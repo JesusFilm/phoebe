@@ -1,5 +1,331 @@
 # phoebe-agent
 
+## 0.14.0
+
+### Minor Changes
+
+- 73eeca5: The console has a settings page of its own, at `#/settings`, behind a gear pinned to the foot of the rail the way T3 Code keeps its settings behind the gear at the foot of its sidebar. It holds what is the operator's and about this window: the console theme, with a sample of log lines drawn in whichever theme is picked; the desktop notifications switch, which leaves the top bar; and what this companion runs on, the Docker it found, its version, its platform and its WSL distros. The theme picker leaves the console's header for it. A deployment's own settings stay where they were, behind the gear on its rail entry. A plain browser gets the page too, saying the settings are the companion's.
+- 6685383: The Claude models Phoebe runs move to the current generation. The shipped `defaultModels.claude` is `claude-sonnet-5-5` (was `claude-sonnet-4-6`), and the `sentry` kind's most-capable default is `claude-opus-5-5` (was `claude-opus-5`), still at `high` effort. A consumer that names its own `defaultModels.claude` or a kind `model` is unaffected. The engine repo's own configs move to `claude-opus-5-5` / `claude-sonnet-5-5` the opus kinds keep `high`, and `reviews` runs sonnet-5.5 at `medium` rather than the `low` floor, since Sonnet 5.5 at `low` tends to skip the check that exercises a change.
+- 73eeca5: The companion ships, and an installed one keeps itself up to date.
+
+  Every `phoebe-agent@x.y.z` release now carries the app. A packaging stage runs
+  after `changeset publish` on three runners and attaches the artifacts to the
+  GitHub Release at the tag the publish just pushed: mac arm64 as a dmg and a zip,
+  win x64 as an NSIS installer, linux x64 as an AppImage. One human trigger, merging
+  the version PR, releases npm and the app together — there is no second version to
+  track and no separate cadence. Self-build stays what it was: `vp run -r build`,
+  then `vp run package` in `apps/desktop`, which is the same script CI runs.
+
+  All three ship unsigned this effort. The docs carry the Gatekeeper workaround, and
+  the app's own updater is off on macOS, because Squirrel.Mac refuses to install an
+  unsigned bundle. When a certificate lands, that clause flips and nothing else
+  moves.
+
+  Updates are `electron-updater`, and they are deliberately unhurried: one check
+  shortly after launch, no poll, no download without a click, and the install waits
+  for the app to quit unless you ask for a restart. A tool that drives Docker on
+  your machine does not swap itself out while you are watching. Only the stable feed
+  exists — there is no nightly channel.
+
+  The build you are offered is the newest stable release. There is no downgrade.
+
+  When there is something to do about a new build, the rail says so in one line, and
+  that line is the only place an update is ever mentioned.
+
+- 73eeca5: The companion has a window. `apps/desktop` is a new Electron app whose renderer is
+  the console bundle, loaded from disk over a privileged `phoebe://console/` scheme
+  rather than over `file:` or a second local listener.
+
+  It holds main and preload and nothing else. No UI lives in the desktop package.
+  The console learns it is in the companion by finding the bridge the preload
+  exposes, and by nothing else. No build flag, no second bundle, no user-agent
+  sniff.
+
+  With nothing installed, the window is one rail with a "This machine" group that
+  says it is empty. Local installs and the host verbs fill it in later tickets.
+
+  The app is private and carries no version of its own, reading the root package's
+  version at build time. It reads no `.env`, and Electron is pinned. `pnpm run ready`
+  builds it, so a broken main or preload fails the gate instead of waiting for
+  someone to package the app. Building needs no Electron binary, so the agent
+  container never downloads one.
+
+- 73eeca5: A config opens as a form. The config tab lists the settings a file can carry, one row each with its own Save: a text box, a number box, or a choice for the settings with a closed set of values, drawn by the console so the list follows its theme rather than the OS. A text setting with values worth offering, the model, the effort, the default branch, opens a list of them and takes whatever is typed. Each row is named for a person, Repository rather than `repoSlug`, with the path beside it and a sentence on what the setting decides; an unset row shows what applies without it. A value the file computes is shown as written and left alone. The file's text, and the form that names a path by hand, are the second view, behind a Form and File switch. Which rows a form has depends on whose config it is. A workspace root has the deployment's few: the engine, the fleet, shown and locked with the reason, and reporting. Where the engine comes from is a choice, its repository and its ref are boxes that offer values and take any, and saving the ref runs `upgrade` on the engine, so the new ref's migrations run with the move. Each tenant has its own repository's settings, on a page of its own: the workspace's config tab lists its tenants, each row the way in, and every child on the rail carries a gear that goes to the same page. The page names the workspace it belongs to and has the way back. A solo install's one config has both, under a heading each. A config that will not parse opens on the file.
+
+  The companion reads the settings off the config's source, never by loading it, and hands them over beside the text as `configFields`.
+
+  A folder that is a workspace child, a tenant config and no deployment of its own, is no longer offered init over the top of it. Adding one opens its install tab on the offer to run it on its own too: `init --solo` into `.phoebe/` under the folder, the tenant's settings carried onto the new config, the tenant entry pointed at that folder for its `.env` and prompts, and a root `.env` copied down. The folder stays a tenant. Forget now asks first, on every install.
+
+  A form no longer goes stale after a save. A run that ends, and coming back to the window, both read the install again, so a row shows the value that landed and the next edit is checked against the file as it now is.
+
+  `config set` takes a list of closed leaves a caller on the same disk may write by exact path. The companion opens `engine.source` and `engine.repo` with it; `engine.ref` stays closed to `config set` on every arm.
+
+  The rail says what each tenant is doing at a glance. A row's mark breathes while a unit is in flight, a tenant with every pipeline switched off is struck through and reads disabled, and a tenant with something wrong carries two small counts, errors and warnings, with each one named on hover: a hold and its reason, a wedged or crash-looping pipeline, a failing doctor check, a missing `.env`, a pipeline's last error, a doctor warning. The workspace's own line sums them: how many tenants, how many working, how many disabled, and the same two counts across the fleet, so a closed workspace still shows that something under it needs a look.
+
+  The companion notices a tenant `.env` the container cannot read, and can fix it. A workspace's container runs as an unprivileged user, so a `.env` at mode `0600` is one it cannot open. The tenant then starts with no credentials and reports a missing GitHub token or App key, which points at the wrong thing. The companion now asks the host about each tenant's `.env` on every read of a workspace (inside the distro for a WSL folder). A locked-out tenant shows an error on its rail row and on the workspace's summary line, whether the workspace is running or not. The tenant's page opens on the cause, with a button that gives the container's user read access to that one file by ACL, or by `chmod o+r` on a machine with no ACL tools, and says which it did.
+
+  The companion shows which AI harness each install runs, and can move it. The harness is the agent CLI a provider spawns (Cursor's `agent`, Claude Code, Codex), and the container has whichever version `container/Dockerfile` installed when the image was built. An **AI harness** section on the install tab lists each one the Dockerfile installs with three versions side by side: what the Dockerfile pins, what the running container answers `--version` with, and the newest published. Opening the section reads the file and asks the container. **Check for updates** is the only thing that asks the network: the npm registry for Claude Code and Codex, and Cursor's installer script, read and never run, for the build it names. Each row has a version field and a button that pins that version in the Dockerfile. It rewrites the `ARG` or the `npm install -g` spec that is already there, gives an unpinned install a pin, and adds a pinned install for a provider the Dockerfile lacks. Cursor's pin moves with its two sha256 digests, which the companion computes by fetching both architectures' tarballs. Moving a pin never rebuilds anything. A pin the container has not caught up with is flagged, and **Rebuild and restart** drains the install and starts it with a build as two ordinary runs. A tenant's page shows the harness its own provider runs and moves the workspace's pin, since the container is shared. A tenant whose provider has no CLI in the container gets a warning on its rail row.
+
+  The console's header says what is working and what is wrong. A pipeline with a unit in flight shows in the header as a lit chip naming the pipeline and the work it is on (`phoebe:work issue 497`), and pressing it opens that pipeline's tab. The tab itself pulses while its pipeline is working, as does the agent's tab under the same tenant. Errors and warnings show as two counts in the header, in the theme's red and yellow, and pressing them lists each one under the tabs: a held tenant, a wedged or crash-looping pipeline, a failing doctor check, a `.env` the container cannot read, a pipeline's last error. A tab carries the counts for its own pipeline. Opened from a workspace child, the header speaks for that tenant alone.
+
+  Phoebe's own versions can be moved from the install tab. A **Phoebe** section above the AI harness lists the launcher (the `phoebe-agent` package the image installs) and the engine (the ref the config names). The launcher shows what the Dockerfile pins, what the running container has, and the newest published; the engine shows its ref and, on a release tag, the newest release. Each has a field and a button that starts a real `upgrade` run for that half, so the engine's migrations run with the move and a refusal explains itself in the run's output. A launcher pin the container has not caught up with is flagged **needs rebuild**, with the same **Rebuild and restart**. `upgrade` run from the companion no longer needs `npm` on the companion's PATH to find the newest launcher: the companion asks the registry itself and hands `upgrade` the answer.
+
+  The companion can check for agent updates by itself, and says so in one line. A new **Check for updates automatically** setting, off by default, has the companion read every install shortly after launch and every six hours, asking npm and Cursor what is newest once for all of them. It never updates anything by itself. When an install is behind, an alert floats over the foot of the page, shaped like T3 Code's and taking no room from the console under it: one line with an icon, a title and one action. It reads "Update available for jesusfilm" with what would move beside it, or "Update available for 3 installs", and the title opens the list, each install with its own **Update** and **Review**. Pressing **Update** turns the line into the update itself, a spinner and the step it is on, then "updated" for a moment; a failure reads "Could not update" with a **Retry**. Dismissing it is remembered for exactly what was on offer, so a newer version is a new line. The rail counts the updates beside each install, and a desktop notification says so once per set when notifications are on.
+
+  An update now reaches a running container without a rebuild, and without touching a unit in flight. After a harness pin moves, the pinned version is installed inside the running container beside the one it has, and the command is switched to it in a single rename. A unit already running keeps the files it started on, and the next unit spawned gets the new version. Cursor's tarball is fetched for the container's architecture and checked against the digest the Dockerfile pins. The AI harness section does this after every **Update** on a running install, and offers **Apply to the running container** for a pin the container has not caught up with, beside the rebuild. Phoebe's own launcher and engine are listed in the alert and are not moved from it, because that upgrade runs migrations; **Review** opens the install's page where it is started.
+
+  A verb's output is read in the console, under a new **cli** tab. The install tab used to print what `start`, `stop`, `upgrade`, `doctor` and a config edit wrote in an Output box of its own. Those lines now go to the console, beside the container's tabs: `cli` appears once a verb has run, shows `$ phoebe <verb>` and its lines in the console's theme with stderr in the stderr colour, pulses while the verb runs, carries an error count when it exited non-zero, and ends on a status line with the outcome and a Cancel where the verb can be cancelled. Runs the console has watched stay above the current one, so a restart's stop is still there under its start. A verb started while the console is open brings the tab forward, and the rail's shortcuts open the console on it. The install tab keeps a **Last run** line with the verb, how it ended, what it decided, and a button that opens its output in the console.
+
+  The companion notices a container that runs as root. Claude Code refuses to run unattended under uid 0, and the engine always asks it to, so a root container fails every unit on the claude provider with one line in a log: `--dangerously-skip-permissions cannot be used with root/sudo privileges`. A container gets there by being started from an image built before the Dockerfile dropped to an unprivileged user; `start` does not rebuild an image that is already there, however old, and a freshly scaffolded install reuses another install's stale image when they share the default `phoebe-runtime:latest` tag. The harness check now asks who the container runs as, or who its image would run as when it is stopped, and compares that with the Dockerfile's last `USER`. A root container is an error on the install's rail entry and in the console's header where a config runs claude, a warning where none does, and the install's page opens on it with **Rebuild and restart**. Each install is read once per state it is in, with nothing asked of the network, so the badge is there without opening its page.
+
+  The companion notices volumes the container cannot write, and can hand them over. This is the other half of leaving a root image behind: Docker gives a named volume its owner once, when it creates it, so the volumes a root container made are still root's after the rebuild, and the unprivileged container exits on its first write with `EACCES: permission denied, mkdir '/data/engine/…'`. The harness check asks what the container's user cannot write under `/data`: in the exec it already makes for a running container, and in a one-off container for a stopped install that has been started before. An unwritable volume is an error on the rail and in the console's header, and the install's page opens on it with **Give them to the container's user**, which runs the `chown` that `docs/upgrading.md` gives as the one-time step, as root, in a one-off container with the install's own volumes mounted. Nothing in the volumes is removed.
+
+  Any AI harness can be added, removed or configured from the install tab. The AI harness section now lists all three, Cursor's agent, Claude Code and Codex, installed or not. **Add** writes a pinned install into the Dockerfile: the npm line for Claude Code and Codex, and for Cursor the scaffold's whole block, tarball, digest check and execute-only node included, with the digests fetched first. With nothing typed, Add and Update take the newest version, looking it up if it has not been. **Remove** takes a harness out of the Dockerfile after a confirmation that names the tenants running on it; the container keeps the CLI until the image is rebuilt, and a config still naming the provider shows the rail's warning. Under the list, **What runs on it** sets the provider, model and effort of a solo install's config, saved as the config form saves them; a workspace lists each tenant's provider with a way to its page, where its config form has those rows.
+
+  The companion notices a tool a config's commands need and the container lacks. The engine runs a tenant's install, check, test and ready commands inside the container, so a command that starts with `vp`, `pnpm`, `yarn` or `bun` the image does not have fails every unit with `sh: vp: not found`. The check now reads the first word of those four commands in each config, what the Dockerfile installs, and what is on the container's PATH. A tool the Dockerfile does not install is an error on the rail and in the console's header, and the install's page offers **Add vp to the Dockerfile**, which writes the install (`npm install -g vite-plus`, `corepack enable` for pnpm and yarn, `npm install -g bun`) beside the other global installs; a tool the Dockerfile installs but the image predates offers the rebuild.
+
+  The console has a right-click menu. Electron draws none by itself, so a right-click did nothing. On the console's lines the OS menu offers **Copy** for the selection, **Copy line** for the line under the pointer, **Copy all lines**, and **Select all**; on a field it offers the OS's own cut, copy, paste and select all; on any other selected text it offers Copy.
+
+  The companion notices when Claude Code is not signed in, and offers the sign-in. The claude provider runs under a subscription token or an API key, and when the token is missing, has expired, or the subscription behind it has lapsed, every unit fails with one line in the log: `Not logged in · Please run /login`. The check now reads the container's log tail for Claude Code's own refusals, per tenant, and clears one that a later line shows it got past. A refusal is an error on the rail and in the console's header, and the install's page opens on it: **Sign in to Claude** opens a terminal on this machine running `claude setup-token`, Claude Code's own sign-in, and a field takes the token it prints and sets it as `CLAUDE_CODE_OAUTH_TOKEN` through `secret set`, for the tenant that needs it. A lapsed subscription is said as such, since a new token does not renew it. The scaffold's compose file now passes `CLAUDE_CODE_OAUTH_TOKEN` into the container, as the dogfood's always has; without that line a token in `.env` never arrived.
+
+- 73eeca5: `phoebe config set`: a field patch into the root config (#536).
+
+  - **One verb, one field, in place.** `phoebe config set <path> <value>` changes a single leaf of the root `phoebe.config.ts`. The path is the one `phoebe config` printed; the value reads as JSON when it is JSON and as a plain string otherwise. The file is parsed and one literal is replaced, so your comments, key order and formatting survive byte for byte.
+  - **The deployment directory stays `:ro`.** A new single-file mount in the scaffolded compose makes the root config, and only the root config, writable — over the same read-only directory mount everything else keeps. Writes land on the same inode, never through a rename, because a rename would break a file bind mount.
+  - **Validated before anything is written.** The bootstrapper spawns the _materialized_ checkout's `config set --validate`, so the patch is checked by the loader the deployment is actually running. A value the config rejects is a message and an untouched disk.
+  - **Refusals name what is somebody else's.** The fleet declaration, the engine pin, the `deployment` block, a work kind's declaration, derived `paths`, a leaf a `PHOEBE_*` variable already sets, and a value in the file that is not a plain literal. Each refusal says which of those it is, and every one of them prints the exact edit to make by hand.
+  - **Optimistic concurrency, no merge.** An edit carries the `sha256:` the deployment report showed it; a file that moved in between is refused with both hashes rather than overwritten.
+  - **Idempotent by edit id.** Applied edits are recorded in `state/config-edits.json` on the data volume, so a redelivered id returns its original receipt instead of writing twice. The record rolls off whole the moment an operator edits or commits the file themselves.
+  - **A write reconciles at once.** The writer breaks the reconcile poll's wait, so the fleet drains onto the new config immediately instead of up to an interval later; the report's reconcile section gains `lastEditId`, tying a reconcile back to the edit that caused it.
+  - **In a workspace, only the root is editable.** Tenant configs live in their own checkouts and stay shell-side: a refusal names the checkout rather than reaching into it.
+  - `EditReceipt` and `ConfigEdit` are exported from `phoebe-agent/contracts`.
+
+- 73eeca5: The console, the log display a local install opens on, has colour themes, and the operator picks one. A select on the console's header offers System, which is Phoebe's own light or dark by the OS, and ten terminal schemes at their published values: Phoebe light and dark, Solarized light and dark, Nord, Gruvbox dark, Dracula, Catppuccin mocha, One dark, Tokyo night and Monokai. A theme is what a terminal's is, a background, a foreground and the sixteen ANSI colours, and the lines are drawn on it: the engine's tags coloured by role, the bootstrapper's, a pipeline's, the unit it is on, an agent's and stderr, and any ANSI colour an agent's own output carries shown in the palette rather than as codes. The choice lives in `companion.json` under `preferences.consoleTheme`; an id from a newer console reads as System in an older one. The app around the console keeps following the OS as it did.
+- 73eeca5: The console is set up for Coss UI, the shadcn-style component set on Base UI that T3 Code builds from: the shadcn CLI against `components.json` with the `@coss` registry, Tailwind 4 through its Vite plugin, the Coss theme's variables and fonts, and Lucide for icons. Tailwind's preflight is left out so the console's own stylesheet keeps the browser defaults it was written against, and the theme's `dark` class follows the OS the way the console's colours already do. The first components in use are the rail's shortcut buttons and their spinner; the rest are added one at a time, as something needs them.
+- 73eeca5: The companion notifies. Local installs raise for `wedged`, `crash-looping` and `doctor-fail`, with main running the pure edge rule from `src/contracts/alerts.ts` over each local read. The first read of an install seeds its state without notifying, so relaunching onto a fleet that was already wedged does not re-fire everything.
+
+  Each notification is tagged `<install>:<condition>`, so a clear replaces its raise in place. They are silent, suppressed while the window is focused, and clicking one brings the window forward on that install's page. The dock or taskbar badge counts local installs in a raised condition, subjects rather than edges, and zero clears it. No tray item and no login item.
+
+  One preference, "desktop notifications", in the companion's `userData` beside the install list. Default on.
+
+  `phoebe-agent/contracts` gains `LocalAlertEvent`, and the desktop bridge grows `installs.alerts`.
+
+- 73eeca5: Effective config and the `phoebe config` verb (#531).
+
+  - **A new read-only verb.** `phoebe config` prints every setting this deployment runs on, each with its value and where that value came from — the ladder resolved, not restated. `--json` emits the same object for a script or a console. Nothing is hidden: defaults print, and each pipeline's kinds print the values they will actually use, inherited ones included.
+  - **Six sources, one word each.** A leaf says `default`, `file`, `alias` (a permanent older name like `PHOEBE_AGENT`), `overlay` (a `PHOEBE_*` variable), `derived` (computed from another setting), or `inherited` from a shallower path. There is no `toggle`: after #530 there is one precedence rule, so env is one source and reads the same way everywhere.
+  - **What lost rides along.** Every leaf lists the values it beat, so "why isn't my config file value taking effect" is answered on the line above rather than reconstructed. That includes the provider-mismatch guard, which silences a kind block speaking for a different provider — until now it fired invisibly.
+  - **Bootstrapper-only fields are in the view**, tagged `reader: "bootstrapper"`: `engine`, `workspace`, `configDir`, `gitIdentity`, `reporting`, and the `deployment` block. An inline work-kind definition renders as a summary string marked `opaque`, since its `fetch` and `run` do not survive JSON.
+  - **A separate `env` section reports presence and location, never a value** — `GH_TOKEN`, each provider key, the App key, and every key a work kind declared, each as `{ present, from }` where `from` is `tenantEnv`, `rootEnv` or `process`. Confirming a secret arrived no longer means printing it.
+  - **Top-level `warnings`** index the deprecated aliases a tenant is using, so a console need not walk the tree to find them.
+  - **Per-tenant failure.** Run against a workspace root and every tenant reports; one whose config will not load is a single row carrying its error, and the exit code turns non-zero only when no tenant loaded at all.
+  - The leaf type lives in `phoebe-agent/contracts`, so a console can name a source without loading the engine.
+
+- 73eeca5: The bootstrapper now runs `phoebe doctor` itself, and the deployment report
+  carries what it found. A run happens when the fleet comes up, after a reconcile
+  lands, on request, and every six hours (jittered per deployment). One run happens
+  at a time: a trigger arriving mid-run joins it and receives that run's result,
+  and a trigger arriving mid-reconcile waits for the relaunch, then runs once
+  against the engine that is actually running. `state/deployment.json` gains a
+  `doctor` section holding the last report, the trigger that produced it, when it
+  was taken, a marker while a run is in flight, and the last attempt that produced
+  nothing. `DoctorReport` now lives in `phoebe-agent/contracts`, so a console can
+  render one without importing the engine.
+
+  Those runs are spawned as a child process and handed the installation tokens the
+  supervisor already holds for its tenants, so `repo`, `labels` and
+  `stray-members` are real checks on an App-arm deployment instead of "not probed".
+
+  Every doctor run, manual ones included, now answers within five minutes. A check
+  that has not finished by then reports `unknown` with "deadline passed", and the
+  rest of the report still lands. One unreachable tenant costs you that tenant's
+  answers rather than the whole report. The bootstrapper kills its own doctor child
+  thirty seconds past that as a backstop; the last completed report stays in the
+  deployment report with its age, and the failed attempt is recorded beside it.
+
+- 73eeca5: Add the `phoebe-agent/contracts` subpath export: the pure-TypeScript types shared
+  by anything reading a deployment from outside the engine. A guard test walks
+  everything the subpath imports and fails on a Node built-in or a value import of
+  engine code, so the contracts stay loadable in a browser bundle. `StopOutcome` is
+  the first type to move there, re-exported from `src/stop.ts` unchanged.
+- 73eeca5: A running local install shows its container's output in a pane beside its page. "Logs" on the install's tab row opens it: `docker compose logs --follow` on the phoebe service, the last 200 lines then live, streamed over the bridge and kept to 2000 lines. The pane stays pinned to the newest line until you scroll up to read, follows again when the container comes back, and says why when the stream ends. A WSL install's logs are followed inside its distro, like every other Docker call for one.
+- 73eeca5: The companion drives local installs: the desktop bridge carries the install list, the Docker check and the verb runs, and the console grows a "This machine" group and an install tab.
+
+  `phoebe-agent/contracts` gains the types both sides read — `LocalInstall`, `VerbRun`, `VerbRunRequest`, `CompanionEnvironment`, `MAX_RUN_LINES` and `CANCELLABLE_VERBS` — beside the `DesktopBridge` interface they hang off. Nothing in the package's own CLI behaviour changes.
+
+  Two engine-side changes come with it, both so the host verbs survive being bundled into another process: `resolvePackageResource` moves out of `src/init.ts` into `src/package-resource.ts`, and migration m001 reads its shipped prompt when it applies rather than when its module loads.
+
+- 73eeca5: A local install shows its deployment's tabs, with nothing listening. The companion's main process watches the install's container through `docker compose events` and, while it is up, execs `phoebe status --json` every 15 seconds. What it emits is a `report` event, which the overview, pipelines, doctor, secrets and config tabs render.
+
+  `phoebe-agent/contracts` gains `LocalReportEvent`, `InstallDirectoryFacts` and `StoredReport`. The desktop bridge grows `installs.reports` and `installs.refresh` beside them.
+
+  A stopped install shows config, read from the file, and a pointer to the install tab; the other four say they need a running container, and the last report the window is still holding is not drawn. A refresh on a stopped install answers with the directory's facts and no report.
+
+- 73eeca5: Edits and secrets on a local install run against this machine. `config set` and `secret set` join the host verbs as verb runs, so the companion starts one, watches its lines, and reads a typed outcome at the exit like any other.
+
+  `config set` carries the fingerprint the window was shown. An edit composed against a config a terminal has since changed is refused `stale` with the exact manual edit to make. `runConfigSet` in `src/config-set.ts` is the verb behind both, with no argv and no stdout in it; the edit ledger is now optional, because the ledger answers a redelivered edit and a write on this machine has no delivery to repeat.
+
+  `secret set` takes `{ tenant, key, value }` as an in-memory run argument. The value is held for the run, is in no file the companion writes, and is echoed in no `run:line`. Two writers take it, chosen by what is there to write to: a running install's value goes through the container into the tenant secret store, and a stopped or freshly initialised one's goes into the deployment `.env` beside the config — which is where the first `GH_TOKEN` is typed. The outcome says which, because the two are not the same place.
+
+  `phoebe-agent/contracts` gains `SecretSetOutcome` and `SecretWriter`, and `HostVerb` gains the two write verbs with their outcomes. No envelope is built, and both forms in the console say where the value went.
+
+- 73eeca5: The install page's logs moved from a pane beside the page to a drawer along its bottom, the shape T3 Code's terminal drawer is. It opens from the terminal icon on the page's title row or with Ctrl+` (Cmd+` on a Mac), drags taller or shorter by its top edge between a floor and three quarters of the window, and remembers its height and whether it was open across launches. Its strip carries a tab per pipeline that has spoken, read off the tag the engine puts on every line, beside all and the bootstrapper, so one pipeline's work, or one agent's output, can be read on its own; a button pins the view back to the newest line after you scroll up to read. The stream behind it is unchanged.
+- 73eeca5: Every host verb can now be called in-process: `init`, `start`, `stop`, `upgrade`,
+  `migrate`, `doctor`. Each one is a `run<Verb>(opts)` that takes its seams as
+  arguments, writes progress through an injected io rather than `process.stdout`,
+  and returns a typed outcome. The `run<Verb>Cli` wrappers keep argv parsing,
+  printing and exit codes, so nothing a terminal sees has changed. The outcome
+  types moved to `phoebe-agent/contracts` as a closed union, re-exported from the
+  modules that held them. `runUpgrade` no longer prompts for a target or sets an
+  exit code of its own. A refused half comes back as an outcome instead.
+- 73eeca5: The bootstrapper now keeps a deployment report: one fixed-size file on the data
+  volume, `state/deployment.json`, saying what the whole deployment is doing right
+  now. It carries the deployment's identity, the running engine SHA with the
+  crash-loop record and reconcile state, each supervised child's liveness and last
+  exit, the slot cap, and one entry per (tenant × pipeline) cell with that
+  pipeline's raw `status.json` and its derived state. The type lives in
+  `phoebe-agent/contracts`; the file is replaced atomically and rewritten only when
+  something in it moves.
+
+  Supervised engines report each completed loop pass and each `status.json` write
+  over the IPC channel they already had. That pass clock widens `wedged?`: as well
+  as a unit past its run budget plus a poll interval, a pipeline is wedged when it
+  has completed no pass in three poll intervals while not waiting for a slot — the
+  case an idle-looking engine with a stopped loop used to hide in. Derivation
+  happens once, in the deployment, so a reader of the file renders it and computes
+  nothing. No on-disk logs are added.
+
+- 73eeca5: A local install's own settings, at the top of its install tab: the display name the rail shows, and the folder it points at. The name is a label kept in `companion.json` beside the folder, empty meaning the folder's own name as before. Changing the location opens the folder picker, inside WSL for a WSL install, and re-points the same entry at what was picked: the date it was added and its name come along, nothing is moved on disk, and the new folder is read as it stands. A folder already on the rail is refused. The bridge gains `installs.update` for both.
+- 73eeca5: `phoebe status` answers "is it alive, and what is it doing" in one verb, from one
+  source. It reads the deployment report (`state/deployment.json`) and renders it
+  top to bottom in priority order. First the bootstrapper line, carrying the engine
+  ref, the commit actually running, a quarantine or reconcile in progress, the slot
+  cap and the report's age. Then the
+  fleet, two lines per pipeline: what the supervised process is doing, and what the
+  pipeline itself is doing. Then doctor in one line. Run it on the host and it
+  drives the deployment's Compose file and execs itself inside the container, the
+  way `start` and `stop` already do, passing flags and exit code through.
+
+  `--verbose` inlines doctor's table. `--json` prints the report file byte for
+  byte. `--check` exits 1 when something needs a look: a wedged pipeline, a
+  crash-looping one, a failing doctor check, a held tenant, no bootstrapper, or no
+  report. Nothing in the view is computed twice. Every state and verdict is the one
+  the bootstrapper already derived, which is what stops the CLI and a console
+  disagreeing about a pipeline.
+
+  A missing or old report is stated as a fact. With `phoebe boot` not running, the
+  view opens with "bootstrapper not running; last report N ago" and prints the
+  report beneath it. With no file at all it says that instead. There is no
+  staleness threshold and no invented state.
+
+  `phoebe list` is now a deprecated alias for that fleet section, with a one-line
+  notice, and goes away at the next major. Two things it used to print go with it:
+  the `N of M declared tenant(s)` header and the `undeclared:` footer. Neither has
+  a home in the deployment report yet. `phoebe pipelines`, `phoebe doctor` and
+  `phoebe purge` are unchanged.
+
+- 73eeca5: The console's rail reads more like T3 Code's project list. Every entry carries the mark of the host it runs on, Windows, macOS or Linux, with WSL as Linux too, and a settings gear at its edge that opens the install tab. A workspace root opens out: a chevron before its name lists the children under it, found the way the bootstrapper finds them, each with a mark and a word read off the latest report (working, waiting, idle, held, wedged, or not in the fleet), and a child opens the workspace's pipelines tab.
+
+  The bootstrapper also says where it runs in the report's identity, read off the kernel it sees, so a WSL2 kernel is `wsl`, a LinuxKit kernel is a Mac, and any other is Linux.
+
+  The console is what the rail opens. Picking a local install lands on its container output, full height, with one tab per pipeline, the way picking a project in T3 Code lands on its terminal; the logs drawer along the tabbed page's bottom is gone. The gear, on the rail and on the console's header, opens the tabbed page, and the page's title row has the way back. A workspace child opens the console on a tab of its own lines.
+
+- 73eeca5: The deployment report now carries every tenant's effective config. Section
+  `config` of `state/deployment.json` holds the same annotated object
+  `phoebe config --json` prints, each setting with its value and the source that
+  supplied it, so `phoebe status --json` and the console can show a
+  tenant's settings without asking the deployment a second question. The text
+  `phoebe status` leaves it out.
+
+  The running engine computes each row, per tenant, the way the bootstrapper
+  already asks it for a tenant's pipelines. So the report says what the engine
+  believes rather than what the bootstrapper would guess, and a relaunch onto a
+  different commit re-reads it. A tenant that is held, or whose file will not load,
+  carries its error instead of the resolution it had before it broke. A tenant is
+  re-asked only when its `phoebe.config.ts` or its `.env` moves, so a steady fleet
+  spawns nothing.
+
+  The section also carries a content hash of the root `phoebe.config.ts` it was
+  derived from, which is what a config edit checks itself against before
+  writing. And it is written to a byte budget, so a workspace with far more tenants
+  than any Phoebe runs today produces a report that stops growing instead of one
+  that does not. The tenants left out are counted in `config.omitted`.
+
+- 73eeca5: The settings catalogue: one precedence rule for env and file (#530).
+
+  - **One rule.** Every `PHOEBE_*` name is now one entry in a single catalogue (`src/settings-catalogue.ts`) holding its config path, its derived env name and its permanent aliases. The rule is: env beats file at a path, and a more specific path beats what it would inherit. The old split between an "overlay" and a list of "runtime toggles" is gone — it was never two rules, only one read from two places. The readers, `phoebe --help` and the configuration reference are all generated from the catalogue, and a test fails the build on any `PHOEBE_*` name in the tree that is neither catalogued nor declared a fact about where Phoebe runs (`PHOEBE_ENGINE_DIR`, `PHOEBE_DATA_DIR`).
+  - **Permanent aliases, no removal date.** `PHOEBE_AGENT` → `PHOEBE_DEFAULT_PROVIDER`, `PHOEBE_<KIND>_AGENT` → `PHOEBE_<KIND>_PROVIDER`, `PHOEBE_MAX_CONCURRENT_AGENTS` → `PHOEBE_DEPLOYMENT_SLOT_CAP`, `PHOEBE_SLOT_FLOOR_BUDGET` → `PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET`, `PHOEBE_RECONCILE_INTERVAL_MS` → `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS`. The old names live in `.env` files, which no Phoebe command can edit, so they keep working with no end date. Set both and the canonical name wins. No migration, and no config field was renamed.
+  - **New `model` and `effort` config fields**, meaning "for the active provider" — the leaves `PHOEBE_MODEL` and `PHOEBE_EFFORT` have always set, now sayable in the config file too, above `defaultModels` / `defaultEfforts` and below a kind's own block.
+  - **Three host knobs on the `deployment` block**: `slotCap`, `slotFloorBudget` and `reconcileIntervalMs`, all optional and each beaten by its env name. A block carrying only knobs is valid and leaves compose driving start and stop; `startCommand` and `stopCommand` remain required together whenever either is named.
+  - **Two knobs now reach a fleet's engine children** that the supervisor's allowlist had missed: `PHOEBE_MAX_UNPRODUCTIVE_RUNS` (only its deprecated alias passed before) and `PHOEBE_<KIND>_RUN_TIMEOUT_MS`. The allowlist is derived from the catalogue, so it can no longer fall behind it.
+  - A custom work kind whose derived env names would collide with a catalogued name — a kind called `default`, deriving `PHOEBE_DEFAULT_PROVIDER` — is now a boot error naming both claimants.
+
+- 73eeca5: A local install's rail entry carries shortcuts. A stopped install shows a play icon; a running one shows pause, stop and restart. Pause is `stop` as it drains, the unit in flight finishing and no new one starting; stop is `stop --now`; restart is a drain and then a start. Each opens the install's page and starts the same run the install tab does, so the output lands there as always. While any run is in flight on an install, its shortcuts give way to a spinner until the run ends, on runs started from the page too. The icons are Lucide's, the set T3 Code draws from, which brings `lucide-react` into the console.
+- 73eeca5: A tenant's secrets can now be set without editing a `.env`. `phoebe secret set
+<KEY>` reads the value from stdin and writes it to that tenant's **secret
+  store**, `<data>/<owner>/<repo>/state/secrets.json` at mode `0600`, with `phoebe
+secret ls` for presence and `phoebe secret clear` to hand the key back to the
+  file. The value is never an argument, never logged, and never printed back.
+  `ls`, `phoebe config` and the deployment report all report presence and
+  provenance, nothing else.
+
+  The store is the tier above the tenant's `.env`, and neither reader lets a
+  collision pass quietly. `phoebe config`'s `env` section flags the key
+  `shadowed`, and `phoebe doctor` gains a per-tenant `secret-store` check that
+  warns and names it. Clearing an entry drops it, so the `.env` or ambient value
+  governs again. There is no tombstone, because revoking a secret means rotating
+  it.
+
+  What may be set is derived from the tenant's own config: every `requiredEnv` key
+  its scheduled work kinds declare, plus `GH_TOKEN`, plus the names in
+  `providerEnv`. Write a custom kind and its key is settable the same day. The
+  GitHub App credentials are refused at every scope, so the store stays tenant
+  scope only and the masked deployment env-file keeps the guarantee it had.
+
+  Delivery reuses the two paths that already existed. The credential lease re-reads
+  the store on every request, so a `GH_TOKEN` rotation lands in a running child in
+  place. Every other key counts toward the reconcile digest, so setting one
+  relaunches the children that would hold it, in solo too, where the store is the
+  only channel a secret has. A successful set then runs `phoebe doctor`, which is
+  what says the key is where the child will look for it. `--no-doctor` skips that.
+
+  `docs/trust.md` records the cost. The store holds plaintext at rest in the same
+  place, with the same readers, as the tenant `.env` it sits above. It joins the
+  accepted residual rather than widening it.
+
+- 73eeca5: The console is two panes and nothing above them, the way T3 Code is. The top bar is gone: the brand now heads the rail and is the way home, and the right pane opens with a line saying where the console is, This machine › jesusfilm › Console, or Settings. The rail scrolls on its own and the pane's top line stays put while the page under it scrolls.
+- 73eeca5: The companion takes a folder inside a WSL distro as a local install. On a machine with WSL the home page offers "Add a WSL folder" beside "Add a folder": the same picker, opened at `\\wsl.localhost\` where the distros are, because the Windows picker will not take a typed path and keeps that root under a "Linux" node at the foot of its tree. The config, the Dockerfile pin and the `.env` are read and written through that path like any other folder's. Docker is the difference: Compose run from Windows would resolve the deployment's bind mounts to UNC paths Docker Desktop cannot mount, and the containers are the distro's own. So every `docker` the companion spawns for such an install — the `ps` behind the rail, the `status --json` read, the events stream, start and stop, `secret set` into the container, pairing's `up -d` — now runs inside the distro through `wsl.exe --exec`, with each path translated to the one the distro knows. The rail and the install tab name the distro, and this machine's own Docker check is not held against it.
+
+  A repository that is a workspace child at its root and a standalone deployment in `.phoebe/` beside it is now a local install too. The companion used to read the root config, call the folder a workspace child and offer nothing; it now drives the deployment in `.phoebe/`, reading its config, its `.env` and its Dockerfile pin from there, and the install page says so. The rail's "+ add" goes to the home page, where the ways to add sit side by side.
+
+### Patch Changes
+
+- 3d40dea: Document the Claude Code CLI version floor. The CLI rejects a model released after it with a `does not support this model` error, and the unit ends with `Agent exited with code 1`; the current models (`claude-opus-5-5`, `claude-sonnet-5-5`, the latter the shipped `defaultModels.claude`) need CLI 2.1.280 or newer. `docs/claude-subscription-auth.md` now says so beside the install step, and notes that an unpinned `npm install -g @anthropic-ai/claude-code` stays frozen at the version the image was built with until a `docker compose build --no-cache`. The engine repo's own dogfood image pin moves to 2.1.287.
+- 73eeca5: The companion opens again. `init` read the root `package.json` through `new URL("../package.json", import.meta.url)` at module load, and the bundler turned that into a `data:` URL that `readFileSync` refuses, so main threw before the window appeared. The read is now lazy and goes through the bundler-safe path helper, and the companion hands `init` its own version rather than looking for a manifest beside the bundle.
+- 73eeca5: One docs home for the console and the companion (#562).
+
+  `docs/console.md` covers the companion, what each of the console's pages shows,
+  alerting, and the part that stays at a shell on purpose. `operating.md`,
+  `configuration.md` and `trust.md` point at it rather than growing a second copy.
+
+  - Every noun the console introduced to `CONTEXT.md` carries an avoid-list.
+  - The findings behind the design land under `docs/research/`: how T3 Code
+    packages its clients, and what youtube-studio's app guidelines require.
+  - The doctor report has one contract file rather than two copies of the same
+    type.
+
+- 73eeca5: A stopped install's page no longer opens with a line saying nothing is running and config is the only tab with anything in it. The tabs that need a container are greyed and say so on hover, the start shortcut is on the rail, and the install tab is one click away; the sentence was noise on every stopped install.
+
+  A WSL install's install tab no longer carries a Docker section: the paragraph saying Docker is asked inside the distro through wsl.exe said nothing the rail and the verbs do not already say when it matters.
+
+  A workspace's config tab has a config space per tenant under the root's: each child's `phoebe.config.ts` as its folder holds it, with the same one-field edit form pointed at it. The desktop reads the children's configs beside the root's on every read, and a `config set` may name a child by its folder; a folder outside the install, or one with no config, is refused before anything is read.
+
+- 73eeca5: The repo becomes a pnpm workspace so the apps that ship beside the engine have
+  somewhere to live. `phoebe-agent` stays at the root and packs the same files it
+  did before; `apps/*` is empty until the desktop console lands. The root `ready`
+  gate now ends in `vp run -r build`.
+- 73eeca5: The companion's tabs no longer sit on "Reading this install's report…" for a running container that cannot answer. The read loop now reads the deployment report file inside the container through `sh` rather than execing `phoebe status --json`, which prints the same bytes but needs `phoebe` on the container's PATH; a container that runs the engine from a mounted checkout, as this repo's own `.phoebe/` does, has none. And when a read does fail, the tabs say why: a container whose phoebe-agent predates the report is named as such, with the upgrade as the remedy.
+
 ## 0.13.2
 
 ### Patch Changes
