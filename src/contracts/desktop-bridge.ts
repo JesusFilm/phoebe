@@ -28,6 +28,7 @@ import type {
   LocalInstall,
 } from "./local-install.ts";
 import type {
+  ClaudeSignInOutcome,
   HarnessApplyOutcome,
   HarnessName,
   HarnessRemoveOutcome,
@@ -228,6 +229,12 @@ export type DesktopBridge = {
     remove: (dir: string, harness: HarnessName) => Promise<HarnessRemoveOutcome>;
     /** Write a tool's install into the Dockerfile: `pnpm`, `yarn`, `bun`, or the companion's others. Rebuilds nothing. */
     addTool: (dir: string, tool: string) => Promise<ToolAddOutcome>;
+    /**
+     * Open a terminal on this machine running `claude setup-token`, Claude
+     * Code's own sign-in, which ends by printing a long-lived token. The token
+     * comes back through `secret set`, as every other secret does.
+     */
+    signInClaude: () => Promise<ClaudeSignInOutcome>;
     /**
      * Put the version the Dockerfile pins into the running container, without
      * a rebuild and without touching a unit in flight.

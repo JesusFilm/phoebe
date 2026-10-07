@@ -37,6 +37,7 @@ import {
   runCompose,
   type CommandRunner,
 } from "../../../src/deployment-compose.ts";
+import { readClaudeAuth } from "./claude-auth.ts";
 import { PHOEBE_SERVICE } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 
@@ -703,6 +704,9 @@ export function parseLauncherVersion(stdout: string): string | null {
 
 // ── putting a pinned version into a running container ─────────────────────
 
+/** Enough of the log to hold the last thing each agent said, and what came after it. */
+const LOG_TAIL_FOR_AUTH = 400;
+
 /** Where swapped-in npm harnesses live, one folder per version, beside the image's own. */
 const SWAP_ROOT = "/opt/phoebe-harness";
 
@@ -983,6 +987,22 @@ export function createHarness(deps: HarnessDeps = {}) {
     }
   }
 
+  /** The last lines the container printed, running or not. Empty when there is no container to ask. */
+  async function logTail(dir: string): Promise<string[]> {
+    const deployment = resolveDeploymentCompose(deploymentDirOf(dir, exists).dir, exists);
+    if ("kind" in deployment) return [];
+    try {
+      const result = await runCompose({
+        deployment,
+        args: ["logs", "--tail", String(LOG_TAIL_FOR_AUTH), "--no-log-prefix", PHOEBE_SERVICE],
+        runner: runnerFor(dir),
+      });
+      return result.code === 0 ? result.stdout.split("\n") : [];
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * A stopped install: who its image would run as, and, when that is not root
    * and the install has been started before, what a one-off container of it
@@ -1056,10 +1076,12 @@ export function createHarness(deps: HarnessDeps = {}) {
     async check(opts: { dir: string; running: boolean; lookUp: boolean }): Promise<HarnessReport> {
       const { file, content } = dockerfileText(opts.dir);
       const pins = content === null ? null : readHarnessPins(content);
-      const [inContainer, stopped] = await Promise.all([
+      const [inContainer, stopped, tail] = await Promise.all([
         opts.running ? runningVersions(opts.dir) : Promise.resolve(null),
         // A stopped install has no container to ask, so its image is asked.
         opts.running || content === null ? Promise.resolve(null) : stoppedContainer(opts.dir),
+        // What the container last said, for whether Claude Code could run.
+        content === null ? Promise.resolve([]) : logTail(opts.dir),
         opts.lookUp
           ? Promise.all([
               ...HARNESS_NAMES.map(async (harness) => {
@@ -1110,6 +1132,7 @@ export function createHarness(deps: HarnessDeps = {}) {
           dockerfileDrops: content !== null && dockerfileDropsPrivileges(content),
           unwritable: inContainer?.unwritable ?? stopped?.unwritable ?? [],
         },
+        auth: readClaudeAuth(tail),
         tools: Object.keys(TOOLS).map((tool) => {
           const has = inContainer?.tools ?? stopped?.tools ?? null;
           return {

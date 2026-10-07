@@ -10,6 +10,7 @@
 // Pure. The section that checks and updates is harness-section.tsx.
 
 import type {
+  ClaudeAuthState,
   ConfigFieldFacts,
   HarnessApplyOutcome,
   HarnessFacts,
@@ -687,4 +688,77 @@ export function toolAddReading(outcome: ToolAddOutcome): string {
   return outcome.kind === "added"
     ? `The Dockerfile now installs ${outcome.tool}. Rebuild to put it in the container.`
     : `${outcome.tool} was not added: ${outcome.why}.`;
+}
+
+// ── Claude Code's sign-in ─────────────────────────────────────────────────
+
+/** The variable the claude provider's subscription token travels in (docs/claude-subscription-auth.md). */
+export const CLAUDE_TOKEN_KEY = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/** One tenant Claude Code refused to run on, with what to do about it. */
+export type ClaudeAuthReading = {
+  slug: string;
+  state: ClaudeAuthState;
+  /** What the CLI said. */
+  said: string;
+  /** What that means here, and what fixes it. */
+  text: string;
+  /** Whether a fresh sign-in token is the fix; a lapsed subscription needs more than that. */
+  signIn: boolean;
+};
+
+/**
+ * Claude Code's refusals on the install, read off the last check. Each is one
+ * tenant's; the remedy is the same for all but a lapsed subscription, which a
+ * new token does not renew.
+ */
+export function claudeAuthReading(report: HarnessReport | null): ClaudeAuthReading[] {
+  if (report === null) return [];
+  return report.auth.map((facts) => {
+    switch (facts.state) {
+      case "subscription-lapsed":
+        return {
+          slug: facts.slug,
+          state: facts.state,
+          said: facts.text,
+          signIn: false,
+          text: `Claude Code on ${facts.slug} says its subscription has lapsed, so every unit on the claude provider fails. Renew the subscription, or point the provider at an API key (providerEnv.claude in its config, and ANTHROPIC_API_KEY as a secret).`,
+        };
+      case "token-expired":
+        return {
+          slug: facts.slug,
+          state: facts.state,
+          said: facts.text,
+          signIn: true,
+          text: `Claude Code on ${facts.slug} says its sign-in token has expired, so every unit on the claude provider fails. Sign in again and set the new token.`,
+        };
+      case "invalid-key":
+        return {
+          slug: facts.slug,
+          state: facts.state,
+          said: facts.text,
+          signIn: true,
+          text: `Claude Code on ${facts.slug} rejects the credential it was given, so every unit on the claude provider fails. Set a valid ANTHROPIC_API_KEY, or sign in for a subscription token and point providerEnv.claude at ${CLAUDE_TOKEN_KEY}.`,
+        };
+      case "not-logged-in":
+        return {
+          slug: facts.slug,
+          state: facts.state,
+          said: facts.text,
+          signIn: true,
+          text: `Claude Code on ${facts.slug} is not logged in, so every unit on the claude provider fails. It has no token: ${CLAUDE_TOKEN_KEY} is unset for this tenant, or the compose file does not pass it in. Sign in and set the token here.`,
+        };
+    }
+  });
+}
+
+/** The same, as the lines a rail badge and the console's header carry. */
+export function claudeAuthProblem(report: HarnessReport | null): RailProblem[] {
+  return claudeAuthReading(report).map((reading) => ({
+    level: "error",
+    text:
+      reading.state === "subscription-lapsed"
+        ? `Claude Code on ${reading.slug}: the subscription has lapsed`
+        : `Claude Code on ${reading.slug} is not signed in`,
+  }));
 }

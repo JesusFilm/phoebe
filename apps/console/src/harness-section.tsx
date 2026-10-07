@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type {
+  ClaudeSignInOutcome,
   DesktopBridge,
   HarnessApplyOutcome,
   HarnessName,
@@ -32,6 +33,8 @@ import { Input } from "~/components/ui/input";
 import {
   applyReading,
   awaitingRebuild,
+  CLAUDE_TOKEN_KEY,
+  claudeAuthReading,
   engineReading,
   engineStanding,
   harnessReading,
@@ -53,11 +56,12 @@ import {
   volumesReading,
   updateVerb,
   upgradeReading,
+  type ClaudeAuthReading,
   type HarnessRow,
   type PhoebeVersions,
 } from "./harness.ts";
 import { ConfigFieldRow, saveRequest } from "./config-form.tsx";
-import { receiptReading } from "./local-install.ts";
+import { receiptReading, secretSetRequest } from "./local-install.ts";
 import { receiptOfRun, refusalText } from "./verb-run.ts";
 
 export function HarnessSection({
@@ -220,6 +224,7 @@ export function HarnessSection({
 
   const root = rootReading(install, event, report);
   const volumes = volumesReading(report);
+  const auth = claudeAuthReading(report);
   const tools = toolsReading(install, event, report);
   const addTool = (tool: string): void => {
     setAddingTool(tool);
@@ -290,6 +295,16 @@ export function HarnessSection({
             </Button>
           ) : null}
         </section>
+      )}
+      {auth.length === 0 ? null : (
+        <ClaudeSignIn
+          install={install}
+          event={event}
+          readings={auth}
+          bridge={bridge}
+          busy={busy}
+          onStart={onStart}
+        />
       )}
       {tools.length === 0 && toolAdded === null ? null : (
         <section className="fixable" aria-label="Tooling the commands need">
@@ -973,5 +988,134 @@ export function HarnessSettings({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Claude Code refusing to run for want of a sign-in, and the way back in.
+ *
+ * The sign-in is Claude Code's own: `claude setup-token` in a terminal on this
+ * machine, a browser, and a long-lived token printed at the end. The companion
+ * opens that terminal and takes the token back, into the tenant's secrets as
+ * `CLAUDE_CODE_OAUTH_TOKEN` through the same `secret set` every other secret
+ * uses: the container's store on a running install, the install's `.env` on a
+ * stopped one. A token already to hand can be pasted without the terminal.
+ */
+export function ClaudeSignIn({
+  install,
+  event,
+  readings,
+  bridge,
+  busy,
+  onStart,
+}: {
+  install: LocalInstall;
+  event: LocalReportEvent | null;
+  readings: ClaudeAuthReading[];
+  bridge: DesktopBridge;
+  busy: boolean;
+  onStart?: (request: VerbRunRequest) => void;
+}) {
+  const [opening, setOpening] = useState(false);
+  const [opened, setOpened] = useState<ClaudeSignInOutcome | null>(null);
+  const [token, setToken] = useState("");
+  const [refused, setRefused] = useState<string | null>(null);
+  const signIn = readings.some((reading) => reading.signIn);
+  // A workspace sets the token for the tenant that needs it; a solo install for itself.
+  const tenants = readings
+    .map((reading) =>
+      install.workspace === undefined
+        ? null
+        : (event?.directory.tenants?.find((tenant) => tenant.slug === reading.slug)?.dir ?? null),
+    )
+    .filter((dir): dir is string => dir !== null);
+  const open = (): void => {
+    setOpening(true);
+    bridge.harness
+      .signInClaude()
+      .then(setOpened, (error: unknown) => setOpened({ opened: false, detail: refusalText(error) }))
+      .finally(() => setOpening(false));
+  };
+  const save = (): void => {
+    if (onStart === undefined) return;
+    setRefused(null);
+    const targets = install.workspace === undefined ? [undefined] : tenants;
+    try {
+      for (const tenant of targets) {
+        onStart(
+          secretSetRequest({
+            install,
+            key: CLAUDE_TOKEN_KEY,
+            value: token.trim(),
+            ...(tenant === undefined ? {} : { tenant }),
+          }),
+        );
+      }
+      // Emptied now: a box still holding a token is a box read over a shoulder.
+      setToken("");
+    } catch (error) {
+      setRefused(refusalText(error));
+    }
+  };
+
+  return (
+    <section className="fixable" aria-label="Claude Code is not signed in">
+      <h2>{signIn ? "Claude Code is not signed in" : "Claude Code's subscription has lapsed"}</h2>
+      {readings.map((reading) => (
+        <p key={reading.slug}>
+          {reading.text} <span className="muted mono">{reading.said}</span>
+        </p>
+      ))}
+      {!signIn || onStart === undefined ? null : (
+        <>
+          <div className="verbs">
+            <Button size="sm" disabled={opening} onClick={open}>
+              {opening ? "Opening…" : "Sign in to Claude"}
+            </Button>
+          </div>
+          {opened === null ? (
+            <p className="muted">
+              Opens a terminal with <span className="mono">claude setup-token</span>, Claude
+              Code&apos;s own sign-in: finish it in the browser it opens, then paste the token it
+              prints here. The token goes into this install&apos;s secrets as{" "}
+              <span className="mono">{CLAUDE_TOKEN_KEY}</span>.
+            </p>
+          ) : (
+            <p className={opened.opened ? "muted" : "refusal"}>{opened.detail}</p>
+          )}
+          <div className="verbs">
+            <Input
+              size="sm"
+              type="password"
+              autoComplete="off"
+              className="mono harness-token"
+              aria-label="Claude sign-in token"
+              placeholder="sk-ant-oat01-…"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={
+                busy ||
+                token.trim() === "" ||
+                (install.workspace !== undefined && tenants.length === 0)
+              }
+              onClick={save}
+            >
+              Set the token
+            </Button>
+          </div>
+          {token.trim() !== "" && !token.trim().startsWith("sk-ant-oat") ? (
+            <p className="muted">
+              A subscription token starts with <span className="mono">sk-ant-oat</span>. This will
+              be set as given.
+            </p>
+          ) : null}
+          {refused === null ? null : <p className="refusal">{refused}</p>}
+        </>
+      )}
+    </section>
   );
 }

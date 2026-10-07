@@ -106,6 +106,7 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     latestAt: "2026-10-01T12:00:00.000Z",
     user: { root: false, dockerfileDrops: true, unwritable: [] },
     tools: [],
+    auth: [],
     launcher: {
       pin: { kind: "pinned", version: "0.13.2" },
       running: "0.13.0",

@@ -229,6 +229,9 @@ export type {
   TenantConfigFacts,
 } from "./local-report.ts";
 export type {
+  ClaudeAuthFacts,
+  ClaudeAuthState,
+  ClaudeSignInOutcome,
   ContainerUserFacts,
   HarnessApplyOutcome,
   HarnessFacts,

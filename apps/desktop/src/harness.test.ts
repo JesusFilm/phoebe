@@ -504,6 +504,7 @@ describe("the check and the update", () => {
     imageUser = "phoebe",
     unwritable: string[] = [],
     started = true,
+    log: string[] = ["[phoebe] boot: ok"],
   ) {
     const files = new Map<string, string>([[COMPOSE, "services: {}\n"]]);
     if (content !== null) files.set(DOCKERFILE, content);
@@ -513,6 +514,9 @@ describe("the check and the update", () => {
     const runner: CommandRunner = (spec) => {
       ran.push(spec.args);
       // An apply ends on what the one command answers; a check lists them all.
+      if (spec.args.includes("logs")) {
+        return Promise.resolve({ code: 0, stdout: log.join("\n") + "\n", stderr: "" });
+      }
       const applied = spec.args.includes("-u")
         ? spec.args.at(-3) === "claude"
           ? "2.1.228 (Claude Code)\n"
@@ -565,7 +569,8 @@ describe("the check and the update", () => {
     const report = await harness.check({ dir: DIR, running: true, lookUp: false });
 
     expect(fetched).toEqual([]);
-    expect(ran).toHaveLength(1);
+    // One exec for the versions, and the log tail; the network is not asked.
+    expect(ran.filter((args) => !args.includes("logs"))).toHaveLength(1);
     expect(report).toMatchObject({ dockerfile: DOCKERFILE, containerAsked: true, latestAt: null });
     // The launcher is read beside them: what the file pins, what the container has.
     expect(report.launcher).toEqual({
@@ -613,10 +618,9 @@ describe("the check and the update", () => {
     expect(report.user).toEqual({ root: true, dockerfileDrops: true, unwritable: [] });
     // The compose file is asked which image, and Docker is asked about that one.
     // A root image owns whatever it mounts, so nothing more is asked of it.
-    expect(stale.ran.map((args) => args.slice(-2).join(" "))).toEqual([
-      "config --images",
-      "{{.Config.User}}| phoebe-runtime:latest",
-    ]);
+    expect(
+      stale.ran.filter((args) => !args.includes("logs")).map((args) => args.slice(-2).join(" ")),
+    ).toEqual(["config --images", "{{.Config.User}}| phoebe-runtime:latest"]);
     const fine = await setup().harness.check({ dir: DIR, running: false, lookUp: false });
     expect(fine.user.root).toBe(false);
   });
@@ -816,6 +820,23 @@ describe("the check and the update", () => {
       inDockerfile: false,
       inContainer: null,
     });
+  });
+
+  test("the log tail says where Claude Code could not run", async () => {
+    const { harness } = setup(WITH_CLAUDE, 10001, "phoebe", [], true, [
+      "[phoebe] boot: ok",
+      "[acme/a:claude][issues issue:716] Not logged in · Please run /login",
+      "[phoebe:acme/a:work] Agent exited with code 1.",
+    ]);
+
+    const report = await harness.check({ dir: DIR, running: false, lookUp: false });
+
+    expect(report.auth).toEqual([
+      { slug: "acme/a", state: "not-logged-in", text: "Not logged in · Please run /login" },
+    ]);
+    expect((await setup().harness.check({ dir: DIR, running: true, lookUp: false })).auth).toEqual(
+      [],
+    );
   });
 
   test("adding a tool writes its install and says so", async () => {

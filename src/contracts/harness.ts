@@ -95,6 +95,28 @@ export type ToolAddOutcome =
   | { kind: "added"; tool: string; file: string }
   | { kind: "refused"; tool: string; why: string };
 
+/** The ways Claude Code says it cannot run, read off its own output in the log. */
+export type ClaudeAuthState =
+  | "not-logged-in"
+  | "token-expired"
+  | "subscription-lapsed"
+  | "invalid-key";
+
+/**
+ * Claude Code refusing to run on one tenant, as the last thing it said there.
+ * A refusal that a later line of its output shows it got past is not listed.
+ */
+export type ClaudeAuthFacts = {
+  /** The tenant, as the log tags it: `owner/repo`. */
+  slug: string;
+  state: ClaudeAuthState;
+  /** What the CLI said, verbatim. */
+  text: string;
+};
+
+/** What came of asking this machine to open the Claude sign-in. */
+export type ClaudeSignInOutcome = { opened: boolean; detail: string };
+
 /** Every harness on one install, as the last check found them. */
 export type HarnessReport = {
   /** The Dockerfile that was read, or null when the install has none. */
@@ -104,6 +126,8 @@ export type HarnessReport = {
   user: ContainerUserFacts;
   /** The tools a config's commands might need, as far as the install has them. */
   tools: ToolFacts[];
+  /** Tenants on which Claude Code last refused to run for want of a sign-in. */
+  auth: ClaudeAuthFacts[];
   /** Whether a running container answered. False for a stopped install. */
   containerAsked: boolean;
   /** When `latest` was last looked up, ISO-8601. Null before the first lookup. */

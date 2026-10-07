@@ -135,7 +135,9 @@ the Dockerfile that drops privileges. After that rebuild its volumes are still
 root's, so the same places flag what the container cannot write under `/data`,
 with **Give them to the container's user**. A tool a config's commands start
 with (`vp`, `pnpm`, `yarn`, `bun`) that the container lacks is flagged the same
-way, with a button that writes its install into the Dockerfile.
+way, with a button that writes its install into the Dockerfile. Claude Code saying
+it is not logged in is flagged too, with **Sign in to Claude**, which opens
+`claude setup-token` in a terminal and takes the token it prints as a secret.
 
 The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
 in `container/Dockerfile`) and the engine (`engine.ref` in the config), each

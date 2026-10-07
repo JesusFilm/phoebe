@@ -17,6 +17,7 @@ const REPORT: HarnessReport = {
   launcher: { pin: { kind: "absent" }, running: null, latest: null, behind: null },
   user: { root: null, dockerfileDrops: false, unwritable: [] },
   tools: [],
+  auth: [],
   containerAsked: false,
   latestAt: null,
 };
