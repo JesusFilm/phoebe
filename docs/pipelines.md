@@ -8,7 +8,7 @@ to declare one, and what the engine does differently once a tenant has two.
 If you have never declared a `pipelines` block, you already have one pipeline and
 nothing here changes what Phoebe does for you. Read the first section and stop.
 
-The vocabulary is in [`CONTEXT.md`](../CONTEXT.md). This page uses those words
+The vocabulary is in [`GLOSSARY.md`](../GLOSSARY.md). This page uses those words
 rather than redefining them.
 
 ## What a pipeline is

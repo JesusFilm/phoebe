@@ -79,7 +79,7 @@ The path from a fuzzy idea to something Phoebe can pick up:
 
 1. **[`/grill-with-docs`](https://www.aihero.dev/skills-grill-with-docs)** interviews
    you about the idea until you and the agent share one understanding of it,
-   writing settled vocabulary into `CONTEXT.md` and hard decisions into ADRs as it
+   writing settled vocabulary into `GLOSSARY.md` and hard decisions into ADRs as it
    goes. ([`/grill-me`](https://www.aihero.dev/skills-grill-me) is the same
    interview with no repository under it, and
    [`/grilling`](https://www.aihero.dev/skills-grilling) is the primitive both run.)

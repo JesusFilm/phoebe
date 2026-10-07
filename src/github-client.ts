@@ -69,7 +69,7 @@ const TRANSIENT_RETRY_SCHEDULE_MS = [2_000, 8_000];
 
 /**
  * Which GitHub object a write addresses — `gh issue …` vs `gh pr …`. Deliberately
- * not called a "kind": that word is taken by the work kinds (CONTEXT.md), and a
+ * not called a "kind": that word is taken by the work kinds (GLOSSARY.md), and a
  * `conflicts` unit and a `checks` unit are both a `pr` here.
  */
 export type UnitTarget = { objectType: "issue" | "pr"; id: number };
