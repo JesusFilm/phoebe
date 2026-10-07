@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "electron": "44.3.0",
+    "electron": "44.7.0",
     "electron-builder": "^26.15.3",
     "typescript": "^7.0.0",
     "vite-plus": "^0.3.0"
