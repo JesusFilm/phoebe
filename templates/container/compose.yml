@@ -52,6 +52,9 @@ services:
       # authenticates the engine checkout when `engine.source` is "github".
       GH_TOKEN: "${GH_TOKEN:?GH_TOKEN is required}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # A Claude Pro/Max subscription token instead of the API key, when
+      # `providerEnv.claude` names it (docs/claude-subscription-auth.md).
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
       CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
       # Where `boot` keeps engine checkouts. Pointed at a named volume below so

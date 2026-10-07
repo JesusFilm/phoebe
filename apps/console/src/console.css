@@ -1914,3 +1914,7 @@ details.why > summary::marker {
 .tool-need + .tool-need {
   margin-top: 8px;
 }
+
+.harness-token {
+  width: 360px;
+}

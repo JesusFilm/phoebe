@@ -32,6 +32,7 @@ import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
 import {
   availableUpdates,
+  claudeAuthProblem,
   rootProblem,
   toolsProblem,
   updatesReading,
@@ -208,6 +209,7 @@ export function App({
         ...rootProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
         ...volumesProblem(harnessReports[install.dir] ?? null),
         ...toolsProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
+        ...claudeAuthProblem(harnessReports[install.dir] ?? null),
       ];
       if (problems.length > 0) found[install.dir] = problems;
     }

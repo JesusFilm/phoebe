@@ -9,6 +9,8 @@ import type {
 import {
   applyReading,
   availableUpdates,
+  claudeAuthProblem,
+  claudeAuthReading,
   harnessRows,
   neededTools,
   rootProblem,
@@ -25,7 +27,7 @@ import {
   type AvailableUpdate,
 } from "./harness.ts";
 import { consoleStatus } from "./console-status.ts";
-import { HarnessPanel } from "./harness-section.tsx";
+import { ClaudeSignIn, HarnessPanel } from "./harness-section.tsx";
 import { createNotifier, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { SettingsPage } from "./settings-page.tsx";
@@ -70,6 +72,7 @@ function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
     latestAt: "2026-10-02T12:00:00.000Z",
     user: { root: false, dockerfileDrops: true, unwritable: [] },
     tools: [],
+    auth: [],
     launcher: {
       pin: { kind: "pinned", version: "0.13.2" },
       running: "0.13.2",
@@ -717,5 +720,84 @@ describe("tooling the commands need", () => {
     expect(toolAddReading({ kind: "added", tool: "vp", file: "f" })).toBe(
       "The Dockerfile now installs vp. Rebuild to put it in the container.",
     );
+  });
+});
+
+describe("Claude Code not signed in", () => {
+  const notLoggedIn = report({
+    auth: [{ slug: "acme/one", state: "not-logged-in", text: "Not logged in · Please run /login" }],
+  });
+
+  test("is read as what it means and what fixes it", () => {
+    const [reading] = claudeAuthReading(notLoggedIn);
+
+    expect(reading).toMatchObject({ slug: "acme/one", state: "not-logged-in", signIn: true });
+    expect(reading!.text).toContain("is not logged in, so every unit on the claude provider fails");
+    expect(reading!.text).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(claudeAuthReading(report())).toEqual([]);
+    expect(claudeAuthReading(null)).toEqual([]);
+  });
+
+  test("a lapsed subscription is not fixed by signing in again", () => {
+    const [reading] = claudeAuthReading(
+      report({
+        auth: [
+          { slug: "acme/one", state: "subscription-lapsed", text: "Your subscription has expired" },
+        ],
+      }),
+    );
+
+    expect(reading).toMatchObject({ signIn: false });
+    expect(reading!.text).toContain("Renew the subscription");
+  });
+
+  test("is an error on the rail and in the console's header", () => {
+    expect(claudeAuthProblem(notLoggedIn)).toEqual([
+      { level: "error", text: "Claude Code on acme/one is not signed in" },
+    ]);
+    expect(
+      claudeAuthProblem(
+        report({ auth: [{ slug: "acme/one", state: "subscription-lapsed", text: "x" }] }),
+      )[0]!.text,
+    ).toContain("the subscription has lapsed");
+  });
+
+  test("the notice offers the sign-in and a place for the token", () => {
+    const markup = renderToStaticMarkup(
+      <ClaudeSignIn
+        install={solo}
+        event={event()}
+        readings={claudeAuthReading(notLoggedIn)}
+        bridge={bridge()}
+        busy={false}
+        onStart={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Claude Code is not signed in"');
+    expect(markup).toContain(">Sign in to Claude<");
+    expect(markup).toContain("claude setup-token");
+    expect(markup).toContain('aria-label="Claude sign-in token"');
+    expect(markup).toContain(">Set the token<");
+    // What the CLI said, verbatim, beside the reading of it.
+    expect(markup).toContain("Not logged in · Please run /login");
+  });
+
+  test("a lapsed subscription gets the explanation and no sign-in", () => {
+    const markup = renderToStaticMarkup(
+      <ClaudeSignIn
+        install={solo}
+        event={event()}
+        readings={claudeAuthReading(
+          report({ auth: [{ slug: "acme/one", state: "subscription-lapsed", text: "lapsed" }] }),
+        )}
+        bridge={bridge()}
+        busy={false}
+        onStart={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("subscription has lapsed");
+    expect(markup).not.toContain(">Sign in to Claude<");
   });
 });

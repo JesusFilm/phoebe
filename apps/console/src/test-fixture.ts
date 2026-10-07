@@ -304,6 +304,7 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
           ? Promise.reject(notAnInstall(dir))
           : Promise.resolve(answers.harness);
       },
+      signInClaude: () => Promise.resolve({ opened: true, detail: "opened" }),
       addTool: (dir, tool) => {
         answers.toolAdds?.push({ dir, tool });
         return Promise.resolve({ kind: "added", tool, file: `${dir}/container/Dockerfile` });

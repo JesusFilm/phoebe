@@ -17,6 +17,7 @@
 // here rather than in the renderer for the same reason — a reload must not lose
 // them.
 
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -35,6 +36,7 @@ import electronUpdater from "electron-updater";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
+  ClaudeSignInOutcome,
   ContextMenuChoice,
   ContextMenuRequest,
   CompanionUpdate,
@@ -54,6 +56,7 @@ import type {
   ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
+import { claudeLoginCommand } from "./claude-auth.ts";
 import { contextMenuTemplate } from "./context-menu.ts";
 import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
 import {
@@ -210,6 +213,45 @@ const updateWatch = createUpdateWatch({
     harness.check({ dir: install.dir, running: install.state === "running", lookUp }),
   emit: (install, report) => broadcast(BRIDGE_CHANNELS.harnessReport, { install, report }),
 });
+
+/**
+ * A terminal with `claude setup-token` in it (claude-auth.ts). Detached, so the
+ * sign-in outlives this call; the token it ends on is the operator's to paste
+ * back. Said plainly when this machine has no `claude` to run.
+ */
+async function openClaudeSignIn(): Promise<ClaudeSignInOutcome> {
+  const command = claudeLoginCommand(process.platform);
+  if (command === null) {
+    return { opened: false, detail: `No terminal is known to open on ${process.platform}.` };
+  }
+  const probe = await defaultCommandRunner({
+    file: process.platform === "win32" ? "where.exe" : "sh",
+    args: process.platform === "win32" ? ["claude"] : ["-c", "command -v claude"],
+  }).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (probe.code !== 0) {
+    return {
+      opened: false,
+      detail:
+        "Claude Code is not on this machine's PATH. Install it (npm install -g @anthropic-ai/claude-code) and try again, or run `claude setup-token` wherever it is and paste the token below.",
+    };
+  }
+  return new Promise((resolve) => {
+    const child = spawn(command.file, [...command.args], {
+      detached: true,
+      stdio: "ignore",
+      shell: process.platform === "win32",
+    });
+    child.once("error", (error) => resolve({ opened: false, detail: error.message }));
+    child.once("spawn", () => {
+      child.unref();
+      resolve({
+        opened: true,
+        detail:
+          "A terminal opened with `claude setup-token`. Finish the sign-in in the browser it opens, then paste the token it prints below.",
+      });
+    });
+  });
+}
 
 /** The install at `dir`, or the refusal every call on a folder main does not hold gets. */
 async function heldInstall(dir: string): Promise<LocalInstall> {
@@ -535,6 +577,10 @@ app.whenReady().then(
         }
         return outcome;
       }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessSignInClaude, () =>
+      answering<ClaudeSignInOutcome>(() => openClaudeSignIn()),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.harnessApply, (_event, dir: string, name: HarnessName) =>
