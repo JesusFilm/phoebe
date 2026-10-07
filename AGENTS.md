@@ -53,8 +53,8 @@ Three things it does not touch:
 - Code, tests, config, and lockfiles.
 - Documents written for agents rather than people, and documents whose shape a
   format spec fixes — this file, any `SKILL.md`,
-  [`CONTEXT.md`](CONTEXT.md) (see
-  [`CONTEXT-FORMAT.md`](.agents/skills/domain-modeling/CONTEXT-FORMAT.md)) and ADRs
+  [`GLOSSARY.md`](GLOSSARY.md) (see
+  [`GLOSSARY-FORMAT.md`](.agents/skills/domain-modeling/GLOSSARY-FORMAT.md)) and ADRs
   (see [`ADR-FORMAT.md`](.agents/skills/domain-modeling/ADR-FORMAT.md)). A rewrite
   there breaks the machine reading it. Unslop the prose inside the structure if you
   like, but leave the structure alone.

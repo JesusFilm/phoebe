@@ -120,7 +120,7 @@ reference and the `PHOEBE_*` environment overlay.
 
 ## Documentation
 
-[`CONTEXT.md`](CONTEXT.md) is the glossary. It holds the words this project uses
+[`GLOSSARY.md`](GLOSSARY.md) is the glossary. It holds the words this project uses
 for its own concepts, and the ones it avoids on purpose.
 
 Docs live under [`docs/`](docs/), in two groups.
