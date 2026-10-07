@@ -367,7 +367,7 @@ function makeIo(overrides: {
     source: { source: "github"; ref: string; repo: string };
     configPath: string;
     token: string | undefined;
-  }) => number | null;
+  }) => number | null | Promise<number | null>;
   readDockerfile?: () => string | null;
   writeDockerfile?: (content: string) => void;
 }) {
@@ -397,10 +397,10 @@ function makeIo(overrides: {
 }
 
 describe("upgradeEngineHalf migration ordering", () => {
-  test("no migrations index (runMigrations returns null) — flip proceeds", () => {
+  test("no migrations index (runMigrations returns null) — flip proceeds", async () => {
     const configPath = makeTempConfig();
     const io = makeIo({ runMigrations: () => null });
-    const moved = upgradeEngineHalf({
+    const moved = await upgradeEngineHalf({
       configPath,
       source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
       ref: "v0.3.2",
@@ -412,10 +412,10 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
   });
 
-  test("migrations exit 0 — flip proceeds", () => {
+  test("migrations exit 0 — flip proceeds", async () => {
     const configPath = makeTempConfig();
     const io = makeIo({ runMigrations: () => 0 });
-    const moved = upgradeEngineHalf({
+    const moved = await upgradeEngineHalf({
       configPath,
       source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
       ref: "v0.3.2",
@@ -427,11 +427,11 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(readFileSync(configPath, "utf8")).toContain('ref: "v0.3.2"');
   });
 
-  test("migrations exit nonzero — flip aborted, engine.ref unchanged", () => {
+  test("migrations exit nonzero — flip aborted, engine.ref unchanged", async () => {
     const configPath = makeTempConfig();
     const originalContent = readFileSync(configPath, "utf8");
     const io = makeIo({ runMigrations: () => 1 });
-    const moved = upgradeEngineHalf({
+    const moved = await upgradeEngineHalf({
       configPath,
       source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
       ref: "v0.3.2",
@@ -448,7 +448,7 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(io._faults).toEqual(["migrate: the target engine's migrations failed (exit 1)"]);
   });
 
-  test("migrations run the target ref's checkout, not the current pin", () => {
+  test("migrations run the target ref's checkout, not the current pin", async () => {
     const configPath = makeTempConfig();
     let migratedRef: string | null = null;
     const io = makeIo({
@@ -457,7 +457,7 @@ describe("upgradeEngineHalf migration ordering", () => {
         return 0;
       },
     });
-    upgradeEngineHalf({
+    await upgradeEngineHalf({
       configPath,
       source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
       ref: "v0.3.2",
@@ -468,7 +468,7 @@ describe("upgradeEngineHalf migration ordering", () => {
     expect(migratedRef).toBe("v0.3.2");
   });
 
-  test("migrations are called before the pin moves", () => {
+  test("migrations are called before the pin moves", async () => {
     const configPath = makeTempConfig();
     let contentAtMigrateTime: string | null = null;
     const io = makeIo({
@@ -478,7 +478,7 @@ describe("upgradeEngineHalf migration ordering", () => {
         return 0;
       },
     });
-    upgradeEngineHalf({
+    await upgradeEngineHalf({
       configPath,
       source: { source: "github", ref: "v0.3.1", repo: "JesusFilm/phoebe" },
       ref: "v0.3.2",
