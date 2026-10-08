@@ -402,6 +402,10 @@ export function consoleThemeProperties(theme: ConsoleTheme): Record<string, stri
     "--console-dim": theme.dim,
     "--console-panel": theme.panel,
     "--console-accent": theme.ansi[TAG_ROLES.boot],
+    // The header's own signals, in the theme's green, yellow and red.
+    "--console-ok": theme.ansi[2],
+    "--console-warn": theme.ansi[3],
+    "--console-fail": theme.ansi[1],
     "--console-tag-boot": theme.ansi[TAG_ROLES.boot],
     "--console-tag-pipeline": theme.ansi[TAG_ROLES.pipeline],
     "--console-tag-unit": theme.ansi[TAG_ROLES.unit],

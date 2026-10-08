@@ -29,6 +29,13 @@ describe("where the console is, for the pane's top line", () => {
     ]);
   });
 
+  test("a tenant's config is under its workspace, by the name the rail gives it", () => {
+    const workspace = install({ name: "jesusfilm" });
+    expect(
+      routeCrumbs({ ...base, open: workspace, view: "tenant", child: "JesusFilm/phoebe" }),
+    ).toEqual(["This machine", "jesusfilm", "JesusFilm/phoebe", "Config"]);
+  });
+
   test("the relay's pages are under Relay in the companion, bare in a browser", () => {
     expect(routeCrumbs(base)).toEqual(["Relay", "Fleet"]);
     expect(routeCrumbs({ ...base, route: { page: "people" } })).toEqual(["Relay", "People"]);

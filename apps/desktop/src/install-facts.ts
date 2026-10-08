@@ -33,12 +33,24 @@ import {
 } from "../../../src/deployment-compose.ts";
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
+import { configFieldsOf } from "./config-fields.ts";
+import { probeEnvAccess, tenantEnvPath, type EnvAccessDeps } from "./env-access.ts";
+import { HARNESS_NAMES, readHarnessPins } from "./harness.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { workspaceBlockOf, workspaceChildren } from "./workspace-children.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
 
 /** The config file at the root of an install. */
 const CONFIG_FILE = "phoebe.config.ts";
+
+/**
+ * The engine refs a form offers: the tip, and the release this companion is.
+ * The version is a build-time define, so a test run has only the tip to offer.
+ */
+const OFFER = {
+  engineRefs:
+    typeof __COMPANION_VERSION__ === "string" ? ["main", `v${__COMPANION_VERSION__}`] : ["main"],
+};
 
 /** The seams the derivation reaches the machine through. All injectable. */
 export type FactsDeps = {
@@ -117,6 +129,7 @@ export async function installFacts(
     return {
       ...base,
       state: "not-initialised",
+      ...(deployment.kind === "tenant-directory" ? { tenantOnly: true } : {}),
       detail:
         deployment.kind === "tenant-directory"
           ? "a workspace child, not a deployment — container lifecycle belongs to the workspace root"
@@ -283,12 +296,89 @@ export function directoryFacts(
     configText = null;
   }
 
+  // A workspace's children, each config read the same way. The list is the
+  // install's own (workspace-children.ts), so a folder that is not one of its
+  // children is never read here.
+  const tenants = (install.workspace?.children ?? []).map((child) => {
+    const childPath = path.join(child.dir, TENANT_CONFIG_FILE);
+    let text: string | null = null;
+    try {
+      if (exists(childPath)) text = read(childPath);
+    } catch {
+      text = null;
+    }
+    return {
+      dir: child.dir,
+      name: child.name,
+      slug: child.slug,
+      configPath: childPath,
+      configText: text,
+      configFingerprint: text === null ? null : fingerprintOf(text),
+      ...(text === null ? {} : { configFields: configFieldsOf(text, "tenant", OFFER) }),
+    };
+  });
+
   return {
     configPath,
     configText,
     configFingerprint: configText === null ? null : fingerprintOf(configText),
+    ...(configText === null
+      ? {}
+      : {
+          configFields: configFieldsOf(
+            configText,
+            install.workspace === undefined ? "solo" : "workspace",
+            OFFER,
+          ),
+        }),
     envPresent: exists(path.join(root, ".env")),
     bootstrapperRunning: install.state === "running",
+    ...(install.workspace === undefined ? {} : { tenants }),
+    ...harnessPinsOf(root, exists, read),
+  };
+}
+
+/**
+ * What the install's Dockerfile says about each agent CLI, as a field to spread
+ * in. Nothing at all when there is no Dockerfile to read: a tenant's folder, or
+ * a folder not initialised yet.
+ */
+function harnessPinsOf(
+  root: string,
+  exists: (file: string) => boolean,
+  read: (file: string) => string,
+): Pick<InstallDirectoryFacts, "harnessPins"> {
+  const file = path.join(root, "container", "Dockerfile");
+  try {
+    if (!exists(file)) return {};
+    const pins = readHarnessPins(read(file));
+    return { harnessPins: HARNESS_NAMES.map((harness) => ({ harness, pin: pins[harness] })) };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The directory's facts, with what the host says about each tenant's `.env`
+ * (env-access.ts). One child for the whole workspace, and nothing asked of a
+ * solo install: its `.env` is Compose's own input and never opened inside the
+ * container.
+ */
+export async function directoryFactsWithAccess(
+  install: LocalInstall,
+  deps: DirectoryDeps & EnvAccessDeps = {},
+): Promise<InstallDirectoryFacts> {
+  const facts = directoryFacts(install, deps);
+  if (facts.tenants === undefined || facts.tenants.length === 0) return facts;
+  const files = facts.tenants.map((tenant) => tenantEnvPath(tenant.dir, tenant.configText));
+  const access = await probeEnvAccess(install.dir, files, deps);
+  return {
+    ...facts,
+    tenants: facts.tenants.map((tenant, index) => {
+      const file = files[index]!;
+      const answer = access.get(file);
+      return answer === undefined ? tenant : { ...tenant, env: { path: file, access: answer } };
+    }),
   };
 }
 

@@ -429,6 +429,22 @@ describe("applyConfigEdit — the ledger", () => {
   });
 });
 
+describe("a caller let into a closed leaf by name", () => {
+  test("may write that leaf, and nothing else in the block", () => {
+    const open = ["engine.source", "engine.repo"];
+
+    expect(editabilityOf("engine.repo", {}, open).ok).toBe(true);
+    expect(editabilityOf("engine.source", {}, open).ok).toBe(true);
+    // The ref moves with `phoebe upgrade`, whoever is asking.
+    expect(editabilityOf("engine.ref", {}, open).ok).toBe(false);
+    expect(editabilityOf("workspace.depth", {}, open).ok).toBe(false);
+  });
+
+  test("with nothing opened, the block is as closed as it was", () => {
+    expect(editabilityOf("engine.repo", {}).ok).toBe(false);
+  });
+});
+
 describe("configEditLedgerPath", () => {
   test("sits in the deployment-level state directory, beside the report", () => {
     expect(configEditLedgerPath("/data/repos")).toBe("/data/repos/state/config-edits.json");

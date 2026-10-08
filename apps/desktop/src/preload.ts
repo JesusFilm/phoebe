@@ -13,6 +13,7 @@ import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
   CompanionUpdate,
   DesktopBridge,
+  HarnessReportEvent,
   LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
@@ -60,7 +61,17 @@ const bridge: DesktopBridge = {
     changes: (onChange) => subscribe<LocalInstall[]>(BRIDGE_CHANNELS.installsChanged, onChange),
     reports: (onReport) => subscribe<LocalReportEvent>(BRIDGE_CHANNELS.installsReport, onReport),
     refresh: (dir) => call(BRIDGE_CHANNELS.installsRefresh, dir),
+    repair: (dir, repair) => call(BRIDGE_CHANNELS.installsRepair, dir, repair),
     alerts: (onAlert) => subscribe<LocalAlertEvent>(BRIDGE_CHANNELS.installsAlert, onAlert),
+  },
+  harness: {
+    check: (dir, opts) => call(BRIDGE_CHANNELS.harnessCheck, dir, opts),
+    update: (dir, update) => call(BRIDGE_CHANNELS.harnessUpdate, dir, update),
+    remove: (dir, harness) => call(BRIDGE_CHANNELS.harnessRemove, dir, harness),
+    addTool: (dir, tool) => call(BRIDGE_CHANNELS.harnessAddTool, dir, tool),
+    signInClaude: () => call(BRIDGE_CHANNELS.harnessSignInClaude),
+    apply: (dir, harness) => call(BRIDGE_CHANNELS.harnessApply, dir, harness),
+    reports: (onReport) => subscribe<HarnessReportEvent>(BRIDGE_CHANNELS.harnessReport, onReport),
   },
   runs: {
     start: (request) => call(BRIDGE_CHANNELS.runStart, request),
@@ -68,6 +79,9 @@ const bridge: DesktopBridge = {
     cancel: (runId) => call(BRIDGE_CHANNELS.runCancel, runId),
     lines: (onLine) => subscribe<RunLine>(BRIDGE_CHANNELS.runLine, onLine),
     exits: (onExit) => subscribe<RunExit>(BRIDGE_CHANNELS.runExit, onExit),
+  },
+  menu: {
+    show: (request) => call(BRIDGE_CHANNELS.menuShow, request),
   },
   logs: {
     follow: (install) => call(BRIDGE_CHANNELS.logsFollow, install),

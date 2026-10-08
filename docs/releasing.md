@@ -39,8 +39,13 @@ automatically.
 3. **Merge the version PR.** That is the release trigger. On that merge the
    workflow finds no pending changesets, runs the `release` script
    (`changeset publish`, since the package ships raw `.ts` with no build step),
-   publishes the new version to npm, and pushes the matching `phoebe-agent@x.y.z`
-   git tag.
+   publishes the new version to npm, and pushes two tags at the release commit.
+   `phoebe-agent@x.y.z` is the one changesets cuts, named after the package
+   because the repo is a workspace. `vX.Y.Z` is added by the next step of the
+   workflow, because the engine's `upgrade` finds releases by that shape alone,
+   on every deployment already running, and a release without it does not exist
+   as far as they can tell. (0.14.0 shipped with only the first; its `v0.14.0`
+   was pushed by hand.)
 
 4. **The companion is packaged from the same run.** If step 3 published, the
    `package` job builds the desktop app on three runners and attaches the

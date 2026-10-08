@@ -57,14 +57,28 @@ import type {
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import { connectionReading, type RowFacts } from "./facts.ts";
-import { ChevronDown, ChevronRight, Pause, Play, RotateCcw, Settings, Square } from "lucide-react";
+import {
+  ArrowUpCircle,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  Pause,
+  Play,
+  RotateCcw,
+  Settings,
+  Square,
+  TriangleAlert,
+} from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { HostIcon, hostOfProcessPlatform, hostTitle } from "./host-icon.tsx";
 import { Spinner } from "~/components/ui/spinner";
 import {
   installActions,
   installReading,
+  problemCounts,
   workspaceChildren,
+  workspaceSummary,
+  type RailProblem,
   type InstallAction,
   type RailChild,
 } from "./local-install.ts";
@@ -81,15 +95,19 @@ export function Rail({
   installs = [],
   paired,
   selected = null,
+  selectedChild = null,
   selectedDeployment = null,
   update = null,
   busy,
   reports,
+  updates,
+  problems,
   platform,
   defaultExpanded,
   onSelect,
   onSettings,
   onChild,
+  onChildSettings,
   onAction,
   onAdd,
   onHome,
@@ -122,6 +140,10 @@ export function Rail({
   busy?: ReadonlySet<string>;
   /** The latest read per install, by directory: what a workspace's children are doing. */
   reports?: Readonly<Record<string, LocalReportEvent>>;
+  /** How many updates are on offer per install, by directory (update-alert.tsx). */
+  updates?: Readonly<Record<string, number>>;
+  /** What is wrong with each install itself, by directory: a container running as root. */
+  problems?: Readonly<Record<string, readonly RailProblem[]>>;
   /** The companion's `process.platform`: which host a local install runs on. */
   platform?: string;
   /** The workspaces opened out to their children to begin with, by directory. */
@@ -131,6 +153,10 @@ export function Rail({
   onSettings?: (dir: string) => void;
   /** A workspace child: the console on the child's lines. */
   onChild?: (dir: string, child: RailChild) => void;
+  /** The gear on a workspace child: that tenant's own config. */
+  onChildSettings?: (dir: string, child: RailChild) => void;
+  /** The tenant whose config is open, by folder. */
+  selectedChild?: string | null;
   /** The entry shortcuts. Absent in a browser, which has no local arm. */
   onAction?: (dir: string, action: InstallAction) => void;
   onAdd?: () => void;
@@ -211,6 +237,8 @@ export function Rail({
               current={install.dir === selected}
               paired={paired?.has(install.dir) ?? false}
               busy={busy?.has(install.dir) ?? false}
+              updates={updates?.[install.dir] ?? 0}
+              problems={problems?.[install.dir] ?? NO_PROBLEMS}
               host={install.wsl === undefined ? companionHost : "wsl"}
               children={workspaceChildren(install, reports?.[install.dir] ?? null)}
               expanded={expanded.has(install.dir)}
@@ -225,6 +253,8 @@ export function Rail({
               {...(onSelect !== undefined ? { onSelect } : {})}
               {...(onSettings !== undefined ? { onSettings } : {})}
               {...(onChild !== undefined ? { onChild } : {})}
+              {...(onChildSettings !== undefined ? { onChildSettings } : {})}
+              selectedChild={install.dir === selected ? selectedChild : null}
               {...(onAction !== undefined ? { onAction } : {})}
             />
           ))
@@ -333,6 +363,8 @@ function InstallEntry({
   current,
   paired,
   busy,
+  updates = 0,
+  problems = NO_PROBLEMS,
   host,
   children,
   expanded,
@@ -340,6 +372,8 @@ function InstallEntry({
   onSelect,
   onSettings,
   onChild,
+  onChildSettings,
+  selectedChild,
   onAction,
 }: {
   install: LocalInstall;
@@ -348,6 +382,10 @@ function InstallEntry({
   paired: boolean;
   /** A verb run is in flight on this install: the shortcuts give way to a spinner. */
   busy: boolean;
+  /** How many updates the last check found on offer. */
+  updates?: number;
+  /** What is wrong with the install itself, as the entry's own badges. */
+  problems?: readonly RailProblem[];
   /** Where it runs: this machine's host, or a WSL distro. Null while the host is unknown. */
   host: HostPlatform | null;
   /** A workspace's children, read against its report; empty for a solo install. */
@@ -359,12 +397,24 @@ function InstallEntry({
   onSettings?: (dir: string) => void;
   /** A child row: the console on that child's lines. */
   onChild?: (dir: string, child: RailChild) => void;
+  /** A child's gear: that tenant's own config. */
+  onChildSettings?: (dir: string, child: RailChild) => void;
+  /** The child whose config is open, by folder. */
+  selectedChild: string | null;
   /** The shortcuts: start on a stopped install; pause, stop and restart on a running one. */
   onAction?: (dir: string, action: InstallAction) => void;
 }) {
   const reading = installReading(install);
   const actions = onAction === undefined ? [] : installActions(install);
   const workspace = install.workspace !== undefined;
+  // The fleet under it, summed, so a closed workspace still says what is wrong.
+  // A stopped one has nothing to sum unless the host found something: a `.env`
+  // the container cannot read is as true stopped as running.
+  const summed = workspaceSummary(children);
+  const summary =
+    install.state === "running" || (summed !== null && summed.errors + summed.warnings > 0)
+      ? summed
+      : null;
   // Where it runs, as T3 Code's project list marks each project with its host.
   const platformTitle = hostTitle(host, install.wsl?.distro);
   return (
@@ -401,7 +451,23 @@ function InstallEntry({
           {install.name}
           {paired ? <span className="chip paired">paired</span> : null}
         </div>
-        <div className="sub">{reading.text}</div>
+        <div className="sub">
+          {reading.text}
+          <ProblemBadges
+            {...problemCounts(problems)}
+            title={problems.map(problemLine).join("\n")}
+          />
+          {updates === 0 ? null : (
+            <span
+              className="rail-updates"
+              title={`${updates} ${updates === 1 ? "update" : "updates"} available`}
+              aria-label={`${updates} ${updates === 1 ? "update" : "updates"} available`}
+            >
+              <ArrowUpCircle size={11} aria-hidden="true" />
+              {updates}
+            </span>
+          )}
+        </div>
       </button>
       {busy ? (
         // Something is running on this install and its end is what changes the
@@ -453,29 +519,107 @@ function InstallEntry({
           )}
         </span>
       )}
+      {summary === null ? null : (
+        // A line of its own under the entry, the width of the rail: beside the
+        // name it has the shortcuts for neighbours and is cut to nothing.
+        <div className="rail-summary">
+          {summary.text}
+          <ProblemBadges
+            errors={summary.errors}
+            warnings={summary.warnings}
+            title={`Across the tenants of ${install.name}`}
+          />
+        </div>
+      )}
       {workspace && expanded ? (
         <ul className="rail-children" aria-label={`Children of ${install.name}`}>
           {children.length === 0 ? (
             <li className="rail-child muted">no children with a config yet</li>
           ) : (
             children.map((child) => (
-              <li key={child.dir}>
+              <li
+                key={child.dir}
+                className={`rail-child-row${child.dir === selectedChild ? " current" : ""}`}
+              >
                 <button
                   type="button"
-                  className="rail-child"
-                  title={child.dir}
+                  className={`rail-child${child.enabled === false ? " disabled" : ""}`}
+                  // The folder, and under it everything the badges are counting.
+                  title={[child.dir, ...child.problems.map(problemLine)].join("\n")}
                   onClick={() => onChild?.(install.dir, child)}
                 >
-                  <span className={`mark ${child.tone}`} aria-hidden="true" />
+                  <span
+                    className={`mark ${child.tone}${child.active ? " active" : ""}`}
+                    aria-hidden="true"
+                  />
                   <span className="label">{child.label}</span>
+                  <ProblemBadges {...problemCounts(child.problems)} />
                   {child.text === "" ? null : <span className="word">{child.text}</span>}
                 </button>
+                {onChildSettings === undefined ? null : (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="rail-gear"
+                    title={`Config of ${child.label}`}
+                    aria-label={`Config of ${child.label}`}
+                    onClick={() => onChildSettings(install.dir, child)}
+                  >
+                    <Settings aria-hidden="true" />
+                  </Button>
+                )}
               </li>
             ))
           )}
         </ul>
       ) : null}
     </div>
+  );
+}
+
+const NO_PROBLEMS: readonly RailProblem[] = [];
+
+/** One problem as a line of hover text. */
+function problemLine(problem: RailProblem): string {
+  return `${problem.level === "error" ? "Error" : "Warning"} — ${problem.text}`;
+}
+
+/**
+ * How many errors and warnings, as two small counts with an icon each. Nothing
+ * at all when there are none: a rail of zeroes is a rail nobody reads, and the
+ * rows that do carry one stand out because the rest carry nothing.
+ */
+function ProblemBadges({
+  errors,
+  warnings,
+  title,
+}: {
+  errors: number;
+  warnings: number;
+  title?: string;
+}) {
+  if (errors === 0 && warnings === 0) return null;
+  return (
+    <span className="rail-problems" {...(title === undefined ? {} : { title })}>
+      {errors === 0 ? null : (
+        <span
+          className="rail-problem error"
+          aria-label={`${errors} ${errors === 1 ? "error" : "errors"}`}
+        >
+          <CircleAlert size={11} aria-hidden="true" />
+          {errors}
+        </span>
+      )}
+      {warnings === 0 ? null : (
+        <span
+          className="rail-problem warning"
+          aria-label={`${warnings} ${warnings === 1 ? "warning" : "warnings"}`}
+        >
+          <TriangleAlert size={11} aria-hidden="true" />
+          {warnings}
+        </span>
+      )}
+    </span>
   );
 }
 

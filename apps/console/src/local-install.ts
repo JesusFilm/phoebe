@@ -13,17 +13,22 @@
 import { MAX_RUN_LINES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
+  DeploymentReport,
+  FleetCell,
   LocalInstall,
   LocalReportEvent,
   OutcomeOf,
   RunExit,
   RunLine,
   StoredReport,
+  TenantEnvFacts,
+  TenantFacts,
   VerbOutcome,
   VerbRun,
   VerbRunRequest,
 } from "phoebe-agent/contracts";
-import { readReport } from "./report.ts";
+import { harnessPin, providerOf } from "./harness.ts";
+import { childrenOf, readReport } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
 // ── the two write verbs, as requests (#557) ───────────────────────────────
@@ -67,6 +72,8 @@ export function configSetRequest(opts: {
   config: ConfigReading;
   path: string;
   literal: string;
+  /** A workspace child's folder, when the edit is to its config rather than the root's. */
+  tenant?: string;
 }): VerbRunRequest {
   if (opts.config.kind === "absent") {
     throw new Error(`There is no ${opts.config.path} to change.`);
@@ -79,6 +86,7 @@ export function configSetRequest(opts: {
     path,
     value: readLiteral(opts.literal),
     fingerprint: opts.config.fingerprint,
+    ...(opts.tenant === undefined ? {} : { tenant: opts.tenant }),
   };
 }
 
@@ -429,19 +437,21 @@ function versionNote(install: LocalInstall, companion: string | null): string | 
   if (install.containerVersion === null) {
     return (
       "This install's Dockerfile pins no phoebe-agent version, so its build takes whatever " +
-      "npm published last. Check for upgrades writes a pin."
+      "npm published last."
     );
   }
   if (companion === null || companion === install.containerVersion) return null;
   return (
     `This install runs phoebe-agent ${install.containerVersion} and the companion is ${companion}. ` +
-    "Nothing here refuses on that — Check for upgrades moves the install."
+    "Nothing here refuses on that. The launcher under Phoebe, below, moves the install."
   );
 }
 
 /** Which verbs an install in this state can be asked for. */
 export function offeredVerbs(install: LocalInstall): {
   init: boolean;
+  /** A tenant's folder can be given a deployment of its own, beside the tenant. */
+  solo: boolean;
   start: boolean;
   stop: boolean;
   upgrade: boolean;
@@ -452,7 +462,8 @@ export function offeredVerbs(install: LocalInstall): {
     // Init is offered on an un-initialised folder and nowhere else: a folder
     // that already carries a config is adopted as it stands (#555), and init
     // over the top of one is a button whose best outcome is doing nothing.
-    init: !initialised,
+    init: !initialised && install.tenantOnly !== true,
+    solo: !initialised && install.tenantOnly === true,
     start: initialised && install.state !== "running",
     stop: initialised && install.state === "running",
     upgrade: initialised,
@@ -491,15 +502,135 @@ export type RailChild = {
   /** The state word beside it, and the mark's tone. */
   tone: "running" | "stopped" | "attention" | "idle";
   text: string;
+  /** A unit is in flight on one of its pipelines right now. */
+  active: boolean;
+  /**
+   * Whether it does any work: false when every pipeline it declares is switched
+   * off. Null when there is nothing to say it by: a stopped workspace, or a
+   * folder the fleet does not know.
+   */
+  enabled: boolean | null;
+  /** What is wrong, worst first, one line each. What the row's badges count. */
+  problems: RailProblem[];
 };
+
+/** One thing wrong with a tenant, as the rail's hover says it. */
+export type RailProblem = {
+  /** An error stops work; a warning is something to look at. */
+  level: "error" | "warning";
+  text: string;
+};
+
+/** What the row and the tenant's page both say when the container is locked out of a `.env`. */
+export const ENV_UNREADABLE = "the container cannot read its .env";
+
+/**
+ * What the host said about a tenant's `.env`, or null where it said nothing:
+ * before the first read, on a filesystem with no permissions to ask about, and
+ * from a companion that does not look.
+ */
+export function tenantEnv(event: LocalReportEvent | null, dir: string): TenantEnvFacts | null {
+  return event?.directory.tenants?.find((tenant) => tenant.dir === dir)?.env ?? null;
+}
+
+/** How many of each, for the two badges. */
+export function problemCounts(problems: readonly RailProblem[]): {
+  errors: number;
+  warnings: number;
+} {
+  const errors = problems.filter((problem) => problem.level === "error").length;
+  return { errors, warnings: problems.length - errors };
+}
+
+/** The cells whose engine child the supervisor has given up restarting quickly. */
+export function crashLoopingCells(report: DeploymentReport): Set<string> {
+  return new Set(
+    [...childrenOf(report).values()].filter((child) => child.crashLooping).map((child) => child.id),
+  );
+}
+
+/**
+ * What is wrong with one pipeline, errors and warnings apart so a caller can
+ * place them among a tenant's others. Each names its pipeline, because the list
+ * it lands in is a tenant's.
+ */
+export function cellProblems(
+  cell: FleetCell,
+  crashLooping: ReadonlySet<string>,
+): { errors: RailProblem[]; warnings: RailProblem[] } {
+  const errors: RailProblem[] = [];
+  if (cell.wedged.wedged) errors.push({ level: "error", text: `${cell.pipeline}: wedged` });
+  if (crashLooping.has(cell.id)) {
+    errors.push({ level: "error", text: `${cell.pipeline}: crash-looping` });
+  }
+  const lastError = cell.snapshot?.lastError ?? null;
+  return {
+    errors,
+    warnings:
+      lastError === null ? [] : [{ level: "warning", text: `${cell.pipeline}: ${lastError}` }],
+  };
+}
+
+/**
+ * Everything wrong with one tenant of a running deployment, worst first: what
+ * the fleet, the supervisor and the last doctor run say, with what the host
+ * found (`host`) placed at the head of each level, since a file the container
+ * cannot read is the cause under whatever the tenant reports next.
+ */
+export function fleetTenantProblems(
+  report: DeploymentReport,
+  tenant: TenantFacts,
+  host: { errors: readonly RailProblem[]; warnings: readonly RailProblem[] } = {
+    errors: [],
+    warnings: [],
+  },
+): RailProblem[] {
+  const crashLooping = crashLoopingCells(report);
+  const cells = report.fleet.cells
+    .filter((cell) => cell.tenant.id === tenant.id)
+    .map((cell) => cellProblems(cell, crashLooping));
+  const doctor = (report.doctor?.report?.tenants ?? []).find(
+    (row) => (row.slug !== null && row.slug === tenant.slug) || row.path === tenant.path,
+  );
+  const checks = doctor?.checks ?? [];
+
+  const problems: RailProblem[] = [...host.errors];
+  if (tenant.held) {
+    problems.push({ level: "error", text: `held: ${tenant.reason ?? "no reason given"}` });
+  }
+  if (!tenant.configValid && !tenant.held) {
+    problems.push({ level: "error", text: "its config does not load" });
+  }
+  for (const cell of cells) problems.push(...cell.errors);
+  for (const check of checks) {
+    if (check.state === "fail") {
+      problems.push({ level: "error", text: `doctor ${check.id}: ${check.detail}` });
+    }
+  }
+  problems.push(...host.warnings);
+  if (!tenant.envPresent) problems.push({ level: "warning", text: "no .env beside its config" });
+  for (const cell of cells) problems.push(...cell.warnings);
+  for (const check of checks) {
+    if (check.state === "warn") {
+      problems.push({ level: "warning", text: `doctor ${check.id}: ${check.detail}` });
+    }
+  }
+  return problems;
+}
 
 /**
  * The children a workspace install lists, read against its latest report. With
  * the container running, the report's fleet says what each tenant is doing:
- * held, wedged, working, waiting, or idle. Stopped, the folder is all there is,
- * so the child is listed and says nothing more. A child on disk the report does
- * not know is "not in the fleet" — a folder the bootstrapper has not picked up
- * yet, or one it skipped.
+ * held, wedged, working, waiting, or idle; whether any of its pipelines is
+ * switched on; and what is wrong with it, from the fleet, the supervisor and
+ * the last doctor run. Stopped, the folder is all there is, so the child is
+ * listed and says nothing more. A child on disk the report does not know is
+ * "not in the fleet" — a folder the bootstrapper has not picked up yet, or one
+ * it skipped.
+ *
+ * Nothing here is a second opinion. Every word and every problem is a verdict
+ * the deployment already reached and wrote down (#501); this only gathers the
+ * ones that are about one tenant onto its row.
  */
 export function workspaceChildren(
   install: LocalInstall,
@@ -508,41 +639,95 @@ export function workspaceChildren(
   const children = install.workspace?.children ?? [];
   const reading = readReport(renderableReport(install, event));
   const report = reading.kind === "read" ? reading.report : null;
-  return children.map((child) => {
-    const label = child.slug ?? child.name;
+  const crashLooping = report === null ? new Set<string>() : crashLoopingCells(report);
+
+  return children.map((child): RailChild => {
+    const base = { dir: child.dir, slug: child.slug, label: child.slug ?? child.name };
+    // The host's answer, not the container's: it holds whether the workspace is
+    // up or not, and it is the cause under whatever the tenant reports next.
+    const lockedOut: RailProblem[] =
+      tenantEnv(event, child.dir)?.access === "unreadable"
+        ? [{ level: "error", text: ENV_UNREADABLE }]
+        : [];
+    // The Dockerfile's answer, as true stopped as running: the config names a
+    // provider the container has no CLI for. A warning, not an error, because
+    // an env var can still point the tenant at another one.
+    const provider = providerOf(
+      event?.directory.tenants?.find((tenant) => tenant.dir === child.dir)?.configFields,
+    );
+    const noHarness: RailProblem[] =
+      provider !== null && harnessPin(event, provider)?.kind === "absent"
+        ? [{ level: "warning", text: `its provider (${provider}) has no CLI in the container` }]
+        : [];
+    const quiet = { active: false, enabled: null, problems: [...lockedOut, ...noHarness] };
     if (report === null || install.state !== "running") {
-      return { dir: child.dir, slug: child.slug, label, tone: "stopped", text: "" };
+      return { ...base, ...quiet, tone: "stopped", text: "" };
     }
     const tenant = report.fleet.tenants.find(
       (candidate) =>
-        (child.slug !== null && candidate.slug === child.slug) ||
-        candidate.path.replace(/[\\/]+$/, "").endsWith(`/${child.name}`) ||
-        candidate.path.replace(/[\\/]+$/, "").endsWith(`\\${child.name}`),
+        (child.slug !== null && candidate.slug === child.slug) || sameFolder(candidate.path, child),
     );
-    if (tenant === undefined)
-      return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "not in the fleet" };
-    if (tenant.held)
-      return { dir: child.dir, slug: child.slug, label, tone: "attention", text: "held" };
+    if (tenant === undefined) {
+      return { ...base, ...quiet, tone: "idle", text: "not in the fleet" };
+    }
+
     const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
+    const problems = fleetTenantProblems(report, tenant, {
+      errors: lockedOut,
+      warnings: noHarness,
+    });
+
+    const active = cells.some((cell) => cell.state === "working");
+    const enabled = cells.length === 0 ? null : cells.some((cell) => !cell.disabled);
+    const facts = { ...base, active, enabled, problems };
+
+    if (tenant.held) return { ...facts, tone: "attention", text: "held" };
     if (cells.some((cell) => cell.wedged.wedged)) {
-      return { dir: child.dir, slug: child.slug, label, tone: "attention", text: "wedged" };
+      return { ...facts, tone: "attention", text: "wedged" };
     }
-    if (cells.some((cell) => cell.state === "working")) {
-      return { dir: child.dir, slug: child.slug, label, tone: "running", text: "working" };
+    if (cells.some((cell) => crashLooping.has(cell.id))) {
+      return { ...facts, tone: "attention", text: "crash-looping" };
     }
+    if (lockedOut.length > 0) return { ...facts, tone: "attention", text: ".env unreadable" };
+    if (active) return { ...facts, tone: "running", text: "working" };
     if (cells.some((cell) => cell.state === "waiting for slot")) {
-      return {
-        dir: child.dir,
-        slug: child.slug,
-        label,
-        tone: "running",
-        text: "waiting for a slot",
-      };
+      return { ...facts, tone: "running", text: "waiting for a slot" };
     }
-    if (cells.length === 0)
-      return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "no pipelines" };
-    return { dir: child.dir, slug: child.slug, label, tone: "idle", text: "idle" };
+    if (cells.length === 0) return { ...facts, tone: "idle", text: "no pipelines" };
+    if (enabled === false) return { ...facts, tone: "stopped", text: "disabled" };
+    return { ...facts, tone: "idle", text: "idle" };
   });
+}
+
+/** Is this fleet path the child's folder? Compared by its last segment, either separator. */
+function sameFolder(fleetPath: string, child: { name: string }): boolean {
+  const trimmed = fleetPath.replace(/[\\/]+$/, "");
+  return trimmed.endsWith(`/${child.name}`) || trimmed.endsWith(`\\${child.name}`);
+}
+
+/** A workspace, summed over its children, for the line under its name. */
+export type WorkspaceSummary = {
+  /** `3 tenants · 1 working · 1 disabled`, with only the clauses that are true. */
+  text: string;
+  errors: number;
+  warnings: number;
+};
+
+/**
+ * What a workspace's entry says about its fleet without being opened: how many
+ * tenants, how many are working, how many are switched off, and how many
+ * errors and warnings there are across them. Null for a solo install, and for a
+ * workspace with nothing to count.
+ */
+export function workspaceSummary(children: readonly RailChild[]): WorkspaceSummary | null {
+  if (children.length === 0) return null;
+  const clauses = [`${children.length} ${children.length === 1 ? "tenant" : "tenants"}`];
+  const working = children.filter((child) => child.active).length;
+  const disabled = children.filter((child) => child.enabled === false).length;
+  if (working > 0) clauses.push(`${working} working`);
+  if (disabled > 0) clauses.push(`${disabled} disabled`);
+  const { errors, warnings } = problemCounts(children.flatMap((child) => child.problems));
+  return { text: clauses.join(" · "), errors, warnings };
 }
 
 // ── the local read loop, as the page reads it (#556) ──────────────────────
@@ -600,10 +785,46 @@ export function landingTab(install: LocalInstall): DeploymentTab | "install" {
 }
 
 /** The config as the directory facts hand it over (#527 §6). */
+/** One workspace child's config, read for the config tab. */
+export type TenantConfigReading = {
+  dir: string;
+  /** The slug when the config states one, else the folder's name. */
+  label: string;
+  config: ConfigReading;
+};
+
+/**
+ * The configs under a workspace root, one per child, in the rail's order. Empty
+ * on a solo install, before the first read, and from a companion that does
+ * not read them.
+ */
+export function tenantConfigs(event: LocalReportEvent | null): TenantConfigReading[] {
+  return (event?.directory.tenants ?? []).map((tenant) => ({
+    dir: tenant.dir,
+    label: tenant.slug ?? tenant.name,
+    config:
+      tenant.configText === null || tenant.configFingerprint === null
+        ? { kind: "absent", path: tenant.configPath }
+        : {
+            kind: "file",
+            path: tenant.configPath,
+            text: tenant.configText,
+            fingerprint: tenant.configFingerprint,
+            ...(tenant.configFields === undefined ? {} : { fields: tenant.configFields }),
+          },
+  }));
+}
+
 export function localConfig(event: LocalReportEvent | null): ConfigReading | null {
   if (event === null) return null;
-  const { configPath, configText, configFingerprint } = event.directory;
+  const { configPath, configText, configFingerprint, configFields } = event.directory;
   if (configText === null || configFingerprint === null)
     return { kind: "absent", path: configPath };
-  return { kind: "file", path: configPath, text: configText, fingerprint: configFingerprint };
+  return {
+    kind: "file",
+    path: configPath,
+    text: configText,
+    fingerprint: configFingerprint,
+    ...(configFields === undefined ? {} : { fields: configFields }),
+  };
 }

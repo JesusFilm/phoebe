@@ -211,8 +211,16 @@ place with their output streaming into the window: `init`, `start`, `stop`,
 `upgrade --check`, `doctor`, and `pair` once you are signed in to a relay: it mints
 the token, writes the address into the config and the token into `.env`, and
 recreates the container, so nothing is pasted by hand. The same five tabs sit
-beside it, fed by a local read loop rather than a socket. Docker is checked, never
-installed.
+beside it, fed by a local read loop rather than a socket, and on this arm the
+config tab is a form over each config the folder holds: the deployment's few
+settings on a workspace root, a tenant's own on each child. Docker is checked,
+never installed.
+
+A folder that is already a workspace's tenant is not offered `init` over the
+top of its config. It is offered a deployment of its own beside the tenant: the
+scaffold goes into `.phoebe/` under the folder with the tenant's settings
+carried over, and the tenant entry points the workspace at that folder for its
+`.env` and prompts, so the two share one set. The folder stays a tenant.
 
 The local arm still adds no listener to the deployment container. Main spawns
 `docker compose` exactly as you would at a shell, and reads through
@@ -223,6 +231,60 @@ Compose answers directly.
 One rail holds both, under "This machine" and "Relay". A group rather than a
 mode, because a switch would hide half your fleet and the rail exists so nothing
 is hidden. Pair a local install and it appears once, not twice.
+
+A workspace on the local arm opens out to its children, and each child's gear
+opens that tenant's own config. A child's row says whether it is working,
+whether it is switched on, and how many errors and warnings it has, each named
+on hover; the workspace's own line sums them, so a closed workspace still shows
+that something under it needs a look. One of those errors the companion finds
+itself, on the host: a tenant `.env` the container's unprivileged user cannot
+read. The tenant's page opens on it with a button that grants that user read
+access to the one file.
+
+A right-click on the console's lines offers Copy, Copy line, Copy all lines and
+Select all; on a field, the usual edit menu; on any selected text, Copy.
+
+The console's **cli** tab holds what `phoebe` printed when the companion last
+ran a verb on the install (a start, a stop, an upgrade, a doctor, a config
+edit), with the runs it has watched kept above the current one. The install
+tab says which verb ran and how it ended, and links there.
+
+The console's header names each pipeline with a unit in flight and the work it
+is on, and counts the install's errors and warnings; pressing the counts lists
+them. A pipeline's tab pulses while it is working and carries its own counts.
+
+With **Check for updates automatically** on (Settings → Updates), the companion
+reads every install shortly after launch and every six hours, and floats one
+line over the foot of the page when any is behind: "Update available for …", with
+**Update**, a list behind the title, and a dismiss that is remembered for that
+set of versions. It never updates by itself. **Update** moves each harness pin
+and, on a running install, puts the new version into the container beside the
+old one, so a unit in flight finishes on what it started with.
+
+A container that runs as root is flagged on the rail, in the console's header
+and at the top of the install tab, with **Rebuild and restart**: Claude Code
+refuses to run as root, and a container is root when its image is older than
+the Dockerfile that drops privileges. After that rebuild its volumes are still
+root's, so the same places flag what the container cannot write under `/data`,
+with **Give them to the container's user**. A tool a config's commands start
+with (`vp`, `pnpm`, `yarn`, `bun`) that the container lacks is flagged the same
+way, with a button that writes its install into the Dockerfile. Claude Code saying
+it is not logged in is flagged too, with **Sign in to Claude**, which opens
+`claude setup-token` in a terminal and takes the token it prints as a secret.
+
+The install tab's **Phoebe** section lists the launcher (`phoebe-agent`, pinned
+in `container/Dockerfile`) and the engine (`engine.ref` in the config), each
+with a field and a button that runs `upgrade` for that half.
+
+The install tab's **AI harness** section lists every agent CLI the container
+could carry (Cursor's `agent`, Claude Code, Codex): the version
+`container/Dockerfile` pins, the one the running container has, and, after
+**Check for updates**, the newest published. Each row can pin a version in the
+Dockerfile, add the harness when the Dockerfile lacks it, or remove it, and
+**Rebuild and restart** puts the result in the container. Under the list, the
+provider, model and effort a config runs are set as the config form sets them. A
+tenant's page shows the same for the one harness its provider runs. The
+container is the workspace's, so the pin it moves is shared by every tenant.
 
 Alerts become OS notifications, tagged by deployment and condition, so a clear
 replaces the raise it is about instead of piling up beside it. The dock badge

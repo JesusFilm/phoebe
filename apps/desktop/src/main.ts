@@ -26,6 +26,8 @@
 // here rather than in the renderer for the same reason — a reload must not lose
 // them.
 
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,6 +36,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
   nativeTheme,
   net,
   protocol,
@@ -45,6 +48,9 @@ import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
   CompanionPreferences,
+  ClaudeSignInOutcome,
+  ContextMenuChoice,
+  ContextMenuRequest,
   CompanionUpdate,
   LocalInstall,
   LocalReportEvent,
@@ -55,9 +61,20 @@ import type {
   VerbRun,
   VerbRunRequest,
   InstallPatch,
+  InstallRepair,
+  RepairOutcome,
+  HarnessApplyOutcome,
+  HarnessName,
+  HarnessRemoveOutcome,
+  HarnessReport,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
+  ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
 import { authCodeIn, authCodeInArgv } from "./auth-link.ts";
+import { claudeLoginCommand } from "./claude-auth.ts";
+import { contextMenuTemplate } from "./context-menu.ts";
 import {
   answering,
   BRIDGE_CHANNELS,
@@ -84,9 +101,12 @@ import {
 } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { probeDocker } from "./docker.ts";
-import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
+import { CONTAINER_UID, grantEnvAccess, tenantEnvPath } from "./env-access.ts";
+import { createHarness } from "./harness.ts";
+import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import type { PairArm } from "./pair.ts";
+import { createUpdateWatch } from "./update-watch.ts";
 import {
   defaultCommandRunner,
   formatResolveFailure,
@@ -266,6 +286,80 @@ async function factsFor(dir: string): Promise<LocalInstall | null> {
 }
 
 /**
+ * The agent CLIs each install's container carries (harness.ts). Docker is asked
+ * where the install's containers are, as every other read is.
+ */
+const harness = createHarness({
+  runnerFor: (dir) => {
+    const wsl = wslLocationOf(dir);
+    return wsl === null ? defaultCommandRunner : wslRunner(wsl, defaultCommandRunner);
+  },
+});
+
+/**
+ * The automatic check (update-watch.ts). It reads the preference each time it
+ * would run, so turning it off is enough to stop it.
+ */
+const updateWatch = createUpdateWatch({
+  enabled: () => readCompanion().preferences.autoCheckUpdates,
+  installs: listInstalls,
+  check: (install, lookUp) =>
+    harness.check({ dir: install.dir, running: install.state === "running", lookUp }),
+  emit: (install, report) => broadcast(BRIDGE_CHANNELS.harnessReport, { install, report }),
+});
+
+/**
+ * A terminal with `claude setup-token` in it (claude-auth.ts). Detached, so the
+ * sign-in outlives this call; the token it ends on is the operator's to paste
+ * back. Said plainly when this machine has no `claude` to run.
+ */
+async function openClaudeSignIn(): Promise<ClaudeSignInOutcome> {
+  const command = claudeLoginCommand(process.platform);
+  if (command === null) {
+    return { opened: false, detail: `No terminal is known to open on ${process.platform}.` };
+  }
+  const probe = await defaultCommandRunner({
+    file: process.platform === "win32" ? "where.exe" : "sh",
+    args: process.platform === "win32" ? ["claude"] : ["-c", "command -v claude"],
+  }).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (probe.code !== 0) {
+    return {
+      opened: false,
+      detail:
+        "Claude Code is not on this machine's PATH. Install it (npm install -g @anthropic-ai/claude-code) and try again, or run `claude setup-token` wherever it is and paste the token below.",
+    };
+  }
+  return new Promise((resolve) => {
+    const child = spawn(command.file, [...command.args], {
+      detached: true,
+      stdio: "ignore",
+      shell: process.platform === "win32",
+    });
+    child.once("error", (error) => resolve({ opened: false, detail: error.message }));
+    child.once("spawn", () => {
+      child.unref();
+      resolve({
+        opened: true,
+        detail:
+          "A terminal opened with `claude setup-token`. Finish the sign-in in the browser it opens, then paste the token it prints below.",
+      });
+    });
+  });
+}
+
+/** The install at `dir`, or the refusal every call on a folder main does not hold gets. */
+async function heldInstall(dir: string): Promise<LocalInstall> {
+  const install = await factsFor(dir);
+  if (install === null) {
+    throw new BridgeRefusal({
+      code: "refused",
+      message: `${dir} is not a local install the companion knows`,
+    });
+  }
+  return install;
+}
+
+/**
  * The local read loop (#556). Its seams are the real ones here and stubs in the
  * test: Compose's event stream, one `status --json` exec, and the directory.
  *
@@ -274,7 +368,7 @@ async function factsFor(dir: string): Promise<LocalInstall | null> {
  */
 const reads = createLocalReads({
   facts: factsFor,
-  directory: (install) => directoryFacts(install),
+  directory: (install) => directoryFactsWithAccess(install),
   // An install inside a WSL distro is read and watched from inside the distro:
   // its containers are the distro's Docker's, not this machine's (wsl.ts).
   read: async (install) => {
@@ -573,6 +667,114 @@ app.whenReady().then(
       answering<LocalReportEvent>(() => reads.refresh(dir)),
     );
 
+    ipcMain.handle(BRIDGE_CHANNELS.installsRepair, (_event, dir: string, repair: InstallRepair) =>
+      answering<RepairOutcome>(async () => {
+        const install = await factsFor(dir);
+        if (repair.kind === "volume-ownership") {
+          await heldInstall(dir);
+          const outcome = await harness.ownVolumes(dir);
+          // Every window hears what the install is like now.
+          const report = await harness
+            .check({ dir, running: install?.state === "running", lookUp: false })
+            .catch(() => null);
+          if (report !== null) broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
+          return outcome;
+        }
+        // Only a folder this install lists as its child: the repair changes a
+        // file's permissions, and it does that for nothing outside the install.
+        const child = install?.workspace?.children.find(
+          (candidate) => candidate.dir === repair.tenant,
+        );
+        if (install === null || child === undefined) {
+          throw new BridgeRefusal({
+            code: "refused",
+            message: `${repair.tenant} is not a tenant of an install the companion holds`,
+          });
+        }
+        const config = path.join(child.dir, "phoebe.config.ts");
+        let configText: string | null = null;
+        try {
+          configText = readFileSync(config, "utf8");
+        } catch {
+          configText = null;
+        }
+        const file = tenantEnvPath(child.dir, configText);
+        const how = await grantEnvAccess(install.dir, file);
+        // The read after it is what the rail redraws from.
+        await reads.refresh(dir).catch(() => undefined);
+        return how === "failed"
+          ? { fixed: false, detail: `${file} could not be opened to the container's user.` }
+          : {
+              fixed: true,
+              detail:
+                how === "acl"
+                  ? `The container's user (uid ${CONTAINER_UID}) may now read ${file}, and nobody else gained anything.`
+                  : `${file} is now readable by every user on this machine: there was no ACL tool to name the container's user alone.`,
+            };
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessCheck, (_event, dir: string, opts: { lookUp: boolean }) =>
+      answering<HarnessReport>(async () => {
+        const report = await harness.check({
+          dir,
+          running: (await heldInstall(dir)).state === "running",
+          lookUp: opts?.lookUp === true,
+        });
+        // Every window hears it, so the alert and the rail agree with the page.
+        broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
+        return report;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessRemove, (_event, dir: string, name: HarnessName) =>
+      answering<HarnessRemoveOutcome>(async () => {
+        await heldInstall(dir);
+        const outcome = harness.remove(dir, name);
+        // The pins ride on the install's read, so the rail and the page redraw.
+        if (outcome.kind === "removed") await reads.refresh(dir).catch(() => undefined);
+        return outcome;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessAddTool, (_event, dir: string, tool: string) =>
+      answering<ToolAddOutcome>(async () => {
+        const install = await heldInstall(dir);
+        const outcome = harness.addTool(dir, tool);
+        if (outcome.kind === "added") {
+          const report = await harness
+            .check({ dir, running: install.state === "running", lookUp: false })
+            .catch(() => null);
+          if (report !== null) broadcast(BRIDGE_CHANNELS.harnessReport, { install: dir, report });
+        }
+        return outcome;
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessSignInClaude, () =>
+      answering<ClaudeSignInOutcome>(() => openClaudeSignIn()),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessApply, (_event, dir: string, name: HarnessName) =>
+      answering<HarnessApplyOutcome>(async () => {
+        const install = await heldInstall(dir);
+        if (install.state !== "running") {
+          return { kind: "refused", harness: name, why: "the install is not running" };
+        }
+        return harness.apply(dir, name);
+      }),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.harnessUpdate, (_event, dir: string, update: HarnessUpdate) =>
+      answering<HarnessUpdateOutcome>(async () => {
+        await heldInstall(dir);
+        const outcome = await harness.update(dir, update);
+        // The pins ride on the install's read, so the rail and the page redraw.
+        if (outcome.kind === "moved") await reads.refresh(dir).catch(() => undefined);
+        return outcome;
+      }),
+    );
+
     ipcMain.handle(BRIDGE_CHANNELS.runStart, (_event, request: VerbRunRequest) =>
       answering<string>(async () => {
         if (request.verb === "pair") await assertPairable(request.install);
@@ -586,6 +788,27 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.runCancel, (_event, runId: string) =>
       answering<void>(() => runs.cancel(runId)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.menuShow, (event, request: ContextMenuRequest) =>
+      answering<ContextMenuChoice | null>(
+        () =>
+          new Promise((resolve) => {
+            // Chosen before the menu closes, answered when it has: the edit set
+            // and a dismissal both close it with nothing chosen.
+            let chosen: ContextMenuChoice | null = null;
+            const menu = Menu.buildFromTemplate(
+              contextMenuTemplate(request, (choice) => {
+                chosen = choice;
+              }),
+            );
+            const window = BrowserWindow.fromWebContents(event.sender);
+            menu.popup({
+              ...(window === null ? {} : { window }),
+              callback: () => resolve(chosen),
+            });
+          }),
+      ),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.logsFollow, (_event, dir: string) =>
@@ -618,8 +841,11 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.preferencesSet, (_event, preferences: CompanionPreferences) =>
       answering<CompanionPreferences>(() => {
         const contents = readCompanion();
-        const next = { ...contents, preferences };
+        // Over what is held, so a console that predates a preference does not
+        // erase it by not sending it.
+        const next = { ...contents, preferences: { ...contents.preferences, ...preferences } };
         writeCompanionFile(companionFile(), next);
+        updateWatch.refresh();
         return next.preferences;
       }),
     );
@@ -637,6 +863,7 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.relaySignOut, () => answering(() => arm().signOut()));
 
     createWindow();
+    updateWatch.refresh();
 
     // One check, and no poll (#525 §3). It is fired after the window exists so
     // the first thing the operator sees is the window rather than a wait on

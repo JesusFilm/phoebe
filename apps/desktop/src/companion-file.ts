@@ -42,7 +42,7 @@ export function emptyCompanionFile(): CompanionFile {
   return {
     installs: [],
     relay: null,
-    preferences: { notifications: true, consoleTheme: "system" },
+    preferences: { notifications: true, consoleTheme: "system", autoCheckUpdates: false },
   };
 }
 
@@ -178,7 +178,14 @@ function coerce(parsed: unknown): CompanionFile {
       ? (preferencesField as { consoleTheme: string }).consoleTheme
       : empty.preferences.consoleTheme;
 
-  return { installs, relay, preferences: { notifications, consoleTheme } };
+  const autoCheckUpdates =
+    typeof preferencesField === "object" &&
+    preferencesField !== null &&
+    typeof (preferencesField as { autoCheckUpdates?: unknown }).autoCheckUpdates === "boolean"
+      ? (preferencesField as { autoCheckUpdates: boolean }).autoCheckUpdates
+      : empty.preferences.autoCheckUpdates;
+
+  return { installs, relay, preferences: { notifications, consoleTheme, autoCheckUpdates } };
 }
 
 function isStoredInstall(value: unknown): value is StoredInstall {

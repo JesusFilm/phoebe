@@ -21,6 +21,7 @@ import {
   configHandle,
   editConfigAppendWorkKind,
   editConfigGetField,
+  editConfigGetFieldAt,
   editConfigGetRelay,
   editConfigListKeys,
   editConfigMoveField,
@@ -886,6 +887,26 @@ describe("editConfigSetFieldAt", () => {
     if (!result.ok) return;
     expect(result.content).toContain(`effort: "medium",`);
     expect(result.content).not.toContain("as const");
+  });
+});
+
+describe("editConfigGetFieldAt", () => {
+  const content = MINIMAL(`
+  engine: { source: "github", ref: "main" },
+  workspace: depthOf(),`);
+
+  test("reads a literal inside a block, and says when the leaf is not there", () => {
+    expect(editConfigGetFieldAt(content, ["engine", "ref"])).toMatchObject({
+      ok: true,
+      found: true,
+      literal: "main",
+    });
+    expect(editConfigGetFieldAt(content, ["engine", "repo"])).toEqual({ ok: true, found: false });
+    expect(editConfigGetFieldAt(content, ["reporting", "dsn"])).toEqual({ ok: true, found: false });
+  });
+
+  test("a block that is not a plain object literal is a refusal", () => {
+    expect(editConfigGetFieldAt(content, ["workspace", "depth"]).ok).toBe(false);
   });
 });
 

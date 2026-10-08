@@ -20,7 +20,13 @@ import type {
   DoctorCheck,
   DoctorSection,
   FleetCell,
+  HarnessApplyOutcome,
+  HarnessName,
+  HarnessReport,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
   InstallDirectoryFacts,
+  InstallRepair,
   LocalAlertEvent,
   LocalInstall,
   LocalReportEvent,
@@ -29,6 +35,7 @@ import type {
   RelayEvent,
   RelayPerson,
   RelayStoredReport,
+  RepairOutcome,
   SecretListing,
   SecretsSection,
   StatusSnapshot,
@@ -416,9 +423,49 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
         const event = (answers.reports ?? []).find((candidate) => candidate.install === dir);
         return event === undefined ? Promise.reject(notAnInstall(dir)) : Promise.resolve(event);
       },
+      repair: (dir, repair) => {
+        answers.repaired?.push({ dir, repair });
+        return Promise.resolve(answers.repair ?? { fixed: true, detail: "fixed" });
+      },
       alerts: (onAlert) => {
         for (const event of answers.alerts ?? []) onAlert(event);
         return () => undefined;
+      },
+    },
+    harness: {
+      check: (dir, opts) => {
+        answers.harnessChecks?.push({ dir, lookUp: opts.lookUp });
+        return answers.harness === undefined
+          ? Promise.reject(notAnInstall(dir))
+          : Promise.resolve(answers.harness);
+      },
+      signInClaude: () => Promise.resolve({ opened: true, detail: "opened" }),
+      addTool: (dir, tool) => {
+        answers.toolAdds?.push({ dir, tool });
+        return Promise.resolve({ kind: "added", tool, file: `${dir}/container/Dockerfile` });
+      },
+      remove: (dir, harness) => {
+        answers.harnessRemovals?.push({ dir, harness });
+        return Promise.resolve({ kind: "removed", harness, file: `${dir}/container/Dockerfile` });
+      },
+      apply: (dir, harness) => {
+        answers.harnessApplies?.push({ dir, harness });
+        return Promise.resolve(
+          answers.harnessApply ?? { kind: "applied", harness, version: "0.0.0" },
+        );
+      },
+      reports: () => () => undefined,
+      update: (dir, update) => {
+        answers.harnessUpdates?.push({ dir, update });
+        return Promise.resolve(
+          answers.harnessUpdate ?? {
+            kind: "moved",
+            harness: update.harness,
+            from: null,
+            to: update.version,
+            file: `${dir}/container/Dockerfile`,
+          },
+        );
       },
     },
     runs: {
@@ -431,6 +478,7 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       exits: () => () => undefined,
     },
+    menu: { show: () => Promise.resolve(null) },
     logs: {
       follow: () => Promise.resolve(answers.logs ?? []),
       stop: () => Promise.resolve(),
@@ -450,7 +498,8 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       changes: () => () => undefined,
     },
     preferences: {
-      get: () => Promise.resolve({ notifications: true, consoleTheme: "system" }),
+      get: () =>
+        Promise.resolve({ notifications: true, consoleTheme: "system", autoCheckUpdates: false }),
       set: (preferences) => Promise.resolve(preferences),
     },
     relay: {
@@ -480,6 +529,18 @@ export type BridgeAnswers = {
   logs?: string[];
   environment?: CompanionEnvironment;
   installs?: LocalInstall[];
+  /** What a harness check answers with; unset, the check is refused. */
+  harness?: HarnessReport;
+  harnessChecks?: { dir: string; lookUp: boolean }[];
+  harnessUpdate?: HarnessUpdateOutcome;
+  harnessUpdates?: { dir: string; update: HarnessUpdate }[];
+  harnessApply?: HarnessApplyOutcome;
+  harnessApplies?: { dir: string; harness: HarnessName }[];
+  harnessRemovals?: { dir: string; harness: HarnessName }[];
+  toolAdds?: { dir: string; tool: string }[];
+  /** What a repair answers with, and where each one asked for is recorded. */
+  repair?: RepairOutcome;
+  repaired?: { dir: string; repair: InstallRepair }[];
   picked?: string | null;
   run?: VerbRun | null;
   runId?: string;

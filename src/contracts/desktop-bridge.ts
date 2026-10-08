@@ -27,10 +27,38 @@ import type {
   InstallPatch,
   LocalInstall,
 } from "./local-install.ts";
-import type { LocalAlertEvent, LocalReportEvent } from "./local-report.ts";
+import type {
+  ClaudeSignInOutcome,
+  HarnessApplyOutcome,
+  HarnessName,
+  HarnessRemoveOutcome,
+  HarnessReport,
+  HarnessReportEvent,
+  HarnessUpdate,
+  HarnessUpdateOutcome,
+  ToolAddOutcome,
+} from "./harness.ts";
+import type {
+  InstallRepair,
+  LocalAlertEvent,
+  LocalReportEvent,
+  RepairOutcome,
+} from "./local-report.ts";
 import type { RelayEvent } from "./relay-events.ts";
 import type { RelayIdentity } from "./relay-routes.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
+
+/** What was right-clicked, as much as the menu needs to know. */
+export type ContextMenuRequest =
+  /** A field: cut, copy, paste, select all, all the OS's own. */
+  | { kind: "edit"; selection: string }
+  /** Selected text anywhere else: copy. */
+  | { kind: "text"; selection: string }
+  /** The console's lines: copy the selection, the line under the pointer, or every line. */
+  | { kind: "console"; selection: string; line: string | null; lines: number };
+
+/** What the menu chose. The edit set answers nothing: the OS has already done it. */
+export type ContextMenuChoice = "copy" | "copy-line" | "copy-all" | "select-all";
 
 /**
  * The global the preload writes the bridge onto, and the only thing the console
@@ -154,6 +182,12 @@ export type DesktopBridge = {
      */
     refresh: (dir: string) => Promise<LocalReportEvent>;
     /**
+     * Put one thing right on an install, and read it again. Never run on main's
+     * own initiative: every repair changes something on the operator's disk, so
+     * each is a button somebody pressed.
+     */
+    repair: (dir: string, repair: InstallRepair) => Promise<RepairOutcome>;
+    /**
      * Every alert main raised over a local install (#524 §3). The relay arm's
      * alerts arrive on `relay.events` instead, because there they are the
      * relay's to decide and main only forwards them — here main is the one
@@ -182,6 +216,47 @@ export type DesktopBridge = {
    * `stop` ends it. Lines and endings arrive for every followed install, tagged
    * with the install they belong to, so a pane filters for its own.
    */
+  /**
+   * The agent CLIs an install's container carries (harness.ts). A check reads
+   * the Dockerfile and asks the running container; it asks the network for the
+   * newest versions only when `lookUp` is set. An update moves one pin in the
+   * Dockerfile and rebuilds nothing: the rebuild is a `start --build` run.
+   */
+  harness: {
+    check: (dir: string, opts: { lookUp: boolean }) => Promise<HarnessReport>;
+    update: (dir: string, update: HarnessUpdate) => Promise<HarnessUpdateOutcome>;
+    /** Take one harness out of the Dockerfile. Rebuilds nothing; the container keeps it until then. */
+    remove: (dir: string, harness: HarnessName) => Promise<HarnessRemoveOutcome>;
+    /** Write a tool's install into the Dockerfile: `pnpm`, `yarn`, `bun`, or the companion's others. Rebuilds nothing. */
+    addTool: (dir: string, tool: string) => Promise<ToolAddOutcome>;
+    /**
+     * Open a terminal on this machine running `claude setup-token`, Claude
+     * Code's own sign-in, which ends by printing a long-lived token. The token
+     * comes back through `secret set`, as every other secret does.
+     */
+    signInClaude: () => Promise<ClaudeSignInOutcome>;
+    /**
+     * Put the version the Dockerfile pins into the running container, without
+     * a rebuild and without touching a unit in flight.
+     */
+    apply: (dir: string, harness: HarnessName) => Promise<HarnessApplyOutcome>;
+    /**
+     * Every report main produces: a page's check, and the automatic one the
+     * `autoCheckUpdates` preference turns on. Returns the unsubscribe.
+     */
+    reports: (onReport: (event: HarnessReportEvent) => void) => () => void;
+  };
+
+  /**
+   * The right-click menu. The window says what was clicked and main draws the
+   * OS menu for it, answering with what was chosen; the window does the
+   * copying from text it already has. Null when the menu was dismissed, and
+   * for the edit set, which the OS carries out itself.
+   */
+  menu: {
+    show: (request: ContextMenuRequest) => Promise<ContextMenuChoice | null>;
+  };
+
   logs: {
     /**
      * Start following, or join the stream already running. Resolves with the

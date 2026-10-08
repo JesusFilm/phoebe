@@ -289,11 +289,8 @@ function ConfigTab({ config, writes }: { config: ConfigReading | null; writes?: 
   return (
     <section>
       <h2>Config</h2>
-      <p className="muted">
-        <span className="mono">{config.path}</span> · {config.fingerprint}
-      </p>
-      <pre className="config mono">{config.text}</pre>
-      {writes}
+      {/* A page that can write brings its own view of the file, form first. */}
+      {writes ?? <pre className="config mono">{config.text}</pre>}
     </section>
   );
 }

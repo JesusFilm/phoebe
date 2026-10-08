@@ -13,8 +13,13 @@ import {
   installReading,
   landingTab,
   versionReading,
+  ENV_UNREADABLE,
+  problemCounts,
+  tenantEnv,
   workspaceChildren,
+  workspaceSummary,
   localConfig,
+  tenantConfigs,
   localConnection,
   offeredVerbs,
   outcomeReading,
@@ -31,7 +36,10 @@ import {
 import {
   ago,
   cell,
+  check,
+  child,
   directory,
+  doctor,
   environment,
   install,
   localReport,
@@ -87,11 +95,22 @@ describe("which shortcuts a rail entry carries", () => {
 });
 
 describe("which verbs an install offers", () => {
+  test("a tenant's folder is offered a deployment beside the tenant instead of init", () => {
+    const offered = offeredVerbs(install({ state: "not-initialised", tenantOnly: true }));
+
+    expect(offered.init).toBe(false);
+    expect(offered.solo).toBe(true);
+    expect(offered.start).toBe(false);
+    expect(offeredVerbs(install({ state: "not-initialised" })).solo).toBe(false);
+    expect(offeredVerbs(install({ state: "stopped" })).solo).toBe(false);
+  });
+
   test("a folder with no install in it offers init and nothing that needs one", () => {
     const offered = offeredVerbs(install({ state: "not-initialised" }));
 
     expect(offered).toEqual({
       init: true,
+      solo: false,
       start: false,
       stop: false,
       upgrade: false,
@@ -667,8 +686,8 @@ describe("the two versions the install tab states", () => {
     );
 
     expect(reading.note).toContain("Nothing here refuses");
-    expect(reading.note).toContain("Check for upgrades");
-    // The remedy is a button in this same section, and it stays offered.
+    expect(reading.note).toContain("The launcher under Phoebe");
+    // The remedy is on this same tab, and the check stays offered.
     expect(offeredVerbs(install({ containerVersion: "0.12.1" })).upgrade).toBe(true);
   });
 
@@ -745,7 +764,7 @@ describe("what a workspace's children are doing, for the rail", () => {
   });
 
   test("labels each child by slug, else folder, and says what the fleet has it doing", () => {
-    expect(workspaceChildren(workspace, event)).toEqual([
+    expect(workspaceChildren(workspace, event)).toMatchObject([
       { dir: "/repos/ws/a", slug: "acme/a", label: "acme/a", tone: "attention", text: "held" },
       { dir: "/repos/ws/b", slug: null, label: "b", tone: "running", text: "working" },
       { dir: "/repos/ws/c", slug: "acme/c", label: "acme/c", tone: "attention", text: "wedged" },
@@ -812,6 +831,10 @@ describe("what a workspace's children are doing, for the rail", () => {
         label: child.slug ?? child.name,
         tone: "stopped",
         text: "",
+        // Nothing is known about a tenant with no container to ask.
+        active: false,
+        enabled: null,
+        problems: [],
       })),
     );
     expect(workspaceChildren(workspace, null)).toHaveLength(5);
@@ -819,5 +842,347 @@ describe("what a workspace's children are doing, for the rail", () => {
 
   test("a solo install has no children", () => {
     expect(workspaceChildren(install(), event)).toEqual([]);
+  });
+
+  test("says whether each is active, and whether it is switched on at all", () => {
+    const [held, working, wedged, waiting, absent] = workspaceChildren(workspace, event);
+
+    expect(working).toMatchObject({ active: true, enabled: true });
+    expect(waiting).toMatchObject({ active: false, enabled: true });
+    expect(wedged).toMatchObject({ active: false, enabled: true });
+    // Nothing enumerated for a held tenant, and nothing known of a stranger.
+    expect(held!.enabled).toBeNull();
+    expect(absent).toMatchObject({ active: false, enabled: null, problems: [] });
+  });
+
+  test("a tenant with every pipeline switched off is disabled, and says so", () => {
+    const off = localReport({
+      facts: workspace,
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          fleet: {
+            tenants: [tenant({ id: "/w/c", path: "/w/c", slug: "acme/c" })],
+            cells: [
+              cell({
+                id: "/w/c#work",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+                disabled: true,
+              }),
+              cell({
+                id: "/w/c#intake",
+                pipeline: "intake",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+                disabled: true,
+              }),
+            ],
+            updatedAt: ago(12),
+          },
+        }),
+      },
+    });
+
+    expect(workspaceChildren(workspace, off)[2]).toMatchObject({
+      enabled: false,
+      tone: "stopped",
+      text: "disabled",
+    });
+  });
+
+  test("gathers what is wrong with a tenant, errors before warnings", () => {
+    const troubled = localReport({
+      facts: workspace,
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          bootstrapper: {
+            ...report().bootstrapper,
+            children: [child({ id: "/w/c#intake", crashLooping: true })],
+          },
+          fleet: {
+            tenants: [
+              tenant({
+                id: "/w/a",
+                path: "/w/a",
+                slug: "acme/a",
+                held: true,
+                reason: "no repoSlug",
+              }),
+              tenant({ id: "/w/c", path: "/w/c", slug: "acme/c", envPresent: false }),
+            ],
+            cells: [
+              cell({
+                id: "/w/c#work",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+                wedged: { wedged: true, reason: "no-pass", noPassForMs: 1_020_000 },
+                snapshot: {
+                  tenant: "acme/c",
+                  pipeline: "work",
+                  currentUnits: [],
+                  waitingForSlot: false,
+                  lastError: "gh: rate limited",
+                  lastTimeoutAt: null,
+                  updatedAt: ago(30),
+                },
+              }),
+              cell({
+                id: "/w/c#intake",
+                pipeline: "intake",
+                tenant: tenant({ id: "/w/c" }),
+                state: "idle",
+              }),
+            ],
+            updatedAt: ago(12),
+          },
+          doctor: doctor({
+            report: {
+              ok: false,
+              checks: [],
+              tenants: [
+                {
+                  path: "/w/c",
+                  slug: "acme/c",
+                  checks: [
+                    check({ id: "token", state: "fail", detail: "no GH_TOKEN" }),
+                    check({ id: "stale-state", state: "warn", detail: "one stray directory" }),
+                    check({ id: "config", state: "ok" }),
+                  ],
+                },
+              ],
+            },
+          }),
+        }),
+      },
+    });
+    const [held, , troubledChild] = workspaceChildren(workspace, troubled);
+
+    expect(held!.problems).toEqual([{ level: "error", text: "held: no repoSlug" }]);
+    expect(troubledChild!.problems).toEqual([
+      { level: "error", text: "work: wedged" },
+      { level: "error", text: "intake: crash-looping" },
+      { level: "error", text: "doctor token: no GH_TOKEN" },
+      { level: "warning", text: "no .env beside its config" },
+      { level: "warning", text: "work: gh: rate limited" },
+      { level: "warning", text: "doctor stale-state: one stray directory" },
+    ]);
+    expect(problemCounts(troubledChild!.problems)).toEqual({ errors: 3, warnings: 3 });
+    // A healthy tenant has nothing to count.
+    expect(workspaceChildren(workspace, event)[1]!.problems).toEqual([]);
+  });
+});
+
+describe("a tenant whose .env the container cannot read", () => {
+  const workspace = install({
+    dir: "/repos/ws",
+    name: "ws",
+    workspace: {
+      children: [
+        { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+        { dir: "/repos/ws/b", name: "b", slug: "acme/b" },
+      ],
+    },
+  });
+  const tenants = [
+    {
+      dir: "/repos/ws/a",
+      name: "a",
+      slug: "acme/a",
+      configPath: "/repos/ws/a/phoebe.config.ts",
+      configText: null,
+      configFingerprint: null,
+      env: { path: "/repos/ws/a/.phoebe/.env", access: "unreadable" as const },
+    },
+    {
+      dir: "/repos/ws/b",
+      name: "b",
+      slug: "acme/b",
+      configPath: "/repos/ws/b/phoebe.config.ts",
+      configText: null,
+      configFingerprint: null,
+      env: { path: "/repos/ws/b/.env", access: "readable" as const },
+    },
+  ];
+
+  test("is an error on its row, first, and the row says so in a word", () => {
+    const event = localReport({
+      facts: workspace,
+      directory: directory({ tenants }),
+      report: {
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({
+          fleet: {
+            tenants: [
+              tenant({ id: "/w/a", path: "/w/a", slug: "acme/a" }),
+              tenant({ id: "/w/b", path: "/w/b", slug: "acme/b" }),
+            ],
+            cells: [
+              cell({
+                id: "/w/a#work",
+                tenant: tenant({ id: "/w/a" }),
+                state: "idle",
+                snapshot: {
+                  tenant: "acme/a",
+                  pipeline: "work",
+                  currentUnits: [],
+                  waitingForSlot: false,
+                  lastError: "App mode active but GH_APP_ID is missing",
+                  lastTimeoutAt: null,
+                  updatedAt: ago(30),
+                },
+              }),
+              cell({ id: "/w/b#work", tenant: tenant({ id: "/w/b" }), state: "idle" }),
+            ],
+            updatedAt: ago(12),
+          },
+        }),
+      },
+    });
+    const [locked, fine] = workspaceChildren(workspace, event);
+
+    expect(locked).toMatchObject({ tone: "attention", text: ".env unreadable" });
+    // The cause, ahead of the symptom the tenant itself reports.
+    expect(locked!.problems).toEqual([
+      { level: "error", text: ENV_UNREADABLE },
+      { level: "warning", text: "work: App mode active but GH_APP_ID is missing" },
+    ]);
+    expect(fine!.problems).toEqual([]);
+    expect(tenantEnv(event, "/repos/ws/a")).toEqual(tenants[0]!.env);
+    expect(tenantEnv(event, "/repos/elsewhere")).toBeNull();
+    expect(tenantEnv(null, "/repos/ws/a")).toBeNull();
+  });
+
+  test("is as true of a stopped workspace, which has nothing else to say", () => {
+    const stopped = { ...workspace, state: "stopped" as const };
+    const event = localReport({
+      facts: stopped,
+      directory: directory({ bootstrapperRunning: false, tenants }),
+    });
+    const rows = workspaceChildren(stopped, event);
+
+    expect(rows[0]).toMatchObject({
+      tone: "stopped",
+      problems: [{ level: "error", text: ENV_UNREADABLE }],
+    });
+    expect(rows[1]!.problems).toEqual([]);
+    expect(workspaceSummary(rows)).toMatchObject({ errors: 1, warnings: 0 });
+  });
+});
+
+describe("a workspace, summed over its tenants", () => {
+  const row = (overrides: Partial<ReturnType<typeof workspaceChildren>[number]> = {}) => ({
+    dir: "/w/a",
+    slug: "acme/a",
+    label: "acme/a",
+    tone: "idle" as const,
+    text: "idle",
+    active: false,
+    enabled: true,
+    problems: [],
+    ...overrides,
+  });
+
+  test("counts the tenants, and only the clauses that are true", () => {
+    expect(workspaceSummary([row(), row()])).toEqual({ text: "2 tenants", errors: 0, warnings: 0 });
+    expect(workspaceSummary([row({ active: true })])?.text).toBe("1 tenant · 1 working");
+    expect(
+      workspaceSummary([row({ active: true }), row({ enabled: false }), row({ enabled: null })])
+        ?.text,
+    ).toBe("3 tenants · 1 working · 1 disabled");
+  });
+
+  test("adds up what is wrong across them", () => {
+    const summary = workspaceSummary([
+      row({ problems: [{ level: "error", text: "held: x" }] }),
+      row({
+        problems: [
+          { level: "error", text: "work: wedged" },
+          { level: "warning", text: "no .env beside its config" },
+        ],
+      }),
+    ]);
+
+    expect(summary).toMatchObject({ errors: 2, warnings: 1 });
+  });
+
+  test("a solo install has nothing to sum", () => {
+    expect(workspaceSummary([])).toBeNull();
+  });
+});
+
+describe("a workspace's tenant configs, for the config tab", () => {
+  test("one reading per child, labelled by slug else folder, absent when there is no file", () => {
+    const event = localReport({
+      directory: directory({
+        tenants: [
+          {
+            dir: "/w/a",
+            name: "a",
+            slug: "acme/a",
+            configPath: "/w/a/phoebe.config.ts",
+            configText: "export default {}\n",
+            configFingerprint: "sha256:aa",
+          },
+          {
+            dir: "/w/b",
+            name: "b",
+            slug: null,
+            configPath: "/w/b/phoebe.config.ts",
+            configText: null,
+            configFingerprint: null,
+          },
+        ],
+      }),
+    });
+
+    expect(tenantConfigs(event)).toEqual([
+      {
+        dir: "/w/a",
+        label: "acme/a",
+        config: {
+          kind: "file",
+          path: "/w/a/phoebe.config.ts",
+          text: "export default {}\n",
+          fingerprint: "sha256:aa",
+        },
+      },
+      { dir: "/w/b", label: "b", config: { kind: "absent", path: "/w/b/phoebe.config.ts" } },
+    ]);
+  });
+
+  test("nothing on a solo install, before the first read, or from a companion that does not read them", () => {
+    expect(tenantConfigs(localReport())).toEqual([]);
+    expect(tenantConfigs(null)).toEqual([]);
+  });
+
+  test("a config set aimed at a tenant carries its folder", () => {
+    const config = {
+      kind: "file" as const,
+      path: "/w/a/phoebe.config.ts",
+      text: "x",
+      fingerprint: "sha256:aa",
+    };
+    expect(
+      configSetRequest({
+        install: install(),
+        config,
+        path: "engine.ref",
+        literal: '"main"',
+        tenant: "/w/a",
+      }),
+    ).toMatchObject({
+      verb: "config set",
+      tenant: "/w/a",
+      fingerprint: "sha256:aa",
+      value: "main",
+    });
+    expect(
+      configSetRequest({ install: install(), config, path: "engine.ref", literal: '"main"' }),
+    ).not.toHaveProperty("tenant");
   });
 });

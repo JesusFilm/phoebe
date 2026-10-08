@@ -42,7 +42,7 @@
 // folder" and "this was sealed and sent to a server" are different things to
 // have done with a secret.
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
@@ -57,12 +57,12 @@ import type {
 } from "phoebe-agent/contracts";
 import { DeploymentTabPanel, ReceiptPanel } from "./deployment-tabs.tsx";
 import {
-  applyRunExit,
-  applyRunLine,
   configSetRequest,
   dockerReading,
   landingTab,
   localConfig,
+  tenantConfigs,
+  type TenantConfigReading,
   localConnection,
   offeredVerbs,
   outcomeReading,
@@ -74,11 +74,14 @@ import {
   secretWriterReading,
   versionReading,
 } from "./local-install.ts";
-import { TerminalSquare } from "lucide-react";
+import { ChevronRight, TerminalSquare } from "lucide-react";
 import { Button } from "~/components/ui/button";
+import { ConfigSpace } from "./config-form.tsx";
 import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
+import { HarnessSection } from "./harness-section.tsx";
+import { receiptOfRun, useInstallRun } from "./verb-run.ts";
 
 export function InstallPage({
   install,
@@ -88,6 +91,8 @@ export function InstallPage({
   signedIn,
   paired,
   onConsole,
+  onCli,
+  onTenant,
   onUpdate,
   onForget,
 }: {
@@ -102,41 +107,17 @@ export function InstallPage({
   paired: boolean;
   /** Back to the console (console-view.tsx), the view the rail opens. */
   onConsole?: () => void;
+  /** The console on its cli tab: where a verb's output is read. */
+  onCli?: () => void;
+  /** Open one tenant's own config (tenant-page.tsx). Without it the list is not links. */
+  onTenant?: (dir: string) => void;
   /** Save a change to the install's own settings (project-settings.tsx). */
   onUpdate: (dir: string, patch: InstallPatch) => Promise<void>;
   onForget: (dir: string) => void;
 }) {
   const [tab, setTab] = useState<DeploymentTab | "install">(() => landingTab(install));
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
-  const [run, setRun] = useState<VerbRun | null>(null);
-  const [trouble, setTrouble] = useState<string | null>(null);
-  // The run is main's, so the page reads it rather than owning it. Reading on
-  // mount is what makes a reload rejoin a run in flight (#527 §13).
-  useEffect(() => {
-    let live = true;
-    bridge.runs.current(install.dir).then(
-      (current) => {
-        if (live) setRun(current);
-      },
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, [bridge, install.dir]);
-
-  useEffect(() => {
-    const unsubscribeLines = bridge.runs.lines((line) => {
-      setRun((current) => applyRunLine(current, line));
-    });
-    const unsubscribeExits = bridge.runs.exits((exit) => {
-      setRun((current) => applyRunExit(current, exit));
-    });
-    return () => {
-      unsubscribeLines();
-      unsubscribeExits();
-    };
-  }, [bridge]);
+  const { run, running, trouble, start, rebuild } = useInstallRun(bridge, install.dir);
 
   useEffect(() => {
     let live = true;
@@ -151,30 +132,11 @@ export function InstallPage({
     };
   }, [bridge, run?.exit]);
 
-  const running = run !== null && run.exit === undefined;
-
-  function start(request: VerbRunRequest): void {
-    setTrouble(null);
-    bridge.runs.start(request).then(
-      (runId) => {
-        // A fresh record rather than a refetch: the first lines may already be
-        // on their way, and applying them to a stale run would drop them.
-        setRun({
-          runId,
-          install: install.dir,
-          verb: request.verb,
-          startedAt: new Date().toISOString(),
-          lines: [],
-        });
-      },
-      (error: unknown) => setTrouble(refusalText(error)),
-    );
-  }
-
   // The rule the whole stopped-install decision hangs off: what may be drawn is
   // not what was last received.
   const reading = readReport(renderableReport(install, report));
   const config = localConfig(report);
+  const tenants = tenantConfigs(report);
   // A running install's tabs are live while its first read is in flight. The
   // four that need a report are closed only when there is no container behind
   // them, which is the state #526 wrote the rule for.
@@ -202,14 +164,6 @@ export function InstallPage({
             </Button>
           )}
         </div>
-        {install.deploymentDir === undefined ? null : (
-          <p className="muted">
-            The deployment lives in <span className="mono">{install.deploymentDir}/</span> under
-            this folder: its config, its <span className="mono">.env</span> and its container. The
-            folder&apos;s own config is the entry a workspace above it reads.
-          </p>
-        )}
-
         <ProjectSettings
           install={install}
           onUpdate={(patch) => onUpdate(install.dir, patch)}
@@ -254,20 +208,22 @@ export function InstallPage({
             onStart={start}
             onForget={onForget}
             onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
+            {...(onCli === undefined ? {} : { onCli })}
+            harness={
+              <HarnessSection
+                install={install}
+                bridge={bridge}
+                event={report}
+                busy={running}
+                onRebuild={() => rebuild(install.state === "running")}
+                run={run}
+                onStart={start}
+                {...(onTenant === undefined ? {} : { onTenant })}
+              />
+            }
           />
         ) : (
           <>
-            {install.state === "running" ? null : (
-              // The pointer #526 asks for, on the page rather than inside one tab:
-              // a stopped install lands here, and the button that changes that is
-              // one tab away.
-              <p className="muted">
-                Nothing is running, so config is the only tab with anything in it.{" "}
-                <button type="button" className="quiet" onClick={() => setTab("install")}>
-                  Go to the install tab
-                </button>
-              </p>
-            )}
             <DeploymentTabPanel
               tab={tab}
               reading={reading}
@@ -287,13 +243,32 @@ export function InstallPage({
               }
               writes={{
                 config: (
-                  <ConfigEditForm
-                    install={install}
-                    config={config}
-                    running={running}
-                    receipt={receiptOfRun(run)}
-                    onStart={start}
-                  />
+                  <>
+                    {config === null || config.kind === "absent" ? null : (
+                      <ConfigSpace
+                        install={install}
+                        config={config}
+                        running={running}
+                        receipt={receiptOfRun(run, config.path)}
+                        onStart={start}
+                        status={<UpgradeStatus run={run} />}
+                        label="the root config"
+                        file={
+                          <ConfigEditForm
+                            install={install}
+                            config={config}
+                            running={running}
+                            receipt={receiptOfRun(run, config.path)}
+                            onStart={start}
+                          />
+                        }
+                      />
+                    )}
+                    <TenantList
+                      tenants={tenants}
+                      {...(onTenant === undefined ? {} : { onTenant })}
+                    />
+                  </>
                 ),
                 secrets: (
                   <p className="muted">
@@ -372,6 +347,8 @@ export function InstallTab({
   onStart,
   onForget,
   onCancel,
+  onCli,
+  harness,
 }: {
   install: LocalInstall;
   environment: CompanionEnvironment | null;
@@ -383,23 +360,47 @@ export function InstallTab({
   onStart: (request: VerbRunRequest) => void;
   onForget: (dir: string) => void;
   onCancel: (runId: string) => void;
+  /** Open the console on its cli tab, where this install's run output is. */
+  onCli?: () => void;
+  /** The AI harness section (harness-section.tsx), which needs the bridge this tab does not hold. */
+  harness?: ReactNode;
 }) {
   const offered = offeredVerbs(install);
+  // Forget asks first. One click on a quiet button, and an install is gone from
+  // the rail with nothing on disk to say it was there.
+  const [forgetting, setForgetting] = useState(false);
 
   return (
     <>
-      <section>
-        <h2>Docker</h2>
-        {install.wsl === undefined ? (
+      {install.wsl === undefined ? (
+        <section>
+          <h2>Docker</h2>
           <DockerCheck environment={environment} />
-        ) : (
+        </section>
+      ) : null}
+
+      {offered.solo ? (
+        <section className="offer" aria-label="Run it on its own">
+          <h2>This folder is a tenant. Run it on its own too?</h2>
           <p className="muted">
-            Asked inside the <code>{install.wsl.distro}</code> distro through <code>wsl.exe</code>,
-            not on this machine&apos;s own PATH. A distro with no Docker says so on the rail and
-            when a verb runs.
+            A workspace runs this folder&apos;s container, so there is nothing here to start. It can
+            also be a deployment of its own: the scaffold goes into{" "}
+            <span className="mono">.phoebe/</span> under the folder with the tenant&apos;s settings
+            carried over, and the tenant entry points the workspace at that folder for its{" "}
+            <span className="mono">.env</span> and prompts, so the two share one set. It stays a
+            tenant either way.
           </p>
-        )}
-      </section>
+          <div className="verbs">
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => onStart({ install: install.dir, verb: "init", beside: "tenant" })}
+            >
+              Run it on its own too
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section>
         <h2>This install</h2>
@@ -468,10 +469,23 @@ export function InstallTab({
               Pair with the relay
             </button>
           )}
-          <button type="button" className="quiet" onClick={() => onForget(install.dir)}>
-            Forget
-          </button>
+          {forgetting ? null : (
+            <button type="button" className="quiet" onClick={() => setForgetting(true)}>
+              Forget
+            </button>
+          )}
         </div>
+        {forgetting ? (
+          <p className="confirm" role="alert">
+            Forget <strong>{install.name}</strong>? It leaves the rail; nothing on disk is deleted.{" "}
+            <button type="button" className="danger" onClick={() => onForget(install.dir)}>
+              Forget
+            </button>{" "}
+            <button type="button" className="quiet" onClick={() => setForgetting(false)}>
+              Keep
+            </button>
+          </p>
+        ) : null}
         <Versions install={install} environment={environment} />
         <p className="muted">
           {pairing.kind === "paired"
@@ -480,17 +494,21 @@ export function InstallTab({
               ? pairing.reason
               : "Pairing mints a token on the relay, points this install's config at it and nudges the container. The token never leaves this machine in a line you can read."}
         </p>
-        <p className="muted">
-          Forgetting removes this install from the companion. Nothing on disk is deleted.
-        </p>
+        {forgetting ? null : (
+          <p className="muted">
+            Forgetting removes this install from the companion. Nothing on disk is deleted.
+          </p>
+        )}
         {trouble === null ? null : <p className="refusal">{trouble}</p>}
       </section>
+
+      {harness}
 
       <SecretSetForm install={install} running={running} run={run} onStart={onStart} />
 
       <section>
-        <h2>Output</h2>
-        <RunOutput run={run} onCancel={onCancel} />
+        <h2>Last run</h2>
+        <RunStatus run={run} onCancel={onCancel} onCli={onCli} />
       </section>
     </>
   );
@@ -515,6 +533,8 @@ export function ConfigEditForm({
   running,
   receipt,
   onStart,
+  tenant,
+  heading = "Change one field",
 }: {
   install: LocalInstall;
   config: ConfigReading | null;
@@ -522,6 +542,10 @@ export function ConfigEditForm({
   /** The receipt the last `config set` on this install answered with, if any. */
   receipt: EditReceipt | null;
   onStart: (request: VerbRunRequest) => void;
+  /** A workspace child's folder: the edit goes to its config rather than the root's. */
+  tenant?: string;
+  /** The heading over the form; the root's says which file below it. */
+  heading?: string;
 }) {
   const [field, setField] = useState("");
   const [literal, setLiteral] = useState("");
@@ -536,7 +560,13 @@ export function ConfigEditForm({
     event.preventDefault();
     let request: VerbRunRequest;
     try {
-      request = configSetRequest({ install, config: file, path: field, literal });
+      request = configSetRequest({
+        install,
+        config: file,
+        path: field,
+        literal,
+        ...(tenant === undefined ? {} : { tenant }),
+      });
     } catch (error) {
       setUnreadable(error instanceof Error ? error.message : String(error));
       return;
@@ -547,11 +577,11 @@ export function ConfigEditForm({
 
   return (
     <>
-      <h2>Change one field</h2>
+      <h2>{heading}</h2>
       <p className="muted">
         Written straight to <span className="mono">{file.path}</span> on this machine. No relay is
-        involved, and the edit checks itself against the fingerprint above — if the file has moved
-        since this tab read it, the edit is refused and says what to type instead.
+        involved, and the edit checks itself against the file as this tab read it: if it has moved
+        since, the edit is refused and says what to type instead.
       </p>
       <form className="verbs" onSubmit={submit}>
         <input
@@ -651,12 +681,6 @@ export function SecretSetForm({
   );
 }
 
-/** The last run's receipt, when the last run was a `config set` that finished. */
-function receiptOfRun(run: VerbRun | null): EditReceipt | null {
-  const outcome = run?.exit?.outcome;
-  return outcome?.verb === "config set" ? outcome.outcome : null;
-}
-
 /** The same, for `secret set`. */
 function secretOutcomeOfRun(run: VerbRun | null): SecretSetOutcome | null {
   const outcome = run?.exit?.outcome;
@@ -706,15 +730,20 @@ function DockerCheck({ environment }: { environment: CompanionEnvironment | null
   }
 }
 
-/** The verb run's lines while it runs, and what it decided when it ends. */
-function RunOutput({ run, onCancel }: { run: VerbRun | null; onCancel: (runId: string) => void }) {
-  const tail = useRef<HTMLDivElement>(null);
-
-  // Follow the tail. An operator watching a start does not want to scroll.
-  useEffect(() => {
-    tail.current?.scrollTo({ top: tail.current.scrollHeight });
-  }, [run?.lines.length]);
-
+/**
+ * The last verb run on the install: which, how it went, and what it decided.
+ * Its lines are in the console, under the cli tab (console-view.tsx), which is
+ * where output is read; this is the status and the way there.
+ */
+function RunStatus({
+  run,
+  onCancel,
+  onCli,
+}: {
+  run: VerbRun | null;
+  onCancel: (runId: string) => void;
+  onCli?: () => void;
+}) {
   if (run === null) {
     return <p className="muted">Nothing has run on this install yet.</p>;
   }
@@ -736,29 +765,84 @@ function RunOutput({ run, onCancel }: { run: VerbRun | null; onCancel: (runId: s
           </>
         ) : null}
       </p>
-      <div className="run-lines mono" ref={tail} aria-label="Verb output">
-        {run.lines.map((line, index) => (
-          <div key={index} className={line.stream}>
-            {line.line}
-          </div>
-        ))}
-      </div>
       {run.exit?.outcome === undefined ? null : (
         <p className={run.exit.code === 0 ? "outcome" : "refusal"}>
           {outcomeReading(run.exit.outcome)}
         </p>
       )}
+      <div className="verbs">
+        <button type="button" disabled={onCli === undefined} onClick={onCli}>
+          Open its output in the console
+        </button>
+      </div>
     </>
   );
 }
 
 /**
- * A refusal's own words. Every bridge call rejects with `{ code, message,
- * instruction? }` (#527 §16), and the instruction is the thing the operator can
- * run by hand — so it goes on screen beside the message, not in a console log.
+ * How the last engine move went, under the config form that asked for it. The
+ * run's own lines are in the console, under cli; this is the one sentence.
  */
-function refusalText(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  const instruction = (error as { instruction?: string }).instruction;
-  return instruction === undefined ? error.message : `${error.message} — ${instruction}`;
+function UpgradeStatus({ run }: { run: VerbRun | null }) {
+  if (run === null || run.verb !== "upgrade") return null;
+  if (run.exit === undefined) {
+    return (
+      <p className="muted">
+        Moving the engine. The console&apos;s cli tab has the run&apos;s output.
+      </p>
+    );
+  }
+  if (run.exit.outcome !== undefined) {
+    return <p className="outcome">{outcomeReading(run.exit.outcome)}</p>;
+  }
+  return (
+    <p className="refusal">
+      The engine was not moved. The console&apos;s cli tab has what the run said.
+    </p>
+  );
+}
+
+/**
+ * A workspace's tenants, as somewhere to go. Each keeps its own config, which is
+ * a different file saying different things, so each has a page of its own
+ * (tenant-page.tsx) and this is the list of them.
+ */
+function TenantList({
+  tenants,
+  onTenant,
+}: {
+  tenants: TenantConfigReading[];
+  onTenant?: (dir: string) => void;
+}) {
+  if (tenants.length === 0) return null;
+  return (
+    <section className="tenant-configs" aria-label="Tenants">
+      <h2>Tenants</h2>
+      <p className="muted">
+        Each child of this workspace keeps its own <code>phoebe.config.ts</code>. The root above
+        names the fleet; these say what each member does.
+      </p>
+      <ul className="tenant-list">
+        {tenants.map((tenant) => (
+          <li key={tenant.dir}>
+            <button
+              type="button"
+              className="tenant-link"
+              disabled={onTenant === undefined}
+              title={`Open the config of ${tenant.label}`}
+              onClick={() => onTenant?.(tenant.dir)}
+            >
+              <span className="tenant-label">{tenant.label}</span>
+              <span className="muted mono">
+                {tenant.config.kind === "absent"
+                  ? `no phoebe.config.ts in ${tenant.dir}`
+                  : tenant.config.path}
+              </span>
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }

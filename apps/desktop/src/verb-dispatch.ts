@@ -29,23 +29,24 @@
 // `process.chdir` would make two installs running in parallel into a race.
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
 import { BridgeRefusal } from "./channels.ts";
+import { LOCAL_OPEN_PATHS } from "./config-fields.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { runTargetMigrations, type EnvCommandRunner } from "./engine-migrate.ts";
+import { latestLauncherVersion, registryNpm } from "./harness.ts";
+import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
-import {
-  formatResolveFailure,
-  resolveDeploymentCompose,
-  type CommandRunner,
-} from "../../../src/deployment-compose.ts";
+import { formatResolveFailure, resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
 import { runInit } from "../../../src/init.ts";
 import { runMigrate } from "../../../src/migrate.ts";
 import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
-import { runUpgrade } from "../../../src/upgrade.ts";
+import { defaultNpm, runUpgrade } from "../../../src/upgrade.ts";
 import { pairInstall, type PairArm } from "./pair.ts";
 import {
   defaultStdinSpawner,
@@ -106,14 +107,26 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
     // config set, upgrade, migrate, doctor — reach the folder as Windows shows it
     // and need nothing.
     const wsl = wslLocationOf(install);
-    const runner =
-      wsl === null ? streamingRunner(io, register) : wslRunner(wsl, streamingRunner(io, register));
+    const host = streamingRunner(io, register);
+    const runner = wsl === null ? host : wslRunner(wsl, host);
     // This machine's PATH says nothing about the distro's; its Compose answers
     // for itself, and a distro with no Docker fails the run with its own words.
     const dockerInDistro = wsl === null ? {} : { dockerAvailable: true };
 
     switch (request.verb) {
       case "init": {
+        // A tenant's folder given a deployment of its own, beside the tenant
+        // (solo-beside-tenant.ts). Its own arm because it writes into `.phoebe/`
+        // and touches the tenant config, which a plain init never does.
+        if (request.beside === "tenant") {
+          const outcome = initSoloBesideTenant({
+            install,
+            io,
+            cliVersion: __COMPANION_VERSION__,
+            deps: { packageRoot: packageRoot() },
+          });
+          return { verb: "init", outcome };
+        }
         // `init` prints nothing of its own (#552) and returns the file lists
         // instead, so the run says what it is doing and then what it did. An
         // install tab with an empty output box and a green tick reads as a button
@@ -154,12 +167,29 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         // The companion always passes a target, so upgrade's TTY picker is never
         // reached (#527 §3). It asks no consent question either: the dep defaults
         // to never asking, which is the right answer with no terminal.
+        // The latest launcher is looked up here, over HTTPS, and handed to
+        // upgrade as the answer its `npm view` would give (harness.ts): this
+        // process often has no npm to run. The incoming engine's migrations
+        // run as this machine's children, not the verb's default way: that
+        // spawns `process.execPath`, which here is the companion itself
+        // (engine-migrate.ts). Host-side even for an install inside WSL, like
+        // every other file the verb touches.
+        const check = request.check ?? true;
+        const target = request.target ?? "both";
+        const asksRegistry = check || target !== "engine";
         const outcome = await runUpgrade({
-          check: request.check ?? true,
-          target: request.target ?? "both",
+          check,
+          target,
           ...(request.ref !== undefined ? { ref: request.ref } : {}),
           configPath,
-          deps: { cwd: root, io },
+          deps: {
+            cwd: root,
+            io,
+            runMigrations: (opts) => runTargetMigrations(opts, { run: host }),
+            ...(asksRegistry
+              ? { npm: registryNpm(await latestLauncherVersion(), defaultNpm) }
+              : {}),
+          },
         });
         return { verb: "upgrade", outcome };
       }
@@ -180,18 +210,24 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         // The fingerprint the window was shown rides in the request (#527 §11), so
         // an edit composed against a config a terminal has since changed is
         // refused `stale` here exactly as it would be over a relay.
-        io.stdout(`[phoebe] config set ${request.path} in ${configPath}`);
+        // On a workspace the edit may name a child; the child's folder has to
+        // be under the install, or the request is not this install's to make.
+        const target =
+          request.tenant === undefined ? configPath : tenantConfigPath(install, request.tenant);
+        io.stdout(`[phoebe] config set ${request.path} in ${target}`);
         const outcome = await runConfigSet(
           {
-            configPath,
+            configPath: target,
             path: request.path,
             value: request.value,
             fingerprint: request.fingerprint,
           },
           // No ledger: the ledger answers a redelivered edit, and there is no
           // delivery here to repeat. The volume one would live on is inside the
-          // container this edit deliberately does not go through.
-          { ledgerPath: null },
+          // container this edit deliberately does not go through. And the
+          // engine's source and repository are open here: this is the operator's
+          // own disk, and where the engine comes from is theirs to say.
+          { ledgerPath: null, open: LOCAL_OPEN_PATHS },
         );
         io.stdout(
           outcome.state === "written"
@@ -274,11 +310,12 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
  * Every child it spawns is registered, which is what gives cancel something to
  * signal (#527 §2).
  */
-export function streamingRunner(io: VerbIo, register: (child: Killable) => void): CommandRunner {
+export function streamingRunner(io: VerbIo, register: (child: Killable) => void): EnvCommandRunner {
   return (spec) =>
     new Promise((resolve, reject) => {
       const child = spawn(spec.file, spec.args as string[], {
         cwd: spec.cwd,
+        ...(spec.env === undefined ? {} : { env: spec.env }),
         stdio: ["ignore", "pipe", "pipe"],
       });
       register(child);
@@ -317,4 +354,20 @@ function emitLines(buffered: string, emit: (line: string) => void): string {
   const rest = pieces.pop() ?? "";
   for (const piece of pieces) emit(piece.replace(/\r$/, ""));
   return rest;
+}
+
+/**
+ * A workspace child's config, for a `config set` that names the child. The
+ * folder has to sit under the install and carry a config: a path that walks
+ * out of the install, or names a folder with nothing to edit, is refused
+ * before anything is read.
+ */
+function tenantConfigPath(install: string, tenant: string): string {
+  const inside = path.relative(install, tenant);
+  if (inside === "" || inside.startsWith("..") || path.isAbsolute(inside)) {
+    throw new Error(`${tenant} is not a child of ${install}.`);
+  }
+  const file = path.join(tenant, CONFIG_FILE);
+  if (!existsSync(file)) throw new Error(`${tenant} has no ${CONFIG_FILE} to change.`);
+  return file;
 }

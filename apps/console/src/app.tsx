@@ -28,6 +28,7 @@ import type {
   AlertBody,
   CompanionUpdate,
   DesktopBridge,
+  HarnessReport,
   LocalInstall,
   LocalReportEvent,
   RelayIdentity,
@@ -57,8 +58,24 @@ import { ChevronRight } from "lucide-react";
 import { routeCrumbs, type Crumbs } from "./crumbs.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { hostOfProcessPlatform } from "./host-icon.tsx";
+import {
+  availableUpdates,
+  claudeAuthProblem,
+  rootProblem,
+  toolsProblem,
+  updatesReading,
+  volumesProblem,
+  updatesSignature,
+  type AvailableUpdate,
+} from "./harness.ts";
 import { InstallPage } from "./install-page.tsx";
-import { pairedInstalls, type InstallAction, type RailChild } from "./local-install.ts";
+import { TenantPage } from "./tenant-page.tsx";
+import {
+  pairedInstalls,
+  type InstallAction,
+  type RailChild,
+  type RailProblem,
+} from "./local-install.ts";
 import {
   busyInstalls,
   NO_ACTIVITY,
@@ -74,6 +91,10 @@ import { Rail } from "./rail.tsx";
 import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
 import { configOf } from "./report.ts";
 import { ADD_HREF, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
+import { readContext, textToCopy } from "./context-menu.ts";
+import { CLI_CHANNEL } from "./logs-channels.ts";
+import { UpdateAlerts } from "./update-alert.tsx";
+import { exitOf } from "./verb-run.ts";
 
 type Session =
   | { kind: "asking" }
@@ -232,8 +253,12 @@ function Console({
   // Which of an install's two views is up: the console the rail opens
   // (console-view.tsx), or the tabbed page behind its gear (install-page.tsx).
   // A workspace child opens the console on its own lines.
-  const [openView, setOpenView] = useState<"console" | "settings">("console");
+  const [openView, setOpenView] = useState<"console" | "settings" | "tenant">("console");
+  // The tenant whose config is open, by folder (tenant-page.tsx).
+  const [openChild, setOpenChild] = useState<string | null>(null);
   const [openTenant, setOpenTenant] = useState<string | null>(null);
+  // The console tab somebody asked for by name: `cli`, to watch a verb run.
+  const [openChannel, setOpenChannel] = useState<string | null>(null);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
@@ -241,6 +266,10 @@ function Console({
   // The console's colour theme (console-themes.ts): the operator's preference,
   // read with the rest and written back through the bridge when the picker moves.
   const [consoleTheme, setConsoleTheme] = useState<ConsoleThemeChoice>(SYSTEM_CONSOLE_THEME);
+  // Off until the operator asks for it: the check asks npm and Cursor.
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(false);
+  // The last harness report per install, from a page's check or the automatic one.
+  const [harnessReports, setHarnessReports] = useState<Record<string, HarnessReport>>({});
   const systemDark = useSystemDark();
   const chooseNotifications = (wanted: boolean): void => {
     setNotifications(wanted);
@@ -250,14 +279,21 @@ function Console({
     if (wanted && typeof Notification !== "undefined") void Notification.requestPermission();
     if (bridge === null) return;
     void bridge.preferences
-      .set({ notifications: wanted, consoleTheme })
+      .set({ notifications: wanted, consoleTheme, autoCheckUpdates })
       .then((saved) => setNotifications(saved.notifications), ignore);
+  };
+  const chooseAutoCheckUpdates = (wanted: boolean): void => {
+    setAutoCheckUpdates(wanted);
+    if (bridge === null) return;
+    void bridge.preferences
+      .set({ notifications, consoleTheme, autoCheckUpdates: wanted })
+      .then((saved) => setAutoCheckUpdates(saved.autoCheckUpdates === true), ignore);
   };
   const chooseConsoleTheme = (choice: ConsoleThemeChoice): void => {
     setConsoleTheme(choice);
     if (bridge === null) return;
     void bridge.preferences
-      .set({ notifications, consoleTheme: choice })
+      .set({ notifications, consoleTheme: choice, autoCheckUpdates })
       .then((saved) => setConsoleTheme(consoleThemeChoiceOf(saved.consoleTheme)), ignore);
   };
   const now = useNow(1000);
@@ -276,6 +312,7 @@ function Console({
       if (!live) return;
       setNotifications(preferences.notifications);
       setConsoleTheme(consoleThemeChoiceOf(preferences.consoleTheme));
+      setAutoCheckUpdates(preferences.autoCheckUpdates === true);
     }, ignore);
     return () => {
       live = false;
@@ -324,6 +361,114 @@ function Console({
     },
     [notifier],
   );
+
+  // What each install could move to, by its last harness report. The alert, the
+  // rail's count and the notification are all this one reading.
+  const updatesByInstall = useMemo(() => {
+    const found: Record<string, AvailableUpdate[]> = {};
+    for (const install of installs) {
+      const updates = availableUpdates(
+        install,
+        reports[install.dir] ?? null,
+        harnessReports[install.dir] ?? null,
+      );
+      if (updates.length > 0) found[install.dir] = updates;
+    }
+    return found;
+  }, [installs, reports, harnessReports]);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    return bridge.harness.reports(({ install, report }) => {
+      setHarnessReports((held) => ({ ...held, [install]: report }));
+    });
+  }, [bridge]);
+
+  // What is wrong with each install itself, off the same reports: a container
+  // that runs as root, one that cannot write its volumes, a tool its commands
+  // need and the container lacks. The rail's badge and the console's header both read it.
+  const installProblems = useMemo(() => {
+    const found: Record<string, RailProblem[]> = {};
+    for (const install of installs) {
+      const problems = [
+        ...rootProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
+        ...volumesProblem(harnessReports[install.dir] ?? null),
+        ...toolsProblem(install, reports[install.dir] ?? null, harnessReports[install.dir] ?? null),
+        ...claudeAuthProblem(harnessReports[install.dir] ?? null),
+      ];
+      if (problems.length > 0) found[install.dir] = problems;
+    }
+    return found;
+  }, [installs, reports, harnessReports]);
+
+  // Each install is read once per state it is in, with nothing asked of the
+  // network: a file and a container, or an image when it is stopped. Without
+  // this the rail would know about a root container only after somebody had
+  // opened the install's page.
+  const readLocally = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (bridge === null) return;
+    for (const install of installs) {
+      if (install.state === "not-initialised") continue;
+      const standing = `${install.state}:${install.containerVersion ?? ""}`;
+      if (readLocally.current[install.dir] === standing) continue;
+      readLocally.current[install.dir] = standing;
+      void bridge.harness.check(install.dir, { lookUp: false }).catch(ignore);
+    }
+  }, [bridge, installs]);
+
+  // One notification per set of updates: what was said is not said again until
+  // what is on offer changes.
+  const toldUpdates = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const install of installs) {
+      const updates = updatesByInstall[install.dir];
+      if (updates === undefined) continue;
+      const signature = updatesSignature(updates);
+      if (toldUpdates.current[install.dir] === signature) continue;
+      toldUpdates.current[install.dir] = signature;
+      notifier?.raise(
+        {
+          tag: `${install.dir}:updates`,
+          title: install.name,
+          body: `Updates are available: ${updatesReading(updates)}.`,
+          subject: { arm: "local", install: install.dir },
+          pipeline: null,
+        },
+        {
+          enabled: wanted.current,
+          focused: typeof document === "undefined" ? false : document.hasFocus(),
+        },
+      );
+    }
+  }, [installs, updatesByInstall, notifier]);
+
+  // The right-click menu (context-menu.ts). Electron draws none by itself; the
+  // page says what was clicked and main draws the OS's, then the page copies.
+  useEffect(() => {
+    if (bridge === null || typeof document === "undefined") return;
+    const onContextMenu = (event: MouseEvent): void => {
+      const read = readContext(
+        event.target instanceof Element ? event.target : null,
+        document.getSelection()?.toString() ?? "",
+      );
+      if (read === null) return;
+      event.preventDefault();
+      void bridge.menu.show(read.request).then((choice) => {
+        const text = textToCopy(choice, read);
+        if (text !== null) void navigator.clipboard.writeText(text).catch(ignore);
+        if (choice === "select-all" && read.box instanceof Element) {
+          const range = document.createRange();
+          range.selectNodeContents(read.box);
+          const selection = document.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        }
+      }, ignore);
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, [bridge]);
 
   // The local arm. One read, then main's `installs:changed` does the updating —
   // the same shape as the relay's stream, for the same reason: the page holds
@@ -376,6 +521,22 @@ function Console({
     return undefined;
   }, [bridge, openInstall]);
 
+  // Coming back to the window is a read too. A stopped install is not polled,
+  // so a config edited in a terminal would otherwise sit unseen behind a form
+  // still holding the old text, and the next edit from here would be refused as
+  // stale.
+  useEffect(() => {
+    if (bridge === null || openInstall === null || typeof window === "undefined") return;
+    const reread = (): void => {
+      bridge.installs.refresh(openInstall).then(
+        (event) => setReports((held) => ({ ...held, [event.install]: event })),
+        () => undefined,
+      );
+    };
+    window.addEventListener("focus", reread);
+    return () => window.removeEventListener("focus", reread);
+  }, [bridge, openInstall]);
+
   // Which relay this companion is signed in to — the other half of the join
   // that decides whether a local install is also a row on the fleet (#558).
   // Watched rather than read once: signing in to a different relay changes
@@ -404,10 +565,15 @@ function Console({
       if (bridge === null) return;
       void bridge.installs.pick(inside).then(async (dir) => {
         if (dir === null) return;
-        setInstalls(await bridge.installs.add(dir));
-        // Straight to its page. A folder that already carries a config is adopted
-        // as it stands and needs nothing; one that does not lands on the install
-        // tab, which is where init is (#526).
+        const added = await bridge.installs.add(dir);
+        setInstalls(added);
+        // Straight to its page. A folder that already carries a deployment is
+        // adopted as it stands and opens on its console; one that does not opens
+        // on the install tab, where init is, or the offer to run a tenant's
+        // folder on its own (#526).
+        const state = added.find((install) => install.dir === dir)?.state;
+        setOpenView(state === "not-initialised" ? "settings" : "console");
+        setOpenTenant(null);
         setOpenInstall(dir);
       });
     },
@@ -602,12 +768,14 @@ function Console({
         installs={installs}
         paired={pairedDirs}
         selected={openInstall}
+        selectedChild={openView === "tenant" ? openChild : null}
         selectedDeployment={
           openInstall === null && route.page === "deployment" ? route.fingerprint : null
         }
         onSelect={(dir) => {
           setOpenView("console");
           setOpenTenant(null);
+          setOpenChannel(null);
           setOpenInstall(dir);
         }}
         // The brand is home. The route effect closes the install when the
@@ -615,6 +783,10 @@ function Console({
         // here too — the same guard `onAdd` carries below.
         onHome={() => setOpenInstall(null)}
         reports={reports}
+        updates={Object.fromEntries(
+          Object.entries(updatesByInstall).map(([dir, updates]) => [dir, updates.length]),
+        )}
+        problems={installProblems}
         {...(platform === null ? {} : { platform })}
         update={update}
         {...(bridge === null
@@ -644,12 +816,22 @@ function Console({
               onChild: (dir: string, child: RailChild) => {
                 setOpenView("console");
                 setOpenTenant(child.slug);
+                setOpenChannel(null);
                 setOpenInstall(dir);
               },
-              // The rail's shortcuts. The page opens first so the run's lines
-              // have somewhere to land; a refusal (`busy`, most likely) is
-              // the page's to show from the run it reads on mount.
+              // A child's gear is that tenant's own config.
+              onChildSettings: (dir: string, child: RailChild) => {
+                setOpenView("tenant");
+                setOpenChild(child.dir);
+                setOpenTenant(null);
+                setOpenInstall(dir);
+              },
+              // The rail's shortcuts. The console opens on its cli tab first,
+              // so the run's lines have somewhere to land.
               onAction: (dir: string, action: InstallAction) => {
+                setOpenView("console");
+                setOpenTenant(null);
+                setOpenChannel(CLI_CHANNEL);
                 setOpenInstall(dir);
                 void runAction(dir, action);
               },
@@ -667,17 +849,35 @@ function Console({
             open,
             view: openView,
             tenant: openTenant,
+            child:
+              open?.workspace?.children
+                .filter((child) => child.dir === openChild)
+                .map((child) => child.slug ?? child.name)[0] ?? null,
             facts,
             signedIn: identity !== null,
           })}
           identity={identity}
           onSignOut={() => void client.signOut().then(onSignedOut, onSignedOut)}
         />
+        {bridge === null ? null : (
+          <UpdateAlerts
+            bridge={bridge}
+            installs={installs}
+            events={reports}
+            reports={harnessReports}
+            onReview={(dir) => {
+              setOpenView("settings");
+              setOpenTenant(null);
+              setOpenInstall(dir);
+            }}
+          />
+        )}
         {open !== null && bridge !== null && openView === "console" ? (
           <ConsoleView
-            key={`${open.dir}#${openTenant ?? ""}`}
+            key={`${open.dir}#${openTenant ?? ""}#${openChannel ?? ""}`}
             bridge={bridge}
             install={open}
+            channel={openChannel}
             host={
               open.wsl === undefined
                 ? platform === null
@@ -685,17 +885,38 @@ function Console({
                   : hostOfProcessPlatform(platform)
                 : "wsl"
             }
+            report={reports[open.dir] ?? null}
+            problems={installProblems[open.dir] ?? []}
             tenant={openTenant}
             theme={consoleTheme}
             onSettings={() => setOpenView("settings")}
+          />
+        ) : open !== null && bridge !== null && openView === "tenant" && openChild !== null ? (
+          <TenantPage
+            key={`${open.dir}#${openChild}`}
+            install={open}
+            tenant={openChild}
+            bridge={bridge}
+            report={reports[open.dir] ?? null}
+            onWorkspace={() => setOpenView("settings")}
           />
         ) : open !== null && bridge !== null ? (
           <InstallPage
             key={open.dir}
             install={open}
             bridge={bridge}
+            onTenant={(dir) => {
+              setOpenChild(dir);
+              setOpenView("tenant");
+            }}
             onConsole={() => {
               setOpenTenant(null);
+              setOpenChannel(null);
+              setOpenView("console");
+            }}
+            onCli={() => {
+              setOpenTenant(null);
+              setOpenChannel(CLI_CHANNEL);
               setOpenView("console");
             }}
             report={reports[open.dir] ?? null}
@@ -712,9 +933,14 @@ function Console({
             systemDark={systemDark}
             notifications={notifications}
             consoleTheme={consoleTheme}
+            autoCheckUpdates={autoCheckUpdates}
             {...(bridge === null
               ? {}
-              : { onNotifications: chooseNotifications, onConsoleTheme: chooseConsoleTheme })}
+              : {
+                  onNotifications: chooseNotifications,
+                  onConsoleTheme: chooseConsoleTheme,
+                  onAutoCheckUpdates: chooseAutoCheckUpdates,
+                })}
           />
         ) : identity === null || route.page === "add" ? (
           <CompanionHome
@@ -891,25 +1117,6 @@ async function sendConfigEdit(
  * The route, kept in step with the address bar. Links are plain `href`s into the
  * hash, so the browser does the navigating and the history; this only listens.
  */
-/** Resolves when the run with this id exits — a restart's wait between its halves. */
-function exitOf(bridge: DesktopBridge, dir: string, runId: string): Promise<void> {
-  return new Promise((resolve) => {
-    const off = bridge.runs.exits((exit) => {
-      if (exit.runId !== runId) return;
-      off();
-      resolve();
-    });
-    // The exit may have come and gone before this subscription existed; main
-    // still holds the install's last run, so ask it once.
-    void bridge.runs.current(dir).then((current) => {
-      if (current !== null && current.runId === runId && current.exit !== undefined) {
-        off();
-        resolve();
-      }
-    }, noop);
-  });
-}
-
 function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() =>
     typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),

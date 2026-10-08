@@ -71,7 +71,13 @@ export const CANCELLABLE_VERBS: readonly HostVerb[] = ["start", "stop"];
  * `install` is the install's directory — its identity (#527 §12).
  */
 export type VerbRunRequest =
-  | { install: string; verb: "init"; profile?: InitProfile }
+  /**
+   * `beside: "tenant"` scaffolds into a `.phoebe` folder under one that is already
+   * a workspace child, carries the tenant config's settings onto the new one and
+   * points the tenant entry at the shared folder — a deployment of its own,
+   * beside the tenant it stays.
+   */
+  | { install: string; verb: "init"; profile?: InitProfile; beside?: "tenant" }
   | { install: string; verb: "start"; build?: boolean }
   | { install: string; verb: "stop"; now?: boolean }
   | { install: string; verb: "upgrade"; check?: boolean; target?: UpgradeTarget; ref?: string }
@@ -88,6 +94,11 @@ export type VerbRunRequest =
       value: string | number | boolean | null;
       /** The `sha256:<hex>` of the file as the caller read it. */
       fingerprint: string;
+      /**
+       * On a workspace, the child whose config takes the edit, by its folder
+       * (InstallDirectoryFacts.tenants). Omitted, the root config does.
+       */
+      tenant?: string;
     }
   // `value` is the secret itself. See the fourth rule above: it lives for the
   // run and appears in no file, no log and no line.

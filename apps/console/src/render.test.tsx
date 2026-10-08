@@ -16,6 +16,7 @@ import { FleetPage } from "./fleet-page.tsx";
 import { Rail } from "./rail.tsx";
 import { ConsoleView } from "./console-view.tsx";
 import { ConfigEditForm, InstallPage, InstallTab } from "./install-page.tsx";
+import { TenantPage } from "./tenant-page.tsx";
 import { RELAY_UPGRADE_DOC, tooOldText } from "./relay-version.ts";
 import { ReceiptPanel } from "./deployment-tabs.tsx";
 import { pairReading } from "./local-install.ts";
@@ -688,11 +689,68 @@ describe("the local arm on the rail", () => {
     // The slug labels a child when it has one, the folder otherwise; the fleet
     // says what each is doing, and a folder the fleet does not know says so.
     expect(opened).toMatch(
-      /class="mark attention"[^>]*><\/span><span class="label">acme\/a<\/span><span class="word">held/,
+      /class="mark attention"[^>]*><\/span><span class="label">acme\/a<\/span><span class="rail-problems">[\s\S]*?<\/span><span class="word">held/,
     );
+    // What is wrong shows without opening anything: one error on the held child,
+    // counted again on the workspace's own line with the fleet's size.
+    expect(opened).toMatch(/class="rail-problem error" aria-label="1 error"/);
+    expect(opened).toMatch(/class="rail-summary">2 tenants<span class="rail-problems"/);
+    // One summary where there are two installs: a solo one has no fleet to sum.
+    expect(closed.match(/class="rail-summary"/g)).toHaveLength(1);
+    expect(opened).toContain("Error — held:");
     expect(opened).toMatch(
       /class="mark idle"[^>]*><\/span><span class="label">b<\/span><span class="word">not in the fleet/,
     );
+  });
+
+  test("each child carries a gear onto its own config, and the open one is marked", () => {
+    const workspace = install({
+      dir: "/repos/ws",
+      name: "ws",
+      workspace: {
+        children: [
+          { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/ws/b", name: "b", slug: null },
+        ],
+      },
+    });
+    const rail = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+        installs={[workspace]}
+        selected="/repos/ws"
+        selectedChild="/repos/ws/b"
+        defaultExpanded={new Set(["/repos/ws"])}
+        onChild={() => undefined}
+        onChildSettings={() => undefined}
+      />,
+    );
+
+    expect(rail).toContain('aria-label="Config of acme/a"');
+    expect(rail).toContain('aria-label="Config of b"');
+    expect(rail.match(/class="rail-child-row current"/g)).toHaveLength(1);
+    expect(rail).toMatch(/class="rail-child-row current"><button[^>]*title="\/repos\/ws\/b"/);
+
+    // Without a page to open there is no gear on a child.
+    const bare = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+        installs={[workspace]}
+        defaultExpanded={new Set(["/repos/ws"])}
+        onChild={() => undefined}
+      />,
+    );
+    expect(bare).not.toContain("Config of");
   });
 
   test("gives the three states three marks, and borrows none of the relay's four", () => {
@@ -828,6 +886,43 @@ describe("the install tab", () => {
     );
   }
 
+  test("a run's output is not on the tab: its status is, and the way to the console", () => {
+    const run = {
+      runId: "run-1",
+      install: "/repos/youtube-studio",
+      verb: "start" as const,
+      startedAt: ago(5),
+      lines: [{ runId: "run-1", stream: "stdout" as const, line: "[phoebe] Started." }],
+      exit: {
+        runId: "run-1",
+        code: 0,
+        outcome: { verb: "start" as const, outcome: { kind: "started" as const } },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <InstallTab
+        install={install()}
+        environment={null}
+        run={run}
+        running={false}
+        trouble={null}
+        pairing={{ kind: "ready" }}
+        onStart={() => undefined}
+        onForget={() => undefined}
+        onCancel={() => undefined}
+        onCli={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("<h2>Last run</h2>");
+    expect(markup).toContain("<code>phoebe start</code>");
+    expect(markup).toContain("finished");
+    expect(markup).toContain("Open its output in the console");
+    // The lines themselves are the console's, under cli.
+    expect(markup).not.toContain("[phoebe] Started.");
+    expect(tab()).toContain("Nothing has run on this install yet.");
+  });
+
   test("a not-initialised install is offered init and nothing that needs one", () => {
     const markup = tab({ state: "not-initialised" });
 
@@ -882,6 +977,27 @@ describe("the install tab", () => {
 
   test("says forgetting deletes nothing, because a Forget button reads like one that does", () => {
     expect(tab()).toContain("Nothing on disk is deleted");
+    // And asks before it does anything: the first press is a question.
+    expect(tab()).toMatch(/<button type="button" class="quiet">Forget<\/button>/);
+    expect(tab()).not.toContain('class="confirm"');
+  });
+
+  test("a tenant's folder is offered a deployment of its own, and never a plain init", () => {
+    const markup = tab({
+      state: "not-initialised",
+      tenantOnly: true,
+      detail: "a workspace child, not a deployment",
+    });
+
+    expect(markup).toContain(">Run it on its own too<");
+    expect(markup).not.toContain(">Init<");
+    expect(markup).toContain("It stays a tenant either way.");
+    // The offer opens the tab: it comes before the install's own section.
+    expect(markup.indexOf('aria-label="Run it on its own"')).toBeLessThan(
+      markup.indexOf("<h2>This install</h2>"),
+    );
+    // A folder that is nobody's tenant is offered init, and no second deployment.
+    expect(tab({ state: "not-initialised" })).not.toContain("Run it on its own too");
   });
 
   test("states the container's version beside the companion's, and refuses nothing on it", () => {
@@ -990,10 +1106,14 @@ describe("a local install's page", () => {
     expect(markup).toContain("defineConfig");
   });
 
-  test("a stopped install is pointed at the install tab, where the start button is (#526)", () => {
+  test("a stopped install opens on config with no line about the other tabs", () => {
     const markup = page({ state: "stopped" }, {});
 
-    expect(markup).toContain("Go to the install tab");
+    // The rail's shortcut and the install tab are one click away; a sentence
+    // saying so on every stopped install was noise (#526 asked for a pointer,
+    // the rail now is one).
+    expect(markup).not.toContain("Nothing is running, so config");
+    expect(markup).toContain("defineConfig");
   });
 
   test("a running install mid-read says it is reading, not that nothing is running", () => {
@@ -1001,6 +1121,58 @@ describe("a local install's page", () => {
 
     expect(markup).toContain("Reading this install");
     expect(markup).not.toContain("Go to the install tab");
+  });
+
+  test("a workspace's config tab lists its tenants, each the way to a page of its own", () => {
+    const markup = page(
+      {
+        state: "stopped",
+        workspace: { children: [{ dir: "/repos/ws/a", name: "a", slug: "acme/a" }] },
+      },
+      {
+        directory: directory({
+          bootstrapperRunning: false,
+          tenants: [
+            {
+              dir: "/repos/ws/a",
+              name: "a",
+              slug: "acme/a",
+              configPath: "/repos/ws/a/phoebe.config.ts",
+              configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+              configFingerprint: "sha256:aa",
+            },
+            {
+              dir: "/repos/ws/b",
+              name: "b",
+              slug: null,
+              configPath: "/repos/ws/b/phoebe.config.ts",
+              configText: null,
+              configFingerprint: null,
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(markup).toContain('aria-label="Tenants"');
+    expect(markup).toContain('<span class="tenant-label">acme/a</span>');
+    expect(markup).toContain('title="Open the config of acme/a"');
+    // A tenant's config is its own page's, so none of it is drawn here.
+    expect(markup).not.toContain("repoSlug: &quot;acme/a&quot;");
+    expect(markup).not.toContain("Change one field in");
+    // The child with no config is listed and says so rather than being dropped.
+    expect(markup).toContain('<span class="tenant-label">b</span>');
+    expect(markup).toContain("no phoebe.config.ts in /repos/ws/b");
+    // The root keeps its own config above them.
+    expect(markup.indexOf("<h2>Change one field</h2>")).toBeLessThan(
+      markup.indexOf('aria-label="Tenants"'),
+    );
+  });
+
+  test("a solo install's config tab has no tenants block", () => {
+    const markup = page({ state: "stopped" }, {});
+
+    expect(markup).not.toContain('aria-label="Tenants"');
   });
 
   test("config stays open on a stopped install, because a file is readable either way", () => {
@@ -1030,11 +1202,12 @@ describe("the two local writes on screen (#557)", () => {
     );
   }
 
-  test("the config tab carries the edit form and the fingerprint it checks against", () => {
+  test("the config tab carries the edit form, and keeps the fingerprint it checks against to itself", () => {
     const markup = page({ state: "stopped" }, {});
 
     expect(markup).toContain("Change one field");
-    expect(markup).toContain("sha256:0f1e2d3c4b5a6978");
+    // The fingerprint rides in the request; it is nothing a person reads.
+    expect(markup).not.toContain("sha256:0f1e2d3c4b5a6978");
     expect(markup).toContain("pipelines.work.pollIntervalMs");
   });
 
@@ -1143,6 +1316,142 @@ describe("the two local writes on screen (#557)", () => {
     expect(markup).toContain("checkCommand");
     expect(markup).toContain("pnpm run check");
     expect(markup).toContain("reconciles onto it");
+  });
+});
+
+describe("a tenant's own config page", () => {
+  const workspace = install({
+    dir: "/repos/ws",
+    name: "ws",
+    state: "stopped",
+    workspace: {
+      children: [
+        { dir: "/repos/ws/a", name: "a", slug: "acme/a" },
+        { dir: "/repos/ws/b", name: "b", slug: null },
+      ],
+    },
+  });
+  const event = localReport({
+    facts: workspace,
+    directory: directory({
+      bootstrapperRunning: false,
+      tenants: [
+        {
+          dir: "/repos/ws/a",
+          name: "a",
+          slug: "acme/a",
+          configPath: "/repos/ws/a/phoebe.config.ts",
+          configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+          configFingerprint: "sha256:aa",
+          configFields: [
+            {
+              path: "repoSlug",
+              scope: "tenant",
+              env: "PHOEBE_REPO_SLUG",
+              type: "string",
+              state: "set",
+              value: "acme/a",
+            },
+          ],
+        },
+        {
+          dir: "/repos/ws/b",
+          name: "b",
+          slug: null,
+          configPath: "/repos/ws/b/phoebe.config.ts",
+          configText: null,
+          configFingerprint: null,
+        },
+      ],
+    }),
+  });
+
+  function page(tenant: string, report: typeof event | null = event) {
+    return renderToStaticMarkup(
+      <TenantPage
+        install={workspace}
+        tenant={tenant}
+        bridge={bridge()}
+        report={report}
+        onWorkspace={() => undefined}
+      />,
+    );
+  }
+
+  test("is headed by the tenant, says whose it is, and carries the way back", () => {
+    const markup = page("/repos/ws/a");
+
+    expect(markup).toContain("<h1>acme/a</h1>");
+    expect(markup).toContain("A tenant of <strong>ws</strong>");
+    expect(markup).toContain('title="The config of ws"');
+  });
+
+  test("opens on the tenant's form, over its file and no other", () => {
+    const markup = page("/repos/ws/a");
+
+    expect(markup).toContain('aria-label="Repository in acme/a"');
+    // No path and fingerprint line over the form: the page already says whose it is.
+    expect(markup).not.toContain("sha256:aa");
+    expect(markup).toMatch(/aria-label="repoSlug"[^>]*value="acme\/a"/);
+    // None of the workspace's own page comes along.
+    expect(markup).not.toContain('aria-label="This project"');
+    expect(markup).not.toContain('class="tabs"');
+  });
+
+  test("a child with no config says which file is missing", () => {
+    const markup = page("/repos/ws/b");
+
+    expect(markup).toContain("<h1>b</h1>");
+    expect(markup).toContain("/repos/ws/b/phoebe.config.ts");
+    expect(markup).not.toContain("config-space");
+  });
+
+  test("before the first read it is reading, and a folder that is no child says so", () => {
+    expect(page("/repos/ws/a", null)).toContain("Reading the config");
+    expect(page("/repos/elsewhere")).toContain("This workspace has no such tenant.");
+  });
+
+  test("a .env the container cannot read is said first, with the button that fixes it", () => {
+    const locked = localReport({
+      facts: workspace,
+      directory: directory({
+        bootstrapperRunning: false,
+        tenants: event.directory.tenants!.map((tenant) =>
+          tenant.dir === "/repos/ws/a"
+            ? { ...tenant, env: { path: "/repos/ws/a/.phoebe/.env", access: "unreadable" } }
+            : { ...tenant, env: { path: "/repos/ws/b/.env", access: "missing" } },
+        ),
+      }),
+    });
+    const markup = page("/repos/ws/a", locked);
+
+    expect(markup).toContain('aria-label="The container cannot read this tenant&#x27;s .env"');
+    expect(markup).toContain("/repos/ws/a/.phoebe/.env");
+    expect(markup).toContain("Let the container read it");
+    // Above the config, not under it.
+    expect(markup.indexOf("Let the container read it")).toBeLessThan(markup.indexOf("<h2>Config"));
+    // A readable file, a missing one and no answer at all warn about nothing.
+    expect(page("/repos/ws/b", locked)).not.toContain("Let the container read it");
+    expect(page("/repos/ws/a")).not.toContain("Let the container read it");
+
+    // And the rail shows it on a workspace that is not even running.
+    const rail = renderToStaticMarkup(
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+        installs={[workspace]}
+        reports={{ "/repos/ws": locked }}
+        defaultExpanded={new Set(["/repos/ws"])}
+        onSettings={() => undefined}
+        onChild={() => undefined}
+      />,
+    );
+    expect(rail).toMatch(/class="rail-summary">2 tenants<span class="rail-problems"/);
+    expect(rail).toContain("Error — the container cannot read its .env");
   });
 });
 

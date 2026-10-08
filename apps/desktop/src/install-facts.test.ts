@@ -3,7 +3,12 @@
 import path from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
-import { allInstallFacts, directoryFacts, installFacts } from "./install-facts.ts";
+import {
+  allInstallFacts,
+  directoryFacts,
+  directoryFactsWithAccess,
+  installFacts,
+} from "./install-facts.ts";
 
 const DIR = "/repos/youtube-studio";
 const STORED = { dir: DIR, addedAt: "2026-09-18T09:00:00.000Z" };
@@ -40,6 +45,10 @@ describe("what a folder is", () => {
 
     expect(facts.state).toBe("not-initialised");
     expect(facts.detail).toContain("workspace child");
+    // Said as a fact too, so the install tab can offer the deployment beside it.
+    expect(facts.tenantOnly).toBe(true);
+    const bare = await installFacts(STORED, { exists: folder() });
+    expect(bare.tenantOnly).toBeUndefined();
   });
 
   test("a folder that is gone is named as gone, not as a folder waiting for init", async () => {
@@ -186,6 +195,114 @@ describe("what the folder says with no container", () => {
     // one `config set` checks itself against (#503, #527 §11).
     expect(facts.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(facts.envPresent).toBe(true);
+  });
+
+  test("a workspace's children each bring their config, read the same way", () => {
+    const a = path.join(DIR, "a");
+    const b = path.join(DIR, "b");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({ workspace: {} })\n"],
+      [path.join(a, "phoebe.config.ts"), 'export default defineConfig({ repoSlug: "acme/a" })\n'],
+    ]);
+    const facts = directoryFacts(
+      {
+        ...RUNNING,
+        workspace: {
+          children: [
+            { dir: a, name: "a", slug: "acme/a" },
+            { dir: b, name: "b", slug: null },
+          ],
+        },
+      },
+      { exists: (file) => texts.has(file) || file === DIR, read: (file) => texts.get(file) ?? "" },
+    );
+
+    expect(facts.tenants).toHaveLength(2);
+    expect(facts.tenants?.[0]).toMatchObject({
+      dir: a,
+      name: "a",
+      slug: "acme/a",
+      configPath: path.join(a, "phoebe.config.ts"),
+      configText: 'export default defineConfig({ repoSlug: "acme/a" })\n',
+    });
+    expect(facts.tenants?.[0]?.configFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // A child with no config yet is listed with nothing to show, not dropped.
+    expect(facts.tenants?.[1]).toMatchObject({ dir: b, configText: null, configFingerprint: null });
+  });
+
+  test("each tenant carries what the host says about its .env, where the host says anything", async () => {
+    const a = path.join(DIR, "a");
+    const b = path.join(DIR, "b");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({ workspace: {} })\n"],
+      [path.join(a, "phoebe.config.ts"), 'export default defineConfig({ configDir: ".phoebe" })\n'],
+    ]);
+    const workspace = {
+      ...RUNNING,
+      workspace: {
+        children: [
+          { dir: a, name: "a", slug: "acme/a" },
+          { dir: b, name: "b", slug: null },
+        ],
+      },
+    };
+    const asked: (readonly string[])[] = [];
+    const deps = {
+      exists: (file: string) => texts.has(file) || file === DIR,
+      read: (file: string) => texts.get(file) ?? "",
+      platform: "linux",
+      runner: (spec: { args: readonly string[] }) => {
+        asked.push(spec.args);
+        // The first is its owner's alone; the probe has nothing to say of the second.
+        return Promise.resolve({ code: 0, stdout: "0|1000 1000 600|0\n", stderr: "" });
+      },
+    };
+
+    const facts = await directoryFactsWithAccess(workspace, deps);
+
+    // One child for the whole workspace, each file where its config puts it.
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.slice(-2)).toEqual([path.join(a, ".phoebe", ".env"), path.join(b, ".env")]);
+    expect(facts.tenants?.[0]?.env).toEqual({
+      path: path.join(a, ".phoebe", ".env"),
+      access: "unreadable",
+    });
+    expect(facts.tenants?.[1]?.env).toBeUndefined();
+    // A solo install is not asked about at all.
+    const solo = await directoryFactsWithAccess(RUNNING, { ...deps, exists: folder() });
+    expect(solo.tenants).toBeUndefined();
+    expect(asked).toHaveLength(1);
+  });
+
+  test("carries what the Dockerfile says about each agent CLI, when there is a Dockerfile", () => {
+    const dockerfile = path.join(DIR, "container", "Dockerfile");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({})\n"],
+      [
+        dockerfile,
+        "ARG CLAUDE_CODE_VERSION=2.1.228\nRUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}\n",
+      ],
+    ]);
+    const facts = directoryFacts(RUNNING, {
+      exists: (file) => texts.has(file),
+      read: (file) => texts.get(file) ?? "",
+    });
+
+    expect(facts.harnessPins).toEqual([
+      { harness: "cursor", pin: { kind: "absent" } },
+      { harness: "claude", pin: { kind: "pinned", version: "2.1.228" } },
+      { harness: "codex", pin: { kind: "absent" } },
+    ]);
+    // No Dockerfile is no field, which is how a page knows not to draw the section.
+    expect(
+      directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" }).harnessPins,
+    ).toBeUndefined();
+  });
+
+  test("a solo install has no tenants field at all", () => {
+    const facts = directoryFacts(RUNNING, { exists: folder("phoebe.config.ts"), read: () => "x" });
+
+    expect(facts.tenants).toBeUndefined();
   });
 
   test("the same text fingerprints the same, and an edit moves it", () => {

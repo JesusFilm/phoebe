@@ -31,7 +31,7 @@ import {
  * The service the engine runs as, in the scaffolded compose file. The same name
  * `install-facts.ts` looks for in `ps`.
  */
-const PHOEBE_SERVICE = "phoebe";
+export const PHOEBE_SERVICE = "phoebe";
 
 /**
  * What main execs to get a report: the report file, read where the bootstrapper
