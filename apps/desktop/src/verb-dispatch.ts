@@ -30,14 +30,11 @@ import { app } from "electron";
 import type { InstallState, VerbIo } from "phoebe-agent/contracts";
 import { LOCAL_OPEN_PATHS } from "./config-fields.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { runTargetMigrations, type EnvCommandRunner } from "./engine-migrate.ts";
 import { latestLauncherVersion, registryNpm } from "./harness.ts";
 import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
-import {
-  formatResolveFailure,
-  resolveDeploymentCompose,
-  type CommandRunner,
-} from "../../../src/deployment-compose.ts";
+import { formatResolveFailure, resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
 import { runInit } from "../../../src/init.ts";
 import { runMigrate } from "../../../src/migrate.ts";
@@ -96,8 +93,8 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
     // config set, upgrade, migrate, doctor — reach the folder as Windows shows it
     // and need nothing.
     const wsl = wslLocationOf(install);
-    const runner =
-      wsl === null ? streamingRunner(io, register) : wslRunner(wsl, streamingRunner(io, register));
+    const host = streamingRunner(io, register);
+    const runner = wsl === null ? host : wslRunner(wsl, host);
     // This machine's PATH says nothing about the distro's; its Compose answers
     // for itself, and a distro with no Docker fails the run with its own words.
     const dockerInDistro = wsl === null ? {} : { dockerAvailable: true };
@@ -158,7 +155,11 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
         // to never asking, which is the right answer with no terminal.
         // The latest launcher is looked up here, over HTTPS, and handed to
         // upgrade as the answer its `npm view` would give (harness.ts): this
-        // process often has no npm to run.
+        // process often has no npm to run. The incoming engine's migrations
+        // run as this machine's children, not the verb's default way: that
+        // spawns `process.execPath`, which here is the companion itself
+        // (engine-migrate.ts). Host-side even for an install inside WSL, like
+        // every other file the verb touches.
         const check = request.check ?? true;
         const target = request.target ?? "both";
         const asksRegistry = check || target !== "engine";
@@ -170,6 +171,7 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
           deps: {
             cwd: root,
             io,
+            runMigrations: (opts) => runTargetMigrations(opts, { run: host }),
             ...(asksRegistry
               ? { npm: registryNpm(await latestLauncherVersion(), defaultNpm) }
               : {}),
@@ -282,11 +284,12 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
  * Every child it spawns is registered, which is what gives cancel something to
  * signal (#527 §2).
  */
-export function streamingRunner(io: VerbIo, register: (child: Killable) => void): CommandRunner {
+export function streamingRunner(io: VerbIo, register: (child: Killable) => void): EnvCommandRunner {
   return (spec) =>
     new Promise((resolve, reject) => {
       const child = spawn(spec.file, spec.args as string[], {
         cwd: spec.cwd,
+        ...(spec.env === undefined ? {} : { env: spec.env }),
         stdio: ["ignore", "pipe", "pipe"],
       });
       register(child);
