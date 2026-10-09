@@ -133,6 +133,10 @@ export const CLOSED_EDIT_BLOCKS: readonly { prefix: string; why: string }[] = [
     why: "`engine.ref` picks which engine runs and moves with `phoebe upgrade`, so the migrations for the new ref run with it",
   },
   {
+    prefix: "relay",
+    why: "the relay block is the pairing's own, written when a deployment is paired rather than edited field by field",
+  },
+  {
     prefix: "deployment",
     why: "the `deployment` block holds the host's lifecycle commands, which run outside the container and are not the container's to rewrite",
   },

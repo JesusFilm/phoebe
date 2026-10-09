@@ -949,6 +949,41 @@ asks it once more only for a config that has no block at all, and a present
 block, `true` or `false`, is never asked again. What each event carries and how
 it is sent is [`operating.md` → Crash reporting](operating.md#crash-reporting).
 
+## Relay (`relay`)
+
+This section is the field reference. What the relay is for, how to stand one up
+and what the console does once a deployment is paired is
+[`console.md`](console.md).
+
+Bootstrapper-only and **root config only**. `relay` names the console this
+deployment dials out to. The engine never reads it, `resolveConfig` drops it, no
+`PHOEBE_*` variable overlays it, and a tenant config carrying one is ignored the
+way a tenant `engine` block is. No block, or a block with no `url`, and the
+deployment never dials: it behaves exactly as it did before this field existed.
+
+| Field  | Default                                          | Meaning                                                                                                  |
+| ------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `url`  | _required_                                       | The relay's WebSocket URL, `wss://relay.example.com/deployments`.                                        |
+| `name` | solo `repoSlug`, or the workspace root's dirname | What a console displays. The relay keys on the deployment's key, never on this, so two may share a name. |
+
+```ts
+export default defineConfig({
+  // ...
+  relay: { url: "wss://relay.example.com/deployments", name: "the-fleet" },
+});
+```
+
+Pairing is a one-time token in the root `.env` as `PHOEBE_RELAY_TOKEN`, spent on
+the first boot and removed afterwards; the identity that outlives it is an
+Ed25519 key the deployment generates at `state/relay-key` on its data volume.
+The whole flow, the handshake and the close codes are in
+[`relay.md` → Pairing a deployment](relay.md#pairing-a-deployment).
+
+Changing `url` or `name` is a local file edit. Nothing on the relay can rewrite
+it, for the same reason nothing on the relay can rewrite `engine.ref`. A console
+that could move the address it is reached at could strand a deployment where no
+operator can find it.
+
 ## Settings (`PHOEBE_*`)
 
 Every setting Phoebe reads from the environment is one entry in the **settings
@@ -1104,6 +1139,14 @@ children that would hold it. A successful `set` then runs `phoebe doctor`, which
 is what tells you the key is where the child will look for it. `--no-doctor`
 skips that for a scripted rotation.
 
+**The console is the same store, reached from a browser.** A deployment paired
+with a relay can be sent a secret from the console's secrets tab: the value is
+encrypted in the browser to the deployment's own key, the relay forwards the
+envelope without being able to open it, and the deployment decrypts on arrival
+into this same file. The ledger records the sender's address as `by` where a
+local run writes `local`. Presence and provenance are all either side ever
+shows. See [`relay.md`](relay.md#setting-a-secret-without-the-relay-seeing-it).
+
 Two costs, both deliberate. The store does not survive `docker compose down -v`:
 it lives on the data volume, and wiping the volume wipes it. And it holds
 plaintext at rest, in exactly the place a tenant `.env` already sits. See
@@ -1123,7 +1166,9 @@ is up. Running, the companion execs this verb inside it, with the value on the
 child's stdin for the reason above. Stopped or not yet started, there is no
 container to reach, so it writes the deployment `.env` instead: the file you would
 have opened in an editor, and the only place a first `GH_TOKEN` can go. The form
-says which before you paste anything, and the run says which afterwards.
+says which before you paste anything, and the run says which afterwards. Nothing
+is sealed and nothing crosses a relay — that envelope is for a deployment a
+console can only reach through a server.
 
 ## Seeing what applies: `phoebe config`
 
@@ -1168,13 +1213,13 @@ will not load is one row carrying its error; the exit code turns non-zero only
 when no tenant loaded at all.
 
 **You rarely need to run it to read it.** The same object rides in the
-deployment report as its `config` section, so `phoebe status --json` and the
-console both show a tenant's settings without asking the deployment a second
-question. The text `phoebe status` leaves it out, because settings are
+deployment report as its `config` section, so `phoebe status --json`, the relay
+and the console all show a tenant's settings without asking the deployment a
+second question. The text `phoebe status` leaves it out, because settings are
 what this verb is for and a status screen reciting every leaf would bury the
 question it exists to answer. The section also carries a content hash of the root
-`phoebe.config.ts` it was read from, which is what a later edit checks itself
-against before writing.
+`phoebe.config.ts` it was read from, which is what a later remote edit checks
+itself against before writing.
 
 One deployment writes one file, so the section has a byte budget. On a workspace
 far larger than any Phoebe has run, the first tenants by id carry their configs
@@ -1205,7 +1250,7 @@ reconciles onto it the way it would onto an edit you made by hand.
 | ----------------------------------------------- | ---------------------------------------------------------------------------- |
 | `workspace.*`                                   | Your fleet declaration is a git edit.                                        |
 | `engine.*`                                      | The engine pin moves with `phoebe upgrade`, so the new ref's migrations run. |
-| `deployment.*`                                  | The host's, not the container's.                                             |
+| `relay.*`, `deployment.*`                       | The pairing's and the host's, not the container's.                           |
 | A work kind's declaration, `paths.*`            | Code, and a derivation — neither is a literal to set.                        |
 | A leaf a `PHOEBE_*` variable already sets       | Env beats file, so the write would be shadowed.                              |
 | A value in the file that is not a plain literal | Replacing a computed value is a guess about intent.                          |
@@ -1233,13 +1278,33 @@ Two flags matter when something else is driving:
   write and the second call gets the first one's receipt back. The record rolls
   off as soon as you edit or commit the file yourself.
 
+### The same verb, from the console
+
+A deployment paired with a relay can be edited from the config tab of the web
+console ([`console.md`](console.md#what-the-console-shows)), and it is this code
+that runs: the console sends `{ path, value }` with
+the fingerprint its page was drawn from, the relay stamps the signed-in address
+as the edit's author, and the bootstrapper applies it to the file exactly as a
+shell run would. The receipt an operator sees is the one printed above, including
+the manual edit when it is a refusal.
+
+Two things the console adds. It offers the affordance only on leaves this verb
+accepts, from the same table of refusals — so a closed leaf shows the sentence
+and the command instead of a button that would be turned away. And after
+`written` it follows the deployment's report: the reconcile it set going appears
+there as `reconciling (config)` and then as idle with `lastEditId` naming the
+edit, with the leaf reading `file` at its new value. The report also ships the
+live ledger, so a console can say "edits not yet in a commit" without reading
+your git. [`relay.md`](relay.md#setting-one-config-field) has the route and the answers.
+
 ### The same verb, from the companion
 
 The companion drives the same verb for an install on your own machine, from the
 config tab. It sends the fingerprint the tab is showing without asking you for
 one, and it keeps no ledger — the ledger answers a message delivered twice, and
 there is no message. So an edit made in the window while a terminal is editing the
-same file is refused `stale`, with the same line telling you what to type.
+same file is refused `stale`, with the same line telling you what to type, and
+nothing crosses a relay on the way.
 
 ## GitHub App arm
 
