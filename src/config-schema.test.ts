@@ -584,6 +584,12 @@ describe("resolveConfig", () => {
     );
   });
 
+  test("a prScope entry that is the empty string is rejected, since it would admit every branch (#655)", () => {
+    expect(() => resolveConfig(minimalUserConfig({ prScope: [""] } as never))).toThrow(
+      /`prScope` must be "phoebe", "all", or an array of branch prefixes/,
+    );
+  });
+
   test("fills every optional field from CONFIG_DEFAULTS", () => {
     const resolved = resolveConfig(minimalUserConfig());
     expect(resolved.defaultBranch).toBe(CONFIG_DEFAULTS.defaultBranch);

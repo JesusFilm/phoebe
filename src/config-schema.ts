@@ -55,7 +55,9 @@ export type PrScope = "phoebe" | "all" | readonly string[];
 /** Whether `value` is a legal {@link PrScope}. */
 export function isPrScope(value: unknown): value is PrScope {
   if (value === "phoebe" || value === "all") return true;
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0)
+  );
 }
 
 /**
