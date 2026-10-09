@@ -142,6 +142,12 @@ That tenant has `checks` chase a red `renovate/*` PR while `conflicts` and
 config-file value, because a list typed into an `.env` has no spelling an
 operator could be expected to guess.
 
+The companion's config form offers the array as a third choice beside `phoebe`
+and `all`, called **prefixes**: picking it reveals a box that takes the
+prefixes comma-separated, open on your own `branchPrefix` so the value
+`"phoebe"` stands for is there to edit rather than to remember. Entries are
+trimmed, blanks dropped, and an empty box saves `[]`.
+
 Whatever the scope admits, Phoebe's _own_ branch stays `branchPrefix`: the
 `draftPrs: "skip-non-phoebe"` rule reads the prefix, so admitting someone
 else's prefix never makes their drafts Phoebe's business.
@@ -1177,11 +1183,15 @@ container to read one of those.
 ```sh
 phoebe config set pipelines.work.pollIntervalMs 30000
 phoebe config set defaultProvider claude
+phoebe config set prScope '["renovate/"]'
 ```
 
 The path is the one `phoebe config` printed. The value is read as JSON when it
 parses as JSON (`42`, `true`, `null`, `"two words"`) and as a plain string
-otherwise, so `claude` and `"claude"` mean the same thing.
+otherwise, so `claude` and `"claude"` mean the same thing. A field that takes a
+list takes a JSON array of strings, as the third line above; an array holding
+anything else is refused naming the element, because the mistake is in the list
+rather than in the field.
 
 What happens is deliberately small. The file is parsed, one literal is replaced,
 and every other byte — your comments, your key order, your formatting — is left

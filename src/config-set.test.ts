@@ -4,6 +4,8 @@
 // Contracts:
 //   * The path and the value are positional; every flag is named.
 //   * A value is JSON when it parses as JSON, and the string typed otherwise.
+//   * A JSON array of strings is a value too, for a field that takes a list;
+//     an array holding anything else is thrown back naming the element.
 //   * `--validate` answers against the real loader, for a tenant and for a root,
 //     and writes nothing either way.
 //   * A written receipt prints what landed; a refusal prints the manual edit.
@@ -12,6 +14,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, test } from "vite-plus/test";
+import { editConfigGetFieldAt } from "./config-handle.ts";
 import {
   formatReceipt,
   localEditId,
@@ -107,8 +110,15 @@ describe("parseSetValue", () => {
     ["claude", "claude"],
     ["v1.2.3", "v1.2.3"],
     ["{}", "{}"],
+    [`["renovate/", "phoebe/"]`, ["renovate/", "phoebe/"]],
+    ["[]", []],
   ])("%s", (raw, expected) => {
     expect(parseSetValue(raw)).toEqual(expected);
+  });
+
+  test("a list of anything but strings names the element rather than becoming one", () => {
+    expect(() => parseSetValue("[1]")).toThrow(/element 0 of/);
+    expect(() => parseSetValue(`["renovate/", null]`)).toThrow(/element 1 of/);
   });
 });
 
@@ -222,6 +232,46 @@ describe("runConfigSet — the verb, with no argv and no stdout", () => {
 
     expect(receipt.state).toBe("written");
     expect(readFileSync(configPath, "utf8")).toContain(`checkCommand: "pnpm run check"`);
+  });
+
+  test("a list lands as an array, and the next read of the file gives it back", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({
+      configPath,
+      path: "prScope",
+      value: ["phoebe/", "renovate/"],
+    });
+
+    expect(receipt.state).toBe("written");
+    expect(readFileSync(configPath, "utf8")).toContain(`prScope: ["phoebe/", "renovate/"]`);
+    expect(editConfigGetFieldAt(readFileSync(configPath, "utf8"), ["prScope"])).toMatchObject({
+      literal: ["phoebe/", "renovate/"],
+    });
+  });
+
+  test("an empty list is a value an operator can mean, so it is written", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({ configPath, path: "prScope", value: [] });
+
+    expect(receipt.state).toBe("written");
+    expect(readFileSync(configPath, "utf8")).toContain("prScope: []");
+  });
+
+  test("a list holding something the loader refuses is refused, with the file untouched", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({
+      configPath,
+      path: "prScope",
+      // Not reachable through the CLI's own parse, which throws first; a relay
+      // or a console sending the contract's value type can still compose it.
+      value: ["  "],
+    });
+
+    expect(receipt).toMatchObject({ state: "refused", reason: "invalid" });
+    expect(readFileSync(configPath, "utf8")).toBe(TENANT);
   });
 
   test("a fingerprint that is not the file's is refused stale, and the file is untouched", async () => {

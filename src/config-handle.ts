@@ -55,12 +55,14 @@ export type GetFieldResult =
       /** Raw source text of the value node — always available. */
       raw: string;
       /**
-       * Parsed value for plain literal nodes (string, number, boolean, null).
-       * `undefined` for non-literals (call expression, identifier, template
-       * literal, etc.) — these are readable as `raw` for detection purposes
-       * but cannot be overwritten by `editConfigSetField`.
+       * Parsed value for plain literal nodes (string, number, boolean, null)
+       * and for an array of string literals, which is one value a config field
+       * may hold (`prScope`'s branch prefixes, #656). `undefined` for
+       * non-literals (call expression, identifier, template literal, an array
+       * with anything else in it) — these are readable as `raw` for detection
+       * purposes but cannot be overwritten by `editConfigSetField`.
        */
-      literal: string | number | boolean | null | undefined;
+      literal: string | number | boolean | null | readonly string[] | undefined;
     };
 
 /**
@@ -79,10 +81,14 @@ export type ConfigHandle = {
    */
   getField(content: string, key: string): GetFieldResult;
   /**
-   * Set a top-level scalar field to a literal value. Creates the field if
-   * absent. Refuses when the existing value is non-literal.
+   * Set a top-level field to a literal value — a scalar, or a list of strings.
+   * Creates the field if absent. Refuses when the existing value is non-literal.
    */
-  setField(content: string, key: string, value: string | number | boolean): ConfigEditResult;
+  setField(
+    content: string,
+    key: string,
+    value: string | number | boolean | readonly string[],
+  ): ConfigEditResult;
   /**
    * Remove a top-level field. No-ops when the key is absent.
    */
@@ -339,11 +345,45 @@ function findProp(configObj: BNode, key: string): BNode | null {
   return null;
 }
 
-function extractLiteral(node: BNode): string | number | boolean | null | undefined {
+/**
+ * A value as config source. `JSON.stringify` for a scalar; a list is written
+ * out element by element with a space after each comma, because a person reads
+ * the file afterwards and that is how a person writes one (and how the
+ * formatters these configs pass through leave one).
+ */
+function serializeLiteral(value: string | number | boolean | null | readonly string[]): string {
+  return Array.isArray(value)
+    ? `[${value.map((entry) => JSON.stringify(entry)).join(", ")}]`
+    : JSON.stringify(value);
+}
+
+/**
+ * The value a node is, for the nodes a splice may read and replace: the four
+ * scalars, and an array whose every element is a string literal.
+ *
+ * The array arm is as narrow as it is because a write goes back out through
+ * {@link serializeLiteral}. A list of strings round-trips through that exactly;
+ * an array holding a call, a spread, a nested array or an elision does not, so
+ * it stays a non-literal and is refused rather than rewritten.
+ */
+function extractLiteral(
+  node: BNode,
+): string | number | boolean | null | readonly string[] | undefined {
   if (node.type === "StringLiteral") return node.value as string;
   if (node.type === "NumericLiteral") return node.value as number;
   if (node.type === "BooleanLiteral") return node.value as boolean;
   if (node.type === "NullLiteral") return null;
+  if (node.type === "ArrayExpression") {
+    const strings: string[] = [];
+    for (const element of node.elements as BNode[]) {
+      // An elision (`["a", , "b"]`) is a hole, not a value.
+      if (element === null) return undefined;
+      const inner = unwrapTs(element);
+      if (inner.type !== "StringLiteral") return undefined;
+      strings.push(inner.value as string);
+    }
+    return strings;
+  }
   return undefined;
 }
 
@@ -392,13 +432,13 @@ export function editConfigGetFieldAt(source: string, path: readonly string[]): G
 export function editConfigSetField(
   source: string,
   key: string,
-  value: string | number | boolean,
+  value: string | number | boolean | readonly string[],
 ): ConfigEditResult {
   const resolved = resolveConfigObject(source);
   if (!resolved.ok) return resolved;
 
   const prop = findProp(resolved.configObj, key);
-  const serialized = JSON.stringify(value);
+  const serialized = serializeLiteral(value);
 
   if (prop) {
     if (prop.shorthand as boolean) {
@@ -788,8 +828,9 @@ export function editConfigMoveField(
  * sibling of {@link editConfigSetField}, and the substrate under
  * `phoebe config set` (#503, #536).
  *
- * Strict-literal in both directions. The value written is `JSON.stringify` of a
- * scalar, so a splice can never introduce an expression; and an existing value
+ * Strict-literal in both directions. The value written is a scalar's
+ * `JSON.stringify`, or a list of strings written out element by element, so a
+ * splice can never introduce an expression; and an existing value
  * that is not already a plain literal is refused rather than overwritten,
  * because a config that computes its own field has an author whose intent a
  * splice cannot read. Object literals the path names but the config does not
@@ -799,7 +840,7 @@ export function editConfigMoveField(
 export function editConfigSetFieldAt(
   source: string,
   path: readonly string[],
-  value: string | number | boolean | null,
+  value: string | number | boolean | null | readonly string[],
 ): ConfigEditResult {
   if (path.length === 0) return { ok: false, reason: "set needs a path" };
   const resolved = resolveConfigObject(source);
@@ -809,7 +850,7 @@ export function editConfigSetFieldAt(
   const located = locatePath(source, resolved.configObj, path);
   if (!located.ok) return located;
 
-  const serialized = JSON.stringify(value);
+  const serialized = serializeLiteral(value);
   if (!located.found) return insertAtPath(source, path, serialized, "");
 
   if (located.prop.shorthand as boolean) {

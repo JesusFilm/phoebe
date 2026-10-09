@@ -15,6 +15,7 @@
 // report at all and still has a page to draw (#526).
 
 import type { AlertMessage } from "./alerts.ts";
+import type { ConfigEditValue } from "./config-edit.ts";
 import type { HarnessName, HarnessPin } from "./harness.ts";
 import type { LocalInstall } from "./local-install.ts";
 
@@ -109,6 +110,22 @@ export type ConfigFieldFacts = {
   /** The closed set of accepted values, for an `enum`. */
   values?: readonly string[];
   /**
+   * What the field's list alternative is called, for a field that takes a list
+   * of strings as well as its `values` — the word the extra item in a form
+   * carries ("prefixes" for `prScope`). Present exactly when the list is on
+   * offer, which is the catalogue's `listAlternative` flag and not a path this
+   * contract or any form names: a form reads the word and never learns what a
+   * branch prefix is.
+   */
+  list?: string;
+  /**
+   * What a list box holds before it is edited, when the file holds no list.
+   * `prScope: "phoebe"` means `[branchPrefix]`, so the box opens on the literal
+   * the shorthand stands for and the operator edits a real value rather than
+   * inventing one.
+   */
+  listPrefill?: readonly string[];
+  /**
    * Values worth offering for a `string`, none of them binding: the box takes
    * whatever is typed, and these are what it offers first.
    */
@@ -118,8 +135,8 @@ export type ConfigFieldFacts = {
    * or something computed, which is shown as written and left alone.
    */
   state: "unset" | "set" | "computed";
-  /** The literal, when `state` is `set`. */
-  value?: string | number | boolean | null;
+  /** The literal, when `state` is `set` — a list where the file holds one. */
+  value?: ConfigEditValue;
   /** The source text, when `state` is `computed`. */
   raw?: string;
   /** What applies when the file says nothing, where there is a default. */

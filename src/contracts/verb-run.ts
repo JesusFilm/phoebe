@@ -24,6 +24,7 @@
 // why `secret set` streams the writer's own sentences and never the value it
 // wrote. On the renderer's side the same rule is the field clearing on submit.
 
+import type { ConfigEditValue } from "./config-edit.ts";
 import type { HostVerb, VerbOutcome } from "./host-verb.ts";
 import type { InitProfile } from "./init-report.ts";
 import type { UpgradeTarget } from "./upgrade-outcome.ts";
@@ -86,7 +87,8 @@ export type VerbRunRequest =
       verb: "config set";
       /** Dotted path into the config, the same path the effective-config tree carries. */
       path: string;
-      value: string | number | boolean | null;
+      /** A literal, or a list — whatever {@link ConfigEditValue} admits. */
+      value: ConfigEditValue;
       /** The `sha256:<hex>` of the file as the caller read it. */
       fingerprint: string;
       /**

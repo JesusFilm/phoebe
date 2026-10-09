@@ -557,7 +557,7 @@ export function ConfigEditForm({
         <input
           aria-label="Value, as a JSON literal"
           className="mono"
-          placeholder='300000, "main", true, null'
+          placeholder='300000, "main", true, null, ["renovate/"]'
           value={literal}
           onChange={(event) => setLiteral(event.target.value)}
         />
