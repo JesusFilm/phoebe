@@ -49,6 +49,42 @@ describe("a tenant's settings", () => {
     });
   });
 
+  test("a field that also takes a list says what the list is called, and what it opens on", () => {
+    const source = config('  prScope: "phoebe",\n  branchPrefix: "bot/",');
+
+    expect(field(source, "prScope")).toMatchObject({
+      type: "enum",
+      values: ["phoebe", "all"],
+      list: "prefixes",
+      // The literal `"phoebe"` is shorthand for, read off this file rather than
+      // off the engine's default.
+      listPrefill: ["bot/"],
+    });
+    // Nothing else in the catalogue claims a list, so no other row carries one.
+    expect(field(source, "draftPrs")).not.toHaveProperty("list");
+    expect(field(source, "repoSlug")).not.toHaveProperty("listPrefill");
+  });
+
+  test("a list in the file is the field's value, so a form shows the list it holds", () => {
+    const source = config('  prScope: ["renovate/", "dependabot/"],');
+
+    expect(field(source, "prScope")).toMatchObject({
+      state: "set",
+      value: ["renovate/", "dependabot/"],
+      list: "prefixes",
+    });
+  });
+
+  test("a list box opens on the engine's default where the file names no prefix", () => {
+    expect(field(config('  repoSlug: "acme/widget",'), "prScope")?.listPrefill).toEqual([
+      "phoebe/",
+    ]);
+    // A prefix this reader cannot evaluate is not one it may show as a value.
+    expect(field(config("  branchPrefix: process.env.PREFIX!,"), "prScope")?.listPrefill).toEqual(
+      [],
+    );
+  });
+
   test("a text setting with values worth offering carries them, and stays a text setting", () => {
     const source = config('  repoSlug: "acme/widget",');
 

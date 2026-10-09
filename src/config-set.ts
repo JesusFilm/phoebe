@@ -21,9 +21,10 @@
 // candidate file, because there is nowhere to put a candidate: the deployment
 // directory is `:ro` and the one writable file is the target itself. Nothing is
 // lost by it. The splice substrate has already parsed the source and replaced
-// one literal with a `JSON.stringify` of a scalar, so the candidate's syntax is
-// a property of the mechanism; what is left to ask is whether the config still
-// loads with that value in it, which is exactly what the loader answers.
+// one literal with a `JSON.stringify` of a scalar or a list of strings, so the
+// candidate's syntax is a property of the mechanism; what is left to ask is
+// whether the config still loads with that value in it, which is exactly what
+// the loader answers.
 
 import { readFileSync } from "node:fs";
 import { matchConfigFlag } from "./cli-flags.ts";
@@ -34,7 +35,7 @@ import {
   type PatchValidator,
 } from "./config-edit.ts";
 import { resolveConfig, validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
-import type { EditReceipt } from "./contracts/config-edit.ts";
+import type { ConfigEditValue, EditReceipt } from "./contracts/config-edit.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 
@@ -113,7 +114,9 @@ Usage:
   phoebe config set <path> <value> [--config <path>]
 
   <path>   A dotted path into the config, the same path \`phoebe config\` prints
-  <value>  JSON when it parses as JSON (42, true, null, "a b"), else a string
+  <value>  JSON when it parses as JSON (42, true, null, "a b"), else a string.
+           A field that takes a list takes a JSON array of strings:
+           phoebe config set prScope '["renovate/"]'
 
 Flags:
   --json           Print the receipt instead of a sentence
@@ -165,7 +168,7 @@ export type ValidateResult = { ok: true } | { ok: false; reason: string };
 export async function validateConfigPatch(opts: {
   configPath: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   env?: NodeJS.ProcessEnv;
   dataBase?: string;
 }): Promise<ValidateResult> {
@@ -189,16 +192,36 @@ export async function validateConfigPatch(opts: {
   }
 }
 
-/** `<value>` as the config would hold it: JSON when it is JSON, else the string typed. */
-export function parseSetValue(raw: string): string | number | boolean | null {
+/**
+ * `<value>` as the config would hold it: JSON when it is JSON, else the string
+ * typed.
+ *
+ * A JSON array of strings is a value too, for the fields that take a list —
+ * `prScope '["renovate/"]'` is the same edit the console's list box composes
+ * (#657). An array holding anything else is thrown back here rather than passed
+ * on, because the alternative is to treat the operator's `[1]` as the literal
+ * *string* `[1]` and refuse it a step later as a type error about the field. The
+ * mistake is in the list, so the sentence is about the list.
+ */
+export function parseSetValue(raw: string): ConfigEditValue {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null) return null;
-    if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
-      return parsed;
-    }
+    parsed = JSON.parse(raw);
   } catch {
     /* not JSON — the operator typed a bare string */
+    return raw;
+  }
+  if (parsed === null) return null;
+  if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
+    return parsed;
+  }
+  if (Array.isArray(parsed)) {
+    const at = parsed.findIndex((element) => typeof element !== "string");
+    if (at === -1) return parsed as string[];
+    throw new Error(
+      `A list value holds strings; element ${at} of \`${raw}\` is ` +
+        `${JSON.stringify(parsed[at])}. Write it as ["one", "two"].`,
+    );
   }
   return raw;
 }
@@ -210,7 +233,7 @@ export function parseSetValue(raw: string): string | number | boolean | null {
  */
 export function localEditId(opts: {
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   fingerprint: string;
 }): string {
   return `local:${fingerprintOf(`${opts.path}=${JSON.stringify(opts.value)}@${opts.fingerprint}`).slice(7, 23)}`;
@@ -233,7 +256,7 @@ export type ConfigSetRequest = {
   /** The root config to edit. The one file any arm of this verb may write. */
   configPath: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   /**
    * The `sha256:<hex>` the caller was shown (#503). Absent only for a caller
    * that read the file and writes it in the same breath, with no report in

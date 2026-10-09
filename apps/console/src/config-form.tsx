@@ -157,7 +157,7 @@ export function ConfigSpace({
 export function saveRequest(opts: {
   install: string;
   field: Pick<ConfigFieldFacts, "path" | "via">;
-  value: string | number | boolean;
+  value: string | number | boolean | readonly string[];
   fingerprint: string;
   tenant?: string;
 }): VerbRunRequest {
@@ -205,11 +205,79 @@ export function configGroups(fields: readonly ConfigFieldFacts[]): ConfigGroup[]
   return groups.map((group) => ({ ...group, alone: groups.length === 1 }));
 }
 
-/** What a row's control holds, as text: the file's value, or nothing. */
+/** The empty draft, as the select knows it: an item of its own, so unset stays pickable. */
+const UNSET = "";
+
+/**
+ * The select item a list is picked by, and what that item is not: any value a
+ * catalogued enum carries. `[]` is not a config value anywhere — the enums are
+ * words — so it can stand for "the list" without shadowing one.
+ */
+const LIST = "[]";
+
+/** One item of a row's select: what picking it drafts, and what it reads as. */
+export type ChoiceItem = { value: string; label: string };
+
+/**
+ * The items a row's select offers, or null for a row that is not a select.
+ *
+ * Three kinds, in this order: unset, where saying nothing still applies;
+ * the field's own closed values; and, for a field that also takes a list, one
+ * more item named for what the list is. That last one is the only item whose
+ * value is not its own label — the console has no word for a branch prefix and
+ * does not need one, because the companion sent the word with the field.
+ */
+export function choiceItems(field: ConfigFieldFacts, fallback: string): ChoiceItem[] | null {
+  const choices =
+    field.type === "boolean" ? ["true", "false"] : field.type === "enum" ? field.values : undefined;
+  if (choices === undefined) return null;
+  // The unset item says it is unset, and what applies: a default of `false`
+  // must not read as one more `false` in the list.
+  const unsetLabel = field.default === undefined ? "not set" : `not set (${fallback})`;
+  return [
+    ...(field.state === "unset" ? [{ value: UNSET, label: unsetLabel }] : []),
+    ...choices.map((choice) => ({ value: choice, label: choice })),
+    ...(field.list === undefined ? [] : [{ value: LIST, label: field.list }]),
+  ];
+}
+
+/** What a row's control holds, as text: the file's value, the list item, or nothing. */
 function draftOf(field: ConfigFieldFacts): string {
+  if (field.list !== undefined && Array.isArray(field.value)) return LIST;
   return field.state === "set" && field.value !== null && field.value !== undefined
     ? String(field.value)
     : "";
+}
+
+/**
+ * What a row's list box holds before it is touched: the list the file holds, or
+ * the prefill the companion read for it — the literal the enum arm is shorthand
+ * for, so an operator edits a visible default rather than an empty box.
+ */
+export function listDraftOf(field: ConfigFieldFacts): string {
+  const current = Array.isArray(field.value) ? field.value : (field.listPrefill ?? []);
+  return current.join(", ");
+}
+
+/**
+ * The list a comma-separated box is: entries trimmed, blanks dropped. An empty
+ * box is the empty list, which is a thing an operator can mean — `prScope: []`
+ * says the janitors scan nothing — and so is saved rather than refused.
+ */
+export function listOfDraft(draft: string): string[] {
+  return draft
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
+/** Is this list the one the file already holds? */
+function sameList(list: readonly string[], value: ConfigFieldFacts["value"]): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === list.length &&
+    list.every((entry, index) => entry === value[index])
+  );
 }
 
 /**
@@ -243,14 +311,19 @@ export function ConfigFieldRow({
 }: {
   field: ConfigFieldFacts;
   running: boolean;
-  onSave: (value: string | number | boolean) => void;
+  onSave: (value: string | number | boolean | readonly string[]) => void;
 }) {
   const [draft, setDraft] = useState(() => draftOf(field));
-  const value = valueOfDraft(field, draft);
-  const changed = draft.trim() !== draftOf(field);
-  const choices =
-    field.type === "boolean" ? ["true", "false"] : field.type === "enum" ? field.values : undefined;
+  const [list, setList] = useState(() => listDraftOf(field));
+  // The word this field calls a list, while the list is what is picked — null
+  // on every row that is not on its list, which is every row that has none. The
+  // box under the select is then what gets saved.
+  const listing = field.list !== undefined && draft === LIST ? field.list : null;
+  const value = listing === null ? valueOfDraft(field, draft) : listOfDraft(list);
+  const changed =
+    listing === null ? draft.trim() !== draftOf(field) : !sameList(listOfDraft(list), field.value);
   const fallback = field.default === undefined ? "not set" : String(field.default);
+  const items = choiceItems(field, fallback);
   const copy = settingCopy(field.path);
 
   return (
@@ -292,15 +365,29 @@ export function ConfigFieldRow({
             if (value !== null) onSave(value);
           }}
         >
-          {choices !== undefined ? (
-            <ChoiceControl
-              field={field}
-              choices={choices}
-              fallback={fallback}
-              draft={draft}
-              running={running}
-              onDraft={setDraft}
-            />
+          {items !== null ? (
+            <>
+              <ChoiceControl
+                field={field}
+                items={items}
+                draft={draft}
+                running={running}
+                onDraft={setDraft}
+              />
+              {/* Revealed by the list item, and only by it: until then the
+                  field is one of its words and there is no list to show. */}
+              {listing === null ? null : (
+                <Input
+                  size="sm"
+                  className="mono"
+                  aria-label={`${field.path} ${listing}`}
+                  value={list}
+                  placeholder={`${listing}, comma separated`}
+                  disabled={running}
+                  onChange={(event) => setList(event.target.value)}
+                />
+              )}
+            </>
           ) : field.suggestions !== undefined && field.suggestions.length > 0 ? (
             <SuggestingControl
               field={field}
@@ -335,9 +422,6 @@ export function ConfigFieldRow({
   );
 }
 
-/** The empty draft, as the select knows it: an item of its own, so unset stays pickable. */
-const UNSET = "";
-
 /**
  * A closed set of values, as Coss UI's select rather than the browser's own,
  * whose popup follows the OS and not the console's theme. An unset setting
@@ -346,26 +430,17 @@ const UNSET = "";
  */
 function ChoiceControl({
   field,
-  choices,
-  fallback,
+  items,
   draft,
   running,
   onDraft,
 }: {
   field: ConfigFieldFacts;
-  choices: readonly string[];
-  fallback: string;
+  items: readonly ChoiceItem[];
   draft: string;
   running: boolean;
   onDraft: (draft: string) => void;
 }) {
-  // The unset item says it is unset, and what applies: a default of `false`
-  // must not read as one more `false` in the list.
-  const unsetLabel = field.default === undefined ? "not set" : `not set (${fallback})`;
-  const items = [
-    ...(field.state === "unset" ? [{ value: UNSET, label: unsetLabel }] : []),
-    ...choices.map((choice) => ({ value: choice, label: choice })),
-  ];
   return (
     <Select
       items={items}

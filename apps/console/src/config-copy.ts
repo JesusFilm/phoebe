@@ -94,7 +94,7 @@ export const SETTING_COPY: Readonly<Record<string, SettingCopy>> = {
   prScope: {
     label: "Pull request scope",
     description:
-      "phoebe scans only branches with the prefix above; all scans every pull request in the repository.",
+      "phoebe scans only branches with the prefix above; all scans every pull request in the repository; prefixes scans the branch prefixes you name and nothing else.",
   },
   draftPrs: {
     label: "Draft pull requests",

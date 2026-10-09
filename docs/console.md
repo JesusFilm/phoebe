@@ -114,7 +114,10 @@ install's own page: the install tab, and five more.
 Two things write, and both write to this machine. Each row of the config form
 saves itself, as one `{ path, value }` patch against the fingerprint its page was drawn from, and the
 answer is `written` or `refused`, a refusal always carrying the exact manual
-edit. The secret form hands the value to the running container's tenant store,
+edit. A setting that takes a list as well as its own words — `prScope`, so far —
+has one more item in its select, named for the list, and picking it reveals a
+box that takes the entries comma-separated. Which settings those are is the
+settings catalogue's to say, not the console's. The secret form hands the value to the running container's tenant store,
 or to the deployment `.env` when nothing is running.
 
 A stopped install shows its config, read from the file, and nothing else. The

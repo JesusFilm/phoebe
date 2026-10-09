@@ -12,6 +12,19 @@
 // and the console that renders what came back.
 
 /**
+ * What one edit may carry: a plain literal, or a list of strings.
+ *
+ * The list is not a second kind of edit — it is the same one leaf, written as an
+ * array because the field at it accepts one. `prScope` is the first (#656): a
+ * tenant names the branch prefixes its PR janitors admit, and the catalogue
+ * entry says so with a flag rather than by name, so a form can offer the list
+ * without knowing which field it is (settings-catalogue.ts `listAlternative`).
+ * Nothing here carries an object, a function, or an array of anything but
+ * strings — a splice can `JSON.stringify` exactly this much and no more.
+ */
+export type ConfigEditValue = string | number | boolean | null | readonly string[];
+
+/**
  * One field patch. `path` is a dotted path into the config object, the same path
  * a leaf of the effective-config tree carries, so what a console shows is what
  * it can ask to change.
@@ -25,8 +38,8 @@ export type ConfigEdit = {
   /** Caller-chosen id. The same id twice is the same edit, answered identically. */
   id: string;
   path: string;
-  /** The new value. A leaf is a literal; nothing here carries an object or a function. */
-  value: string | number | boolean | null;
+  /** The new value — a literal, or the list a field that takes one holds. */
+  value: ConfigEditValue;
   /** The `sha256:<hex>` the caller read, from the report's config section. */
   fingerprint: string;
   /** The allowlisted email the relay stamped on the edit; absent for a shell run. */
@@ -62,7 +75,7 @@ export type EditWritten = {
   /** The file that was written. */
   file: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   /** The `sha256:<hex>` of the file as the writer left it — the next edit's check. */
   fingerprint: string;
   at: string;
