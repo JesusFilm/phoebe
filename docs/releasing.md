@@ -20,6 +20,18 @@ automatically.
    Pick the bump (`patch` / `minor` / `major`) and write a one-line summary. This
    drops a Markdown file under `.changeset/`; commit it with your PR.
 
+   Or write the file yourself. The CLI above is interactive, so an agent reading a
+   CI log cannot answer its prompts. Any `.changeset/*.md` will do: frontmatter
+   naming the package and the bump, then one summary line.
+
+   **The gate's failure text does not spell that out yet.** The wording is
+   written and travels in the body of the pull request for
+   [#658](https://github.com/JesusFilm/phoebe/issues/658), not in the tree, for
+   the same reason the `package` job below does: the agent that wrote it holds a
+   token GitHub will not let write a workflow file. Pasting the hunk into
+   `.github/workflows/changeset.yml` is the one step left, and this paragraph
+   goes with it.
+
    The [`changeset`](../.github/workflows/changeset.yml) workflow enforces this
    on every PR: it runs `changeset status` against the base branch and fails the
    check if the package changed with no pending changeset. Docs-only, CI-only,
@@ -79,6 +91,54 @@ files to a package it has been told to skip. Such a change rides out with the
 next release some engine change triggers, and says nothing in the changelog. If
 an app change deserves a release note, a new window or a changed sign-in flow,
 write the changeset by hand against the root package.
+
+## The gate's dotfile hole
+
+`changeset status` maps changed files to packages with a `**` glob, and that glob
+does not match dot-paths. A PR touching only `.github/workflows/`, `.changeset/`
+or `.node-version` therefore maps to no package and goes green with no
+changeset. An npm bump fails, because every npm bump also rewrites
+`pnpm-lock.yaml` at the root, and that path does map to `phoebe-agent`.
+
+So a PR that only moves `actions/checkout@v4` to `@v7` passes on its own, and
+ships with no line in the changelog, while a one-line edit under `src/` comes up
+red. If a CI-only change does deserve a release note, write the changeset by
+hand, because the gate will not ask you for one.
+
+The hole stays open. Closing it would start failing every human CI-only PR,
+which is a policy change rather than a bug fix and gets its own conversation
+([#655](https://github.com/JesusFilm/phoebe/issues/655)).
+
+## Renovate's changesets are Phoebe's job
+
+Renovate cannot write a changeset here, because the hosted Mend app does not run
+post-upgrade commands. So the chore is split two ways
+([#655](https://github.com/JesusFilm/phoebe/issues/655)).
+
+[`renovate.json`](../renovate.json) labels every bump no consumer would notice
+`skip-changeset` as it opens the PR: devDependencies, the pinned pnpm, the
+`engines` floor, and the github-actions, nodenv, dockerfile and docker-compose
+managers. Those never trip the gate.
+
+A runtime `dependencies` bump opens with no label and comes up red. That red
+check is what Phoebe watches. This repo's tenant config admits `renovate/` to
+Phoebe's `checks` kind (`prScope: ["renovate/"]`, in both copies of
+`phoebe.config.ts`), so within a cycle Phoebe reads the failure, commits a
+`patch` changeset whose summary is the Renovate PR title, and pushes. The PR
+turns green and a human merges it. Automerge is a separate decision, and waits
+until this loop has run against a few real bumps.
+
+Two things to expect from that arrangement.
+
+`gitIgnoredAuthors` in `renovate.json` names the address Phoebe commits under.
+Without it, Renovate sees a branch another author has touched and stops
+refreshing it, so the bump freezes at whatever version it opened on.
+
+And a Renovate branch holds exactly one commit by construction. When Renovate
+rebases it, for a newer release of the same dependency or a conflict with
+`main`, it recreates that commit and Phoebe's changeset goes with it. Phoebe
+re-adds it on the next cycle. That churn is accepted. It costs a cycle of agent
+time, and the alternative is a person writing the same file by hand every time.
 
 ## The companion's artifacts
 
