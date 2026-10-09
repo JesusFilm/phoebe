@@ -914,6 +914,35 @@ describe("work-kind tuning knobs widened by #415", () => {
   });
 });
 
+describe("prScope takes a prefix list (#656)", () => {
+  test("the two enum arms, a list of prefixes, and the empty list are all valid", () => {
+    for (const prScope of ["phoebe", "all", ["renovate/"], ["renovate/", "deps/"], []] as const) {
+      expect(() => validateUserConfig(minimalUserConfig({ prScope }))).not.toThrow();
+      expect(resolveConfig(minimalUserConfig({ prScope })).prScope).toEqual(prScope);
+    }
+  });
+
+  test("anything else is rejected, at the tenant and inside a kind block", () => {
+    const reject = (user: unknown, pattern: RegExp) =>
+      expect(() => validateUserConfig(user as never)).toThrow(pattern);
+    reject(minimalUserConfig({ prScope: "renovate/" } as never), /`prScope` must be "phoebe"/);
+    reject(minimalUserConfig({ prScope: ["renovate/", 7] } as never), /`prScope` must be/);
+    // A blank prefix would match every branch name — "all" with no one saying so.
+    reject(minimalUserConfig({ prScope: [" "] } as never), /`prScope` must be/);
+    reject(
+      minimalUserConfig({ workKinds: { checks: { prScope: "renovate/" } } } as never),
+      /`workKinds\.checks\.prScope` must be/,
+    );
+  });
+
+  test("a kind block carries it, and the engine keeps it on the block", () => {
+    const resolved = resolveConfig(
+      minimalUserConfig({ pipelines: { work: { kinds: { checks: { prScope: ["renovate/"] } } } } }),
+    );
+    expect(resolved.pipelines["work"]!.kinds["checks"]).toEqual({ prScope: ["renovate/"] });
+  });
+});
+
 describe("the built-in kinds' default prompt paths (#419)", () => {
   test("every kind has one, and it is what the deprecated promptFiles block defaults to", () => {
     for (const [kind, key] of Object.entries(PROMPT_FILE_KEY_BY_KIND)) {

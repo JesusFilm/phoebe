@@ -34,6 +34,27 @@ export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "res
 export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
 
 /**
+ * Which open PRs a PR janitor scans (#656). Three arms:
+ *
+ *   - `"phoebe"` — the branches `branchPrefix` names, and nothing else. Sugar
+ *     for `[branchPrefix]`, which is why widening the prefix widens the scope.
+ *   - `"all"` — every same-repo PR. Fork PRs are excluded on every arm.
+ *   - a string array — the literal set of admitted branch prefixes, each
+ *     matched the way `branchPrefix` is (a leading match on the head branch
+ *     name). `["renovate/"]` puts the bot's PRs in front of the janitors
+ *     without admitting anything else, and `[]` admits nothing at all.
+ *
+ * The array is file-only: `PHOEBE_PR_SCOPE` and `PHOEBE_<KIND>_PR_SCOPE` take
+ * `phoebe` or `all`, because a list typed into an `.env` has no syntax an
+ * operator could be expected to guess right.
+ *
+ * Whatever the scope, "Phoebe's own branch" stays `branchPrefix` — the
+ * `draftPrs: "skip-non-phoebe"` rule reads the prefix, not this field, so
+ * admitting someone else's prefix never makes their drafts Phoebe's business.
+ */
+export type PrScope = "phoebe" | "all" | readonly string[];
+
+/**
  * One work kind's tuning block (#300, widened by #415): each knob optional,
  * each falling back to the repo-level defaults when unset. The block
  * speaks for one provider — its own `provider`, else `defaultProvider` — and
@@ -68,6 +89,14 @@ export type WorkKindOverride = {
    * are unusually long or short no longer has to bend the tenant-wide number.
    */
   runTimeoutMs?: number;
+  /**
+   * Which open PRs this kind scans (#656), on the same ladder:
+   * `PHOEBE_<KIND>_PR_SCOPE` → this field → the tenant's `prScope`. Read by
+   * the three PR janitors — `conflicts`, `checks`, `reviews` — and inert on a
+   * kind that does not scan PRs, which is what lets a tenant hold `checks` to
+   * `["renovate/"]` while the other two stay on the tenant's own branches.
+   */
+  prScope?: PrScope;
   /**
    * The sole off-switch for a kind (#415). `order` is priority, not
    * membership — every registered kind a pipeline owns runs, named there or
@@ -158,6 +187,7 @@ const WORK_KIND_KNOBS = [
   "effort",
   "promptFile",
   "runTimeoutMs",
+  "prScope",
   "disabled",
 ] as const satisfies readonly (keyof WorkKindOverride)[];
 
@@ -697,9 +727,8 @@ export type PhoebeConfig = {
    * feature branches.
    */
   featureLabel: string;
-  /** Which open PRs the conflicts/checks/reviews work-kinds scan.
-   *  "phoebe" = only branchPrefix branches. "all" = any same-repo PR. */
-  prScope: "phoebe" | "all";
+  /** Which open PRs the conflicts/checks/reviews work-kinds scan (see {@link PrScope}). */
+  prScope: PrScope;
   /** Draft PR handling: "skip-non-phoebe" = drafts on non-Phoebe branches are
    *  off-limits; "skip-all" = never touch drafts; "include" = drafts are fair game. */
   draftPrs: "skip-non-phoebe" | "skip-all" | "include";
@@ -1113,6 +1142,26 @@ function validateIssueRefPattern(
  * fields and are exempt from that check — the block's presence is the canonical
  * mode selector, and declaring both is rejected by `validateWorkspaceField`.
  */
+/**
+ * Reject a malformed `prScope`, at the tenant or inside a kind block. The two
+ * enum arms, or an array of non-blank prefixes — an empty array is legal and
+ * means "admit nothing", which is a thing an operator can mean, while a blank
+ * string inside one would admit every branch by matching every name.
+ */
+function validatePrScope(value: unknown, at: string): void {
+  if (value === "phoebe" || value === "all") return;
+  if (
+    Array.isArray(value) &&
+    value.every((prefix) => typeof prefix === "string" && prefix.trim().length > 0)
+  ) {
+    return;
+  }
+  throw new Error(
+    `phoebe.config.ts \`${at}\` must be "phoebe", "all", or an array of branch ` +
+      `prefixes (e.g. ["renovate/"]) — got ${JSON.stringify(value)}.`,
+  );
+}
+
 export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.workspace === undefined) {
     const missing = REQUIRED_USER_FIELDS.filter((key) => {
@@ -1137,6 +1186,9 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
       reads: "parent issue number (parsePartOf reads match[1])",
       example: String.raw`Part of\s+#(\d+)`,
     });
+  }
+  if (user.prScope !== undefined) {
+    validatePrScope(user.prScope, "prScope");
   }
   if (user.workKinds !== undefined) {
     validateWorkKindsField(user.workKinds);
@@ -1403,6 +1455,9 @@ function validateKnobValues(block: Record<string, unknown>, at: string): void {
       `phoebe.config.ts \`${at}.runTimeoutMs\` must be a positive number of ` +
         `milliseconds — got ${JSON.stringify(knobs.runTimeoutMs)}.`,
     );
+  }
+  if (knobs.prScope !== undefined) {
+    validatePrScope(knobs.prScope, `${at}.prScope`);
   }
   if (knobs.disabled !== undefined && typeof knobs.disabled !== "boolean") {
     throw new Error(

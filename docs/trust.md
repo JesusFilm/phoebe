@@ -267,6 +267,15 @@ not sandboxing: fork PRs are always excluded, and the default
 already treats as inside the trust domain. Setting `prScope: "all"` widens
 that to every same-repo branch; set it knowing that is what it means.
 
+Between those two sits the list arm — `prScope: ["renovate/"]` admits exactly
+the branch prefixes you name — and the same field on a `conflicts`, `checks`
+or `reviews` block, which scopes one janitor without touching the other two.
+Reach for them when the honest answer is "this one bot's branches, and nothing
+else": a list says whose install hooks you are consenting to run, where
+`"all"` consents in advance to everyone with push access. The question to ask
+of a prefix is who may push to it — a ruleset on `renovate/*` is what makes
+the prefix mean the bot rather than anyone who can type the name.
+
 The engine strips its own credentials — `GH_TOKEN`, the `GH_APP_*` pair, and
 every configured provider API key — from the `installCommand` environment
 (`src/shell-env.ts`), so an install hook lands in the operator's toolchain

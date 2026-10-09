@@ -39,9 +39,11 @@ import {
   issueBranch,
   type BlockerPrState,
   type Issue,
+  type PrScopeConfig,
   type ReviewThread,
   type WorkflowRunItem,
 } from "./orchestrator.ts";
+import { prScanListingScope } from "./pr-scope.ts";
 import {
   issueContentBaseline,
   parseUnitTimeoutMarker,
@@ -501,10 +503,10 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 export type CreateGitHubClientOptions = {
   /**
-   * This tenant's resolved config — the source of `repoSlug`, the work labels and
-   * the PR base. Note that two pure helpers the client calls (`issueBranch`,
-   * `isPrInScope`) still read the `resolved-config.ts` Proxy for `branchPrefix`
-   * and the PR scope rather than this value; in production they are the same
+   * This tenant's resolved config — the source of `repoSlug`, the work labels,
+   * the PR base and the PR scope. Note that one pure helper the client calls
+   * (`issueBranch`) still reads the `resolved-config.ts` Proxy for
+   * `branchPrefix` rather than this value; in production they are the same
    * object. `main.ts` no longer reads the Proxy (#280); orchestrator.ts is what
    * keeps it alive.
    */
@@ -539,6 +541,19 @@ export function createGitHubClient({
   const tagged = tag ?? "[phoebe]";
   const rawExec = internal?.exec ?? createGhExecutor(env);
   const sleep = internal?.sleep ?? defaultSleep;
+
+  /**
+   * The scope the janitors' shared listing runs on: the widest any of the three
+   * kinds this child runs admits (#656). Resolved once, here, so a per-kind env
+   * var with a value outside `phoebe`/`all` is heard at startup rather than
+   * mid-cycle. Each kind narrows the listing to its own scope as it walks it.
+   */
+  const listingScopeConfig: PrScopeConfig = {
+    branchPrefix: config.branchPrefix,
+    prScope: prScanListingScope({ env, config }),
+    draftPrs: config.draftPrs,
+    prOptOutLabel: config.prOptOutLabel,
+  };
 
   /**
    * The transport every method below actually calls: `rawExec` plus a retry on
@@ -775,12 +790,15 @@ export function createGitHubClient({
       "100",
     ])
       .filter((pr) =>
-        isPrInScope({
-          headRefName: asBranchRef(pr.headRefName),
-          isDraft: pr.isDraft,
-          isCrossRepository: pr.isCrossRepository,
-          labels: pr.labels.map((label) => label.name),
-        }),
+        isPrInScope(
+          {
+            headRefName: asBranchRef(pr.headRefName),
+            isDraft: pr.isDraft,
+            isCrossRepository: pr.isCrossRepository,
+            labels: pr.labels.map((label) => label.name),
+          },
+          listingScopeConfig,
+        ),
       )
       .map((pr) => ({
         number: asPrNumber(pr.number),

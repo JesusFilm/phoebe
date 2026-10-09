@@ -58,6 +58,15 @@ export type Setting = {
   /** The closed set of accepted values, for `type: "enum"`. */
   values?: readonly string[];
   /**
+   * The file field at this path accepts a list of strings as well as the closed
+   * {@link values} set — `prScope`'s array of branch prefixes (#656). The env
+   * name stays enum-only, so a list is a config-file value and nothing here
+   * will parse one. Said as a flag rather than left to each reader's knowledge
+   * of which field it is, so a form can offer the alternative without naming
+   * the field.
+   */
+  listAlternative?: boolean;
+  /**
    * The field name this setting takes inside a `kinds.<kind>` block, when it
    * has a per-kind variant. `PHOEBE_<KIND>_<FIELD>` derives from it, so
    * `defaultProvider` (tenant) and `provider` (kind) name one knob at two path
@@ -163,6 +172,8 @@ export const SETTINGS: readonly Setting[] = [
     reader: "engine",
     type: "enum",
     values: ["phoebe", "all"],
+    listAlternative: true,
+    kindField: "prScope",
     overlay: "all",
   }),
   setting({
