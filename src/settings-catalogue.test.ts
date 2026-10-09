@@ -128,6 +128,18 @@ describe("the catalogue", () => {
     expect(global).not.toContain("PHOEBE_DEPLOYMENT_SLOT_CAP");
   });
 
+  test("the field that also takes a list says so, and keeps its enum env name", () => {
+    const prScope = settingAt("prScope");
+    expect(prScope.listAlternative).toBe(true);
+    expect(prScope.type).toBe("enum");
+    expect(prScope.values).toEqual(["phoebe", "all"]);
+    expect(kindEnvNames(prScope, "checks")).toEqual(["PHOEBE_CHECKS_PR_SCOPE"]);
+    // The flag is the exception, not the rule: nothing else claims one.
+    expect(SETTINGS.filter((entry) => entry.listAlternative === true).map((e) => e.path)).toEqual([
+      "prScope",
+    ]);
+  });
+
   test("an env-only path is never written onto a config field", () => {
     for (const entry of SETTINGS) {
       if (entry.envOnly !== true) continue;

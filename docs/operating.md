@@ -144,8 +144,15 @@ back.
   `branchPrefix` (default `phoebe/`) branches.
 - `prScope: "all"`. Phoebe maintains _every_ same-repo PR (still honouring
   `prOptOutLabel`, `draftPrs`, and the fork exclusion).
+- `prScope: ["renovate/"]`. Phoebe maintains the branches whose names start
+  with a prefix you list, and nothing else. `[]` admits nothing.
 
 Cross-repository PRs from forks are **always** excluded.
+
+A `conflicts`, `checks` or `reviews` block can carry its own `prScope`,
+which is how one janitor goes wider than the other two — a tenant on
+`"phoebe"` with `checks: { prScope: ["renovate/"] }` has Phoebe chase the
+bot's red CI without touching its conflicts or its reviews.
 
 ## Watermark comments
 
@@ -400,7 +407,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out.                              |
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
-| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
+| Let Phoebe maintain all PRs, not just its own | `prScope: "all"`, or `prScope: ["<prefix>/"]` for named prefixes only.                                                                                                          |
 | See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
 | Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
 

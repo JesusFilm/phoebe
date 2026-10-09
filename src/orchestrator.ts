@@ -2,7 +2,8 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
-import { WORK_KIND_NAMES, type WorkKindName } from "./config-schema.ts";
+import { WORK_KIND_NAMES, type PrScope, type WorkKindName } from "./config-schema.ts";
+import { prScopeAdmits } from "./pr-scope.ts";
 import { config } from "./resolved-config.ts";
 import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 import type { Feature } from "./feature-branch.ts";
@@ -387,7 +388,7 @@ export function isPhoebeHeadBranch(branch: BranchRef): boolean {
 
 export type PrScopeConfig = {
   branchPrefix: string;
-  prScope: "phoebe" | "all";
+  prScope: PrScope;
   draftPrs: "skip-non-phoebe" | "skip-all" | "include";
   prOptOutLabel: string;
 };
@@ -406,7 +407,12 @@ const defaultPrScopeConfig = (): PrScopeConfig => ({
   prOptOutLabel: config.prOptOutLabel,
 });
 
-/** Whether an open PR is eligible for conflicts/checks/reviews scanning. */
+/**
+ * Whether an open PR is eligible for conflicts/checks/reviews scanning. The
+ * `prScope` passed is the caller's own: the shared listing hands over the widest
+ * scope any janitor asks for, and each kind narrows the result to its own scope
+ * as it walks it (src/pr-scope.ts). Every other rule here is kind-independent.
+ */
 export function isPrInScope(
   pr: PrScanFields,
   scopeConfig: PrScopeConfig = defaultPrScopeConfig(),
@@ -423,10 +429,12 @@ export function isPrInScope(
   if (pr.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
     return false;
   }
-  const isPhoebe = pr.headRefName.startsWith(scopeConfig.branchPrefix);
-  if (scopeConfig.prScope === "phoebe" && !isPhoebe) {
+  if (!prScopeAdmits(scopeConfig.prScope, pr.headRefName, scopeConfig.branchPrefix)) {
     return false;
   }
+  // Phoebe's own branch is the prefix, never the scope: a tenant that admitted
+  // `renovate/` did not thereby adopt the bot's drafts (#656).
+  const isPhoebe = pr.headRefName.startsWith(scopeConfig.branchPrefix);
   if (pr.isDraft) {
     if (scopeConfig.draftPrs === "skip-all") {
       return false;
