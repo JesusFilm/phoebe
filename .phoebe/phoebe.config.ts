@@ -95,6 +95,24 @@ const config: PhoebeUserConfig = {
           model: "claude-sonnet-5-5",
           effort: "medium",
           promptFile: "../prompts/checks-prompt.md",
+          // Renovate's branches, admitted to this kind alone (#658). Most
+          // Renovate PRs here arrive red on the `changeset` gate: every npm
+          // bump rewrites the root `pnpm-lock.yaml`, which `changeset status`
+          // resolves to `phoebe-agent`, and the hosted Mend app cannot run the
+          // post-upgrade command that would write the changeset. So `checks`
+          // reads the red gate, writes a `patch` changeset with the PR title as
+          // its summary, and pushes.
+          //
+          // The tenant's own `prScope` stays the default "phoebe", so
+          // `conflicts` and `reviews` never see a bot branch — widening for one
+          // bot's red CI is not a licence to resolve its conflicts or work its
+          // review threads.
+          //
+          // Read this list literally: it is the whole admitted set for `checks`,
+          // and "phoebe/" is not in it, so this kind no longer chases Phoebe's
+          // own red PRs. #655 asked for exactly `["renovate/"]`. Add "phoebe/"
+          // back to the array to have both.
+          prScope: ["renovate/"],
         },
         reviews: {
           model: "claude-sonnet-5-5",

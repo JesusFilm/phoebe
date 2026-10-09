@@ -1,4 +1,21 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"]
+  "extends": ["config:recommended"],
+  "description": [
+    "Phoebe writes the changesets Renovate cannot (#655). The hosted Mend app blocks post-upgrade commands, so Renovate labels every bump no consumer would notice `skip-changeset` and leaves runtime `dependencies` with no label. Those are the ones Phoebe's `checks` kind finds red and writes a `patch` changeset for.",
+    "`gitIgnoredAuthors` is what keeps that working. Without it, Renovate treats a branch Phoebe pushed to as modified by someone else and stops refreshing it."
+  ],
+  "gitIgnoredAuthors": ["838371+mikeallisonJS@users.noreply.github.com"],
+  "packageRules": [
+    {
+      "description": "Toolchain, not product. A devDependency, the pinned pnpm, or the `engines` floor changes nothing a consumer of phoebe-agent would notice. Runtime `dependencies` are the deliberate omission from this list.",
+      "matchDepTypes": ["devDependencies", "packageManager", "engines"],
+      "addLabels": ["skip-changeset"]
+    },
+    {
+      "description": "The managers that only touch CI and the container. None of them is a published dependency. The github-actions and nodenv ones already pass the gate through the dotfile hole (docs/releasing.md); the label makes that deliberate rather than accidental.",
+      "matchManagers": ["github-actions", "nodenv", "dockerfile", "docker-compose"],
+      "addLabels": ["skip-changeset"]
+    }
+  ]
 }
