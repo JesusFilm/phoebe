@@ -61,6 +61,7 @@ import {
 } from "./config-schema.ts";
 import { applyEnvOverlay } from "./load-config.ts";
 import { pipelineOwnedKinds } from "./pipeline.ts";
+import { PR_SCAN_KIND_NAMES } from "./pr-scope.ts";
 import { ENGINE_CREDENTIAL_KEYS } from "./shell-env.ts";
 import { envNames, kindEnvNames, SETTINGS, settingAt, type Setting } from "./settings-catalogue.ts";
 
@@ -115,6 +116,7 @@ const PROVIDER_SETTING = settingAt("defaultProvider");
 const MODEL_SETTING = settingAt("model");
 const EFFORT_SETTING = settingAt("effort");
 const RUN_TIMEOUT_SETTING = settingAt("runTimeoutMs");
+const PR_SCOPE_SETTING = settingAt("prScope");
 const POLL_INTERVAL_SETTING = settingAt("pollIntervalMs");
 const BASE_SETTING = settingAt("kinds.issues.base");
 
@@ -668,6 +670,19 @@ function kindFields(opts: {
     ),
     promptFile: promptFileLeaf({ kind, block, pass: opts.pass }),
   };
+
+  // Only under the three kinds that scan PRs (#656): a scope on a producer kind
+  // would be a row about a field nothing reads.
+  if ((PR_SCAN_KIND_NAMES as readonly string[]).includes(kind)) {
+    fields["prScope"] = leafFrom(
+      [
+        ...kindEnv(PR_SCOPE_SETTING),
+        ...fileCandidate(block?.prScope, configPath),
+        ...inherit(globals["prScope"] as EffectiveLeaf, PR_SCOPE_SETTING.path),
+      ],
+      "engine",
+    );
+  }
 
   // Env-only, and only under the issues kind: a forced base is an escape hatch
   // for one run, never something a tenant writes down. Its name predates the

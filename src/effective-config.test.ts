@@ -218,6 +218,28 @@ describe("a kind's leaves", () => {
     expect(leaf.shadowed).toEqual([{ source: "file", via: CONFIG_PATH, value: "claude-only" }]);
   });
 
+  test("the PR scope is a leaf under each janitor, and nowhere else (#656)", () => {
+    const fields = compute({
+      user: {
+        prScope: ["renovate/"],
+        pipelines: { work: { kinds: { checks: { prScope: "all" } } } },
+      },
+    }).fields;
+    expect(leafAt(fields, "pipelines.work.kinds.checks.prScope")).toMatchObject({
+      value: "all",
+      source: "file",
+    });
+    expect(leafAt(fields, "pipelines.work.kinds.reviews.prScope")).toMatchObject({
+      value: ["renovate/"],
+      source: "inherited",
+      via: "prScope",
+    });
+    const kinds = (
+      ((fields as EffectiveFields)["pipelines"] as EffectiveFields)["work"] as EffectiveFields
+    )["kinds"] as EffectiveFields;
+    expect((kinds["issues"] as EffectiveFields)["prScope"]).toBeUndefined();
+  });
+
   test("the forced base is env-only, and only under the issues kind", () => {
     const fields = compute({ env: { process: { PHOEBE_BASE: "release/2" } } }).fields;
     expect(leafAt(fields, "pipelines.work.kinds.issues.base")).toMatchObject({

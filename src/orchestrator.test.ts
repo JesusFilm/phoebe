@@ -646,6 +646,39 @@ describe("isPrInScope", () => {
     ).toBe(true);
   });
 
+  test("a list of prefixes admits exactly those branches", () => {
+    const scope = { ...defaultPrScopeConfig, prScope: ["renovate/"] };
+    expect(isPrInScope(prScanFields({ headRefName: "renovate/npm-vite" }), scope)).toBe(true);
+    expect(isPrInScope(prScanFields({ headRefName: "phoebe/issue-1" }), scope)).toBe(false);
+  });
+
+  test("the empty list admits nothing", () => {
+    expect(
+      isPrInScope(prScanFields({ headRefName: "phoebe/issue-1" }), {
+        ...defaultPrScopeConfig,
+        prScope: [],
+      }),
+    ).toBe(false);
+  });
+
+  test("a draft on an admitted prefix is still not Phoebe's own", () => {
+    // `skip-non-phoebe` reads `branchPrefix`, never the scope: admitting the
+    // bot's branches is not adopting its drafts.
+    expect(
+      isPrInScope(prScanFields({ headRefName: "renovate/npm-vite", isDraft: true }), {
+        ...defaultPrScopeConfig,
+        prScope: ["renovate/"],
+      }),
+    ).toBe(false);
+    expect(
+      isPrInScope(prScanFields({ headRefName: "renovate/npm-vite", isDraft: true }), {
+        ...defaultPrScopeConfig,
+        prScope: ["renovate/"],
+        draftPrs: "include",
+      }),
+    ).toBe(true);
+  });
+
   test("cross-repo PRs are always excluded", () => {
     expect(
       isPrInScope(prScanFields({ headRefName: "feature/foo", isCrossRepository: true }), {
