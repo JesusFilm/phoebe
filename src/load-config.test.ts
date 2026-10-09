@@ -71,6 +71,14 @@ describe("applyEnvOverlay", () => {
     expect(() => applyEnvOverlay(baseUser(), { PHOEBE_PR_SCOPE: "bogus" })).toThrow(
       /PHOEBE_PR_SCOPE/,
     );
+    // The list arm is file-only (#656): no env spelling of it is admitted, and a
+    // file list the env var does not override survives the overlay.
+    expect(() => applyEnvOverlay(baseUser(), { PHOEBE_PR_SCOPE: "renovate/" })).toThrow(
+      /PHOEBE_PR_SCOPE/,
+    );
+    expect(applyEnvOverlay({ ...baseUser(), prScope: ["renovate/"] }, {}).prScope).toEqual([
+      "renovate/",
+    ]);
   });
 
   test("PHOEBE_DRAFT_PRS overlays and validates the enum", () => {

@@ -1,5 +1,6 @@
-// Shared fetch/select plumbing for the PR-keyed kinds: walking the cycle's open
-// PRs, reading each candidate's issue body through the cycle cache (dropping
+// Shared fetch/select plumbing for the PR-keyed kinds: narrowing the cycle's
+// open PRs to the ones this kind's own `prScope` admits, walking them, reading
+// each candidate's issue body through the cycle cache (dropping
 // candidates whose body cannot be read — a body the selectors cannot find would
 // read as "not stacked"), assembling the select-time stack context, deriving the
 // merged-blocker list a unit's run catches up on, resolving the base branch its
@@ -12,6 +13,7 @@ import {
   type BlockerPrState,
   type StackContext,
 } from "../orchestrator.ts";
+import { prScopeAdmits, resolvePrScopeForKind } from "../pr-scope.ts";
 import type { OpenPhoebePr, PrMergeInfo } from "../github-client.ts";
 import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import type { WorkKindCtx } from "./definition.ts";
@@ -36,17 +38,30 @@ export function baseBranchOf(
 }
 
 /**
- * Walk this cycle's open PRs, resolving each one's merge info, and collect the
- * candidates `visit` builds — returning `null` for a PR this kind does not
- * want. A PR whose read throws is warned (naming `ctx.kind`) and dropped: one
- * unreadable PR must not sink the whole kind's fetch.
+ * Walk the open PRs of this cycle that this kind's own `prScope` admits,
+ * resolving each one's merge info, and collect the candidates `visit` builds —
+ * returning `null` for a PR this kind does not want. A PR whose read throws is
+ * warned (naming `ctx.kind`) and dropped: one unreadable PR must not sink the
+ * whole kind's fetch.
+ *
+ * The listing is shared by all three janitors and admits the widest scope any
+ * of them asks for, so the narrowing is this kind's alone (#656) — and it
+ * happens before the per-PR mergeability read, so a kind pays nothing for the
+ * PRs a sibling kind widened the listing for.
  */
 export async function collectPrCandidates<T>(
   ctx: WorkKindCtx,
   visit: (info: PrMergeInfo, pr: OpenPhoebePr) => Promise<T | null> | T | null,
 ): Promise<T[]> {
+  const scope = resolvePrScopeForKind({
+    kind: ctx.kind,
+    env: ctx.env,
+    workKinds: ctx.config.workKinds,
+    configValue: ctx.config.prScope,
+  });
   const collected: T[] = [];
   for (const pr of ctx.github.openPrs()) {
+    if (!prScopeAdmits(scope, pr.headRefName, ctx.config.branchPrefix)) continue;
     try {
       const candidate = await visit(await ctx.github.mergeInfo(pr.number), pr);
       if (candidate !== null) collected.push(candidate);

@@ -65,10 +65,20 @@ All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
 
 1. **Cross-repository PRs (forks) are always excluded.**
 2. PRs carrying `prOptOutLabel` (default `ready-for-human`) are excluded.
-3. If `prScope` is `"phoebe"`, only `branchPrefix` branches qualify; `"all"`
-   admits any same-repo PR.
+3. The PR's head branch must be admitted by the kind's `prScope`: `"phoebe"`
+   admits `branchPrefix` branches, `"all"` admits any same-repo PR, and a
+   string array admits exactly those branch prefixes. Each janitor reads its own
+   `kinds.<kind>.prScope` and inherits the tenant's when it has none, so the
+   three can disagree — see
+   [`configuration.md` → PR-scan scope](configuration.md#pr-scan-scope).
 4. Drafts are filtered by `draftPrs`: `skip-all` drops every draft;
    `skip-non-phoebe` drops drafts on non-Phoebe branches; `include` keeps them.
+   "Non-Phoebe" is `branchPrefix`, never the scope: a draft on an admitted
+   `renovate/` branch is still someone else's draft.
+
+The listing itself is made once per cycle and admits the widest scope any of the
+three asks for; each kind narrows it to its own as it walks it. So a PR no
+janitor would work is never listed, and one that two kinds want is listed once.
 
 PRs are listed once per base: `defaultBranch`, plus the branch of every live
 feature ([#341](https://github.com/JesusFilm/phoebe/issues/341)). A member PR

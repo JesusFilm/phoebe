@@ -1244,6 +1244,44 @@ describe("listOpenPhoebePrs", () => {
     expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5, 13]);
   });
 
+  test("the listing admits the widest scope any janitor asks for (#656)", () => {
+    // One kind naming `renovate/` is what puts the bot's PR in the shared
+    // listing at all; narrowing it back to the kinds that asked is the kinds'
+    // own job (src/work-kinds/pr-stack.ts).
+    const listing = JSON.stringify([
+      prRow({ number: 5 }),
+      prRow({ number: 6, headRefName: "renovate/npm-vite" }),
+    ]);
+    const narrow = clientWith([listing, "[]"]);
+    expect(narrow.github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
+
+    const widened = clientWith([listing, "[]"], {
+      workKinds: { checks: { prScope: ["renovate/"] } },
+    });
+    expect(widened.github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5, 6]);
+  });
+
+  test("a per-kind env var widens the listing too, and a bad one is heard at startup", () => {
+    const { exec } = stubExec([
+      JSON.stringify([prRow({ number: 6, headRefName: "renovate/npm-vite" })]),
+      "[]",
+    ]);
+    const client = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: { PHOEBE_REVIEWS_PR_SCOPE: "all" },
+      internal: { exec, sleep: async () => {} },
+    });
+    expect(client.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([6]);
+
+    expect(() =>
+      createGitHubClient({
+        config: resolveConfig(minimalUser()),
+        env: { PHOEBE_REVIEWS_PR_SCOPE: "renovate/" },
+        internal: { exec, sleep: async () => {} },
+      }),
+    ).toThrow(/PHOEBE_REVIEWS_PR_SCOPE must be one of phoebe, all/);
+  });
+
   test("an unreadable feature enumeration still yields the default branch's PRs", () => {
     const { github, calls } = clientWith([JSON.stringify([prRow({ number: 5 })]), "not json"]);
 
