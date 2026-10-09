@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import {
   CLOSED_EDIT_BLOCKS,
   type ConfigEdit,
+  type ConfigEditValue,
   type EditReceipt,
   type EditRefusalReason,
 } from "./contracts/config-edit.ts";
@@ -59,7 +60,7 @@ export type EditLedgerEntry = {
   id: string;
   file: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   at: string;
   by?: string;
   /**
@@ -193,7 +194,7 @@ function nestedSource(segments: readonly string[], value: string): string {
 export function instructionFor(opts: {
   file: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   reason: EditRefusalReason;
 }): string {
   const literal = JSON.stringify(opts.value);
@@ -264,7 +265,7 @@ export type PatchValidator = (candidate: {
   /** The config source with the patch already spliced in. */
   source: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
 }) => Promise<{ ok: true } | { ok: false; reason: string }>;
 
 export type ConfigEditDeps = {

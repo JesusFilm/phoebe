@@ -3,8 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ConfigFieldFacts } from "phoebe-agent/contracts";
 import {
   ConfigSpace,
+  choiceItems,
   configGroups,
   landingConfigView,
+  listDraftOf,
+  listOfDraft,
   saveRequest,
   valueOfDraft,
 } from "./config-form.tsx";
@@ -33,6 +36,8 @@ const FIELDS: ConfigFieldFacts[] = [
     env: "PHOEBE_PR_SCOPE",
     type: "enum",
     values: ["phoebe", "all"],
+    list: "prefixes",
+    listPrefill: ["phoebe/"],
     state: "set",
     value: "all",
   },
@@ -118,6 +123,53 @@ describe("one config on the config tab", () => {
     // Unset, the trigger says so and what applies, not a value that reads as set.
     const unset = space([{ ...ROOT[1]!, state: "unset", value: undefined }]);
     expect(unset).toMatch(/data-slot="select-value"[^>]*>not set \(false\)</);
+  });
+
+  test("a field that also takes a list offers it as one more item, by its own name", () => {
+    // The two values, then the list — called what the companion calls it, which
+    // is the only word the console has for it.
+    expect(choiceItems(FIELDS[2]!, "phoebe")).toEqual([
+      { value: "phoebe", label: "phoebe" },
+      { value: "all", label: "all" },
+      { value: "[]", label: "prefixes" },
+    ]);
+    // A field with no list alternative has no extra item; one that is unset
+    // still offers unset first.
+    expect(choiceItems({ ...FIELDS[2]!, list: undefined }, "phoebe")).toHaveLength(2);
+    expect(choiceItems({ ...FIELDS[2]!, state: "unset" }, "phoebe")?.[0]).toEqual({
+      value: "",
+      label: "not set",
+    });
+    // A row that is no kind of choice has no items at all.
+    expect(choiceItems(FIELDS[0]!, "not set")).toBeNull();
+
+    // Not picked, so the form draws no list box yet.
+    expect(space([FIELDS[2]!])).not.toContain('aria-label="prScope prefixes"');
+  });
+
+  test("a list in the file opens on the list item, with the box holding what it holds", () => {
+    const markup = space([{ ...FIELDS[2]!, value: ["renovate/", "dependabot/"] }]);
+
+    expect(markup).toMatch(/data-slot="select-value"[^>]*>prefixes</);
+    expect(markup).toMatch(/aria-label="prScope prefixes"[^>]*value="renovate\/, dependabot\/"/);
+  });
+
+  test("a literal in the file opens on that item, with no box under it", () => {
+    for (const value of ["phoebe", "all"]) {
+      const markup = space([{ ...FIELDS[2]!, value }]);
+      expect(markup).toMatch(new RegExp(`data-slot="select-value"[^>]*>${value}<`));
+      expect(markup).not.toContain('aria-label="prScope prefixes"');
+    }
+  });
+
+  test("the list box opens on the literal the shorthand stands for", () => {
+    // `prScope: "phoebe"` means `[branchPrefix]`, so the box shows the prefix
+    // rather than nothing: the default is visible before it is edited.
+    expect(listDraftOf(FIELDS[2]!)).toBe("phoebe/");
+    // A list in the file is what the box shows instead.
+    expect(listDraftOf({ ...FIELDS[2]!, value: ["renovate/"] })).toBe("renovate/");
+    // Nothing to prefill with is an empty box, not an invented one.
+    expect(listDraftOf({ ...FIELDS[2]!, listPrefill: undefined })).toBe("");
   });
 
   test("a text setting with values worth offering is a box that offers them and takes anything", () => {
@@ -285,5 +337,29 @@ describe("what a row's draft saves as", () => {
     expect(valueOfDraft({ type: "string" }, "  ")).toBeNull();
     expect(valueOfDraft({ type: "number" }, "soon")).toBeNull();
     expect(valueOfDraft({ type: "integer" }, "1.5")).toBeNull();
+  });
+
+  test("a list box saves a list: entries trimmed, blanks dropped, empty is empty", () => {
+    expect(listOfDraft(" renovate/ , dependabot/ ")).toEqual(["renovate/", "dependabot/"]);
+    expect(listOfDraft("renovate/,, ")).toEqual(["renovate/"]);
+    // An operator can mean "scan nothing", so an empty box is the empty list.
+    expect(listOfDraft("   ")).toEqual([]);
+  });
+
+  test("the list the box composes is the value the save carries", () => {
+    expect(
+      saveRequest({
+        install: "/repos/a",
+        field: { path: "prScope" },
+        value: listOfDraft("phoebe/, renovate/"),
+        fingerprint: "sha256:aa",
+      }),
+    ).toEqual({
+      install: "/repos/a",
+      verb: "config set",
+      path: "prScope",
+      value: ["phoebe/", "renovate/"],
+      fingerprint: "sha256:aa",
+    });
   });
 });

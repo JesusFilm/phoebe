@@ -9,6 +9,8 @@
 //   * Optimistic concurrency: a fingerprint that does not match the file refuses.
 //   * A write goes through the engine's loader first, lands in place, records a
 //     ledger entry and nudges reconcile.
+//   * A list of strings is one leaf: it is spliced as an array and recorded as
+//     one, for the fields that take a list (#657).
 //   * The same edit id twice is one write and the original receipt.
 //   * The ledger rolls off whole once the file moves by another hand.
 
@@ -224,6 +226,24 @@ describe("applyConfigEdit — the write", () => {
     );
     expect(receipt.state).toBe("written");
     expect(disk.get(FILE)).toContain("pollIntervalMs: 30000");
+  });
+
+  test("a list of strings is one leaf, written as an array and recorded as one", async () => {
+    const source = CONFIG();
+    const { deps, disk } = harness({ source });
+    const receipt = await applyConfigEdit(
+      edit({
+        path: "prScope",
+        value: ["phoebe/", "renovate/"],
+        fingerprint: fingerprintOf(source),
+      }),
+      deps,
+    );
+
+    expect(receipt.state).toBe("written");
+    expect(disk.get(FILE)).toContain(`prScope: ["phoebe/", "renovate/"]`);
+    const ledger = JSON.parse(disk.get(LEDGER)!) as { applied: { value: unknown }[] };
+    expect(ledger.applied[0]!.value).toEqual(["phoebe/", "renovate/"]);
   });
 
   test("the patched source is what the loader is asked about", async () => {

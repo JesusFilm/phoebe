@@ -10,6 +10,8 @@
 //   * editConfigMoveField relocates a field's source range — comments inside it
 //     included — and refuses anything computed or spread rather than moving it.
 //   * editConfigGetField / setField / removeField have happy-path coverage.
+//   * A list of string literals is a value the substrate reads and writes; a
+//     list with anything else in it stays a non-literal and is refused.
 //   * ConfigRefusal is detected by isConfigRefusal; plain Record is not.
 //   * configHandle delegates to the edit functions.
 
@@ -843,6 +845,39 @@ describe("editConfigSetFieldAt", () => {
       if (!result.ok) return;
       expect(result.content).toContain(`maintainers: ${written}`);
     }
+  });
+
+  test("writes a list of strings, and reads the same list back", () => {
+    const result = editConfigSetFieldAt(MINIMAL(), ["prScope"], ["phoebe/", "renovate/"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`prScope: ["phoebe/", "renovate/"]`);
+
+    const read = editConfigGetFieldAt(result.content, ["prScope"]);
+    expect(read).toMatchObject({ found: true, literal: ["phoebe/", "renovate/"] });
+  });
+
+  test("an empty list is a literal like any other, and replaces one", () => {
+    const first = editConfigSetFieldAt(MINIMAL(), ["prScope"], []);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.content).toContain("prScope: []");
+
+    // A list in the file is a literal, so the next edit overwrites it rather
+    // than refusing it the way a computed value is refused.
+    const second = editConfigSetFieldAt(first.content, ["prScope"], "all");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.content).toContain(`prScope: "all"`);
+  });
+
+  test("a list holding anything but strings is not a literal, so it is refused", () => {
+    const content = MINIMAL(`\n  prScope: [branchPrefix, "renovate/"],`);
+    const result = editConfigSetFieldAt(content, ["prScope"], "all");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain literal");
+    expect(editConfigGetFieldAt(content, ["prScope"])).toMatchObject({ literal: undefined });
   });
 
   test("refuses a computed value rather than overwriting it", () => {
