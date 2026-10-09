@@ -7,24 +7,109 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   CANCELLABLE_VERBS as typedCancellable,
+  CONSOLE_PROTOCOL as typedConsole,
   CLOSED_EDIT_BLOCKS as typedClosedBlocks,
+  COMPANION_AUTH_URL as typedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as typedGlobal,
+  DEVICE_CODE_TTL_MS as typedCodeTtl,
   LOG_TAIL_LINES as typedLogTail,
   MAX_LOG_LINES as typedMaxLogLines,
   MAX_RUN_LINES as typedMaxLines,
+  RELAY_CLOSE as typedClose,
+  RELAY_DARK_AFTER_MS as typedDark,
+  RELAY_DEPLOYMENTS_PATH as typedPath,
+  RELAY_DOCTOR_RUN as typedDoctorRun,
+  RELAY_TOKEN_ENV as typedTokenEnv,
+  RELAY_EVENTS as typedEvents,
+  RELAY_HEARTBEAT_MS as typedHeartbeat,
+  RELAY_MESSAGES as typedMessages,
+  RELAY_PROTOCOL as typedProtocol,
+  CONSOLE_PROTOCOL as shippedConsole,
+  RELAY_ROUTES as typed,
+  RELAY_UNDELIVERED as typedUndelivered,
 } from "./index.ts";
 import {
   CANCELLABLE_VERBS as shippedCancellable,
   CLOSED_EDIT_BLOCKS as shippedClosedBlocks,
+  COMPANION_AUTH_URL as shippedAuthUrl,
   DESKTOP_BRIDGE_GLOBAL as shippedGlobal,
+  DEVICE_CODE_TTL_MS as shippedCodeTtl,
   LOG_TAIL_LINES as shippedLogTail,
   MAX_LOG_LINES as shippedMaxLogLines,
   MAX_RUN_LINES as shippedMaxLines,
+  RELAY_CLOSE as shippedClose,
+  RELAY_DARK_AFTER_MS as shippedDark,
+  RELAY_DEPLOYMENTS_PATH as shippedPath,
+  RELAY_DOCTOR_RUN as shippedDoctorRun,
+  RELAY_TOKEN_ENV as shippedTokenEnv,
+  RELAY_EVENTS as shippedEvents,
+  RELAY_HEARTBEAT_MS as shippedHeartbeat,
+  RELAY_MESSAGES as shippedMessages,
+  RELAY_PROTOCOL as shippedProtocol,
+  RELAY_ROUTES as shipped,
+  RELAY_UNDELIVERED as shippedUndelivered,
 } from "./index.mjs";
 
-describe("the config-edit closed set", () => {
-  test("is the same on both sides", () => {
-    expect(shippedClosedBlocks).toEqual(typedClosedBlocks);
+describe("index.mjs mirrors the typed contracts entry", () => {
+  test("the relay's routes are the same object on both sides", () => {
+    expect(shipped).toEqual(typed);
+  });
+
+  test("every route is an absolute path", () => {
+    for (const [name, path] of Object.entries(typed)) {
+      expect(path.startsWith("/"), `${name} is not absolute`).toBe(true);
+    }
+  });
+
+  test("no two routes share a path", () => {
+    const paths = Object.values(typed);
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+});
+
+describe("the deployment rail's constants are mirrored too", () => {
+  test.each([
+    ["RELAY_PROTOCOL", typedProtocol, shippedProtocol],
+    ["RELAY_DEPLOYMENTS_PATH", typedPath, shippedPath],
+    ["RELAY_TOKEN_ENV", typedTokenEnv, shippedTokenEnv],
+    ["RELAY_MESSAGES", typedMessages, shippedMessages],
+    ["RELAY_CLOSE", typedClose, shippedClose],
+    ["RELAY_HEARTBEAT_MS", typedHeartbeat, shippedHeartbeat],
+    ["RELAY_DARK_AFTER_MS", typedDark, shippedDark],
+    ["RELAY_UNDELIVERED", typedUndelivered, shippedUndelivered],
+    ["RELAY_DOCTOR_RUN", typedDoctorRun, shippedDoctorRun],
+    ["RELAY_EVENTS", typedEvents, shippedEvents],
+    ["CLOSED_EDIT_BLOCKS", typedClosedBlocks, shippedClosedBlocks],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("the dark threshold is three heartbeats, which is what makes it legible", () => {
+    expect(typedDark).toBe(typedHeartbeat * 3);
+  });
+
+  test("every message type carries the rail's prefix", () => {
+    for (const [name, type] of Object.entries(typedMessages)) {
+      expect(type.startsWith("phoebe:relay:"), `${name} is unprefixed`).toBe(true);
+    }
+  });
+
+  test("every close code is in WebSocket's private range", () => {
+    for (const [name, code] of Object.entries(typedClose)) {
+      expect(code >= 4000 && code <= 4999, `${name} is outside 4000–4999`).toBe(true);
+    }
+  });
+});
+
+describe("the console protocol", () => {
+  test("is the same integer on both sides", () => {
+    // The relay publishes this at /api/version and the console compares its own
+    // against it. They ship together; this file is the only way they can drift.
+    expect(shippedConsole).toBe(typedConsole);
+  });
+
+  test("is an integer, because the rule it feeds is an inequality", () => {
+    expect(Number.isInteger(typedConsole)).toBe(true);
   });
 });
 
@@ -33,6 +118,23 @@ describe("the companion's bridge global", () => {
     // The preload writes this global and the console bundle reads it; the two
     // ship together, so the only way they can disagree is through this file.
     expect(shippedGlobal).toBe(typedGlobal);
+  });
+});
+
+describe("the companion's sign-in constants (#554)", () => {
+  test.each([
+    ["COMPANION_AUTH_URL", typedAuthUrl, shippedAuthUrl],
+    ["DEVICE_CODE_TTL_MS", typedCodeTtl, shippedCodeTtl],
+  ])("%s is the same on both sides", (_name, typedValue, shippedValue) => {
+    expect(shippedValue).toEqual(typedValue);
+  });
+
+  test("the landing is on the scheme the companion registers, under its own host", () => {
+    // The relay redirects to this and the companion registers the scheme in
+    // front of it; the host is what keeps it off the renderer's own origin.
+    const landing = new URL(typedAuthUrl);
+    expect(landing.protocol).toBe("phoebe:");
+    expect(landing.host).toBe("auth");
   });
 });
 

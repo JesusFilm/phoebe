@@ -7,6 +7,7 @@
 
 import type { LocalInstall } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
+import type { RowFacts } from "./facts.ts";
 import type { Route } from "./route.ts";
 
 export type Crumbs = readonly string[];
@@ -22,13 +23,30 @@ export function routeCrumbs(input: {
   tenant: string | null;
   /** The tenant whose config is open, by what the rail calls it. */
   child?: string | null;
+  /** The relay's rows, for a deployment's name. */
+  facts: readonly RowFacts[];
+  /** Whether a relay session is held; without one the companion is on its home. */
+  signedIn: boolean;
 }): Crumbs {
-  const { route, open, view, tenant, child } = input;
+  const { surface, route, open, view, tenant, child, facts, signedIn } = input;
   if (open !== null) {
     if (view === "tenant") return ["This machine", open.name, child ?? "tenant", "Config"];
     if (view === "settings") return ["This machine", open.name, "Settings"];
     return ["This machine", open.name, tenant === null ? "Console" : tenant.split("/").pop()!];
   }
   if (route.page === "settings") return ["Settings"];
-  return ["Home"];
+  if (surface === "companion" && (!signedIn || route.page === "add")) return ["Home"];
+  const relay = surface === "companion" ? ["Relay"] : [];
+  switch (route.page) {
+    case "people":
+      return [...relay, "People"];
+    case "deployment": {
+      const row = facts.find((facts) => facts.row.fingerprint === route.fingerprint);
+      return [...relay, row?.row.name ?? route.fingerprint, route.tab];
+    }
+    case "add":
+      return ["Home"];
+    case "fleet":
+      return [...relay, "Fleet"];
+  }
 }

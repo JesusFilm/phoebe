@@ -7,7 +7,7 @@
 // Windows mark any more, so that one is drawn here: four panes, which is all
 // the Windows 11 mark is.
 
-import { Monitor } from "lucide-react";
+import { Cloud, Monitor } from "lucide-react";
 import { siApple, siLinux } from "simple-icons";
 import type { HostPlatform } from "phoebe-agent/contracts";
 
@@ -41,12 +41,22 @@ const PATHS: Record<Exclude<HostPlatform, "windows">, string> = {
 };
 
 /**
- * One host's mark, `size` pixels square. An unknown host falls back to a
- * monitor: it is this machine, and the companion has not said which yet.
+ * One host's mark, `size` pixels square. An unknown host, which is a report
+ * from a bootstrapper older than the field, falls back to a cloud when reached
+ * through the relay and a monitor when it is this machine.
  */
-export function HostIcon({ host, size = 12 }: { host: HostPlatform | null; size?: number }) {
+export function HostIcon({
+  host,
+  size = 12,
+  fallback = "relay",
+}: {
+  host: HostPlatform | null;
+  size?: number;
+  fallback?: "relay" | "local";
+}) {
   if (host === null) {
-    return <Monitor size={size} aria-hidden="true" />;
+    const Fallback = fallback === "relay" ? Cloud : Monitor;
+    return <Fallback size={size} aria-hidden="true" />;
   }
   if (host === "windows") {
     return (

@@ -3,8 +3,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
-  // The bundle is loaded from a custom scheme in the companion (#522 §4), so
-  // every asset URL has to be relative to the document
+  // The bundle is served from the relay's root and from a custom scheme in the
+  // companion (#522 §4), so every asset URL has to be relative to the document
   // rather than to a known origin.
   base: "./",
   // Tailwind 4 through its Vite plugin, which is how Coss UI's components are
@@ -28,8 +28,9 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
-    // Out of the workspace package and into a directory at the root, where the
-    // companion finds it (#522 §5). `apps/*` itself never ships.
+    // Out of the workspace package and into a directory the root package
+    // publishes, which is what lets `phoebe relay serve` hand the console out of
+    // the one installed package (#522 §5). `apps/*` itself never ships.
     outDir: "../../console",
     emptyOutDir: true,
   },

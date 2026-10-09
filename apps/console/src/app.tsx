@@ -1,13 +1,29 @@
-// The console's shell: the installs on this machine, the rail that lists them,
-// and the pane beside it.
+// The console's shell: the session gate, the fleet it holds, the rail and grid it
+// hands them to, and the hash the pages are chosen by.
 //
-// Everything it shows arrives over the companion's bridge. The page reads the
-// install list once, subscribes, and then only applies what main sends — there
-// is no polling loop and no refetch on a timer. What does tick is a clock, once a
-// second, because half the facts on screen are durations and a duration that
-// stops moving reads as a page that has stopped listening.
+// Everything it needs from the relay arrives through the one client seam, so this
+// component is the same component in the companion's renderer with a different
+// implementation passed in (#523, #553). What the surface does change is what
+// signed-out looks like. In a browser the relay is the whole page, so signed-out
+// is a page with a link to sign in. In the companion the window is the shell, and
+// the relay is one of two arms: the Relay group collapses to say so and This
+// machine is untouched (#526).
+//
+// Before any of that, the version handshake. `GET /api/version` is the first
+// thing the console asks any relay, and a relay serving a console protocol below
+// this bundle's gets asked nothing else (#525 §4, relay-version.ts): the Relay
+// arm says upgrade the relay first and the local arm carries on untouched, which
+// is the companion's whole shape — two arms, and one of them being unusable is
+// not the window being unusable.
+//
+// The stream does the updating. The page reads the fleet once, subscribes, and
+// then only applies events (#542) — there is no polling loop and no refetch on a
+// timer. What does tick is a clock, once a second, because half the facts on
+// screen are durations and a duration that stops moving reads as a page that has
+// stopped listening.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RELAY_EVENTS, RELAY_ROUTES } from "phoebe-agent/contracts";
 import type {
   AlertBody,
   CompanionUpdate,
@@ -15,11 +31,23 @@ import type {
   HarnessReport,
   LocalInstall,
   LocalReportEvent,
+  RelayIdentity,
   VerbRunRequest,
   CompanionEnvironment,
   InstallPatch,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
+import {
+  readRelayVersion,
+  RELAY_UPGRADE_DOC,
+  tooOldText,
+  type RelayVersionReading,
+} from "./relay-version.ts";
+import { readEditAnswer, type EditAnswer } from "./config-edit.ts";
+import { DeploymentPage, NoSuchDeployment } from "./deployment-page.tsx";
+import { rowFacts, sortFleet, type RowFacts } from "./facts.ts";
+import { applyEvent, EMPTY_FLEET, loadFleet, type FleetState } from "./fleet-state.ts";
+import { FleetPage } from "./fleet-page.tsx";
 import {
   consoleThemeChoiceOf,
   SYSTEM_CONSOLE_THEME,
@@ -42,7 +70,12 @@ import {
 } from "./harness.ts";
 import { InstallPage } from "./install-page.tsx";
 import { TenantPage } from "./tenant-page.tsx";
-import type { InstallAction, RailChild, RailProblem } from "./local-install.ts";
+import {
+  pairedInstalls,
+  type InstallAction,
+  type RailChild,
+  type RailProblem,
+} from "./local-install.ts";
 import {
   busyInstalls,
   NO_ACTIVITY,
@@ -52,23 +85,168 @@ import {
   runSeen,
   type RunActivity,
 } from "./run-activity.ts";
+import { PeoplePage } from "./people-page.tsx";
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
-import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { isNotSignedIn, type RelayClient, type RelaySignIn } from "./relay-client.ts";
+import { configOf } from "./report.ts";
+import { ADD_HREF, FLEET_ROUTE, parseRoute, type Route } from "./route.ts";
 import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
 
+type Session =
+  | { kind: "asking" }
+  | { kind: "signed-out" }
+  | { kind: "signed-in"; identity: RelayIdentity }
+  | { kind: "broken"; message: string };
+
 export function App({
+  client,
   surface,
   bridge = null,
 }: {
+  client: RelayClient;
   surface: Surface;
-  /** The companion's bridge, or null in a browser, which has no installs to show. */
+  /** The companion's bridge, or null in a browser — which has no local arm. */
   bridge?: DesktopBridge | null;
 }) {
+  const [session, setSession] = useState<Session>({ kind: "asking" });
+  const [signIn, setSignIn] = useState<RelaySignIn | null>(null);
+  const [relay, setRelay] = useState<RelayVersionReading | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void readRelayVersion(client).then((reading) => {
+      if (live) setRelay(reading);
+    });
+    return () => {
+      live = false;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    // The gate: nothing is asked of a relay that has not answered its version,
+    // and nothing more is asked of one that answered too low.
+    if (relay === null || relay.kind === "too-old") return;
+    let live = true;
+    client.me().then(
+      (identity) => {
+        if (!live) return;
+        setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
+      },
+      (error: unknown) => {
+        if (live) setSession({ kind: "broken", message: messageOf(error) });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, relay]);
+
+  // The session can end without the page asking for anything: in the companion
+  // main drops the device token when the relay answers 401 on the event stream,
+  // and the rail has to stop claiming a session that is gone (#554). In a
+  // browser this never fires, and that is the browser arm's own answer.
+  useEffect(() => client.watchSession(setIdentity), [client]);
+
+  // How this arm signs in, read only while there is nobody signed in. The
+  // companion's answer carries the relay it remembers and whether a token
+  // would survive a relaunch, so it is read again each time rather than once.
+  useEffect(() => {
+    if (session.kind !== "signed-out") return;
+    let live = true;
+    client.signIn().then((how) => {
+      if (live) setSignIn(how);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [client, session.kind]);
+
+  function setIdentity(identity: RelayIdentity | null): void {
+    setSession(identity === null ? { kind: "signed-out" } : { kind: "signed-in", identity });
+  }
+
+  const refusal = relay?.kind === "too-old" ? tooOldText(relay.relay) : undefined;
+
+  // A browser was served this bundle by the relay it is refusing, so this is a
+  // case that should not arise — and if it ever does, the page says which end to
+  // move rather than rendering a fleet read off an API it does not speak.
+  if (refusal !== undefined && surface === "browser") {
+    return (
+      <Notice title="Phoebe console">
+        <p>{refusal}</p>
+        <p>
+          <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
+        </p>
+      </Notice>
+    );
+  }
+
+  if (session.kind === "asking" && refusal === undefined) {
+    return <Notice title="Phoebe console">Signing in…</Notice>;
+  }
+  if (session.kind === "signed-out" && surface === "browser") {
+    return (
+      <Notice title="Phoebe console">
+        <p>This relay is behind Google sign-in.</p>
+        {signIn !== null && signIn.kind === "navigate" ? (
+          <p>
+            <a href={signIn.href}>Sign in with Google</a>
+          </p>
+        ) : null}
+      </Notice>
+    );
+  }
+  if (session.kind === "broken") {
+    return (
+      <Notice title="Phoebe console">
+        <p>The relay did not answer who you are.</p>
+        <p className="muted">{session.message}</p>
+      </Notice>
+    );
+  }
+
+  return (
+    <Console
+      client={client}
+      surface={surface}
+      bridge={bridge}
+      identity={session.kind === "signed-in" ? session.identity : null}
+      signIn={signIn}
+      onSignedIn={setIdentity}
+      {...(refusal !== undefined ? { refusal } : {})}
+      onSignedOut={() => setSession({ kind: "signed-out" })}
+    />
+  );
+}
+
+function Console({
+  client,
+  surface,
+  bridge,
+  identity,
+  signIn,
+  onSignedIn,
+  refusal,
+  onSignedOut,
+}: {
+  client: RelayClient;
+  surface: Surface;
+  bridge: DesktopBridge | null;
+  identity: RelayIdentity | null;
+  /** The relay-too-old sentence, when that is where this relay stands. */
+  refusal?: string;
+  signIn: RelaySignIn | null;
+  onSignedIn: (identity: RelayIdentity) => void;
+  onSignedOut: () => void;
+}) {
   const route = useRoute();
+  const [fleet, setFleet] = useState<FleetState>(EMPTY_FLEET);
+  const [loaded, setLoaded] = useState(false);
+  const [trouble, setTrouble] = useState<string | null>(null);
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
@@ -81,6 +259,7 @@ export function App({
   const [openTenant, setOpenTenant] = useState<string | null>(null);
   // The console tab somebody asked for by name: `cli`, to watch a verb run.
   const [openChannel, setOpenChannel] = useState<string | null>(null);
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
   // Default on (#524 §8), and read back off `companion.json` the moment main
   // answers. A browser never asks — there is nothing there to notify with.
   const [notifications, setNotifications] = useState(true);
@@ -119,7 +298,8 @@ export function App({
   };
   const now = useNow(1000);
 
-  // An open install wins the pane. A link that moves the hash closes it —
+  // The two arms share one page area, and an open install wins it. A rail link
+  // into the relay arm moves the hash, so following one closes the install —
   // otherwise the address would change and the page would not.
   useEffect(() => {
     setOpenInstall(null);
@@ -140,6 +320,9 @@ export function App({
   }, [bridge]);
 
   // Bring the window forward and land on the page the alert is about (#524 §6).
+  // A local install has a page here; a deployment's five tabs are #544's, so
+  // until they exist a click on a relay alert does the half it can — the window
+  // comes up on the fleet, which is where the row is.
   const openAlert = useCallback((notifiable: Notifiable) => {
     globalThis.focus();
     const subject = notifiable.subject;
@@ -154,10 +337,12 @@ export function App({
     [openAlert],
   );
 
-  // The preference through a ref, and not as a dependency: flipping a checkbox
-  // must not tear down the subscription that reads `notify`. What the ref buys
-  // is that the preference is read at the moment an alert lands, which is also
-  // the only moment it means anything.
+  // The preference through a ref, and not as a dependency. Both subscriptions
+  // below read `notify`, and one of them is the relay's event stream — if
+  // flipping a checkbox changed this function, it would tear that stream down
+  // and re-read the whole fleet behind it. What the ref buys is that the
+  // preference is read at the moment an alert lands, which is also the only
+  // moment it means anything.
   const wanted = useRef(notifications);
   wanted.current = notifications;
 
@@ -285,8 +470,9 @@ export function App({
     return () => document.removeEventListener("contextmenu", onContextMenu);
   }, [bridge]);
 
-  // The installs. One read, then main's `installs:changed` does the updating:
-  // the page holds no copy it has to reconcile, and every fact on screen was derived by the
+  // The local arm. One read, then main's `installs:changed` does the updating —
+  // the same shape as the relay's stream, for the same reason: the page holds
+  // no copy it has to reconcile, and every fact on screen was derived by the
   // process that can actually see the folder (#527 §12).
   useEffect(() => {
     if (bridge === null) return;
@@ -304,7 +490,8 @@ export function App({
     };
   }, [bridge]);
 
-  // The local read loop's stream (#556). One subscription for every install rather than one per open
+  // The local read loop's stream, which is the local arm's answer to the relay's
+  // SSE (#556). One subscription for every install rather than one per open
   // page: the loop reads them all, and a later badge rule runs over the same
   // events with no page open at all (#524).
   useEffect(() => {
@@ -349,6 +536,26 @@ export function App({
     window.addEventListener("focus", reread);
     return () => window.removeEventListener("focus", reread);
   }, [bridge, openInstall]);
+
+  // Which relay this companion is signed in to — the other half of the join
+  // that decides whether a local install is also a row on the fleet (#558).
+  // Watched rather than read once: signing in to a different relay changes
+  // which rows these installs are, without anything else on the page moving.
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.relay.state().then(
+      (state) => {
+        if (live) setRelayUrl(state.url);
+      },
+      () => undefined,
+    );
+    const unsubscribe = bridge.relay.watch((state) => setRelayUrl(state.url));
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [bridge]);
 
   // `inside: "wsl"` opens the picker among the distros. The Windows picker cannot
   // be typed into and keeps WSL under a "Linux" node at the foot of its tree, so
@@ -497,13 +704,74 @@ export function App({
   const open = installs.find((install) => install.dir === openInstall) ?? null;
   const update = useCompanionUpdate(bridge);
 
+  useEffect(() => {
+    // Signed out, there is no fleet to read and no stream to hold open. The
+    // companion still draws the shell around that (#526).
+    if (identity === null) return;
+
+    let live = true;
+    loadFleet(client).then(
+      (state) => {
+        if (!live) return;
+        setFleet(state);
+        setLoaded(true);
+      },
+      (error: unknown) => {
+        if (!live) return;
+        if (isNotSignedIn(error)) onSignedOut();
+        else setTrouble(messageOf(error));
+      },
+    );
+    // Subscribing after the read would drop an event that landed in between.
+    // Subscribing before it means an event may be applied to the empty fleet and
+    // then overwritten by the read — which is why a connection event inserts its
+    // row rather than assuming one is there (fleet-state.ts).
+    const unsubscribe = client.events((event) => {
+      // The relay's own sink for the same edge rule (#524 §1). A browser has
+      // no notifier and drops it; the companion raises it.
+      if (event.type === RELAY_EVENTS.alert) {
+        notify(event.alert, "relay");
+        return;
+      }
+      setFleet((state) => applyEvent(state, event));
+    });
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [client, identity, notify, onSignedOut]);
+
+  const facts = useMemo(
+    () => sortFleet(fleet.rows.map((row) => rowFacts(row, fleet.reports[row.fingerprint] ?? null))),
+    [fleet],
+  );
+
+  // A paired install is one thing on two arms, and the rail draws it once.
+  const paired = useMemo(
+    () => pairedInstalls(installs, facts, relayUrl),
+    [installs, facts, relayUrl],
+  );
+  const pairedDirs = useMemo(() => new Set(paired.keys()), [paired]);
+  const relayFacts = useMemo(() => {
+    const claimed = new Set(paired.values());
+    return facts.filter((row) => !claimed.has(row.row.fingerprint));
+  }, [facts, paired]);
+
   return (
     <div className="frame">
       <Rail
+        facts={relayFacts}
+        now={now}
         surface={surface}
+        signedIn={identity !== null}
+        {...(refusal !== undefined ? { refusal } : {})}
         installs={installs}
+        paired={pairedDirs}
         selected={openInstall}
         selectedChild={openView === "tenant" ? openChild : null}
+        selectedDeployment={
+          openInstall === null && route.page === "deployment" ? route.fingerprint : null
+        }
         onSelect={(dir) => {
           setOpenView("console");
           setOpenTenant(null);
@@ -511,7 +779,7 @@ export function App({
           setOpenInstall(dir);
         }}
         // The brand is home. The route effect closes the install when the
-        // hash moves; when it is already home's nothing moves, so close it
+        // hash moves; when it is already `#/fleet` nothing moves, so close it
         // here too — the same guard `onAdd` carries below.
         onHome={() => setOpenInstall(null)}
         reports={reports}
@@ -525,7 +793,7 @@ export function App({
           ? {}
           : {
               // To the home page, where the ways to add are laid out — a
-              // folder, a WSL folder — rather than into one picker.
+              // folder, a WSL folder, a relay — rather than into one picker.
               // The route change closes whichever install was open.
               onAdd: () => {
                 // Closed here as well as by the route effect: when the hash
@@ -570,6 +838,8 @@ export function App({
               onDownload: () => void bridge.updates.download().catch(noop),
               onRestart: () => void bridge.updates.restart().catch(noop),
             })}
+        signIn={signIn}
+        onSignedIn={onSignedIn}
       />
       <section className="pane">
         <RouteLine
@@ -583,7 +853,11 @@ export function App({
               open?.workspace?.children
                 .filter((child) => child.dir === openChild)
                 .map((child) => child.slug ?? child.name)[0] ?? null,
+            facts,
+            signedIn: identity !== null,
           })}
+          identity={identity}
+          onSignOut={() => void client.signOut().then(onSignedOut, onSignedOut)}
         />
         {bridge === null ? null : (
           <UpdateAlerts
@@ -647,6 +921,8 @@ export function App({
             }}
             report={reports[open.dir] ?? null}
             now={now}
+            signedIn={identity !== null}
+            paired={paired.has(open.dir)}
             onUpdate={updateInstall}
             onForget={forgetInstall}
           />
@@ -666,14 +942,30 @@ export function App({
                   onAutoCheckUpdates: chooseAutoCheckUpdates,
                 })}
           />
-        ) : (
+        ) : identity === null || route.page === "add" ? (
           <CompanionHome
             installs={installs}
             onAdd={bridge === null ? undefined : () => addInstall()}
             onAddWsl={
               bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")
             }
+            relay={identity === null ? null : { url: relayUrl, email: identity.email }}
+            {...(refusal !== undefined ? { refusal } : {})}
           />
+        ) : route.page === "people" ? (
+          <PeoplePage client={client} now={now} onSignedOut={onSignedOut} />
+        ) : trouble !== null ? (
+          <main className="main">
+            <h1>Fleet</h1>
+            <p className="muted">The relay did not answer: {trouble}</p>
+          </main>
+        ) : loaded ? (
+          <Page route={route} facts={facts} client={client} now={now} />
+        ) : (
+          <main className="main">
+            <h1>Fleet</h1>
+            <p className="muted">Reading the fleet…</p>
+          </main>
         )}
       </section>
     </div>
@@ -681,19 +973,26 @@ export function App({
 }
 
 /**
- * The companion's home: the installs on this machine, and the ways to add one.
- * Adding is a control here as well as on the rail, because an empty companion
- * has a rail nobody has looked at yet.
+ * The companion's home: both arms, and what each one is holding. Signed out, it
+ * is the whole window. Adding a local install is a control here as well as on
+ * the rail, because an empty companion has a rail nobody has looked at yet.
+ * Signing in is the rail's, beside the group it fills, so this page points at it
+ * rather than putting a second copy of the same form on screen.
  */
 function CompanionHome({
   installs,
   onAdd,
   onAddWsl,
+  relay,
+  refusal,
 }: {
   installs: LocalInstall[];
   onAdd: (() => void) | undefined;
   /** The picker opened among the WSL distros. Only on a machine that has some. */
   onAddWsl: (() => void) | undefined;
+  /** The relay this companion is signed in to, or null when it is signed out. */
+  relay: { url: string | null; email: string } | null;
+  refusal?: string;
 }) {
   return (
     <main className="main">
@@ -727,6 +1026,25 @@ function CompanionHome({
           </p>
         )}
       </section>
+      <section>
+        <h2>Relay</h2>
+        {refusal === undefined && relay !== null ? (
+          <p className="muted">
+            Signed in as {relay.email}
+            {relay.url === null ? "" : ` to ${relay.url}`}. Its deployments are on the rail; to
+            reach a different relay, sign out first.
+          </p>
+        ) : refusal === undefined ? (
+          <p className="muted">
+            Not signed in. A relay is how the companion reaches the deployments that run somewhere
+            else. Enter its address in the rail and sign-in opens in your own browser.
+          </p>
+        ) : (
+          <p className="refusal">
+            {refusal} <a href={RELAY_UPGRADE_DOC}>How to upgrade the relay</a>
+          </p>
+        )}
+      </section>
     </main>
   );
 }
@@ -735,12 +1053,73 @@ function CompanionHome({
 function ignore(): void {}
 
 /**
+ * Which page the hash names. A fingerprint the fleet does not hold gets the
+ * "no such deployment" page rather than a redirect: a link that silently became
+ * the fleet page would look like the deployment is fine.
+ */
+function Page({
+  route,
+  facts,
+  client,
+  now,
+}: {
+  route: Route;
+  facts: RowFacts[];
+  /** The pages that ask for something need the seam too, not only the shell. */
+  client: RelayClient;
+  now: Date;
+}) {
+  if (route.page !== "deployment") return <FleetPage facts={facts} client={client} now={now} />;
+  const found = facts.find((row) => row.row.fingerprint === route.fingerprint);
+  if (found === undefined) return <NoSuchDeployment fingerprint={route.fingerprint} />;
+  // The fingerprint the page was drawn with, not a fresh read of it: that is
+  // what makes the edit optimistic-concurrency-checked rather than applied to
+  // text nobody looked at (#503).
+  const loaded =
+    found.reading.kind === "read" ? (configOf(found.reading.report)?.root.fingerprint ?? "") : "";
+  return (
+    <DeploymentPage
+      facts={found}
+      tab={route.tab}
+      client={client}
+      now={now}
+      onEdit={(edit) => sendConfigEdit(client, found.row.fingerprint, loaded, edit)}
+    />
+  );
+}
+
+/**
+ * One config edit, from a row's Save to the answer it renders (#503, #547).
+ *
+ * The id is minted here, and it is the edit's idempotency key: the same id twice
+ * is the same edit, and the deployment answers the second with the first one's
+ * receipt. That is what makes a retry — a double-press, a reconnect — free of a
+ * second write.
+ */
+async function sendConfigEdit(
+  client: RelayClient,
+  fingerprint: string,
+  configFingerprint: string,
+  edit: { path: string; value: string | number | boolean | null },
+): Promise<{ id: string; answer: EditAnswer }> {
+  const id = crypto.randomUUID();
+  const answer = await client.setConfigField({
+    fingerprint,
+    id,
+    path: edit.path,
+    value: edit.value,
+    configFingerprint,
+  });
+  return { id, answer: readEditAnswer(answer) };
+}
+
+/**
  * The route, kept in step with the address bar. Links are plain `href`s into the
  * hash, so the browser does the navigating and the history; this only listens.
  */
 function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() =>
-    typeof window === "undefined" ? HOME_ROUTE : parseRoute(window.location.hash),
+    typeof window === "undefined" ? FLEET_ROUTE : parseRoute(window.location.hash),
   );
   useEffect(() => {
     const onHashChange = (): void => setRoute(parseRoute(window.location.hash));
@@ -790,14 +1169,35 @@ function useNow(everyMs: number): Date {
   return now;
 }
 
+function Notice({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="notice">
+      <h1>{title}</h1>
+      {children}
+    </div>
+  );
+}
+
 function noop(): void {}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * The top line of the right pane: where the console is (crumbs.ts), the way T3
- * Code puts the project and thread at the top of its pane. The rail is the map;
- * this is the mark on it.
+ * Code puts the project and thread at the top of its pane, and the relay session
+ * at its right edge. The rail is the map; this is the mark on it.
  */
-function RouteLine({ crumbs }: { crumbs: Crumbs }) {
+function RouteLine({
+  crumbs,
+  identity,
+  onSignOut,
+}: {
+  crumbs: Crumbs;
+  identity: RelayIdentity | null;
+  onSignOut: () => void;
+}) {
   return (
     <header className="pane-route">
       <nav className="crumbs" aria-label="Where you are">
@@ -808,6 +1208,14 @@ function RouteLine({ crumbs }: { crumbs: Crumbs }) {
           </span>
         ))}
       </nav>
+      {identity === null ? null : (
+        <span className="pane-session">
+          <span className="muted">{identity.email}</span>
+          <button type="button" className="quiet" onClick={onSignOut}>
+            Sign out
+          </button>
+        </span>
+      )}
     </header>
   );
 }

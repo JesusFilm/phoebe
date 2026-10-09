@@ -18,19 +18,17 @@ import type { AlertMessage } from "./alerts.ts";
 import type { ConfigEditValue } from "./config-edit.ts";
 import type { HarnessName, HarnessPin } from "./harness.ts";
 import type { LocalInstall } from "./local-install.ts";
+import { RELAY_EVENTS } from "./relay-events.ts";
+import type { RelayStoredReport } from "./relay-routes.ts";
 
 /**
- * One report as a reader holds it: everything it needs to decide whether it can
- * read the body, and nothing about where it came from.
+ * A report with the fingerprint left off — everything a reader needs to decide
+ * whether it can read the body, and nothing about where it came from.
+ *
+ * The relay's own {@link RelayStoredReport} satisfies this, which is what lets
+ * one narrowing function serve both arms.
  */
-export type StoredReport = {
-  /** The report's own `schema`, hoisted so a reader can branch before it parses. */
-  schema: number;
-  /** When the reader took delivery, ISO 8601. */
-  receivedAt: string;
-  /** `state/deployment.json`, exactly as the deployment wrote it. */
-  report: unknown;
-};
+export type StoredReport = Pick<RelayStoredReport, "schema" | "receivedAt" | "report">;
 
 /**
  * What main can learn about an install without a container to ask (#527 §6,
@@ -201,7 +199,8 @@ export type RepairOutcome = { fixed: boolean; detail: string };
  * like.
  */
 export type LocalReportEvent = {
-  type: "report";
+  /** The relay's word for the same thing, deliberately (#527 §5). */
+  type: typeof RELAY_EVENTS.report;
   /** The install's directory — the local arm's identity (#527 §12). */
   install: string;
   /** When main finished the read, ISO 8601. */
@@ -230,7 +229,8 @@ export type LocalReportEvent = {
  * the local arm's identity everywhere else, and its `name` is the install's.
  */
 export type LocalAlertEvent = {
-  type: "alert";
+  /** The relay's word for the same thing, deliberately (#527 §5). */
+  type: typeof RELAY_EVENTS.alert;
   /** The install's directory — the local arm's identity (#527 §12). */
   install: string;
   /** When main decided the edge had been crossed, ISO 8601. */

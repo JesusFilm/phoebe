@@ -1,7 +1,8 @@
 // `companion.json` — the one file the companion owns (#527 §12).
 //
-// It lives in Electron's `userData` and holds two things: the local installs
-// the operator has added, and the preferences. That is all it holds. Every fact *about* an install — whether the
+// It lives in Electron's `userData` and holds three things: the local installs
+// the operator has added, the relay this companion is paired with, and the
+// preferences. That is all it holds. Every fact *about* an install — whether the
 // folder is initialised, whether its container is up, what its config says — is
 // derived on each read (install-facts.ts), because a fact written here is a fact
 // that goes stale the moment someone runs `docker stop` in a terminal.
@@ -31,6 +32,8 @@ export type StoredInstall = {
 /** The whole file. */
 export type CompanionFile = {
   installs: StoredInstall[];
+  /** The relay this companion is paired with. #554 writes it at sign-in. */
+  relay: { url: string } | null;
   preferences: CompanionPreferences;
 };
 
@@ -38,6 +41,7 @@ export type CompanionFile = {
 export function emptyCompanionFile(): CompanionFile {
   return {
     installs: [],
+    relay: null,
     preferences: { notifications: true, consoleTheme: "system", autoCheckUpdates: false },
   };
 }
@@ -152,6 +156,14 @@ function coerce(parsed: unknown): CompanionFile {
       }))
     : empty.installs;
 
+  const relayField = record["relay"];
+  const relay =
+    typeof relayField === "object" &&
+    relayField !== null &&
+    typeof (relayField as { url?: unknown }).url === "string"
+      ? { url: (relayField as { url: string }).url }
+      : null;
+
   const preferencesField = record["preferences"];
   const notifications =
     typeof preferencesField === "object" &&
@@ -173,7 +185,7 @@ function coerce(parsed: unknown): CompanionFile {
       ? (preferencesField as { autoCheckUpdates: boolean }).autoCheckUpdates
       : empty.preferences.autoCheckUpdates;
 
-  return { installs, preferences: { notifications, consoleTheme, autoCheckUpdates } };
+  return { installs, relay, preferences: { notifications, consoleTheme, autoCheckUpdates } };
 }
 
 function isStoredInstall(value: unknown): value is StoredInstall {

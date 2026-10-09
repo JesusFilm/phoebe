@@ -31,7 +31,7 @@ import { ClaudeSignIn, HarnessPanel } from "./harness-section.tsx";
 import { createNotifier, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
 import { SettingsPage } from "./settings-page.tsx";
-import { bridge, directory, install, localReport } from "./test-fixture.ts";
+import { bridge, directory, install, localReport, NOW } from "./test-fixture.ts";
 import {
   noticeOf,
   takeUpdates,
@@ -345,12 +345,33 @@ describe("the alert on screen", () => {
 
   test("the rail counts them beside the install's state", () => {
     const rail = renderToStaticMarkup(
-      <Rail surface="companion" installs={[solo]} updates={{ [solo.dir]: 2 }} onSettings={noop} />,
+      <Rail
+        facts={[]}
+        now={NOW}
+        surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
+        installs={[solo]}
+        updates={{ [solo.dir]: 2 }}
+        onSettings={noop}
+      />,
     );
 
     expect(rail).toMatch(/class="rail-updates"[^>]*aria-label="2 updates available"/);
     expect(
-      renderToStaticMarkup(<Rail surface="companion" installs={[solo]} onSettings={noop} />),
+      renderToStaticMarkup(
+        <Rail
+          facts={[]}
+          now={NOW}
+          surface="companion"
+          signedIn
+          signIn={null}
+          onSignedIn={noop}
+          installs={[solo]}
+          onSettings={noop}
+        />,
+      ),
     ).not.toContain("rail-updates");
   });
 });
@@ -609,7 +630,12 @@ describe("a container that runs as root", () => {
     const problems = rootProblem(solo, event(), asRoot);
     const rail = renderToStaticMarkup(
       <Rail
+        facts={[]}
+        now={NOW}
         surface="companion"
+        signedIn
+        signIn={null}
+        onSignedIn={noop}
         installs={[solo]}
         problems={{ [solo.dir]: problems }}
         onSettings={noop}

@@ -199,7 +199,7 @@ export function ConsoleView({
       <header className="console-bar">
         <span className="console-name">
           <span className="platform" title={hostTitle(host)} aria-label={hostTitle(host)}>
-            <HostIcon host={host} />
+            <HostIcon host={host} fallback="local" />
           </span>
           <span className={`mark ${reading.tone}`} aria-hidden="true" />
           <h1 title={install.dir}>{install.name}</h1>
