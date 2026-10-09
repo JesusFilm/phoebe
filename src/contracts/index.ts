@@ -25,6 +25,7 @@
 export type { StopOutcome } from "./stop-outcome.ts";
 export type {
   ConfigEdit,
+  ConfigEditValue,
   EditReceipt,
   EditRefusalReason,
   EditRefused,

@@ -12,6 +12,7 @@ import {
   type BlockerPrState,
   type StackContext,
 } from "../orchestrator.ts";
+import { prScopeAdmits, resolvePrScopeForKind } from "../pr-scope.ts";
 import type { OpenPhoebePr, PrMergeInfo } from "../github-client.ts";
 import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import type { WorkKindCtx } from "./definition.ts";
@@ -36,9 +37,31 @@ export function baseBranchOf(
 }
 
 /**
+ * This kind's own slice of the cycle's open PRs (#655).
+ *
+ * The cycle lists once, for the union of every janitor's `prScope`
+ * (src/pr-scope.ts), so a kind that was not the one to widen the scope would
+ * otherwise inherit the widening. The prefix is the only thing this re-asks:
+ * the listing's other rules — forks, `prOptOutLabel`, quarantine, the draft
+ * rule — turn on nothing a kind can override, so asking them twice would be
+ * asking them the same way.
+ */
+function admitsByKind(ctx: WorkKindCtx): (pr: OpenPhoebePr) => boolean {
+  const scope = resolvePrScopeForKind({
+    kind: ctx.kind,
+    env: ctx.env,
+    workKinds: ctx.config.workKinds,
+    configValue: ctx.config.prScope,
+  });
+  return (pr) => prScopeAdmits(scope, ctx.config.branchPrefix, pr.headRefName);
+}
+
+/**
  * Walk this cycle's open PRs, resolving each one's merge info, and collect the
  * candidates `visit` builds — returning `null` for a PR this kind does not
- * want. A PR whose read throws is warned (naming `ctx.kind`) and dropped: one
+ * want. A PR this kind's `prScope` does not admit is passed over before its
+ * merge info is read, so a widened listing costs the other kinds no `gh` calls.
+ * A PR whose read throws is warned (naming `ctx.kind`) and dropped: one
  * unreadable PR must not sink the whole kind's fetch.
  */
 export async function collectPrCandidates<T>(
@@ -46,7 +69,9 @@ export async function collectPrCandidates<T>(
   visit: (info: PrMergeInfo, pr: OpenPhoebePr) => Promise<T | null> | T | null,
 ): Promise<T[]> {
   const collected: T[] = [];
+  const admits = admitsByKind(ctx);
   for (const pr of ctx.github.openPrs()) {
+    if (!admits(pr)) continue;
     try {
       const candidate = await visit(await ctx.github.mergeInfo(pr.number), pr);
       if (candidate !== null) collected.push(candidate);

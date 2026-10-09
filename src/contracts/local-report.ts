@@ -15,6 +15,7 @@
 // report at all and still has a page to draw (#526).
 
 import type { AlertMessage } from "./alerts.ts";
+import type { ConfigEditValue } from "./config-edit.ts";
 import type { HarnessName, HarnessPin } from "./harness.ts";
 import type { LocalInstall } from "./local-install.ts";
 
@@ -109,6 +110,18 @@ export type ConfigFieldFacts = {
   /** The closed set of accepted values, for an `enum`. */
   values?: readonly string[];
   /**
+   * The field also takes a **list of strings**, beside {@link values} (#655).
+   * A form offers that as one more choice; the catalogue says which fields have
+   * it, so nothing on the form names a field.
+   */
+  listAlternative?: true;
+  /**
+   * What a fresh list starts from, for a {@link listAlternative} field: the
+   * value of whatever path the catalogue says it prefills from, so the literal
+   * default is visible before it is edited rather than implied by an empty box.
+   */
+  listPrefill?: readonly string[];
+  /**
    * Values worth offering for a `string`, none of them binding: the box takes
    * whatever is typed, and these are what it offers first.
    */
@@ -119,7 +132,7 @@ export type ConfigFieldFacts = {
    */
   state: "unset" | "set" | "computed";
   /** The literal, when `state` is `set`. */
-  value?: string | number | boolean | null;
+  value?: ConfigEditValue;
   /** The source text, when `state` is `computed`. */
   raw?: string;
   /** What applies when the file says nothing, where there is a default. */

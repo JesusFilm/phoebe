@@ -458,8 +458,13 @@ describe("the requests a write form submits (#557)", () => {
   });
 
   test("a block is refused — one leaf moves at a time", () => {
-    expect(() => readLiteral('{ "a": 1 }')).toThrow(/scalar or null/);
-    expect(() => readLiteral("[1]")).toThrow(/scalar or null/);
+    expect(() => readLiteral('{ "a": 1 }')).toThrow(/scalar, a list of strings, or null/);
+  });
+
+  test("a list of strings is a leaf too, and a list of anything else is not (#655)", () => {
+    expect(readLiteral('["renovate/", "dependabot/"]')).toEqual(["renovate/", "dependabot/"]);
+    expect(readLiteral("[]")).toEqual([]);
+    expect(() => readLiteral("[1]")).toThrow(/A list holds strings only/);
   });
 
   test("no field named is no edit, rather than an edit at the root", () => {

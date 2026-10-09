@@ -34,6 +34,43 @@ export const WORK_KIND_NAMES = ["conflicts", "checks", "reviews", "issues", "res
 export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
 
 /**
+ * Which open PRs a PR janitor (`conflicts`, `checks`, `reviews`) scans — the
+ * `prScope` field, on the tenant and on each of those three kind blocks (#655).
+ *
+ * Three spellings of one question, "whose branches may Phoebe work":
+ *
+ *   - `"phoebe"` — sugar for `[branchPrefix]`, the default and the narrow answer.
+ *   - `"all"` — every same-repo PR, whatever its branch is called.
+ *   - a string array — the literal set of admitted prefixes, matched by
+ *     `startsWith` exactly as `branchPrefix` is. `["renovate/"]` admits one
+ *     bot's branches and nothing else, Phoebe's own included; `[]` admits
+ *     nothing, which is the spelling a tenant that only works issues wants.
+ *
+ * Widening it is a trust decision: the janitors run `installCommand` on a
+ * scanned PR's head (docs/trust.md). Admitting a prefix to one kind rather than
+ * to the tenant is how that decision stays as small as the reason for it.
+ */
+export type PrScope = "phoebe" | "all" | readonly string[];
+
+/** Whether `value` is a legal {@link PrScope}. */
+export function isPrScope(value: unknown): value is PrScope {
+  if (value === "phoebe" || value === "all") return true;
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/**
+ * Throw unless `value` is a legal {@link PrScope}. `at` is the config path the
+ * error names, so one message serves the tenant field and a kind's block.
+ */
+export function assertPrScope(value: unknown, at: string): void {
+  if (isPrScope(value)) return;
+  throw new Error(
+    `phoebe.config.ts \`${at}\` must be "phoebe", "all", or an array of branch ` +
+      `prefixes — got ${JSON.stringify(value)}.`,
+  );
+}
+
+/**
  * One work kind's tuning block (#300, widened by #415): each knob optional,
  * each falling back to the repo-level defaults when unset. The block
  * speaks for one provider — its own `provider`, else `defaultProvider` — and
@@ -68,6 +105,17 @@ export type WorkKindOverride = {
    * are unusually long or short no longer has to bend the tenant-wide number.
    */
   runTimeoutMs?: number;
+  /**
+   * Which open PRs *this* janitor scans (#655), overriding the tenant's
+   * `prScope` for this kind alone; unset inherits it. Read only by the three
+   * PR-keyed kinds — a block that sets it on `issues` configures nothing.
+   *
+   * The point of it being per kind: admitting another bot's branches so the
+   * `checks` kind can fix a red gate on them is a different decision from
+   * letting the `conflicts` kind resolve a merge in somebody else's work, and
+   * one tenant-wide `prScope` would have made it one decision.
+   */
+  prScope?: PrScope;
   /**
    * The sole off-switch for a kind (#415). `order` is priority, not
    * membership — every registered kind a pipeline owns runs, named there or
@@ -158,6 +206,7 @@ const WORK_KIND_KNOBS = [
   "effort",
   "promptFile",
   "runTimeoutMs",
+  "prScope",
   "disabled",
 ] as const satisfies readonly (keyof WorkKindOverride)[];
 
@@ -697,9 +746,8 @@ export type PhoebeConfig = {
    * feature branches.
    */
   featureLabel: string;
-  /** Which open PRs the conflicts/checks/reviews work-kinds scan.
-   *  "phoebe" = only branchPrefix branches. "all" = any same-repo PR. */
-  prScope: "phoebe" | "all";
+  /** Which open PRs the conflicts/checks/reviews work-kinds scan (see {@link PrScope}). */
+  prScope: PrScope;
   /** Draft PR handling: "skip-non-phoebe" = drafts on non-Phoebe branches are
    *  off-limits; "skip-all" = never touch drafts; "include" = drafts are fair game. */
   draftPrs: "skip-non-phoebe" | "skip-all" | "include";
@@ -1138,6 +1186,9 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
       example: String.raw`Part of\s+#(\d+)`,
     });
   }
+  if (user.prScope !== undefined) {
+    assertPrScope(user.prScope, "prScope");
+  }
   if (user.workKinds !== undefined) {
     validateWorkKindsField(user.workKinds);
   }
@@ -1409,6 +1460,9 @@ function validateKnobValues(block: Record<string, unknown>, at: string): void {
       `phoebe.config.ts \`${at}.disabled\` must be a boolean — ` +
         `got ${JSON.stringify(knobs.disabled)}.`,
     );
+  }
+  if (knobs.prScope !== undefined) {
+    assertPrScope(knobs.prScope, `${at}.prScope`);
   }
   const provider = knobs.provider;
   if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {

@@ -95,6 +95,21 @@ const config: PhoebeUserConfig = {
           model: "claude-sonnet-5-5",
           effort: "medium",
           promptFile: "../prompts/checks-prompt.md",
+          // Renovate's branches, admitted to this kind and to no other (#655).
+          // Renovate cannot write a changeset on the hosted app, so a runtime
+          // dependency bump arrives red on the `changeset` gate and sits there;
+          // the checks kind reads the gate, writes a `patch` changeset with the
+          // PR title as its summary, and pushes. The tenant stays on "phoebe",
+          // so widening for this does not hand the conflicts kind somebody
+          // else's merge or point the reviews kind at a bot's PR. Every bump no
+          // consumer would notice opens labelled `skip-changeset` instead
+          // (renovate.json), so this only ever fires on the ones that matter.
+          //
+          // A Renovate rebase recreates the branch's one commit and drops the
+          // changeset; Phoebe re-adds it next cycle. `gitIgnoredAuthors` in
+          // renovate.json is what keeps Renovate refreshing the branch at all
+          // after a push by another author.
+          prScope: ["renovate/"],
         },
         reviews: {
           model: "claude-sonnet-5-5",

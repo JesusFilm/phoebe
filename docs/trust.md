@@ -267,6 +267,17 @@ not sandboxing: fork PRs are always excluded, and the default
 already treats as inside the trust domain. Setting `prScope: "all"` widens
 that to every same-repo branch; set it knowing that is what it means.
 
+Between the two is the array form, `prScope: ["renovate/"]`, which admits the
+prefixes it names and nothing else — and which each of `conflicts`, `checks`
+and `reviews` can carry for itself
+([`configuration.md`](configuration.md#the-array-form-and-per-kind-scope)). That
+is the shape to reach for when the reason to widen is one bot and one janitor:
+letting the `checks` kind fix a red gate on a dependency bot's branch is a
+smaller grant than letting every kind work every branch in the repo, and the
+narrower grant is the one to write down. What you are granting is unchanged in
+kind — that branch's install hooks run as the engine's child — so the question
+to ask of a prefix is whether you would merge what arrives on it unread.
+
 The engine strips its own credentials — `GH_TOKEN`, the `GH_APP_*` pair, and
 every configured provider API key — from the `installCommand` environment
 (`src/shell-env.ts`), so an install hook lands in the operator's toolchain

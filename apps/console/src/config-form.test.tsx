@@ -3,8 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ConfigFieldFacts } from "phoebe-agent/contracts";
 import {
   ConfigSpace,
+  choicesOf,
   configGroups,
   landingConfigView,
+  listDraftOf,
+  listOfDraft,
   saveRequest,
   valueOfDraft,
 } from "./config-form.tsx";
@@ -33,6 +36,8 @@ const FIELDS: ConfigFieldFacts[] = [
     env: "PHOEBE_PR_SCOPE",
     type: "enum",
     values: ["phoebe", "all"],
+    listAlternative: true,
+    listPrefill: ["phoebe/"],
     state: "set",
     value: "all",
   },
@@ -118,6 +123,31 @@ describe("one config on the config tab", () => {
     // Unset, the trigger says so and what applies, not a value that reads as set.
     const unset = space([{ ...ROOT[1]!, state: "unset", value: undefined }]);
     expect(unset).toMatch(/data-slot="select-value"[^>]*>not set \(false\)</);
+  });
+
+  test("a field that also takes a list offers one more item than its values (#655)", () => {
+    expect(choicesOf(FIELDS[2]!)).toEqual(["phoebe", "all", "prefixes"]);
+    // A field with no such flag offers only its values — no case names prScope.
+    expect(choicesOf({ ...FIELDS[2]!, listAlternative: undefined })).toEqual(["phoebe", "all"]);
+    // Not picked, so the form draws no list box.
+    expect(space([FIELDS[2]!])).not.toContain('aria-label="prScope prefixes"');
+  });
+
+  test("a config already holding a list opens on the list item, with the list in the box", () => {
+    const listed: ConfigFieldFacts = { ...FIELDS[2]!, value: ["renovate/", "dependabot/"] };
+    const markup = space([listed]);
+
+    expect(markup).toMatch(/data-slot="select-value"[^>]*>prefixes</);
+    expect(markup).toMatch(/aria-label="prScope prefixes"[^>]*value="renovate\/, dependabot\/"/);
+    expect(listDraftOf(listed)).toBe("renovate/, dependabot/");
+  });
+
+  test("a fresh list starts from the prefix the companion read, not from nothing", () => {
+    // The file says "all", so there is no list yet: what the box opens with is
+    // the prefill, which is the literal default made visible before it is edited.
+    expect(listDraftOf(FIELDS[2]!)).toBe("phoebe/");
+    // A config that states the empty list states it, and the box says so.
+    expect(listDraftOf({ ...FIELDS[2]!, value: [] })).toBe("");
   });
 
   test("a text setting with values worth offering is a box that offers them and takes anything", () => {
@@ -285,5 +315,29 @@ describe("what a row's draft saves as", () => {
     expect(valueOfDraft({ type: "string" }, "  ")).toBeNull();
     expect(valueOfDraft({ type: "number" }, "soon")).toBeNull();
     expect(valueOfDraft({ type: "integer" }, "1.5")).toBeNull();
+  });
+
+  test("a list box saves a string array, trimmed, with blanks dropped (#655)", () => {
+    expect(listOfDraft(" renovate/ , dependabot/ ")).toEqual(["renovate/", "dependabot/"]);
+    expect(listOfDraft("renovate/,,")).toEqual(["renovate/"]);
+    // An empty box is an empty list, which is a value — not "nothing to save".
+    expect(listOfDraft("   ")).toEqual([]);
+  });
+
+  test("a list is what the save request carries", () => {
+    expect(
+      saveRequest({
+        install: "/repos/a",
+        field: { path: "prScope" },
+        value: ["renovate/"],
+        fingerprint: "sha256:aa",
+      }),
+    ).toEqual({
+      install: "/repos/a",
+      verb: "config set",
+      path: "prScope",
+      value: ["renovate/"],
+      fingerprint: "sha256:aa",
+    });
   });
 });

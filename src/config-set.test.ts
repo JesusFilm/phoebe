@@ -107,8 +107,18 @@ describe("parseSetValue", () => {
     ["claude", "claude"],
     ["v1.2.3", "v1.2.3"],
     ["{}", "{}"],
+    // A list is a value a setting can be (#655).
+    [`["renovate/"]`, ["renovate/"]],
+    [`[]`, []],
+    [`["renovate/", "dependabot/"]`, ["renovate/", "dependabot/"]],
   ])("%s", (raw, expected) => {
     expect(parseSetValue(raw)).toEqual(expected);
+  });
+
+  test("a list holding something other than a string says which element (#655)", () => {
+    expect(() => parseSetValue(`["renovate/", 7]`)).toThrow(
+      /A list value holds strings only — 7 is not one\./,
+    );
   });
 });
 
@@ -222,6 +232,41 @@ describe("runConfigSet — the verb, with no argv and no stdout", () => {
 
     expect(receipt.state).toBe("written");
     expect(readFileSync(configPath, "utf8")).toContain(`checkCommand: "pnpm run check"`);
+  });
+
+  test("a list lands in the file as a list, and a second edit replaces it (#655)", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const first = await runConfigSet({
+      configPath,
+      path: "prScope",
+      value: ["renovate/"],
+    });
+    expect(first.state).toBe("written");
+    expect(readFileSync(configPath, "utf8")).toContain(`prScope: ["renovate/"]`);
+
+    // The value now in the file is a literal the splice can read, so the next
+    // edit overwrites it rather than refusing it as computed.
+    const second = await runConfigSet({
+      configPath,
+      path: "prScope",
+      value: ["renovate/", "dependabot/"],
+    });
+    expect(second.state).toBe("written");
+    expect(readFileSync(configPath, "utf8")).toContain(`prScope: ["renovate/","dependabot/"]`);
+  });
+
+  test("a list holding a non-string never loads, so the write is refused (#655)", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({
+      configPath,
+      path: "prScope",
+      value: [7] as unknown as string[],
+    });
+
+    expect(receipt).toMatchObject({ state: "refused", reason: "invalid" });
+    expect(readFileSync(configPath, "utf8")).toBe(TENANT);
   });
 
   test("a fingerprint that is not the file's is refused stale, and the file is untouched", async () => {
