@@ -34,7 +34,7 @@ import {
   type PatchValidator,
 } from "./config-edit.ts";
 import { resolveConfig, validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
-import type { EditReceipt } from "./contracts/config-edit.ts";
+import type { ConfigEditValue, EditReceipt } from "./contracts/config-edit.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 
@@ -165,7 +165,7 @@ export type ValidateResult = { ok: true } | { ok: false; reason: string };
 export async function validateConfigPatch(opts: {
   configPath: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   env?: NodeJS.ProcessEnv;
   dataBase?: string;
 }): Promise<ValidateResult> {
@@ -189,17 +189,38 @@ export async function validateConfigPatch(opts: {
   }
 }
 
-/** `<value>` as the config would hold it: JSON when it is JSON, else the string typed. */
-export function parseSetValue(raw: string): string | number | boolean | null {
+/**
+ * `<value>` as the config would hold it: JSON when it is JSON, else the string
+ * typed.
+ *
+ * A JSON array of strings is a value too (#655) — `prScope` takes the branch
+ * prefixes a janitor admits, and this is the channel the console's own list
+ * control writes through. An array holding anything else throws rather than
+ * falling back to the bracketed text: `["a", 2]` is somebody meaning a list, so
+ * answering with the string `'["a", 2]'` would be answering a question they did
+ * not ask.
+ */
+export function parseSetValue(raw: string): ConfigEditValue {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null) return null;
-    if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
-      return parsed;
-    }
+    parsed = JSON.parse(raw);
   } catch {
-    /* not JSON — the operator typed a bare string */
+    // Not JSON — the operator typed a bare string.
+    return raw;
   }
+  if (parsed === null) return null;
+  if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
+    return parsed;
+  }
+  if (Array.isArray(parsed)) {
+    const offender = parsed.find((entry) => typeof entry !== "string");
+    if (offender !== undefined) {
+      throw new Error(`A list value holds strings only — ${JSON.stringify(offender)} is not one.`);
+    }
+    return parsed as string[];
+  }
+  // An object is not a leaf, so it is read as the text it was typed as — the
+  // behaviour `{}` has always had here.
   return raw;
 }
 
@@ -210,7 +231,7 @@ export function parseSetValue(raw: string): string | number | boolean | null {
  */
 export function localEditId(opts: {
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   fingerprint: string;
 }): string {
   return `local:${fingerprintOf(`${opts.path}=${JSON.stringify(opts.value)}@${opts.fingerprint}`).slice(7, 23)}`;
@@ -233,7 +254,7 @@ export type ConfigSetRequest = {
   /** The root config to edit. The one file any arm of this verb may write. */
   configPath: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   /**
    * The `sha256:<hex>` the caller was shown (#503). Absent only for a caller
    * that read the file and writes it in the same breath, with no report in

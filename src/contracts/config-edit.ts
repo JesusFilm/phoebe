@@ -12,6 +12,16 @@
 // and the console that renders what came back.
 
 /**
+ * What one leaf may be set to: a scalar, `null`, or a list of strings.
+ *
+ * The list is the one non-scalar, and it is here because a setting can
+ * legitimately *be* a list — `prScope` takes the branch prefixes a janitor
+ * admits (#655). Nothing else widens: an object would be a block rather than a
+ * leaf, and the splice under this contract replaces one value, not a subtree.
+ */
+export type ConfigEditValue = string | number | boolean | null | readonly string[];
+
+/**
  * One field patch. `path` is a dotted path into the config object, the same path
  * a leaf of the effective-config tree carries, so what a console shows is what
  * it can ask to change.
@@ -25,8 +35,7 @@ export type ConfigEdit = {
   /** Caller-chosen id. The same id twice is the same edit, answered identically. */
   id: string;
   path: string;
-  /** The new value. A leaf is a literal; nothing here carries an object or a function. */
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   /** The `sha256:<hex>` the caller read, from the report's config section. */
   fingerprint: string;
   /** The allowlisted email the relay stamped on the edit; absent for a shell run. */
@@ -62,7 +71,7 @@ export type EditWritten = {
   /** The file that was written. */
   file: string;
   path: string;
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   /** The `sha256:<hex>` of the file as the writer left it — the next edit's check. */
   fingerprint: string;
   at: string;

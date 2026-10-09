@@ -30,6 +30,24 @@ automatically.
    failing. The "chore: version packages" PR is exempt by branch name, since
    consuming the pending changesets is its whole job.
 
+   The CLI is interactive, which is no use to an agent. The file it writes is
+   two lines of frontmatter and a summary, so write it by hand instead —
+   `.changeset/<any-name>.md`, the name yours to pick and consumed at release:
+
+   ```markdown
+   ---
+   "phoebe-agent": patch
+   ---
+
+   What changed, in one line someone reading the CHANGELOG would want.
+   ```
+
+   The gate's failure text says the same thing, so a log is enough to act on —
+   once a maintainer has pasted it in. That edit is to a workflow file, which
+   the token Phoebe holds may not write, so it travels in the body of the pull
+   request for [#655](https://github.com/JesusFilm/phoebe/issues/655), the same
+   way the `package` job below does.
+
 2. **Merge to `main`.** On push to `main`, the [`release`](../.github/workflows/release.yml)
    workflow sees the pending changeset(s) and opens (or updates) a
    **"chore: version packages"** PR. That PR bumps `version` in `package.json`,
@@ -57,6 +75,27 @@ automatically.
 So publishing always waits on a human merging the version PR. Nothing reaches npm
 straight from a feature branch, and no build of the app exists that a release did
 not produce.
+
+## Two things the gate does not catch
+
+**Dot-paths are invisible to it.** `changeset status` resolves changed files to
+packages with a `**` glob, and that glob does not match a path starting with a
+dot. So a PR touching only `.github/workflows/`, `.node-version`,
+`.changeset/config.json` or any other dotfile passes with no changeset and no
+label, while the equivalent npm bump fails. Nothing here depends on that, and
+closing it would change the rule for human CI-only PRs — which is its own
+conversation, not a quiet fix. Know it when you wonder why one dependency PR is
+red and another is green.
+
+**Renovate's changesets are written after the fact, and can be lost.** Renovate
+cannot run a post-upgrade command on the hosted Mend app, so a runtime
+dependency bump opens red on this gate; Phoebe's `checks` kind picks it up and
+pushes a `patch` changeset whose summary is the PR title (`prScope` on that kind
+alone — [`configuration.md`](configuration.md#pr-scan-scope)). A Renovate branch
+holds exactly one commit, so the next rebase recreates it and drops that
+changeset; Phoebe re-adds it on the next cycle. The churn is accepted. Every
+bump no consumer would notice opens labelled `skip-changeset` by Renovate
+itself, so this path only ever runs for the bumps that earn a changelog line.
 
 ## The workspace apps ride the root version
 

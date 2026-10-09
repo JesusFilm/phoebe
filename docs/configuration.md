@@ -112,12 +112,48 @@ feature branches, which is the correct behaviour rather than an error — so the
 The `conflicts` / `checks` / `reviews` work kinds scan open PRs. Two fields
 bound what they touch:
 
-| Field      | Default             | Values / meaning                                                                                                                           |
-| ---------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `prScope`  | `"phoebe"`          | `"phoebe"` = only `branchPrefix` branches; `"all"` = any same-repo PR.                                                                     |
-| `draftPrs` | `"skip-non-phoebe"` | `"skip-non-phoebe"` = drafts on non-Phoebe branches are off-limits; `"skip-all"` = never touch drafts; `"include"` = drafts are fair game. |
+| Field      | Default             | Values / meaning                                                                                                                                              |
+| ---------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prScope`  | `"phoebe"`          | `"phoebe"` = only `branchPrefix` branches; `"all"` = any same-repo PR; a **string array** = exactly the branch prefixes it names.                             |
+| `draftPrs` | `"skip-non-phoebe"` | `"skip-non-phoebe"` = drafts on non-Phoebe branches are off-limits; `"skip-all"` = never touch drafts; `"include"` = drafts are fair game. Tenant-level only. |
 
 Cross-repository PRs (from forks) are always excluded, regardless of scope.
+
+### The array form, and per-kind scope
+
+`prScope: ["renovate/", "dependabot/"]` is the literal set of admitted prefixes,
+matched by `startsWith` exactly the way `branchPrefix` is matched. So
+`"phoebe"` is sugar for `[branchPrefix]`, `[]` admits nothing — the spelling for
+a tenant that only works issues — and a tenant may leave its own prefix out of
+the list on purpose.
+
+Each of the three kinds takes its own `prScope` of the same type, which
+overrides the tenant's for that kind and inherits it when unset. Admitting
+another bot's branches to one janitor is a smaller decision than admitting them
+to all three, and this is how it stays small:
+
+```ts
+export default defineConfig({
+  // …
+  prScope: "phoebe",
+  pipelines: {
+    work: {
+      kinds: {
+        // The checks kind fixes a red gate on Renovate's branches. The
+        // conflicts and reviews kinds never see them.
+        checks: { prScope: ["renovate/"] },
+      },
+    },
+  },
+});
+```
+
+Two things the array does not change. The draft rule still calls a branch
+Phoebe's own by `branchPrefix` alone, so a draft on an admitted `renovate/`
+branch is still skipped under `draftPrs: "skip-non-phoebe"`. And the env
+overrides stay enum-only: `PHOEBE_PR_SCOPE` and the per-kind
+`PHOEBE_<KIND>_PR_SCOPE` take `phoebe` or `all`, and a list is written in the
+config file.
 
 Widening `prScope` is a trust decision, not a tuning knob: a scanned PR's
 branch gets its install hooks executed by the engine
@@ -393,13 +429,14 @@ per-kind `PHOEBE_<KIND>_AGENT`, which outranks even an explicit `provider`. An
 explicitly-bound block is _not_ flipped by the global `PHOEBE_AGENT` — per-kind
 config outranks global env, per the ladder above.
 
-A kind block holds three more knobs. They resolve on their own ladders rather
+A kind block holds four more knobs. They resolve on their own ladders rather
 than the provider one.
 
 | Knob           | Default               | Hot? | Meaning                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                                                                                                                                                                                                                                                                                     |
 | `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field.                                                                                                                                                                                                                                                       |
+| `prScope`      | tenant `prScope`      | cold | Which open PRs _this_ janitor scans ([PR-scan scope](#the-array-form-and-per-kind-scope)). Read only by `conflicts`, `checks` and `reviews`. Ladder: `PHOEBE_<KIND>_PR_SCOPE` (enum only), then this field, then the tenant's.                                                                                                                                                                                |
 | `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                                                                                                                                                                                                                                                                        |
 | `path`         | the shipped built-in  | cold | **Replace this built-in's definition** with a tenant module (#465), loaded exactly like a [custom kind](#custom-work-kinds)'s. The tuning knobs keep applying to whatever definition lands under the name. `issues: "./kinds/my-issues.ts"` is string sugar for `{ path: … }`. The module's definition must name itself after the key. Same trust posture as any kind module: registering it is executing it. |
 | _(any other)_  | —                     | cold | With `path`, the block's remaining root fields are the replacement's `ctx.options` payload. Without `path` they are boot errors — the shipped built-ins never read `ctx.options`.                                                                                                                                                                                                                             |
@@ -468,7 +505,7 @@ kinds: {
   kind is the authority on its own options. Inline entries carry none — close
   over values instead.
 - **Tuning knobs are the same as a built-in's** (`provider`, `model`,
-  `effort`, `promptFile`, `runTimeoutMs`, `disabled`), declared in the same
+  `effort`, `promptFile`, `runTimeoutMs`, `prScope`, `disabled`), declared in the same
   block. The string and inline arms carry none — an inline definition's
   `promptFile`/`model`/`effort` live on the definition itself, and a string
   entry that needs tuning or options graduates to the block form.
@@ -990,7 +1027,7 @@ bootstrapper-only setting never reaches an engine child.
 | `PHOEBE_BLOCKED_BY_PATTERN`               | `blockedByPattern`               | engine       |                                                                                                                          |
 | `PHOEBE_PART_OF_PATTERN`                  | `partOfPattern`                  | engine       |                                                                                                                          |
 | `PHOEBE_REVIEWS_SUCCESS_HEADING`          | `reviewsSuccessHeading`          | engine       |                                                                                                                          |
-| `PHOEBE_PR_SCOPE`                         | `prScope`                        | engine       | `phoebe` \| `all`.                                                                                                       |
+| `PHOEBE_PR_SCOPE`                         | `prScope`                        | engine       | `phoebe` \| `all`. The array form is file-only. Per kind: `PHOEBE_<KIND>_PR_SCOPE`, same two values.                     |
 | `PHOEBE_DRAFT_PRS`                        | `draftPrs`                       | engine       | `skip-non-phoebe` \| `skip-all` \| `include`.                                                                            |
 | `PHOEBE_FEATURE_BRANCH_CATCH_UP`          | `featureBranchCatchUp`           | engine       | `true` \| `false`.                                                                                                       |
 | `PHOEBE_DEFAULT_PROVIDER`                 | `defaultProvider`                | engine       | `cursor` \| `claude` \| `codex`. Per kind: `PHOEBE_<KIND>_PROVIDER`.                                                     |

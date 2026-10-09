@@ -49,6 +49,36 @@ describe("a tenant's settings", () => {
     });
   });
 
+  test("a field that also takes a list says so, and what a fresh list starts from (#655)", () => {
+    const source = config('  prScope: "all",');
+
+    expect(field(source, "prScope")).toMatchObject({
+      listAlternative: true,
+      listPrefill: ["phoebe/"],
+    });
+    // The prefill is this config's own prefix when it states one.
+    const renamed = config('  branchPrefix: "bot/",\n  prScope: "all",');
+    expect(field(renamed, "prScope")?.listPrefill).toEqual(["bot/"]);
+    // Nothing else in the catalogue claims it.
+    expect(field(source, "draftPrs")).not.toHaveProperty("listAlternative");
+  });
+
+  test("a list in the file is the field's value, replaceable like any literal (#655)", () => {
+    const source = config('  prScope: ["renovate/", "dependabot/"],');
+
+    expect(field(source, "prScope")).toMatchObject({
+      state: "set",
+      value: ["renovate/", "dependabot/"],
+    });
+  });
+
+  test("a list holding anything but strings is computed — shown, not offered (#655)", () => {
+    const source = config("  prScope: [BOT_PREFIX],");
+
+    expect(field(source, "prScope")).toMatchObject({ state: "computed" });
+    expect(field(source, "prScope")?.raw).toContain("BOT_PREFIX");
+  });
+
   test("a text setting with values worth offering carries them, and stays a text setting", () => {
     const source = config('  repoSlug: "acme/widget",');
 
@@ -146,12 +176,13 @@ describe("a workspace root's settings", () => {
     expect(field(ROOT, "workspace.tenants", "workspace")).toBeUndefined();
   });
 
-  test("a declared fleet is shown as written", () => {
+  test("a declared fleet is shown, and still not the console's to change", () => {
     const declared = config('  workspace: { tenants: ["a", "b"] },');
 
     expect(field(declared, "workspace.tenants", "workspace")).toMatchObject({
-      state: "computed",
-      raw: '["a", "b"]',
+      state: "set",
+      value: ["a", "b"],
+      locked: "The fleet declaration is a git edit.",
     });
   });
 

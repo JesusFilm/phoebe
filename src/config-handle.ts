@@ -18,6 +18,14 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — vendored JS bundle; no TS declarations
 import { parse } from "./migrations/vendor/babel-parser.mjs";
+import type { ConfigEditValue } from "./contracts/config-edit.ts";
+
+/**
+ * What a plain literal in a config may be — the same union the edit contract
+ * carries, because a value this substrate can read is exactly a value a console
+ * can ask it to write. One name, two depths.
+ */
+export type LiteralValue = ConfigEditValue;
 
 // ------------------------------------------------------ types
 
@@ -55,12 +63,13 @@ export type GetFieldResult =
       /** Raw source text of the value node — always available. */
       raw: string;
       /**
-       * Parsed value for plain literal nodes (string, number, boolean, null).
-       * `undefined` for non-literals (call expression, identifier, template
-       * literal, etc.) — these are readable as `raw` for detection purposes
-       * but cannot be overwritten by `editConfigSetField`.
+       * Parsed value for plain literal nodes: string, number, boolean, null, or
+       * an array of string literals. `undefined` for non-literals (call
+       * expression, identifier, template literal, an array holding any of
+       * those) — these are readable as `raw` for detection purposes but cannot
+       * be overwritten by `editConfigSetField`.
        */
-      literal: string | number | boolean | null | undefined;
+      literal: LiteralValue | undefined;
     };
 
 /**
@@ -339,11 +348,22 @@ function findProp(configObj: BNode, key: string): BNode | null {
   return null;
 }
 
-function extractLiteral(node: BNode): string | number | boolean | null | undefined {
+function extractLiteral(node: BNode): LiteralValue | undefined {
   if (node.type === "StringLiteral") return node.value as string;
   if (node.type === "NumericLiteral") return node.value as number;
   if (node.type === "BooleanLiteral") return node.value as boolean;
   if (node.type === "NullLiteral") return null;
+  // A list of string literals is one value too (#655): `prScope` holds the
+  // branch prefixes a janitor admits, and a form that could read it but not
+  // replace it would show the list and refuse to change it. Only strings —
+  // anything else in the brackets is an expression this cannot stand behind.
+  if (node.type === "ArrayExpression") {
+    const elements = node.elements as (BNode | null)[];
+    if (elements.some((element) => element === null || element.type !== "StringLiteral")) {
+      return undefined;
+    }
+    return elements.map((element) => (element as BNode).value as string);
+  }
   return undefined;
 }
 
@@ -384,15 +404,15 @@ export function editConfigGetFieldAt(source: string, path: readonly string[]): G
 }
 
 /**
- * Set a top-level scalar field in the config object. Creates the field if
- * absent. Refuses when the existing value is non-literal (template literal,
- * call expression, identifier, etc.) so a hand-authored override is never
- * silently clobbered.
+ * Set a top-level literal field in the config object — a scalar, or a list of
+ * strings. Creates the field if absent. Refuses when the existing value is
+ * non-literal (template literal, call expression, identifier, etc.) so a
+ * hand-authored override is never silently clobbered.
  */
 export function editConfigSetField(
   source: string,
   key: string,
-  value: string | number | boolean,
+  value: Exclude<LiteralValue, null>,
 ): ConfigEditResult {
   const resolved = resolveConfigObject(source);
   if (!resolved.ok) return resolved;
@@ -789,17 +809,17 @@ export function editConfigMoveField(
  * `phoebe config set` (#503, #536).
  *
  * Strict-literal in both directions. The value written is `JSON.stringify` of a
- * scalar, so a splice can never introduce an expression; and an existing value
- * that is not already a plain literal is refused rather than overwritten,
- * because a config that computes its own field has an author whose intent a
- * splice cannot read. Object literals the path names but the config does not
+ * scalar or a string list, so a splice can never introduce an expression; and an
+ * existing value that is not already a plain literal is refused rather than
+ * overwritten, because a config that computes its own field has an author whose
+ * intent a splice cannot read. Object literals the path names but the config does not
  * have yet are created around the leaf, which is what makes an absent setting
  * insertable without the operator first writing an empty block by hand.
  */
 export function editConfigSetFieldAt(
   source: string,
   path: readonly string[],
-  value: string | number | boolean | null,
+  value: LiteralValue,
 ): ConfigEditResult {
   if (path.length === 0) return { ok: false, reason: "set needs a path" };
   const resolved = resolveConfigObject(source);

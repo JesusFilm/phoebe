@@ -10,6 +10,7 @@
 import { MAX_RUN_LINES } from "phoebe-agent/contracts";
 import type {
   CompanionEnvironment,
+  ConfigEditValue,
   DeploymentReport,
   FleetCell,
   LocalInstall,
@@ -35,11 +36,12 @@ import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
  *
  * Typed as JSON rather than guessed at, because `300000` and `"300000"` are
  * different values and a form that decided for the operator would be the one
- * place a number quietly became a string. Objects and arrays are refused here
- * rather than by the writer: the writer's own refusal for one is about splicing,
- * and this one is about what somebody meant by putting a brace in a text field.
+ * place a number quietly became a string. A list of strings is a literal here
+ * too (#655) — a setting can be one — so this box reaches the same values
+ * `phoebe config set` does. An object is still refused: that is a block rather
+ * than a leaf, and the splice under it replaces one value.
  */
-export function readLiteral(raw: string): string | number | boolean | null {
+export function readLiteral(raw: string): ConfigEditValue {
   const text = raw.trim();
   if (text.length === 0) throw new Error("A value is a JSON literal; this box is empty.");
   let parsed: unknown;
@@ -52,7 +54,13 @@ export function readLiteral(raw: string): string | number | boolean | null {
   if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
     return parsed;
   }
-  throw new Error("Only one leaf moves at a time, so the value has to be a scalar or null.");
+  if (Array.isArray(parsed)) {
+    if (parsed.every((entry) => typeof entry === "string")) return parsed as string[];
+    throw new Error("A list holds strings only, each in its own quotes.");
+  }
+  throw new Error(
+    "Only one leaf moves at a time, so the value has to be a scalar, a list of strings, or null.",
+  );
 }
 
 /**

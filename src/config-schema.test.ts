@@ -562,6 +562,34 @@ describe("validateUserConfig", () => {
 });
 
 describe("resolveConfig", () => {
+  test("prScope takes a prefix list, and a kind block takes its own (#655)", () => {
+    const resolved = resolveConfig(
+      minimalUserConfig({
+        prScope: ["renovate/"],
+        pipelines: { work: { kinds: { checks: { prScope: [] } } } },
+      }),
+    );
+    expect(resolved.prScope).toEqual(["renovate/"]);
+    expect(workKindOverride(resolved.pipelines["work"]!.kinds, "checks")?.prScope).toEqual([]);
+    // A kind that declares nothing carries no value of its own, which is what
+    // lets the reader fall through to the tenant's.
+    expect(workKindOverride(resolved.pipelines["work"]!.kinds, "conflicts")?.prScope).toBe(
+      undefined,
+    );
+  });
+
+  test("a tenant prScope that is neither spelling is rejected (#655)", () => {
+    expect(() => resolveConfig(minimalUserConfig({ prScope: "renovate/" } as never))).toThrow(
+      /`prScope` must be "phoebe", "all", or an array of branch prefixes/,
+    );
+  });
+
+  test("a prScope entry that is the empty string is rejected, since it would admit every branch (#655)", () => {
+    expect(() => resolveConfig(minimalUserConfig({ prScope: [""] } as never))).toThrow(
+      /`prScope` must be "phoebe", "all", or an array of branch prefixes/,
+    );
+  });
+
   test("fills every optional field from CONFIG_DEFAULTS", () => {
     const resolved = resolveConfig(minimalUserConfig());
     expect(resolved.defaultBranch).toBe(CONFIG_DEFAULTS.defaultBranch);
@@ -911,6 +939,28 @@ describe("work-kind tuning knobs widened by #415", () => {
     reject({ promptFile: "  " }, /promptFile` must be a path string/);
     reject({ runTimeoutMs: -1 }, /runTimeoutMs` must be a positive number/);
     reject({ disabled: "true" }, /disabled` must be a boolean/);
+  });
+
+  test("prScope is a knob a janitor's block may carry (#655)", () => {
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          pipelines: { work: { kinds: { checks: { prScope: ["renovate/"] } } } },
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ pipelines: { work: { kinds: { checks: { prScope: "all" } } } } }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({
+          pipelines: { work: { kinds: { checks: { prScope: ["renovate/", 7] } } } },
+        } as never),
+      ),
+    ).toThrow(/pipelines\.work\.kinds\.checks\.prScope` must be "phoebe", "all", or an array/);
   });
 });
 
