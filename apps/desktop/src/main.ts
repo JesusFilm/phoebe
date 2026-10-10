@@ -18,7 +18,6 @@
 // them.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -78,7 +77,8 @@ import {
 } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { probeDocker } from "./docker.ts";
-import { CONTAINER_UID, grantEnvAccess, tenantEnvPath } from "./env-access.ts";
+import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
+import { tenantFilesOf } from "./tenant-files.ts";
 import { createHarness } from "./harness.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
@@ -519,14 +519,7 @@ app.whenReady().then(
             message: `${repair.tenant} is not a tenant of an install the companion holds`,
           });
         }
-        const config = path.join(child.dir, "phoebe.config.ts");
-        let configText: string | null = null;
-        try {
-          configText = readFileSync(config, "utf8");
-        } catch {
-          configText = null;
-        }
-        const file = tenantEnvPath(child.dir, configText);
+        const file = tenantFilesOf(child.dir).envPath;
         const how = await grantEnvAccess(install.dir, file);
         // The read after it is what the rail redraws from.
         await reads.refresh(dir).catch(() => undefined);

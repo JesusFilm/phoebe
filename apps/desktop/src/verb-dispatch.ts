@@ -33,6 +33,7 @@ import { deploymentDirOf } from "./deployment-dir.ts";
 import { runTargetMigrations, type EnvCommandRunner } from "./engine-migrate.ts";
 import { latestLauncherVersion, registryNpm } from "./harness.ts";
 import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
+import { tenantFilesOf } from "./tenant-files.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
 import { formatResolveFailure, resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
@@ -335,6 +336,10 @@ function emitLines(buffered: string, emit: (line: string) => void): string {
  * folder has to sit under the install and carry a config: a path that walks
  * out of the install, or names a folder with nothing to edit, is refused
  * before anything is read.
+ *
+ * The file answered is the one the child runs on. A child whose root is a
+ * pointer keeps its settings in its asset directory (tenant-files.ts), and a
+ * field written into the pointer would be a field nothing reads.
  */
 function tenantConfigPath(install: string, tenant: string): string {
   const inside = path.relative(install, tenant);
@@ -343,5 +348,5 @@ function tenantConfigPath(install: string, tenant: string): string {
   }
   const file = path.join(tenant, CONFIG_FILE);
   if (!existsSync(file)) throw new Error(`${tenant} has no ${CONFIG_FILE} to change.`);
-  return file;
+  return tenantFilesOf(tenant).configPath;
 }

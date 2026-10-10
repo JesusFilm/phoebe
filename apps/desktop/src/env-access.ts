@@ -20,30 +20,12 @@
 // reaches the container through Docker Desktop, which serves every file
 // readable; there the answer is nothing, and nothing is warned about.
 
-import path from "node:path";
 import type { TenantEnvFacts } from "phoebe-agent/contracts";
-import { TENANT_ENV_FILE } from "../../../bootstrap/tenants.ts";
-import { editConfigGetField } from "../../../src/config-handle.ts";
 import { defaultCommandRunner, type CommandRunner } from "../../../src/deployment-compose.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
 
 /** The user every tenant's engine child runs as inside the container. */
 export const CONTAINER_UID = 10001;
-
-/**
- * Where a tenant's `.env` is: beside its config, or in the folder its
- * `configDir` names (docs/configuration.md → Asset directory).
- */
-export function tenantEnvPath(tenantDir: string, configText: string | null): string {
-  const configDir = configText === null ? null : editConfigGetField(configText, "configDir");
-  const sub =
-    configDir !== null && configDir.ok && configDir.found && typeof configDir.literal === "string"
-      ? configDir.literal
-      : null;
-  return sub === null
-    ? path.join(tenantDir, TENANT_ENV_FILE)
-    : path.join(tenantDir, sub, TENANT_ENV_FILE);
-}
 
 /**
  * One line per file: `<index>|<uid> <gid> <mode>|<acl entries for the container user>`,
