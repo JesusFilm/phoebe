@@ -29,7 +29,7 @@ jobs:
   ready:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Installs the `vp` CLI and the Node version pinned in .node-version,
       # and caches the pnpm store across runs.
@@ -71,7 +71,7 @@ jobs:
   pack-and-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: voidzero-dev/setup-vp@v1
         with:

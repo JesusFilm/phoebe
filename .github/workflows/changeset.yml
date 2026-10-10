@@ -53,7 +53,7 @@ jobs:
       # actions/checkout fetches every head into `refs/remotes/origin/*`, so the
       # base branch exists locally for the diff. At the default depth of 1 only
       # the PR merge ref is fetched and `origin/<base>` would not resolve.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
