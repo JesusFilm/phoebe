@@ -17,7 +17,7 @@ import {
   type IntegrationPr,
   type IssueGraphNode,
 } from "./feature-branch.ts";
-import { config as sampleUserConfig } from "../phoebe.config.ts";
+import { config as sampleUserConfig } from "../.phoebe/phoebe.config.ts";
 import { setResolvedConfig } from "./resolved-config.ts";
 
 const FEATURE_LABEL = resolveConfig(sampleUserConfig).featureLabel;
