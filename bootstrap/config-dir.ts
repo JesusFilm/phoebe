@@ -6,7 +6,8 @@
 // co-located `.env` and prompt/asset files live — to a subdirectory of the dir
 // holding its `phoebe.config.ts`, so a workspace tenant can reuse its
 // standalone `.phoebe/` folder instead of duplicating `.env` and `prompts/` at
-// the repo root.
+// the repo root. When the root config is a pointer the tenant's config is read
+// from there too (#663, `governingConfigPath` in bootstrap/tenants.ts).
 //
 // The value is validated the same way `src/config-schema.ts` validates it, but
 // read here from the untyped mounted config before the engine validates — a

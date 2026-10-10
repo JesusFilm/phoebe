@@ -46,6 +46,12 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
     phoebe.config.ts
     .env
     …
+  child-c/                              # a repo that is also deployed on its own
+    phoebe.config.ts                    # a pointer: configDir, and nothing else
+    .phoebe/
+      phoebe.config.ts                  # the config this tenant runs on
+      .env                              # this tenant's secrets, beside it
+      container/                        # its own deployment's; this workspace never reads it
 ```
 
 | Layer              | Who owns it            | What it holds                                                                                                        |
@@ -53,6 +59,12 @@ workspace-root/                         # bind-mounted :ro → /etc/phoebe
 | **Root**           | deployment / workspace | Shared `engine` + `workspace: { depth }` or `{ tenants }`; deployment-level `.env`; `container/`                     |
 | **Child (tenant)** | each linked repo       | In-tree `phoebe.config.ts` + gitignored `.env` (+ optional `prompts/`); **no** `container/`                          |
 | **Private clone**  | container volumes      | `/data/repos/<owner>/<repo>/`. Each tenant still clones privately, and the host checkout is **not** the working copy |
+
+A child keeps one `phoebe.config.ts` however many ways it is deployed. `child-c`
+above is also a deployment in its own right, so its config lives in `.phoebe/`
+with the rest of that deployment and its root holds a pointer. The workspace
+runs it on the same file its own container does. See
+[One config for a repo deployed two ways](configuration.md#one-config-for-a-repo-deployed-two-ways).
 
 **One supervised engine child per `(tenant × pipeline)` pipeline.** A tenant that
 declares no [pipelines](configuration.md#pipelines) has one `work` pipeline, so the

@@ -4,7 +4,7 @@
 // source is materialized separately (github-engine.ts) and tested there, and the
 // fallback policy itself lives in crash-loop.ts.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -30,7 +30,7 @@ import {
   workspacePipelineFingerprint,
 } from "./boot.ts";
 import { pipelineLabel, type SupervisedPipeline } from "./pipelines.ts";
-import type { DiscoveredTenant } from "./tenants.ts";
+import { diffFleet, discoverWorkspaceTenants, type DiscoveredTenant } from "./tenants.ts";
 import { createSlotBroker } from "./slot-broker.ts";
 import type { DeploymentState } from "./deployment-state.ts";
 
@@ -208,6 +208,58 @@ describe("tenantFingerprint", () => {
     const present = tenantFingerprint(configPath, envPath);
     expect(present).not.toBeNull();
     expect(present).not.toBe(absent);
+  });
+});
+
+describe("reconcile on a tenant whose root is a pointer (#663)", () => {
+  /** A config's one field, read as text so no module cache sits between two polls. */
+  const field = (path: string, name: string): string | undefined =>
+    new RegExp(`${name}: "([^"]*)"`).exec(readFileSync(path, "utf8"))?.[1];
+
+  const poll = async (root: string) => {
+    const discovery = await discoverWorkspaceTenants(
+      root,
+      { depth: 1 },
+      {
+        loadRepoSlug: (path) => {
+          const slug = field(path, "repoSlug");
+          if (slug === undefined) throw new Error(`missing or empty repoSlug in ${path}`);
+          return slug;
+        },
+        loadConfigDir: (path) => field(path, "configDir") ?? ".",
+        readOriginUrl: () => null,
+      },
+    );
+    return discovery.tenants.map((tenant) => ({
+      tenant,
+      fingerprint: tenantFingerprint(tenant.configPath, tenant.envPath),
+    }));
+  };
+
+  test("an edit to the governing config is the change, with the pointer untouched", async () => {
+    const root = mkdtempSync(join(tmpdir(), "phoebe-pointer-fp-"));
+    const widget = join(root, "widget");
+    mkdirSync(join(widget, ".phoebe"), { recursive: true });
+    const pointer = join(widget, "phoebe.config.ts");
+    const governing = join(widget, ".phoebe", "phoebe.config.ts");
+    writeFileSync(pointer, `export default { configDir: ".phoebe" };\n`);
+    writeFileSync(governing, `export default { repoSlug: "acme/widget" };\n`);
+    const pointerBefore = readFileSync(pointer, "utf8");
+
+    const first = await poll(root);
+    expect(first.map((sample) => sample.tenant.configPath)).toEqual([governing]);
+    const previous = new Map(first.map((sample) => [sample.tenant.id, sample.fingerprint]));
+
+    // Nothing moved: the same poll again is no change.
+    expect(diffFleet(previous, await poll(root)).changed).toEqual([]);
+
+    writeFileSync(governing, `export default { repoSlug: "acme/widget", disabled: true };\n`);
+
+    const diff = diffFleet(previous, await poll(root));
+    expect(diff.changed.map((tenant) => tenant.id)).toEqual([widget]);
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(readFileSync(pointer, "utf8")).toBe(pointerBefore);
   });
 });
 

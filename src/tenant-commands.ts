@@ -308,7 +308,8 @@ async function listingForLive(opts: {
     held: false,
     reason: null,
     configValid: opts.configValid,
-    envPresent: envPresent(opts.dir),
+    // The `.env` the child reads, which `configDir` may have moved (#98).
+    envPresent: existsSync(resolvedEnvPath),
     retainedData: existsSync(dataDir),
     pipelines: await listPipelines({
       configPath: opts.configPath,

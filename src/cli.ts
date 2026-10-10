@@ -42,6 +42,7 @@ import {
 import { promptReportingConsent } from "./reporting-consent.ts";
 import { formatInitReport, runInit, type InitProfile } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
+import { governingConfigFor } from "../bootstrap/tenants.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { settingsHelp } from "./settings-catalogue.ts";
 import { parsePipelineName, selectPipeline } from "./pipeline.ts";
@@ -417,6 +418,38 @@ export function assertNotWorkspaceRoot(
   );
 }
 
+/**
+ * Refuse to run the engine on a pointer config (#663): a tenant root that
+ * declares `configDir` and no `repoSlug`, whose asset dir holds the config the
+ * tenant runs on. `resolveConfig` would refuse it anyway, for the five required
+ * fields a pointer never carries, and that message sends the reader off to add
+ * them to the wrong file.
+ *
+ * It refuses rather than following. The engine resolves its prompt paths
+ * against the working directory, so the governing config run from here would
+ * look for them one directory up from where they are. `phoebe boot` spawns the
+ * child in the asset dir for that reason; a run by hand belongs there too.
+ */
+export function assertNotConfigPointer(
+  userConfig: unknown,
+  configPath: string,
+  exists?: (path: string) => boolean,
+): void {
+  let governing: string;
+  try {
+    governing = governingConfigFor(configPath, userConfig as Record<string, unknown>, exists);
+  } catch {
+    // A malformed `configDir` is `resolveConfig`'s to report, in its own words.
+    return;
+  }
+  if (governing === configPath) return;
+  throw new Error(
+    `${configPath} is a pointer: it declares \`configDir\` and no \`repoSlug\`, and the config ` +
+      `this tenant runs on is ${governing}. Run \`phoebe\` from ${dirname(governing)}, where ` +
+      `that config's prompt paths resolve.`,
+  );
+}
+
 /** The crash reporter for the config under cwd, or the silent one (#474). */
 async function reporterForCwd(): Promise<CrashReporter> {
   try {
@@ -609,6 +642,7 @@ export async function runCli(): Promise<void> {
   const configPath = resolveConfigPath(parsed.configPath, process.cwd());
   const userConfig = await loadUserConfig(configPath);
   assertNotWorkspaceRoot(userConfig, configPath);
+  assertNotConfigPointer(userConfig, configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);
   const tenant = resolveConfig(overlaid, { dataBase: resolveDataBase(process.env) });
   warnDeprecatedPipelineAliases(overlaid);

@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { matchConfigFlag } from "./cli-flags.ts";
 import { resolveConfig, type PhoebeConfig, type ResolvedPipeline } from "./config-schema.ts";
+import { followConfigPointer } from "./config-pointer.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 import { resolvePipelineWorkOrder, pipelineOwnedKinds, selectPipeline } from "./pipeline.ts";
@@ -294,7 +295,9 @@ export async function runPipelinesCli(argv: readonly string[]): Promise<void> {
     process.stdout.write(`${JSON.stringify(probe)}\n`);
     return;
   }
-  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+  // Boot hands this the governing config already; a run by hand in a tenant
+  // whose root is a pointer is sent to the same file (#663).
+  const configPath = await followConfigPointer(resolveConfigPath(parsed.configPath, process.cwd()));
   const userConfig = await loadUserConfig(configPath);
   assertTenantConfig(userConfig, configPath);
   const overlaid = applyEnvOverlay(userConfig, process.env);

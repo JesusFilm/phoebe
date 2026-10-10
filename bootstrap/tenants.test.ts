@@ -3,7 +3,7 @@
 // uniqueness.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
@@ -15,6 +15,8 @@ import {
   DIRECTORY_ABSENT_HOLD_REASON,
   DuplicateOriginSlugError,
   DuplicateTenantSlugError,
+  governingConfigFor,
+  governingConfigPath,
   OUT_OF_TREE_CONTAINER_HOLD_REASON,
   readTenantOriginUrl,
   resolveDeclaredTenantDir,
@@ -531,6 +533,225 @@ describe("configDir asset relocation (#98)", () => {
     expect(tenantForDir(tenantDir, "acme/widget", ".phoebe").envPath).toBe(
       join(tenantDir, ".phoebe", TENANT_ENV_FILE),
     );
+  });
+});
+
+describe("the governing config (#663)", () => {
+  /** Write `fields` as a config's default export at `at/phoebe.config.ts`. */
+  function writeFields(at: string, fields: Record<string, unknown>): string {
+    mkdirSync(at, { recursive: true });
+    const path = join(at, TENANT_CONFIG_FILE);
+    writeFileSync(path, `export default ${JSON.stringify(fields)}`);
+    return path;
+  }
+
+  /** What a config on disk declares, read the way boot's loaders hand it over. */
+  function declared(path: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(path, "utf8").replace("export default ", "")) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  /** Loaders that answer from the file at the path they are handed. */
+  const fromDisk = {
+    loadRepoSlug: (path: string) => {
+      const slug = declared(path)["repoSlug"];
+      if (typeof slug !== "string" || slug.length === 0) {
+        throw new Error(`missing or empty repoSlug in ${path}`);
+      }
+      return slug;
+    },
+    loadConfigDir: (path: string) => (declared(path)["configDir"] as string | undefined) ?? ".",
+    loadGitIdentity: (path: string) =>
+      (declared(path)["gitIdentity"] as { name: string; email: string } | undefined) ?? null,
+    readOriginUrl: () => null,
+  };
+
+  test("a pointer root hands the tenant to the config in its asset dir", async () => {
+    const widget = join(dir, "widget");
+    writeFields(widget, { configDir: ".phoebe" });
+    const governing = writeFields(join(widget, ".phoebe"), {
+      repoSlug: "acme/widget",
+      gitIdentity: { name: "Widget Bot", email: "widget@acme.dev" },
+    });
+
+    const discovery = await discoverWorkspaceTenants(dir, { depth: 1 }, fromDisk);
+
+    expect(discovery.holds).toEqual([]);
+    expect(discovery.tenants).toHaveLength(1);
+    const tenant = discovery.tenants[0]!;
+    // The tenant is still the directory the walk found; only its files moved.
+    expect(tenant.id).toBe(widget);
+    expect(tenant.dir).toBe(widget);
+    expect(tenant.slug).toBe("acme/widget");
+    expect(tenant.configPath).toBe(governing);
+    expect(tenant.envPath).toBe(join(widget, ".phoebe", TENANT_ENV_FILE));
+    expect(tenant.gitIdentity).toEqual({ name: "Widget Bot", email: "widget@acme.dev" });
+  });
+
+  test("the declared arm follows a pointer the same way", async () => {
+    const widget = join(dir, "widget");
+    writeFields(widget, { configDir: ".phoebe" });
+    const governing = writeFields(join(widget, ".phoebe"), { repoSlug: "acme/widget" });
+
+    const discovery = await discoverWorkspaceTenants(dir, { tenants: ["widget"] }, fromDisk);
+
+    expect(discovery.holds).toEqual([]);
+    expect(discovery.tenants[0]?.configPath).toBe(governing);
+    expect(discovery.tenants[0]?.declaredPath).toBe("widget");
+  });
+
+  test("a root that declares its own repoSlug governs itself, whatever its asset dir holds", async () => {
+    // The layout a repo had before pointers: a whole config at the root for the
+    // workspace and a second whole config in `.phoebe/` for its own deployment.
+    // An engine upgrade must not hand such a tenant to the other file.
+    const widget = join(dir, "widget");
+    const root = writeFields(widget, { repoSlug: "acme/widget", configDir: ".phoebe" });
+    writeFields(join(widget, ".phoebe"), { repoSlug: "acme/widget-standalone" });
+
+    const discovery = await discoverWorkspaceTenants(dir, { depth: 1 }, fromDisk);
+
+    expect(discovery.tenants[0]?.configPath).toBe(root);
+    expect(discovery.tenants[0]?.slug).toBe("acme/widget");
+    expect(discovery.tenants[0]?.envPath).toBe(join(widget, ".phoebe", TENANT_ENV_FILE));
+  });
+
+  test("a configDir whose directory holds no config leaves the root governing", async () => {
+    const widget = join(dir, "widget");
+    const root = writeFields(widget, { repoSlug: "acme/widget", configDir: ".phoebe" });
+    mkdirSync(join(widget, ".phoebe"));
+
+    const discovery = await discoverWorkspaceTenants(dir, { depth: 1 }, fromDisk);
+
+    expect(discovery.tenants[0]?.configPath).toBe(root);
+  });
+
+  test("a pointer at a directory with no config is held on the missing repoSlug", async () => {
+    const widget = join(dir, "widget");
+    const root = writeFields(widget, { configDir: ".phoebe" });
+
+    const discovery = await discoverWorkspaceTenants(dir, { depth: 1 }, fromDisk);
+
+    expect(discovery.tenants).toEqual([]);
+    expect(discovery.holds).toEqual([
+      { dir: widget, reason: `missing or empty repoSlug in ${root}`, slug: null },
+    ]);
+  });
+
+  test("a configDir declared inside the governing config is skipped, naming the field and the file", async () => {
+    const widget = join(dir, "widget");
+    writeFields(widget, { configDir: ".phoebe" });
+    const governing = writeFields(join(widget, ".phoebe"), {
+      repoSlug: "acme/widget",
+      configDir: "deeper",
+    });
+    const warnings: string[] = [];
+
+    const discovery = await discoverWorkspaceTenants(
+      dir,
+      { depth: 1 },
+      { ...fromDisk, warn: (message) => warnings.push(message) },
+    );
+
+    expect(discovery.tenants).toEqual([]);
+    expect(discovery.holds).toHaveLength(1);
+    expect(discovery.holds[0]?.reason).toContain("`configDir`");
+    expect(discovery.holds[0]?.reason).toContain(governing);
+    expect(warnings.some((warning) => warning.includes(governing))).toBe(true);
+  });
+
+  test("a governing config with no repoSlug is held, and the hold names that file", async () => {
+    const widget = join(dir, "widget");
+    writeFields(widget, { configDir: ".phoebe" });
+    const governing = writeFields(join(widget, ".phoebe"), {});
+
+    const discovery = await discoverWorkspaceTenants(dir, { depth: 1 }, fromDisk);
+
+    expect(discovery.holds).toEqual([
+      { dir: widget, reason: `missing or empty repoSlug in ${governing}`, slug: null },
+    ]);
+  });
+
+  test("two pointers at one repoSlug still abort discovery", async () => {
+    for (const name of ["a", "b"]) {
+      writeFields(join(dir, name), { configDir: ".phoebe" });
+      writeFields(join(dir, name, ".phoebe"), { repoSlug: "acme/same" });
+    }
+
+    await expect(discoverWorkspaceTenants(dir, { depth: 1 }, fromDisk)).rejects.toBeInstanceOf(
+      DuplicateTenantSlugError,
+    );
+  });
+
+  test("governingConfigPath answers the root unless a pointer names a directory holding a config", () => {
+    const widget = join(dir, "widget");
+    const root = join(widget, TENANT_CONFIG_FILE);
+    const nested = join(widget, ".phoebe", TENANT_CONFIG_FILE);
+    const holds = (path: string): boolean => path === nested;
+
+    expect(
+      governingConfigPath({ dir: widget, configDir: ".", rootDeclaresSlug: false, exists: holds }),
+    ).toBe(root);
+    expect(
+      governingConfigPath({
+        dir: widget,
+        configDir: ".phoebe",
+        rootDeclaresSlug: true,
+        exists: holds,
+      }),
+    ).toBe(root);
+    expect(
+      governingConfigPath({
+        dir: widget,
+        configDir: ".phoebe",
+        rootDeclaresSlug: false,
+        exists: () => false,
+      }),
+    ).toBe(root);
+    expect(
+      governingConfigPath({
+        dir: widget,
+        configDir: ".phoebe",
+        rootDeclaresSlug: false,
+        exists: holds,
+      }),
+    ).toBe(nested);
+    // `./` is the root by another spelling, and the root is not its own pointer.
+    expect(
+      governingConfigPath({
+        dir: widget,
+        configDir: "./",
+        rootDeclaresSlug: false,
+        exists: () => true,
+      }),
+    ).toBe(root);
+  });
+
+  test("governingConfigFor reads the rule off a loaded root config", () => {
+    const widget = join(dir, "widget");
+    const root = join(widget, TENANT_CONFIG_FILE);
+    const nested = join(widget, ".phoebe", TENANT_CONFIG_FILE);
+
+    expect(governingConfigFor(root, { configDir: ".phoebe" }, () => true)).toBe(nested);
+    expect(governingConfigFor(root, { configDir: ".phoebe", repoSlug: " " }, () => true)).toBe(
+      nested,
+    );
+    expect(
+      governingConfigFor(root, { configDir: ".phoebe", repoSlug: "acme/widget" }, () => true),
+    ).toBe(root);
+    expect(governingConfigFor(root, {}, () => true)).toBe(root);
+    expect(() => governingConfigFor(root, { configDir: "../elsewhere" }, () => true)).toThrow(
+      /configDir/,
+    );
+  });
+
+  test("tenantForDir carries a governing config the caller found", () => {
+    const widget = join(dir, "widget");
+    const nested = join(widget, ".phoebe", TENANT_CONFIG_FILE);
+    const tenant = tenantForDir(widget, "acme/widget", ".phoebe", nested);
+    expect(tenant.configPath).toBe(nested);
+    expect(tenant.envPath).toBe(join(widget, ".phoebe", TENANT_ENV_FILE));
   });
 });
 
