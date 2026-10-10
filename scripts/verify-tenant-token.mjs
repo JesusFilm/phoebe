@@ -69,7 +69,12 @@ import { join, relative, resolve } from "node:path";
 
 import { readConfigDir } from "../bootstrap/config-dir.ts";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
-import { discoverTenants, TENANT_CONFIG_FILE, tenantForDir } from "../bootstrap/tenants.ts";
+import {
+  discoverTenants,
+  governingConfigFor,
+  TENANT_CONFIG_FILE,
+  tenantForDir,
+} from "../bootstrap/tenants.ts";
 import { loadUserConfig } from "../src/load-config.ts";
 import { enumerateWorkspaceTenants } from "../src/tenant-commands.ts";
 import {
@@ -268,20 +273,24 @@ async function targetForDir(dir, { allowAmbient }) {
   } catch (error) {
     return makeTarget({ display, error: error instanceof Error ? error.message : String(error) });
   }
-  const slug = typeof user.repoSlug === "string" ? user.repoSlug.trim() : "";
-  if (slug.length === 0) {
-    return makeTarget({ display, error: `missing or empty repoSlug in ${configPath}` });
-  }
-  let tenant;
+  // The root may be a pointer (#663): `configDir` then names the directory that
+  // holds the config the tenant runs on, and the slug is declared there.
+  let configDir;
+  let governingPath;
+  let governing = user;
   try {
-    tenant = tenantForDir(
-      absolute,
-      slug,
-      readConfigDir(/** @type {Record<string, unknown>} */ (user)),
-    );
+    const root = /** @type {Record<string, unknown>} */ (user);
+    configDir = readConfigDir(root);
+    governingPath = governingConfigFor(configPath, root);
+    if (governingPath !== configPath) governing = await loadUserConfig(governingPath);
   } catch (error) {
     return makeTarget({ display, error: error instanceof Error ? error.message : String(error) });
   }
+  const slug = typeof governing.repoSlug === "string" ? governing.repoSlug.trim() : "";
+  if (slug.length === 0) {
+    return makeTarget({ display, error: `missing or empty repoSlug in ${governingPath}` });
+  }
+  const tenant = tenantForDir(absolute, slug, configDir, governingPath);
   return makeTarget({ display, slug, ...readTenantToken(tenant.envPath, { allowAmbient }) });
 }
 

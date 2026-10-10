@@ -4,8 +4,14 @@
 // exclusive profile selectors. The full CLI is exercised at the smoke-test
 // level in dev; here we just pin the surface.
 
+import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
-import { assertNotWorkspaceRoot, parseCliArgs, parseInitArgs } from "./cli.ts";
+import {
+  assertNotConfigPointer,
+  assertNotWorkspaceRoot,
+  parseCliArgs,
+  parseInitArgs,
+} from "./cli.ts";
 
 describe("parseCliArgs", () => {
   test("returns empty parsed state for empty argv", () => {
@@ -130,6 +136,35 @@ describe("assertNotWorkspaceRoot", () => {
     expect(call).toThrow(/workspace root/);
     expect(call).toThrow(/phoebe boot/);
     expect(call).toThrow(String.raw`/root/phoebe.config.ts`);
+  });
+});
+
+describe("assertNotConfigPointer (#663)", () => {
+  const root = join("/tenant", "phoebe.config.ts");
+  const governing = join("/tenant", ".phoebe", "phoebe.config.ts");
+  const holdsGoverning = (path: string): boolean => path === governing;
+
+  test("lets a whole config through, with or without a configDir", () => {
+    expect(() => assertNotConfigPointer({ repoSlug: "acme/widget" }, root)).not.toThrow();
+    expect(() =>
+      assertNotConfigPointer(
+        { repoSlug: "acme/widget", configDir: ".phoebe" },
+        root,
+        holdsGoverning,
+      ),
+    ).not.toThrow();
+  });
+
+  test("refuses a pointer, naming the governing config and where to run from", () => {
+    const call = () => assertNotConfigPointer({ configDir: ".phoebe" }, root, holdsGoverning);
+    expect(call).toThrow(/is a pointer/);
+    expect(call).toThrow(governing);
+    expect(call).toThrow(join("/tenant", ".phoebe"));
+  });
+
+  test("leaves a pointer at nothing, and a malformed configDir, to resolveConfig", () => {
+    expect(() => assertNotConfigPointer({ configDir: ".phoebe" }, root, () => false)).not.toThrow();
+    expect(() => assertNotConfigPointer({ configDir: "../up" }, root, () => true)).not.toThrow();
   });
 });
 

@@ -8,7 +8,7 @@
 //     and writes nothing either way.
 //   * A written receipt prints what landed; a refusal prints the manual edit.
 
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, test } from "vite-plus/test";
@@ -18,6 +18,7 @@ import {
   parseConfigSetArgs,
   parseSetValue,
   runConfigSet,
+  runConfigSetCli,
   validateConfigPatch,
 } from "./config-set.ts";
 
@@ -317,5 +318,40 @@ describe("runConfigSet — the verb, with no argv and no stdout", () => {
     );
 
     expect(second).toEqual(first);
+  });
+});
+
+describe("`phoebe config set` on a tenant whose root is a pointer (#663)", () => {
+  test("the write lands in the governing config and the pointer is byte-identical", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-config-set-pointer-"));
+    temps.push(dir);
+    const pointer = join(dir, "phoebe.config.ts");
+    const pointerSource = `export const config = { configDir: ".phoebe" };\n`;
+    writeFileSync(pointer, pointerSource);
+    mkdirSync(join(dir, ".phoebe"));
+    const governing = join(dir, ".phoebe", "phoebe.config.ts");
+    writeFileSync(governing, TENANT);
+
+    // The shell run keeps its ledger on the data volume; point that at the
+    // fixture, and catch the receipt the verb prints.
+    const dataDir = process.env["PHOEBE_DATA_DIR"];
+    const write = process.stdout.write.bind(process.stdout);
+    const printed: string[] = [];
+    process.env["PHOEBE_DATA_DIR"] = join(dir, "data");
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      printed.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await runConfigSetCli(["checkCommand", "pnpm run check", "--config", pointer, "--json"]);
+    } finally {
+      process.stdout.write = write;
+      if (dataDir === undefined) delete process.env["PHOEBE_DATA_DIR"];
+      else process.env["PHOEBE_DATA_DIR"] = dataDir;
+    }
+
+    expect(JSON.parse(printed.join(""))).toMatchObject({ state: "written" });
+    expect(readFileSync(governing, "utf8")).toContain(`checkCommand: "pnpm run check"`);
+    expect(readFileSync(pointer, "utf8")).toBe(pointerSource);
   });
 });

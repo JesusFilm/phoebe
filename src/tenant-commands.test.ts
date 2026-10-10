@@ -191,6 +191,43 @@ describe("listTenants", () => {
     ]);
   });
 
+  test("a child whose root is a pointer is listed from its governing config (#663)", async () => {
+    writeFileSync(
+      join(configDir, "phoebe.config.ts"),
+      `export default { workspace: { depth: 1 }, engine: { source: "local" } };\n`,
+    );
+    const child = join(configDir, "widget");
+    mkdirSync(join(child, ".phoebe"), { recursive: true });
+    writeFileSync(join(child, "phoebe.config.ts"), `export default { configDir: ".phoebe" };\n`);
+    const governing = join(child, ".phoebe", "phoebe.config.ts");
+    writeFileSync(governing, `export default { repoSlug: "acme/widget", disabled: true };\n`);
+    writeFileSync(join(child, ".phoebe", ".env"), "GH_TOKEN=x\n");
+    const asked: string[] = [];
+
+    // No slug or configDir seam: both are read off the two files on disk, the
+    // way `phoebe list` reads them outside a test.
+    const { listings } = await listTenants({
+      configDir,
+      dataBase,
+      readOriginUrl: () => null,
+      loadPipelines: (configPath) => {
+        asked.push(configPath);
+        return [{ name: "work", disabled: false, concurrency: 1, pollIntervalMs: 300_000 }];
+      },
+    });
+
+    expect(listings).toHaveLength(1);
+    expect(listings[0]).toMatchObject({
+      path: "widget",
+      slug: "acme/widget",
+      held: false,
+      configValid: true,
+      envPresent: true,
+      disabled: true,
+    });
+    expect(asked).toEqual([governing]);
+  });
+
   test("workspace walk mode lists valid + held children with observational reasons", async () => {
     // Root declares workspace mode (#83); children live as siblings of the root
     // config. Valid child has status + .env; env-less is

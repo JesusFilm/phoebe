@@ -936,9 +936,17 @@ export type PhoebeUserConfig = {
    * supervisor reads the tenant `.env` from `<dir>/<configDir>/.env` and runs
    * the tenant's engine child with cwd `<dir>/<configDir>` (so relative
    * `promptFiles` resolve there), while still loading THIS config from `<dir>`.
-   * The `phoebe.config.ts` itself must stay at `<dir>` — workspace discovery
-   * skips dotfolders, so it cannot live inside `.phoebe/`. Must be a relative
-   * path with no `..`. The engine never reads it; `resolveConfig` drops it.
+   * A `phoebe.config.ts` must stay at `<dir>` — workspace discovery skips
+   * dotfolders, so a tenant with nothing at its root is never found.
+   *
+   * That root file may be a *pointer* (#663): one that declares `configDir` and
+   * no `repoSlug`. When `<dir>/<configDir>/phoebe.config.ts` exists, that file
+   * governs the tenant instead, so a repo deployed both as a workspace child and
+   * on its own keeps one config. The governing config declares no `configDir`
+   * itself.
+   *
+   * Must be a relative path with no `..`. The engine never reads it;
+   * `resolveConfig` drops it.
    */
   configDir?: string;
   /**
