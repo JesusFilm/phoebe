@@ -226,6 +226,48 @@ describe("what the folder says with no container", () => {
     expect(facts.tenants?.[1]).toMatchObject({ dir: b, configText: null, configFingerprint: null });
   });
 
+  test("a child whose root is a pointer brings the config it runs on, and the .env beside it (#663)", async () => {
+    const a = path.join(DIR, "a");
+    const governing = path.join(a, ".phoebe", "phoebe.config.ts");
+    const texts = new Map([
+      [path.join(DIR, "phoebe.config.ts"), "export default defineConfig({ workspace: {} })\n"],
+      [path.join(a, "phoebe.config.ts"), 'export default { configDir: ".phoebe" };\n'],
+      [governing, 'export default defineConfig({ repoSlug: "acme/a", readyLabel: "go" })\n'],
+    ]);
+    const workspace = {
+      ...RUNNING,
+      workspace: { children: [{ dir: a, name: "a", slug: "acme/a" }] },
+    };
+    const asked: (readonly string[])[] = [];
+    const deps = {
+      exists: (file: string) => texts.has(file) || file === DIR,
+      read: (file: string) => texts.get(file) ?? "",
+      platform: "linux",
+      runner: (spec: { args: readonly string[] }) => {
+        asked.push(spec.args);
+        return Promise.resolve({ code: 0, stdout: "0|1000 1000 644|0\n", stderr: "" });
+      },
+    };
+
+    const facts = await directoryFactsWithAccess(workspace, deps);
+
+    // The form is drawn from, and saved against, the file the tenant runs on.
+    expect(facts.tenants?.[0]).toMatchObject({
+      dir: a,
+      configPath: governing,
+      configText: texts.get(governing),
+    });
+    expect(facts.tenants?.[0]?.configFields?.some((field) => field.path === "readyLabel")).toBe(
+      true,
+    );
+    // The pointer says where the `.env` is; the config it points at does not.
+    expect(asked[0]!.at(-1)).toBe(path.join(a, ".phoebe", ".env"));
+    expect(facts.tenants?.[0]?.env).toEqual({
+      path: path.join(a, ".phoebe", ".env"),
+      access: "readable",
+    });
+  });
+
   test("each tenant carries what the host says about its .env, where the host says anything", async () => {
     const a = path.join(DIR, "a");
     const b = path.join(DIR, "b");
