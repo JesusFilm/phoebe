@@ -58,6 +58,11 @@ services:
       # "claude": without it the CLI has nothing to authenticate with.
       CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:?CLAUDE_CODE_OAUTH_TOKEN is required}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
+      # The `intake` pipeline's Sentry token (the config's `sentry` kind declares
+      # it). A solo child inherits this container's env and the `.env` below is
+      # masked, so a key that is not forwarded here never reaches the pipeline.
+      # Optional: without it `intake` alone refuses to start and `work` runs.
+      SENTRY_AUTH_TOKEN: "${SENTRY_AUTH_TOKEN:-}"
       PHOEBE_ENGINE_DIR: /data/engine
       # The workspace allows electron's postinstall (pnpm-workspace.yaml
       # allowBuilds), which downloads a ~100MB platform binary. This container

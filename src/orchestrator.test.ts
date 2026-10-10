@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import { config as sampleUserConfig } from "../phoebe.config.ts";
+import { config as sampleUserConfig } from "../.phoebe/phoebe.config.ts";
 import { asBranchRef, asPrNumber, asSha, type Sha } from "./branded.ts";
 import { resolveConfig } from "./config-schema.ts";
 import { config as installedConfig, setResolvedConfig } from "./resolved-config.ts";
