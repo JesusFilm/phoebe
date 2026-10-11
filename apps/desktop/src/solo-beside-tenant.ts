@@ -139,15 +139,36 @@ export function initSoloBesideTenant(opts: {
     const moved: MoveResult =
       blocker === null ? moveConfig(tenantSource, fs.read(soloPath)) : { ok: false };
     if (moved.ok) {
+      // The copy under `.phoebe/` first and the pointer second, so the tenant's
+      // only whole config is never the file at risk: a write that fails here
+      // leaves the root as it was. The pointer is the one that can fail alone,
+      // on a root file this user may read and not write. That is not thrown.
+      // The run would stop with two configs, no word about either, and the
+      // `.env` below never copied; it is reported like any other move that did
+      // not happen, and the run goes on.
       fs.write(soloPath, moved.content);
-      fs.write(tenantConfigPath, POINTER_SOURCE);
-      opts.io.stdout(`  moved    ${TENANT_CONFIG_FILE} into ${NESTED_CONFIG}`);
+      const fault = faultOf(() => fs.write(tenantConfigPath, POINTER_SOURCE));
+      // Moved only if the root gave it up. Otherwise it is a copy, and says so.
+      opts.io.stdout(
+        `  ${fault === null ? "moved " : "copied"}   ${TENANT_CONFIG_FILE} into ${NESTED_CONFIG}`,
+      );
       if (moved.added.length > 0) {
         opts.io.stdout(`  added    ${moved.added.join(", ")} from the scaffold`);
       }
-      opts.io.stdout(
-        `  wrote    ${TENANT_CONFIG_FILE} as a pointer: configDir: "${NESTED_DEPLOYMENT_DIR}"`,
-      );
+      if (fault === null) {
+        opts.io.stdout(
+          `  wrote    ${TENANT_CONFIG_FILE} as a pointer: configDir: "${NESTED_DEPLOYMENT_DIR}"`,
+        );
+      } else {
+        opts.io.stderr(
+          `  left     ${TENANT_CONFIG_FILE} where it is: the pointer could not be written (${fault}).`,
+        );
+        opts.io.stderr(
+          `           The folder has two configs now, and the root still governs the tenant. ` +
+            `${NESTED_CONFIG} already holds the config; to finish, replace the root with ` +
+            `\`export default { configDir: "${NESTED_DEPLOYMENT_DIR}" };\`.`,
+        );
+      }
     } else {
       const why = blocker ?? `it could not be edited (${moved.reason ?? "unknown"})`;
       copySettings({ tenantSource, tenantConfigPath, soloPath, outcome, fs, io: opts.io });
@@ -171,6 +192,16 @@ export function initSoloBesideTenant(opts: {
   }
 
   return outcome;
+}
+
+/** Run `step`; answer what it threw, in a line, or null when it threw nothing. */
+function faultOf(step: () => void): string | null {
+  try {
+    step();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 /** Why the tenant's config cannot move into `.phoebe/`, or null when it can. */

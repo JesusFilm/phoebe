@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vite-plus/test";
@@ -245,6 +253,59 @@ describe("a move that would break the tenant is refused, and the settings are co
 
       expect(rootConfig(dir)).toBe(POINTER_SOURCE);
     }
+  });
+});
+
+describe("a move that stops partway", () => {
+  test("a root that cannot be rewritten keeps governing, and the run says how to finish", () => {
+    const dir = tenantFolder(TENANT, "GH_TOKEN=ghp_x\n");
+    const root = path.join(dir, "phoebe.config.ts");
+    const out = io();
+
+    // The disk as it is, except that the root config may be read and not written.
+    const outcome = initSoloBesideTenant({
+      install: dir,
+      io: out,
+      cliVersion: "1.2.3",
+      deps: { packageRoot: PACKAGE_ROOT },
+      fs: {
+        exists: existsSync,
+        read: (file) => readFileSync(file, "utf8"),
+        write: (file, text) => {
+          if (file === root) throw new Error(`EACCES: permission denied, open '${file}'`);
+          writeFileSync(file, text);
+        },
+        copy: copyFileSync,
+      },
+    });
+
+    // Nothing thrown: the scaffold is reported, and the run went on.
+    expect(outcome.created).toContain("phoebe.config.ts");
+    // The tenant's only whole config was never the file at risk.
+    expect(rootConfig(dir)).toBe(TENANT);
+    expect(tenantFilesOf(dir).configPath).toBe(root);
+    // The deployment under `.phoebe/` has its config and its secrets regardless.
+    expect(nestedConfig(dir)).toContain('repoSlug: "acme/widget"');
+    expect(nestedConfig(dir)).toContain('engine: { source: "github", ref: "main" }');
+    expect(readFileSync(path.join(dir, ".phoebe", ".env"), "utf8")).toBe("GH_TOKEN=ghp_x\n");
+
+    // It is called a copy, since the root kept its config, and the fault and
+    // the one step left are both said.
+    expect(out.lines.some((line) => line.includes("copied   phoebe.config.ts into"))).toBe(true);
+    expect(out.lines.some((line) => line.includes("moved "))).toBe(false);
+    expect(
+      out.lines.some(
+        (line) => line.startsWith("!") && line.includes("pointer could not be written (EACCES"),
+      ),
+    ).toBe(true);
+    expect(
+      out.lines.some(
+        (line) =>
+          line.startsWith("!") &&
+          line.includes("the root still governs") &&
+          line.includes('export default { configDir: ".phoebe" };'),
+      ),
+    ).toBe(true);
   });
 });
 
