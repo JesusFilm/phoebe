@@ -35,6 +35,7 @@ import {
 } from "./config-edit.ts";
 import { resolveConfig, validateUserConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import type { ConfigEditValue, EditReceipt } from "./contracts/config-edit.ts";
+import { followConfigPointer } from "./config-pointer.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 
@@ -330,7 +331,9 @@ export async function runConfigSetCli(argv: readonly string[]): Promise<void> {
         "See `phoebe config set --help`.",
     );
   }
-  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+  // A pointer's field is its governing config's field (#663): the write goes to
+  // the file the tenant runs on, and the pointer stays one line.
+  const configPath = await followConfigPointer(resolveConfigPath(parsed.configPath, process.cwd()));
   const value = parseSetValue(parsed.value);
 
   if (parsed.validate) {

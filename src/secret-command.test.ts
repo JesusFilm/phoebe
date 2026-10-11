@@ -149,6 +149,30 @@ describe("which tenant", () => {
   });
 });
 
+describe("a workspace child whose root is a pointer (#663)", () => {
+  test("its secrets resolve through the governing config and the .env beside it", async () => {
+    writeFileSync(join(root, "phoebe.config.ts"), `export default { workspace: { depth: 1 } };\n`);
+    const child = join(root, "widget");
+    mkdirSync(join(child, ".phoebe"), { recursive: true });
+    writeFileSync(join(child, "phoebe.config.ts"), `export default { configDir: ".phoebe" };\n`);
+    const governing = join(child, ".phoebe", "phoebe.config.ts");
+    writeFileSync(governing, TENANT_CONFIG);
+
+    const target = await resolveSecretTarget({
+      configPath: join(root, "phoebe.config.ts"),
+      dataBase,
+      processEnv: env(),
+      tenant: "acme/widget",
+    });
+
+    expect(target.slug).toBe("acme/widget");
+    expect(target.configPath).toBe(governing);
+    expect(target.envPath).toBe(join(child, ".phoebe", ".env"));
+    expect(target.stateDir).toBe(stateDir());
+    expect(target.settable).toContain("ANTHROPIC_API_KEY");
+  });
+});
+
 describe("set, clear, ls", () => {
   const run = async (
     argv: readonly string[],

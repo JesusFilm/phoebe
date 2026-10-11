@@ -36,6 +36,7 @@ import {
   type EnvLayers,
 } from "./effective-config.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
+import { followConfigPointer } from "./config-pointer.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 import { tenantSecrets, tenantStateDir } from "./secret-store.ts";
@@ -355,7 +356,9 @@ export async function runConfigCli(argv: readonly string[]): Promise<void> {
     process.stdout.write(CONFIG_HELP_TEXT);
     return;
   }
-  const configPath = resolveConfigPath(parsed.configPath, process.cwd());
+  // Run in a tenant whose root is a pointer, this reports the config the tenant
+  // runs on rather than the pointer's one field (#663).
+  const configPath = await followConfigPointer(resolveConfigPath(parsed.configPath, process.cwd()));
   const report = await collectEffectiveConfig({
     configPath,
     dataBase: resolveDataBase(process.env),
