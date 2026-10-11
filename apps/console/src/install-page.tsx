@@ -365,9 +365,9 @@ export function InstallTab({
           <p className="muted">
             A workspace runs this folder&apos;s container, so there is nothing here to start. It can
             also be a deployment of its own: the scaffold goes into{" "}
-            <span className="mono">.phoebe/</span> under the folder with the tenant&apos;s settings
-            carried over, and the tenant entry points the workspace at that folder for its{" "}
-            <span className="mono">.env</span> and prompts, so the two share one set. It stays a
+            <span className="mono">.phoebe/</span> under the folder, the tenant&apos;s config moves
+            in with it, and the root is left a pointer to it, so the workspace and the new
+            deployment run on one config and one <span className="mono">.env</span>. It stays a
             tenant either way.
           </p>
           <div className="verbs">

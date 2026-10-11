@@ -33,9 +33,10 @@ import {
 import { readDockerfilePin, type DockerfilePin } from "../../../src/upgrade.ts";
 import type { StoredInstall } from "./companion-file.ts";
 import { configFieldsOf } from "./config-fields.ts";
-import { probeEnvAccess, tenantEnvPath, type EnvAccessDeps } from "./env-access.ts";
+import { probeEnvAccess, type EnvAccessDeps } from "./env-access.ts";
 import { HARNESS_NAMES, readHarnessPins } from "./harness.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { tenantFilesOf } from "./tenant-files.ts";
 import { workspaceBlockOf, workspaceChildren } from "./workspace-children.ts";
 import { wslLocationOf, wslRunner } from "./wsl.ts";
 
@@ -247,9 +248,11 @@ export function directoryFacts(
 
   // A workspace's children, each config read the same way. The list is the
   // install's own (workspace-children.ts), so a folder that is not one of its
-  // children is never read here.
+  // children is never read here. The config is the one the child runs on,
+  // which a pointer at its root may have put in its asset directory
+  // (tenant-files.ts).
   const tenants = (install.workspace?.children ?? []).map((child) => {
-    const childPath = path.join(child.dir, TENANT_CONFIG_FILE);
+    const childPath = tenantFilesOf(child.dir, { exists, read }).configPath;
     let text: string | null = null;
     try {
       if (exists(childPath)) text = read(childPath);
@@ -319,7 +322,7 @@ export async function directoryFactsWithAccess(
 ): Promise<InstallDirectoryFacts> {
   const facts = directoryFacts(install, deps);
   if (facts.tenants === undefined || facts.tenants.length === 0) return facts;
-  const files = facts.tenants.map((tenant) => tenantEnvPath(tenant.dir, tenant.configText));
+  const files = facts.tenants.map((tenant) => tenantFilesOf(tenant.dir, deps).envPath);
   const access = await probeEnvAccess(install.dir, files, deps);
   return {
     ...facts,

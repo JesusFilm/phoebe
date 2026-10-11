@@ -30,9 +30,18 @@ installed.
 
 A folder that is already a workspace's tenant is not offered `init` over the
 top of its config. It is offered a deployment of its own beside the tenant: the
-scaffold goes into `.phoebe/` under the folder with the tenant's settings
-carried over, and the tenant entry points the workspace at that folder for its
-`.env` and prompts, so the two share one set. The folder stays a tenant.
+scaffold goes into `.phoebe/` under the folder, the tenant's config moves in
+with it, and the root is left a
+[pointer](configuration.md#one-config-for-a-repo-deployed-two-ways) to it, so
+the workspace and the new deployment run on one config and one `.env`. The
+folder stays a tenant.
+
+The move is refused where it would break the tenant, and the tenant's top-level
+settings are copied into `.phoebe/` in its place: a config that names a file
+relative to itself, a config already sitting in `.phoebe/`, a `configDir` that
+names some other folder, or a workspace above on an older `phoebe-agent` than
+the companion, which may hold a tenant whose root is a pointer. The run says
+which, and what is left to do by hand to get back to one config.
 
 The companion adds no listener to the deployment container. Main spawns
 `docker compose` exactly as you would at a shell, and reads through
