@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   applyUnitEvent,
   createEmitUnitEvent,
+  createForgetInherited,
   emptyStatus,
+  forgetInherited,
   formatUnitEventLine,
   readStatus,
   statusPathFor,
@@ -228,6 +230,179 @@ describe("createEmitUnitEvent", () => {
     });
     expect(() => emit({ unit: { kind: "issues", id: "1" }, event: "started" })).not.toThrow();
     expect(lines.some((l) => l.includes("could not refresh status.json"))).toBe(true);
+  });
+});
+
+// #670: the snapshot outlives the process that wrote it, and a unit only
+// leaves it on its own settling event. A child killed mid-unit never emits one.
+// On this repo's own deployment a `conflicts` unit sat in `currentUnits` for
+// three weeks, across every relaunch, and the report called the pipeline wedged
+// the whole time — including minutes after a fresh boot with nothing running.
+describe("forgetInherited", () => {
+  const stranded: StatusSnapshot = {
+    tenant: "acme/widget",
+    pipeline: "work",
+    currentUnits: [
+      {
+        unit: { kind: "conflicts", id: "pr:565" },
+        startedAt: "2026-09-18T18:01:06.007Z",
+        runBudgetMs: 2_700_000,
+      },
+    ],
+    waitingForSlot: false,
+    lastError: "push rejected",
+    lastTimeoutAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-10-09T03:12:17.540Z",
+  };
+  const BOOT = "2026-10-09T19:09:38.000Z";
+
+  test("a unit a dead child never settled is dropped, and named", () => {
+    const inherited = forgetInherited(stranded, BOOT);
+    expect(inherited?.next.currentUnits).toEqual([]);
+    expect(inherited?.stranded).toEqual(stranded.currentUnits);
+    // The write is an event like any other: a reader sees the file moved.
+    expect(inherited?.next.updatedAt).toBe(BOOT);
+  });
+
+  test("history is not a claim about now, so it survives", () => {
+    const next = forgetInherited(stranded, BOOT)?.next;
+    expect(next?.lastError).toBe("push rejected");
+    expect(next?.lastTimeoutAt).toBe("2026-09-01T00:00:00.000Z");
+    expect(next?.tenant).toBe("acme/widget");
+    expect(next?.pipeline).toBe("work");
+  });
+
+  test("a slot wait a dead pass left behind is cleared too", () => {
+    // Only `started` clears the flag, so a pass that drained while parked on
+    // the broker leaves it set — and a set flag suppresses the `no pass` clause
+    // that would notice the next child's loop stopping.
+    const parked = { ...stranded, currentUnits: [], waitingForSlot: true };
+    const inherited = forgetInherited(parked, BOOT);
+    expect(inherited?.next.waitingForSlot).toBe(false);
+    expect(inherited?.wasWaitingForSlot).toBe(true);
+    expect(inherited?.stranded).toEqual([]);
+  });
+
+  test("a snapshot claiming nothing is left alone", () => {
+    const clean = { ...stranded, currentUnits: [] };
+    expect(forgetInherited(clean, BOOT)).toBeNull();
+    expect(forgetInherited(emptyStatus("acme/widget", "work"), BOOT)).toBeNull();
+  });
+});
+
+describe("createForgetInherited", () => {
+  const snapshotWith = (over: Partial<StatusSnapshot>): StatusSnapshot => ({
+    ...emptyStatus("acme/widget", "work"),
+    updatedAt: "2026-10-09T03:12:17.540Z",
+    ...over,
+  });
+  const harness = (found: StatusSnapshot | null, write?: () => void) => {
+    const lines: string[] = [];
+    const reported: StatusSnapshot[] = [];
+    let onDisk = found;
+    let writes = 0;
+    const forget = createForgetInherited({
+      tenant: "acme/widget",
+      pipeline: "work",
+      statusPath: "/tmp/state/work/status.json",
+      now: () => "2026-10-09T19:09:38.000Z",
+      log: (line) => lines.push(line),
+      read: () => onDisk,
+      write: (_path, next) => {
+        write?.();
+        writes += 1;
+        onDisk = next;
+      },
+      onSnapshot: (snapshot) => reported.push(snapshot),
+    });
+    return { forget, lines, reported, onDisk: () => onDisk, writes: () => writes };
+  };
+
+  test("each stranded unit is logged once, with when it had started", () => {
+    const h = harness(
+      snapshotWith({
+        currentUnits: [
+          {
+            unit: { kind: "conflicts", id: "pr:565" },
+            startedAt: "2026-09-18T18:01:06.007Z",
+            runBudgetMs: 2_700_000,
+          },
+          {
+            unit: { kind: "issues", id: "issue:9" },
+            startedAt: "2026-09-18T18:02:00.000Z",
+            runBudgetMs: null,
+          },
+        ],
+      }),
+    );
+    h.forget();
+
+    expect(h.onDisk()?.currentUnits).toEqual([]);
+    expect(h.lines).toEqual([
+      "[phoebe:acme/widget:work] dropped conflicts pr:565 from status.json — started " +
+        "2026-09-18T18:01:06.007Z by a process that is gone, and never settled.",
+      "[phoebe:acme/widget:work] dropped issues issue:9 from status.json — started " +
+        "2026-09-18T18:02:00.000Z by a process that is gone, and never settled.",
+    ]);
+  });
+
+  test("the supervisor hears the cleared snapshot, so the report stops saying wedged", () => {
+    const h = harness(
+      snapshotWith({
+        currentUnits: [
+          {
+            unit: { kind: "conflicts", id: "pr:565" },
+            startedAt: "2026-09-18T18:01:06.007Z",
+            runBudgetMs: 1,
+          },
+        ],
+      }),
+    );
+    h.forget();
+    expect(h.reported).toHaveLength(1);
+    expect(h.reported[0]?.currentUnits).toEqual([]);
+  });
+
+  test("a cleared slot wait is said in the log", () => {
+    const h = harness(snapshotWith({ waitingForSlot: true }));
+    h.forget();
+    expect(h.onDisk()?.waitingForSlot).toBe(false);
+    expect(h.lines).toEqual([
+      "[phoebe:acme/widget:work] cleared a slot wait in status.json — the pass that was parked is gone.",
+    ]);
+  });
+
+  test("a clean snapshot, or none at all, is not written and not announced", () => {
+    for (const found of [snapshotWith({}), null]) {
+      const h = harness(found);
+      h.forget();
+      expect(h.writes()).toBe(0);
+      expect(h.lines).toEqual([]);
+      expect(h.reported).toEqual([]);
+    }
+  });
+
+  test("a write that fails is one log line, never a boot that failed", () => {
+    const h = harness(
+      snapshotWith({
+        currentUnits: [
+          {
+            unit: { kind: "conflicts", id: "pr:565" },
+            startedAt: "2026-09-18T18:01:06.007Z",
+            runBudgetMs: 1,
+          },
+        ],
+      }),
+      () => {
+        throw new Error("EROFS");
+      },
+    );
+    expect(() => h.forget()).not.toThrow();
+    expect(h.lines).toEqual([
+      "[phoebe:acme/widget:work] could not clear inherited state from status.json — Error: EROFS",
+    ]);
+    // Nothing was written, so nothing is reported as if it had been.
+    expect(h.reported).toEqual([]);
   });
 });
 
