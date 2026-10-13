@@ -485,12 +485,13 @@ against each other — one that polls every 15 minutes is not sick for being
 quieter than the one beside it.
 
 A snapshot outlives the process that wrote it, and a child killed mid-unit never
-gets to say the unit ended. So each child, as it starts, drops whatever its
-pipeline's snapshot still lists as in flight or waiting for a slot, and logs every
-unit it drops with the time that unit had started. Until that next start the file
-still names the dead unit, which is why a stopped deployment can read `wedged?
-unit past its budget` with nothing running. A `--dry-run` never does this: it may
-be a preview beside a child whose unit is alive.
+gets to say the unit ended. So each child in persistent mode, as it starts, drops
+whatever its pipeline's snapshot still lists as in flight or waiting for a slot,
+and logs every unit it drops with the time that unit had started. Until that next
+start the file still names the dead unit, which is why a stopped deployment can
+read `wedged? unit past its budget` with nothing running. A `--dry-run` or a
+`--run-once` never does this: either may be a second process beside a child whose
+unit is alive.
 
 `(stale)` marks a `state/<name>/` directory this tenant's config no longer
 declares: a renamed or deleted pipeline whose snapshot outlived it. It is

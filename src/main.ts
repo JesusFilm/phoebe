@@ -2223,10 +2223,17 @@ export function createEngine(options: EngineOptions): Engine {
     // pipeline wedged for good. This process has admitted nothing yet, and it is
     // the pipeline's only writer — the supervisor awaits the old child's exit
     // before it spawns this one — so whatever the file claims is in flight is
-    // nobody's. Not under `--dry-run`, which is how an agent previews selection
-    // from inside the container while the real child has a unit running, and
-    // not on the host, where no unit can run and so none can be stranded.
-    if (inContainer && !dryRun) options.forgetInherited?.();
+    // nobody's.
+    //
+    // That holds for the daemon and for nothing else, so nothing else does it.
+    // `--dry-run` is how an agent previews selection from inside the container
+    // while the real child has a unit running. `--run-once` may be a second
+    // process beside the daemon too — `docker compose run --rm phoebe
+    // --run-once` is a second container on the same data volume, with a
+    // supervisor of its own — and clearing there would hide the daemon's live
+    // unit from the report for the rest of that unit's run. And on the host no
+    // unit can run, so none can be stranded.
+    if (inContainer && !dryRun && !runOnce) options.forgetInherited?.();
 
     // Boot-time login identity cross-check (#346): warn when the resolved login
     // differs from the author on Phoebe's own newest unit-marker comment. An

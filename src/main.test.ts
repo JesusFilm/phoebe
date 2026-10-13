@@ -3098,6 +3098,29 @@ describe("a snapshot inherited from a child that is gone", () => {
     });
     expect(calls).toBe(0);
   });
+
+  test("nor does --run-once, which may be a second process beside the daemon", async () => {
+    // `docker compose run --rm phoebe --run-once` is a second container on the
+    // same data volume, with a supervisor of its own. Clearing here would hide
+    // the daemon's live unit from the report for the rest of that unit's run.
+    let calls = 0;
+    await runCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [],
+        // The boot-time login cross-check (#346) runs on an executing cycle.
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      },
+      env: { GH_TOKEN: "t" },
+      inContainer: true,
+      run: { runOnce: true, dryRun: false },
+      forgetInherited: () => {
+        calls += 1;
+      },
+    });
+    expect(calls).toBe(0);
+  });
 });
 
 describe("rolling top-up inside one pipeline", () => {
