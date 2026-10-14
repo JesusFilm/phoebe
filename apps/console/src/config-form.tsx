@@ -265,6 +265,25 @@ export function listDraftOf(field: ConfigFieldFacts): string {
   return (current ?? []).join(", ");
 }
 
+/** Whether two lists hold the same entries in the same order. */
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((entry, index) => entry === b[index]);
+}
+
+/**
+ * Whether a row's drafts differ from what the file holds — what turns its Save
+ * on. A list is compared as the list it parses to, so retyping `a, b` as `a,b`
+ * is no change and offers no Save that would only rewrite the spacing.
+ */
+export function draftChanged(field: ConfigFieldFacts, draft: string, listDraft: string): boolean {
+  if (offersList(field) && draft === LIST_ITEM) {
+    return (
+      draft !== draftOf(field) || !sameList(listOfDraft(listDraft), listOfDraft(listDraftOf(field)))
+    );
+  }
+  return draft.trim() !== draftOf(field);
+}
+
 /** A comma-separated list as the config holds it: trimmed, with blanks dropped. */
 export function listOfDraft(draft: string): string[] {
   return draft
@@ -313,9 +332,7 @@ export function ConfigFieldRow({
   // item name rather than anything the config would hold.
   const listing = offersList(field) && draft === LIST_ITEM;
   const value: ConfigEditValue = listing ? listOfDraft(listDraft) : valueOfDraft(field, draft);
-  const changed = listing
-    ? draft !== draftOf(field) || listDraft.trim() !== listDraftOf(field).trim()
-    : draft.trim() !== draftOf(field);
+  const changed = draftChanged(field, draft, listDraft);
   const choices = choicesOf(field);
   const fallback = field.default === undefined ? "not set" : String(field.default);
   const copy = settingCopy(field.path);

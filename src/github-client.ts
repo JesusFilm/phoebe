@@ -757,9 +757,12 @@ export function createGitHubClient({
    * kinds, so it has to admit whatever the widest of them admits; each janitor
    * then turns away what its own scope does not (src/work-kinds/pr-stack.ts).
    *
-   * Built per call, like `isPrInScope`'s own default, because `config` is
-   * installed after this module is imported.
+   * Resolved once, as the client is built, so a `PHOEBE_<KIND>_PR_SCOPE`
+   * outside `phoebe`/`all` stops the engine at startup rather than on its first
+   * cycle (src/pr-scope.ts).
    */
+  const listingScope = scanScope();
+
   function scanScope(): PrScopeConfig {
     return {
       branchPrefix: config.branchPrefix,
@@ -788,7 +791,7 @@ export function createGitHubClient({
    * branch at a time.
    */
   function openPrsBasedOn(base: string): OpenPhoebePr[] {
-    const scope = scanScope();
+    const scope = listingScope;
     type GhOpenPr = {
       number: number;
       headRefName: string;

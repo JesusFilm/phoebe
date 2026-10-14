@@ -129,9 +129,13 @@ const TENANT_ROWS: readonly Row[] = SETTINGS.filter(
  */
 function listPrefillOf(source: string, prefillFrom: string): readonly string[] {
   const read = editConfigGetFieldAt(source, prefillFrom.split("."));
-  const stated = read.ok && read.found ? read.literal : undefined;
+  // The default stands in only for a field the file leaves out. A computed one
+  // (`branchPrefix: process.env.PREFIX!`) has a value this cannot read, and the
+  // shipped default would be a guess at it.
   const value =
-    typeof stated === "string" ? stated : (CONFIG_DEFAULTS as Record<string, unknown>)[prefillFrom];
+    read.ok && read.found
+      ? read.literal
+      : (CONFIG_DEFAULTS as Record<string, unknown>)[prefillFrom];
   return typeof value === "string" && value !== "" ? [value] : [];
 }
 

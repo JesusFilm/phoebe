@@ -52,11 +52,16 @@ export type WorkKindName = (typeof WORK_KIND_NAMES)[number];
  */
 export type PrScope = "phoebe" | "all" | readonly string[];
 
-/** Whether `value` is a legal {@link PrScope}. */
+/**
+ * Whether `value` is a legal {@link PrScope}. A list entry may not be empty,
+ * which would admit every branch, nor hold whitespace, which no branch name can
+ * — `"  "` or `" renovate/"` would admit nothing and say nothing about it.
+ */
 export function isPrScope(value: unknown): value is PrScope {
   if (value === "phoebe" || value === "all") return true;
   return (
-    Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0)
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string" && entry.length > 0 && !/\s/.test(entry))
   );
 }
 
@@ -68,7 +73,7 @@ export function assertPrScope(value: unknown, at: string): void {
   if (isPrScope(value)) return;
   throw new Error(
     `phoebe.config.ts \`${at}\` must be "phoebe", "all", or an array of branch ` +
-      `prefixes — got ${JSON.stringify(value)}.`,
+      `prefixes, each non-empty and free of whitespace — got ${JSON.stringify(value)}.`,
   );
 }
 
