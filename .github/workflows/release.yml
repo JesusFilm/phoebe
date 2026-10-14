@@ -64,6 +64,7 @@ jobs:
         run: npm install -g npm@11
 
       - name: Create Version Packages PR or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           version: vp run version-packages
@@ -74,3 +75,21 @@ jobs:
           # Only the GitHub token is needed. Publish auth comes from the OIDC
           # token minted via `id-token: write` above — no NPM_TOKEN.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # changesets names its tag after the package once a repo is a workspace:
+      # `phoebe-agent@x.y.z`. The engine's own `upgrade` finds releases by the
+      # `vX.Y.Z` tags this repo carried before it had a workspace, on every
+      # deployment already in the field (src/upgrade.ts, RELEASE_TAG), so a
+      # release with only the first tag is invisible to it. Each release gets
+      # both. The GitHub Release stays on the changesets tag, where the desktop
+      # update feed downloads from (apps/desktop/src/update-feed.ts).
+      - name: Push the vX.Y.Z tag the engine's upgrade looks for
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null; then
+            echo "${tag} is already on origin"
+            exit 0
+          fi
+          git tag -a "${tag}" -m "${tag}"
+          git push origin "${tag}"

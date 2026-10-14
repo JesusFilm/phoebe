@@ -12,7 +12,9 @@
 //               Path is *not* owner/repo layout (#58 path↔slug validation
 //               does not apply). Origin is a best-effort cross-check (#92).
 //
-// In workspace mode the authoritative slug is the child's in-tree config (#85).
+// In workspace mode the authoritative slug is the child's in-tree config (#85):
+// the `phoebe.config.ts` at its root, or the one in its asset dir when the root
+// is a pointer to it (#663, `governingConfigPath`).
 // Solo mode leaves the slug unknown to the supervisor (null).
 //
 // This module only *discovers* the current set. The reconcile diff (added /
@@ -21,9 +23,9 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
-import { DEFAULT_TENANT_CONFIG_DIR } from "./config-dir.ts";
+import { DEFAULT_TENANT_CONFIG_DIR, readConfigDir } from "./config-dir.ts";
 import { type GitIdentity } from "./git-identity.ts";
 import { isInsideContainer } from "../src/execution-gate.ts";
 import { isExplicitWorkspace, type ResolvedWorkspace } from "./workspace-source.ts";
@@ -57,7 +59,11 @@ export type DiscoveredTenant = {
   slug: string | null;
   /** Directory the engine child runs in (cwd): holds the config, `.env`, `prompts/`. */
   dir: string;
-  /** Absolute path to the tenant's `phoebe.config.ts`. */
+  /**
+   * Absolute path to the `phoebe.config.ts` this tenant runs on: the one at
+   * `dir`, or the one in its asset dir when the root is a pointer (#663,
+   * {@link governingConfigPath}).
+   */
   configPath: string;
   /** Absolute path to the tenant's co-located `.env`. */
   envPath: string;
@@ -242,24 +248,87 @@ function tenantDirId(configDir: string, dir: string): string {
   return isAbsolute(dir) ? normalize(dir) : resolve(configDir, dir);
 }
 
+/** Whether a loaded config declares a `repoSlug` worth using. */
+function declaresRepoSlug(config: Record<string, unknown>): boolean {
+  const slug = config["repoSlug"];
+  return typeof slug === "string" && slug.trim().length > 0;
+}
+
+/**
+ * The config a tenant directory runs on (#663).
+ *
+ * A repository that is both a workspace child and a deployment in its own right
+ * used to keep two configs: the one at its root, which the workspace read, and
+ * the one in its asset dir (`.phoebe/`), which its own deployment read. Nothing
+ * kept them in step, and they drifted every time one was edited (#389).
+ *
+ * So the root may be a *pointer*: a `phoebe.config.ts` that declares `configDir`
+ * and no `repoSlug` of its own. When the asset dir it names holds a
+ * `phoebe.config.ts`, that file governs the tenant, and one file describes the
+ * repository however it is deployed. The pointer stays at the root because the
+ * discovery walk skips dotfolders and needs something there to find.
+ *
+ * A root that still declares `repoSlug` is a whole config and governs itself,
+ * whatever sits in its asset dir. That is every tenant that worked before this
+ * existed — including one whose asset dir carries a second, full config for a
+ * standalone deployment — so none of them changes hands on an engine upgrade.
+ */
+export function governingConfigPath(opts: {
+  /** The tenant's directory: where its root `phoebe.config.ts` is. */
+  dir: string;
+  /** The root config's `configDir`, `"."` when it declares none. */
+  configDir: string;
+  /** Whether the root config declares a `repoSlug` of its own. */
+  rootDeclaresSlug: boolean;
+  exists?: (path: string) => boolean;
+}): string {
+  const rootConfigPath = join(opts.dir, TENANT_CONFIG_FILE);
+  if (opts.rootDeclaresSlug || opts.configDir === DEFAULT_TENANT_CONFIG_DIR) return rootConfigPath;
+  const candidate = join(opts.dir, opts.configDir, TENANT_CONFIG_FILE);
+  // A `configDir` spelled `./` or `sub/..` would name the root file itself.
+  if (resolve(candidate) === resolve(rootConfigPath)) return rootConfigPath;
+  return (opts.exists ?? existsSync)(candidate) ? candidate : rootConfigPath;
+}
+
+/**
+ * {@link governingConfigPath} for a root config that is already loaded — what a
+ * host verb handed one tenant's `phoebe.config.ts` asks before it reads or
+ * writes a field. Throws on a malformed `configDir`, as `readConfigDir` does.
+ */
+export function governingConfigFor(
+  rootConfigPath: string,
+  root: Record<string, unknown>,
+  exists?: (path: string) => boolean,
+): string {
+  return governingConfigPath({
+    dir: dirname(rootConfigPath),
+    configDir: readConfigDir(root),
+    rootDeclaresSlug: declaresRepoSlug(root),
+    ...(exists === undefined ? {} : { exists }),
+  });
+}
+
 function tenantAt(
   configDir: string,
   dir: string,
   slug: string | null,
   configDirRel: string = DEFAULT_TENANT_CONFIG_DIR,
   declaredPath?: string,
+  /** The governing config, when it is not the one at `dir` (#663). */
+  configPath?: string,
 ): DiscoveredTenant {
   const absDir = tenantDirId(configDir, dir);
   // `configDirRel` relocates the tenant's asset dir (its `.env` + prompts) to a
-  // subdir of `dir` (#98). The config itself always stays at `dir`; only the
-  // `.env` — and thus the engine child's cwd, `dirname(envPath)` — moves.
+  // subdir of `dir` (#98), and with them the engine child's cwd,
+  // `dirname(envPath)`. The config stays at `dir` unless the caller found that
+  // the asset dir holds the governing one (`governingConfigPath`).
   const assetsDir =
     configDirRel === DEFAULT_TENANT_CONFIG_DIR ? absDir : join(absDir, configDirRel);
   return {
     id: absDir,
     slug,
     dir: absDir,
-    configPath: join(absDir, TENANT_CONFIG_FILE),
+    configPath: configPath ?? join(absDir, TENANT_CONFIG_FILE),
     envPath: join(assetsDir, TENANT_ENV_FILE),
     // Declared-nothing is the default: the discovery walk overlays what the
     // child config actually says (#199).
@@ -275,14 +344,18 @@ function tenantAt(
  * one builder is what keeps `envPath` honest: `configDir` relocation (#98) is
  * easy to forget when hand-joining a path, and a diagnostic that read the wrong
  * `.env` would report the wrong token.
+ *
+ * `configPath` is the governing config when the root is a pointer (#663): the
+ * caller has loaded the root to learn `configDir`, so it is the one that knows.
  */
 export function tenantForDir(
   dir: string,
   slug: string | null,
   configDir: string = DEFAULT_TENANT_CONFIG_DIR,
+  configPath?: string,
 ): DiscoveredTenant {
   const absDir = resolve(dir);
-  return tenantAt(absDir, absDir, slug, configDir);
+  return tenantAt(absDir, absDir, slug, configDir, undefined, configPath);
 }
 
 /** A tenant paired with its config fingerprint (mtime:size) at one poll. */
@@ -458,7 +531,9 @@ export type DiscoverWorkspaceDeps = {
   loadRepoSlug: (configPath: string) => string | Promise<string>;
   /**
    * Load a child `phoebe.config.ts` and return its bootstrapper-only `configDir`
-   * (asset subdir), or `"."` when unset (#98). Throws/rejects on an unreadable
+   * (asset subdir), or `"."` when unset (#98). Asked of the config at the child's
+   * root first, and then of the governing config when that is a different file,
+   * which must answer `"."` (#663). Throws/rejects on an unreadable
    * config or a malformed value — the walker then skip-and-warns the dir, the
    * same as a bad `repoSlug`. Defaults to `() => "."` (co-located), so existing
    * callers and tests need no change.
@@ -555,9 +630,9 @@ function structuralHolds(
  *
  * Dispatches on the resolved workspace arm: the walk arm recursively descends
  * with prune-at-first-hit; the explicit arm takes the declared list directly.
- * {@link consider} — slug load, empty check, duplicate-slug fatal, origin read,
- * duplicate-origin fatal, mismatch skip, `configDir` load, tenant build — is
- * shared verbatim across both arms.
+ * {@link consider} — `configDir` load, governing config, slug load, empty check,
+ * duplicate-slug fatal, origin read, duplicate-origin fatal, mismatch skip,
+ * tenant build — is shared verbatim across both arms.
  *
  * Holds are computed structurally as `candidates − successful` at the end
  * (declared dirs on the explicit arm; dirs that reached `consider` on the walk
@@ -582,15 +657,63 @@ export async function discoverWorkspaceTenants(
   /** Fleet uniqueness: transport-normalised origin slug → first tenant dir. */
   const byOriginSlug = new Map<string, string>();
 
+  // Which config governs the tenant at `dir`, and the `repoSlug` it declares
+  // (#663). The root's own slug is asked for first, and a root that has one
+  // governs itself — today's answer, for every tenant that had one. Only a root
+  // with none is a pointer. Its failure to produce a slug is swallowed for that
+  // reason alone: `loadConfigDir` has already loaded this file in this poll, so
+  // what is left to go wrong is the slug not being there, which is the question.
+  const governed = async (
+    dir: string,
+    rootConfigPath: string,
+    tenantConfigDir: string,
+  ): Promise<{ configPath: string; slug: string }> => {
+    const candidate = governingConfigPath({
+      dir,
+      configDir: tenantConfigDir,
+      rootDeclaresSlug: false,
+    });
+    if (candidate === rootConfigPath) {
+      return { configPath: rootConfigPath, slug: (await deps.loadRepoSlug(rootConfigPath)).trim() };
+    }
+    let own = "";
+    try {
+      own = (await deps.loadRepoSlug(rootConfigPath)).trim();
+    } catch {
+      own = "";
+    }
+    if (own.length > 0) return { configPath: rootConfigPath, slug: own };
+    // The relocation is declared once, in the pointer. A second `configDir` in
+    // the file it points at would be a second answer to where the `.env` is.
+    const nested = deps.loadConfigDir
+      ? (await deps.loadConfigDir(candidate)).trim()
+      : DEFAULT_TENANT_CONFIG_DIR;
+    if (nested !== DEFAULT_TENANT_CONFIG_DIR) {
+      throw new Error(
+        `${candidate} declares \`configDir\`, but it is the config a \`configDir\` points at ` +
+          `— declare the asset directory in ${rootConfigPath} only`,
+      );
+    }
+    return { configPath: candidate, slug: (await deps.loadRepoSlug(candidate)).trim() };
+  };
+
   // `dir` is normalized to its absolute form up front: that path is the tenant's
   // reconcile identity, so two spellings of one directory must not read as two
   // tenants (#139). `declaredPath` is the explicit arm's spelling, diagnostics only.
   const consider = async (rawDir: string, declaredPath?: string): Promise<void> => {
     const dir = tenantDirId(configDir, rawDir);
     attempted.add(dir);
-    const configPath = join(dir, TENANT_CONFIG_FILE);
+    const rootConfigPath = join(dir, TENANT_CONFIG_FILE);
     try {
-      const slug = (await deps.loadRepoSlug(configPath)).trim();
+      // Asset-dir relocation (#98): the child's `configDir` (default "."), read
+      // from the config at its root and read first, because where the asset dir
+      // is decides which file the rest of this is read from (#663). A malformed
+      // value throws here and is caught below as skip-and-warn, exactly like a
+      // bad `repoSlug`.
+      const tenantConfigDir = deps.loadConfigDir
+        ? (await deps.loadConfigDir(rootConfigPath)).trim()
+        : DEFAULT_TENANT_CONFIG_DIR;
+      const { configPath, slug } = await governed(dir, rootConfigPath, tenantConfigDir);
       if (slug.length === 0) {
         const reason = "phoebe.config.ts has an empty repoSlug";
         skipReasons.set(dir, reason);
@@ -633,17 +756,11 @@ export async function discoverWorkspaceTenants(
         return;
       }
 
-      // Asset-dir relocation (#98): read the child's `configDir` (default ".")
-      // from the same config. A malformed value throws here and is caught below
-      // as skip-and-warn, exactly like a bad `repoSlug`.
-      const tenantConfigDir = deps.loadConfigDir
-        ? (await deps.loadConfigDir(configPath)).trim()
-        : DEFAULT_TENANT_CONFIG_DIR;
-      // Commit attribution (#199), read from the same config and malformed the
-      // same way: a throw here is caught below as skip-and-warn.
+      // Commit attribution (#199), read from the governing config and malformed
+      // the same way: a throw here is caught below as skip-and-warn.
       const gitIdentity = deps.loadGitIdentity ? await deps.loadGitIdentity(configPath) : null;
       tenants.push({
-        ...tenantAt(configDir, dir, slug, tenantConfigDir, declaredPath),
+        ...tenantAt(configDir, dir, slug, tenantConfigDir, declaredPath, configPath),
         gitIdentity,
       });
     } catch (error) {

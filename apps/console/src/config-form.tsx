@@ -15,6 +15,7 @@
 
 import { useState, type ReactNode } from "react";
 import type {
+  ConfigEditValue,
   ConfigFieldFacts,
   EditReceipt,
   LocalInstall,
@@ -157,7 +158,7 @@ export function ConfigSpace({
 export function saveRequest(opts: {
   install: string;
   field: Pick<ConfigFieldFacts, "path" | "via">;
-  value: string | number | boolean;
+  value: SavedValue;
   fingerprint: string;
   tenant?: string;
 }): VerbRunRequest {
@@ -205,11 +206,71 @@ export function configGroups(fields: readonly ConfigFieldFacts[]): ConfigGroup[]
   return groups.map((group) => ({ ...group, alone: groups.length === 1 }));
 }
 
-/** What a row's control holds, as text: the file's value, or nothing. */
+/** What a row may save. Not `null`: an empty control is "nothing to save", not a write. */
+export type SavedValue = Exclude<ConfigEditValue, null>;
+
+/**
+ * The select item that stands for the list rather than for a value of its own
+ * (#655). A field carrying `listAlternative` offers it beside the closed set,
+ * and picking it reveals the box the list is typed in. Picked is a state of the
+ * control, not a value — nothing by this name reaches the config — so the name
+ * has to stay outside the values of any field that offers it.
+ */
+export const LIST_ITEM = "prefixes";
+
+/** Whether this row offers the list item at all — the catalogue's flag, nothing else. */
+function offersList(field: Pick<ConfigFieldFacts, "listAlternative">): boolean {
+  return field.listAlternative === true;
+}
+
+/**
+ * What a row's control holds, as text: the file's value, or nothing.
+ *
+ * A list is two different things depending on the row. Where the row offers the
+ * list item, the select holds the item and the list itself lives in the box
+ * beside it. Where it does not — a locked row over a list the console never
+ * offers to change, like the fleet's tenants — the list is the text.
+ */
 function draftOf(field: ConfigFieldFacts): string {
+  if (Array.isArray(field.value)) {
+    return offersList(field) ? LIST_ITEM : field.value.join(", ");
+  }
   return field.state === "set" && field.value !== null && field.value !== undefined
     ? String(field.value)
     : "";
+}
+
+/**
+ * The items a row's control offers, or `undefined` when it is a box rather
+ * than a list of choices. A field that also takes a list offers one more item
+ * than it has values — the list itself (#655).
+ */
+export function choicesOf(
+  field: Pick<ConfigFieldFacts, "type" | "values" | "listAlternative">,
+): readonly string[] | undefined {
+  if (field.type === "boolean") return ["true", "false"];
+  if (field.type !== "enum") return undefined;
+  const values = field.values ?? [];
+  return offersList(field) ? [...values, LIST_ITEM] : values;
+}
+
+/**
+ * What the list box holds before anything is typed: the list the file already
+ * holds, else the prefill the companion read off the path the catalogue names
+ * (`prScope`'s is `branchPrefix`), so the literal default is on screen rather
+ * than implied.
+ */
+export function listDraftOf(field: ConfigFieldFacts): string {
+  const current = Array.isArray(field.value) ? field.value : field.listPrefill;
+  return (current ?? []).join(", ");
+}
+
+/** A comma-separated list as the config holds it: trimmed, with blanks dropped. */
+export function listOfDraft(draft: string): string[] {
+  return draft
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
 }
 
 /**
@@ -243,13 +304,19 @@ export function ConfigFieldRow({
 }: {
   field: ConfigFieldFacts;
   running: boolean;
-  onSave: (value: string | number | boolean) => void;
+  onSave: (value: SavedValue) => void;
 }) {
   const [draft, setDraft] = useState(() => draftOf(field));
-  const value = valueOfDraft(field, draft);
-  const changed = draft.trim() !== draftOf(field);
-  const choices =
-    field.type === "boolean" ? ["true", "false"] : field.type === "enum" ? field.values : undefined;
+  const [listDraft, setListDraft] = useState(() => listDraftOf(field));
+  // The list is picked, not typed, so its own box only speaks when the select
+  // is on it — and then it speaks instead of the select, whose value is the
+  // item name rather than anything the config would hold.
+  const listing = offersList(field) && draft === LIST_ITEM;
+  const value: ConfigEditValue = listing ? listOfDraft(listDraft) : valueOfDraft(field, draft);
+  const changed = listing
+    ? draft !== draftOf(field) || listDraft.trim() !== listDraftOf(field).trim()
+    : draft.trim() !== draftOf(field);
+  const choices = choicesOf(field);
   const fallback = field.default === undefined ? "not set" : String(field.default);
   const copy = settingCopy(field.path);
 
@@ -293,14 +360,27 @@ export function ConfigFieldRow({
           }}
         >
           {choices !== undefined ? (
-            <ChoiceControl
-              field={field}
-              choices={choices}
-              fallback={fallback}
-              draft={draft}
-              running={running}
-              onDraft={setDraft}
-            />
+            <>
+              <ChoiceControl
+                field={field}
+                choices={choices}
+                fallback={fallback}
+                draft={draft}
+                running={running}
+                onDraft={setDraft}
+              />
+              {listing ? (
+                <Input
+                  size="sm"
+                  className="mono"
+                  aria-label={`${field.path} ${LIST_ITEM}`}
+                  value={listDraft}
+                  placeholder={`comma-separated ${LIST_ITEM}`}
+                  disabled={running}
+                  onChange={(event) => setListDraft(event.target.value)}
+                />
+              ) : null}
+            </>
           ) : field.suggestions !== undefined && field.suggestions.length > 0 ? (
             <SuggestingControl
               field={field}

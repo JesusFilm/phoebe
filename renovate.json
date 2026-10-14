@@ -1,4 +1,23 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"]
+  "extends": ["config:recommended"],
+  "gitIgnoredAuthors": ["phoebe@users.noreply.github.com"],
+  "packageRules": [
+    {
+      "description": "Only a runtime dependency bump is a line a consumer would notice, so every other kind opens already labelled and never trips the changeset gate (#655). Phoebe's checks kind writes the changeset for the ones that are left.",
+      "matchDepTypes": [
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+        "packageManager",
+        "engines"
+      ],
+      "addLabels": ["skip-changeset"]
+    },
+    {
+      "description": "The non-npm managers in this repo: CI workflows, the pinned Node version, the container images. None of them changes anything a consumer of phoebe-agent installs.",
+      "matchManagers": ["github-actions", "nodenv", "dockerfile", "docker-compose"],
+      "addLabels": ["skip-changeset"]
+    }
+  ]
 }

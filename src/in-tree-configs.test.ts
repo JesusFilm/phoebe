@@ -1,10 +1,12 @@
 // Repo-governance guard: no config in this repo declares a deprecated field
 // (#419).
 //
-// The dogfood configs, the examples, and the scaffold template are the four
-// things a reader copies from. A deprecated field left in one of them teaches
-// the shape we are moving away from, and — for the two dogfood configs — prints
-// a deprecation warning on every load of the deployment that works this repo.
+// The dogfood config, the examples, and the scaffold template are what a reader
+// copies from. A deprecated field left in one of them teaches the shape we are
+// moving away from, and — for the dogfood config — prints a deprecation warning
+// on every load of the deployment that works this repo. The pointer at the repo
+// root (#663) is listed with them: it declares one field today, and this is
+// what notices if it is ever given a deprecated one.
 //
 // Sibling of deployment-prompts.test.ts: same reason for living under `src/`
 // (test files never ship) and the same shape — a list at the top, so a new

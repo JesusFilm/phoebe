@@ -1,13 +1,6 @@
-import path from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
-import {
-  accessOf,
-  CONTAINER_UID,
-  grantEnvAccess,
-  probeEnvAccess,
-  tenantEnvPath,
-} from "./env-access.ts";
+import { accessOf, CONTAINER_UID, grantEnvAccess, probeEnvAccess } from "./env-access.ts";
 
 /** A runner that answers with `stdout` and remembers what it was asked. */
 function runner(stdout: string) {
@@ -18,19 +11,6 @@ function runner(stdout: string) {
   };
   return { run, asked };
 }
-
-describe("where a tenant's .env is", () => {
-  test("beside its config, unless the config names a folder for it", () => {
-    expect(tenantEnvPath("/w/a", 'export default { repoSlug: "acme/a" };\n')).toBe(
-      path.join("/w/a", ".env"),
-    );
-    expect(tenantEnvPath("/w/a", 'export default { configDir: ".phoebe" };\n')).toBe(
-      path.join("/w/a", ".phoebe", ".env"),
-    );
-    // No config to read is no folder named.
-    expect(tenantEnvPath("/w/a", null)).toBe(path.join("/w/a", ".env"));
-  });
-});
 
 describe("whether the container's user can read a file", () => {
   test("a file that is its owner's alone is not readable", () => {

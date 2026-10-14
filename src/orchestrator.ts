@@ -2,7 +2,8 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
-import { WORK_KIND_NAMES, type WorkKindName } from "./config-schema.ts";
+import { WORK_KIND_NAMES, type PrScope, type WorkKindName } from "./config-schema.ts";
+import { prScopeAdmits } from "./pr-scope.ts";
 import { config } from "./resolved-config.ts";
 import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 import type { Feature } from "./feature-branch.ts";
@@ -387,7 +388,11 @@ export function isPhoebeHeadBranch(branch: BranchRef): boolean {
 
 export type PrScopeConfig = {
   branchPrefix: string;
-  prScope: "phoebe" | "all";
+  /**
+   * The scope this filter is asked about: the tenant's, or — once a janitor
+   * narrows the shared listing — that one kind's (src/pr-scope.ts).
+   */
+  prScope: PrScope;
   draftPrs: "skip-non-phoebe" | "skip-all" | "include";
   prOptOutLabel: string;
 };
@@ -423,8 +428,13 @@ export function isPrInScope(
   if (pr.labels.includes(PHOEBE_QUARANTINE_LABEL)) {
     return false;
   }
+  // Two different questions, and only the first moves with `prScope`. Whether
+  // the branch is *admitted* is the scope's business; whether it is *Phoebe's
+  // own* — which is what the draft rule below turns on — stays `branchPrefix`
+  // and nothing else, so admitting another bot's prefix never reclassifies its
+  // drafts as Phoebe's (#655).
   const isPhoebe = pr.headRefName.startsWith(scopeConfig.branchPrefix);
-  if (scopeConfig.prScope === "phoebe" && !isPhoebe) {
+  if (!prScopeAdmits(scopeConfig.prScope, scopeConfig.branchPrefix, pr.headRefName)) {
     return false;
   }
   if (pr.isDraft) {

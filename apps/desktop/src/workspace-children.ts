@@ -15,6 +15,7 @@ import type { LocalInstallChild } from "phoebe-agent/contracts";
 import { TENANT_CONFIG_FILE } from "../../../bootstrap/tenants.ts";
 import { DEFAULT_WORKSPACE_DEPTH } from "../../../bootstrap/workspace-source.ts";
 import { editConfigGetField } from "../../../src/config-handle.ts";
+import { tenantFilesOf } from "./tenant-files.ts";
 
 /** The block as the source declares it, or null when the config has none. */
 export type WorkspaceBlock = { depth: number } | { tenants: string[] };
@@ -94,7 +95,9 @@ function slugOf(
   exists: (file: string) => boolean,
   read: (file: string) => string,
 ): string | null {
-  const file = path.join(dir, TENANT_CONFIG_FILE);
+  // The slug is declared in the config the child runs on, which is not the
+  // one at its root when that is a pointer (tenant-files.ts).
+  const file = tenantFilesOf(dir, { exists, read }).configPath;
   if (!exists(file)) return null;
   let source: string;
   try {

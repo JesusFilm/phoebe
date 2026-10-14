@@ -27,6 +27,7 @@ export { openSecret, sealSecret } from "./secret-envelope.mjs";
 export type { StopOutcome } from "./stop-outcome.ts";
 export type {
   ConfigEdit,
+  ConfigEditValue,
   EditReceipt,
   EditRefusalReason,
   EditRefused,

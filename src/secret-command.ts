@@ -32,6 +32,7 @@ import { readConfigDir } from "../bootstrap/config-dir.ts";
 import { TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
 import { resolveConfig } from "./config-schema.ts";
+import { followConfigPointer } from "./config-pointer.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { resolveDataBase } from "./paths.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
@@ -404,7 +405,9 @@ export async function runSecretCli(
   }
   const processEnv = deps.processEnv ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
-  const configPath = resolveConfigPath(parsed.configPath, cwd);
+  // A pointer names the config that declares this tenant's slug and kinds
+  // (#663), which is where its settable keys and its state directory come from.
+  const configPath = await followConfigPointer(resolveConfigPath(parsed.configPath, cwd));
   const dataBase = resolveDataBase(processEnv);
   const target = await resolveSecretTarget({
     configPath,

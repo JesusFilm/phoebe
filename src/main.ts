@@ -60,9 +60,11 @@ import {
 import {
   createEmitUnitEvent,
   createEngineLog,
+  createForgetInherited,
   statusPathFor,
   type EmitUnitEvent,
   type EngineLog,
+  type SnapshotWriterDeps,
   type StatusSnapshot,
   type UnitRef,
 } from "./unit-event.ts";
@@ -353,6 +355,12 @@ export type EngineOptions = {
   reportClient?: ReportClient | null;
   /** Per-unit observability (#73): the tagged log line and the status snapshot. */
   emitUnitEvent: EmitUnitEvent;
+  /**
+   * The snapshot writer's boot-time half (#670): drop the in-flight claims this
+   * pipeline's snapshot inherited from a process that is gone. Called once,
+   * before the first pass. Unset leaves the snapshot as it was found.
+   */
+  forgetInherited?: () => void;
   /**
    * How this engine runs. Held here rather than passed to `runLoop` so a caller
    * has one mechanism to learn instead of two.
@@ -2209,6 +2217,24 @@ export function createEngine(options: EngineOptions): Engine {
       }
     }
 
+    // Boot-time snapshot reset (#670), on the lease break's reasoning. The
+    // snapshot outlives its writer too: a killed engine leaves its units listed
+    // as in flight, nothing ever settles them, and the report calls the
+    // pipeline wedged for good. This process has admitted nothing yet, and it is
+    // the pipeline's only writer — the supervisor awaits the old child's exit
+    // before it spawns this one — so whatever the file claims is in flight is
+    // nobody's.
+    //
+    // That holds for the daemon and for nothing else, so nothing else does it.
+    // `--dry-run` is how an agent previews selection from inside the container
+    // while the real child has a unit running. `--run-once` may be a second
+    // process beside the daemon too — `docker compose run --rm phoebe
+    // --run-once` is a second container on the same data volume, with a
+    // supervisor of its own — and clearing there would hide the daemon's live
+    // unit from the report for the rest of that unit's run. And on the host no
+    // unit can run, so none can be stranded.
+    if (inContainer && !dryRun && !runOnce) options.forgetInherited?.();
+
     // Boot-time login identity cross-check (#346): warn when the resolved login
     // differs from the author on Phoebe's own newest unit-marker comment. An
     // identity drift silently resets the quarantine counter every rotation —
@@ -2615,7 +2641,7 @@ export async function runEngine(
   // the tenant's state dir (#418), which `phoebe list` reads for the `work`
   // pipeline. The emitter swallows snapshot-write failures, so it is harmless on the
   // host (where the derived state dir may be unwritable).
-  const emitUnitEvent = createEmitUnitEvent({
+  const snapshotWriter: SnapshotWriterDeps = {
     tenant: config.repoSlug,
     pipeline: pipelineName,
     statusPath: statusPathFor(config.paths.stateDir, pipelineName),
@@ -2625,7 +2651,8 @@ export async function runEngine(
     ...(reportClient !== null
       ? { onSnapshot: (snapshot: StatusSnapshot) => reportClient.snapshot(snapshot) }
       : {}),
-  });
+  };
+  const emitUnitEvent = createEmitUnitEvent(snapshotWriter);
 
   const drain = installDrainSignal();
   try {
@@ -2639,6 +2666,7 @@ export async function runEngine(
       credentialClient,
       reportClient,
       emitUnitEvent,
+      forgetInherited: createForgetInherited(snapshotWriter),
       run: { runOnce, dryRun, pollIntervalMs, concurrency },
     });
     await engine.runLoop();

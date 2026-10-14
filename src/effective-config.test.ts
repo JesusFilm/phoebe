@@ -218,6 +218,27 @@ describe("a kind's leaves", () => {
     expect(leaf.shadowed).toEqual([{ source: "file", via: CONFIG_PATH, value: "claude-only" }]);
   });
 
+  test("prScope is a leaf of the three janitors and of nothing else (#655)", () => {
+    const fields = compute({
+      user: { pipelines: { work: { kinds: { checks: { prScope: ["renovate/"] } } } } },
+    }).fields;
+    expect(leafAt(fields, "pipelines.work.kinds.checks.prScope")).toMatchObject({
+      value: ["renovate/"],
+      source: "file",
+    });
+    // The other two inherit the tenant leaf and say which path from.
+    expect(leafAt(fields, "pipelines.work.kinds.conflicts.prScope")).toMatchObject({
+      value: "phoebe",
+      source: "inherited",
+      via: "prScope",
+    });
+    // `issues` never reads it, so it gets no row.
+    const kinds = ((fields?.["pipelines"] as EffectiveFields)["work"] as EffectiveFields)[
+      "kinds"
+    ] as EffectiveFields;
+    expect((kinds["issues"] as EffectiveFields)["prScope"]).toBeUndefined();
+  });
+
   test("the forced base is env-only, and only under the issues kind", () => {
     const fields = compute({ env: { process: { PHOEBE_BASE: "release/2" } } }).fields;
     expect(leafAt(fields, "pipelines.work.kinds.issues.base")).toMatchObject({

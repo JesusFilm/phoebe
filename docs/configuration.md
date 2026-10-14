@@ -112,12 +112,48 @@ feature branches, which is the correct behaviour rather than an error — so the
 The `conflicts` / `checks` / `reviews` work kinds scan open PRs. Two fields
 bound what they touch:
 
-| Field      | Default             | Values / meaning                                                                                                                           |
-| ---------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `prScope`  | `"phoebe"`          | `"phoebe"` = only `branchPrefix` branches; `"all"` = any same-repo PR.                                                                     |
-| `draftPrs` | `"skip-non-phoebe"` | `"skip-non-phoebe"` = drafts on non-Phoebe branches are off-limits; `"skip-all"` = never touch drafts; `"include"` = drafts are fair game. |
+| Field      | Default             | Values / meaning                                                                                                                                              |
+| ---------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prScope`  | `"phoebe"`          | `"phoebe"` = only `branchPrefix` branches; `"all"` = any same-repo PR; a **string array** = exactly the branch prefixes it names.                             |
+| `draftPrs` | `"skip-non-phoebe"` | `"skip-non-phoebe"` = drafts on non-Phoebe branches are off-limits; `"skip-all"` = never touch drafts; `"include"` = drafts are fair game. Tenant-level only. |
 
 Cross-repository PRs (from forks) are always excluded, regardless of scope.
+
+### The array form, and per-kind scope
+
+`prScope: ["renovate/", "dependabot/"]` is the literal set of admitted prefixes,
+matched by `startsWith` exactly the way `branchPrefix` is matched. So
+`"phoebe"` is sugar for `[branchPrefix]`, `[]` admits nothing — the spelling for
+a tenant that only works issues — and a tenant may leave its own prefix out of
+the list on purpose.
+
+Each of the three kinds takes its own `prScope` of the same type, which
+overrides the tenant's for that kind and inherits it when unset. Admitting
+another bot's branches to one janitor is a smaller decision than admitting them
+to all three, and this is how it stays small:
+
+```ts
+export default defineConfig({
+  // …
+  prScope: "phoebe",
+  pipelines: {
+    work: {
+      kinds: {
+        // The checks kind fixes a red gate on Renovate's branches. The
+        // conflicts and reviews kinds never see them.
+        checks: { prScope: ["renovate/"] },
+      },
+    },
+  },
+});
+```
+
+Two things the array does not change. The draft rule still calls a branch
+Phoebe's own by `branchPrefix` alone, so a draft on an admitted `renovate/`
+branch is still skipped under `draftPrs: "skip-non-phoebe"`. And the env
+overrides stay enum-only: `PHOEBE_PR_SCOPE` and the per-kind
+`PHOEBE_<KIND>_PR_SCOPE` take `phoebe` or `all`, and a list is written in the
+config file.
 
 Widening `prScope` is a trust decision, not a tuning knob: a scanned PR's
 branch gets its install hooks executed by the engine
@@ -393,13 +429,14 @@ per-kind `PHOEBE_<KIND>_AGENT`, which outranks even an explicit `provider`. An
 explicitly-bound block is _not_ flipped by the global `PHOEBE_AGENT` — per-kind
 config outranks global env, per the ladder above.
 
-A kind block holds three more knobs. They resolve on their own ladders rather
+A kind block holds four more knobs. They resolve on their own ladders rather
 than the provider one.
 
 | Knob           | Default               | Hot? | Meaning                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------- | --------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `promptFile`   | the kind's own        | cold | Where this kind's prompt template lives, relative to the runtime root. Replaces the [`promptFiles`](#prompt-files) block.                                                                                                                                                                                                                                                                                     |
 | `runTimeoutMs` | tenant `runTimeoutMs` | cold | This kind's whole-unit wall-clock budget. Ladder: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`, then this field, then `PHOEBE_RUN_TIMEOUT_MS`, then the tenant field.                                                                                                                                                                                                                                                       |
+| `prScope`      | tenant `prScope`      | cold | Which open PRs _this_ janitor scans ([PR-scan scope](#the-array-form-and-per-kind-scope)). Read only by `conflicts`, `checks` and `reviews`. Ladder: `PHOEBE_<KIND>_PR_SCOPE` (enum only), then this field, then the tenant's.                                                                                                                                                                                |
 | `disabled`     | `false`               | hot  | The only off-switch for a kind. Since `order` is priority rather than membership, leaving a kind out of it no longer stops it running.                                                                                                                                                                                                                                                                        |
 | `path`         | the shipped built-in  | cold | **Replace this built-in's definition** with a tenant module (#465), loaded exactly like a [custom kind](#custom-work-kinds)'s. The tuning knobs keep applying to whatever definition lands under the name. `issues: "./kinds/my-issues.ts"` is string sugar for `{ path: … }`. The module's definition must name itself after the key. Same trust posture as any kind module: registering it is executing it. |
 | _(any other)_  | —                     | cold | With `path`, the block's remaining root fields are the replacement's `ctx.options` payload. Without `path` they are boot errors — the shipped built-ins never read `ctx.options`.                                                                                                                                                                                                                             |
@@ -468,7 +505,7 @@ kinds: {
   kind is the authority on its own options. Inline entries carry none — close
   over values instead.
 - **Tuning knobs are the same as a built-in's** (`provider`, `model`,
-  `effort`, `promptFile`, `runTimeoutMs`, `disabled`), declared in the same
+  `effort`, `promptFile`, `runTimeoutMs`, `prScope`, `disabled`), declared in the same
   block. The string and inline arms carry none — an inline definition's
   `promptFile`/`model`/`effort` live on the definition itself, and a string
   entry that needs tuning or options graduates to the block form.
@@ -607,15 +644,77 @@ export default config;
   this repo's own dogfood run months-old prompts and lose a kind outright (#164);
   the startup check now catches the missing kind, but nothing catches a stale
   copy.
-- **The `phoebe.config.ts` itself must stay at `<dir>`.** Workspace discovery
-  skips dotfolders, so a config inside `.phoebe/` would never be found. The
-  config is a thin root file pointing at `configDir`, and everything else moves.
-  `container/` is operator-run (never read by the engine), so it can live in
-  `.phoebe/` too; you just point compose at it.
+- **A `phoebe.config.ts` must stay at `<dir>`.** Workspace discovery skips
+  dotfolders, so a tenant with nothing at its root is never found. That file can
+  be the whole config, as above, or a pointer to one inside `configDir`
+  ([below](#one-config-for-a-repo-deployed-two-ways)). `container/` is
+  operator-run (never read by the engine), so it can live in `.phoebe/` too; you
+  just point compose at it.
 - Must be a **relative** path with no `..` (it stays inside the tenant dir).
   Default `"."` (co-located). Honored for fleet tenants (workspace children).
   Like `engine`, it is bootstrapper-only and `resolveConfig`
   drops it (the engine never sees it).
+
+### One config for a repo deployed two ways
+
+A repository can be a workspace child and a deployment in its own right at the
+same time. The workspace reads the config at its root, and its own container
+reads the one in `.phoebe/`. Kept as two files they drift, because nothing
+compares them: this repo's own pair did, and ran the workspace on the shipped
+default model for weeks while the copy in `.phoebe/` said Opus (#389).
+
+Keep one. Put the config in the asset directory and shrink the root to a
+**pointer**, a `phoebe.config.ts` that says where the config is and nothing else:
+
+```ts
+// <repo>/phoebe.config.ts — the pointer
+import type { PhoebeUserConfig } from "phoebe-agent";
+
+const config: Pick<PhoebeUserConfig, "configDir"> = { configDir: ".phoebe" };
+
+export default config;
+```
+
+```ts
+// <repo>/.phoebe/phoebe.config.ts — the config, for both deployments
+import type { PhoebeUserConfig } from "phoebe-agent";
+
+const config: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git",
+  installCommand: "pnpm install --frozen-lockfile",
+  checkCommand: "pnpm run check",
+  testCommand: "pnpm run test",
+  engine: { source: "github", ref: "v1.2.3" }, // read by the standalone deployment only
+};
+
+export default config;
+```
+
+- **What makes a root a pointer.** It declares `configDir`, it declares no
+  `repoSlug`, and `<dir>/<configDir>/phoebe.config.ts` exists. That file is then
+  the tenant's **governing config**. The bootstrapper reads `repoSlug`,
+  `gitIdentity`, the pipelines, `disabled` and `priority` from it, fingerprints
+  it for reconcile, and runs the engine child on it with `<dir>/<configDir>` as
+  the working directory. An edit to it relaunches the tenant's pipelines at the
+  next unit boundary. Nothing else in the pointer is read.
+- **A root that declares `repoSlug` governs itself**, whatever its asset
+  directory holds. A tenant that carries two whole configs today keeps running
+  on the one at its root across an engine upgrade. It changes hands when you
+  delete the root's fields, and not before.
+- **The governing config declares no `configDir`.** The relocation is said once,
+  in the pointer. A second one is skipped with a warning that names the file.
+- **`engine` in the governing config is ignored by the workspace**, as it is in
+  any tenant config, so the file can carry the `engine` its standalone
+  deployment runs.
+- **Verbs run by hand follow the pointer.** `phoebe config`, `phoebe config set`,
+  `phoebe secret` and `phoebe pipelines` run in the tenant's directory read and
+  write the governing config, and `config set` leaves the pointer as it
+  was. The engine itself does not follow: `phoebe --run-once` from the pointer's
+  directory stops and names the directory to run from, because prompt paths
+  resolve against the working directory.
+- **Solo is unchanged.** A deployment root's own `phoebe.config.ts` is its
+  config, run in place. Pointers are for workspace children.
 
 ## Commit attribution (`gitIdentity`)
 
@@ -1025,7 +1124,7 @@ bootstrapper-only setting never reaches an engine child.
 | `PHOEBE_BLOCKED_BY_PATTERN`               | `blockedByPattern`               | engine       |                                                                                                                          |
 | `PHOEBE_PART_OF_PATTERN`                  | `partOfPattern`                  | engine       |                                                                                                                          |
 | `PHOEBE_REVIEWS_SUCCESS_HEADING`          | `reviewsSuccessHeading`          | engine       |                                                                                                                          |
-| `PHOEBE_PR_SCOPE`                         | `prScope`                        | engine       | `phoebe` \| `all`.                                                                                                       |
+| `PHOEBE_PR_SCOPE`                         | `prScope`                        | engine       | `phoebe` \| `all`. The array form is file-only. Per kind: `PHOEBE_<KIND>_PR_SCOPE`, same two values.                     |
 | `PHOEBE_DRAFT_PRS`                        | `draftPrs`                       | engine       | `skip-non-phoebe` \| `skip-all` \| `include`.                                                                            |
 | `PHOEBE_FEATURE_BRANCH_CATCH_UP`          | `featureBranchCatchUp`           | engine       | `true` \| `false`.                                                                                                       |
 | `PHOEBE_DEFAULT_PROVIDER`                 | `defaultProvider`                | engine       | `cursor` \| `claude` \| `codex`. Per kind: `PHOEBE_<KIND>_PROVIDER`.                                                     |

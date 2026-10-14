@@ -58,6 +58,24 @@ export type Setting = {
   /** The closed set of accepted values, for `type: "enum"`. */
   values?: readonly string[];
   /**
+   * The file field also takes a **list of strings**, beside the closed set
+   * {@link values} names (#655). Env does not: a variable sets the enum, and
+   * the list is written in the config file.
+   *
+   * A flag rather than a fourth `type`, because the enum is what the env name
+   * accepts and that is the half this catalogue exists to describe. A form over
+   * the file reads the flag and offers the list as one more choice; what it must
+   * not do is name the field — any later setting carrying this flag renders the
+   * same way.
+   */
+  listAlternative?: true;
+  /**
+   * The config path whose value prefills a fresh list, for a
+   * {@link listAlternative} field. `prScope`'s list starts from
+   * `branchPrefix`, so the literal default is visible before it is edited.
+   */
+  listPrefillFrom?: string;
+  /**
    * The field name this setting takes inside a `kinds.<kind>` block, when it
    * has a per-kind variant. `PHOEBE_<KIND>_<FIELD>` derives from it, so
    * `defaultProvider` (tenant) and `provider` (kind) name one knob at two path
@@ -163,6 +181,11 @@ export const SETTINGS: readonly Setting[] = [
     reader: "engine",
     type: "enum",
     values: ["phoebe", "all"],
+    // The array form is file-only (#655): `PHOEBE_PR_SCOPE` and the per-kind
+    // `PHOEBE_<KIND>_PR_SCOPE` take the two enum values and nothing else.
+    listAlternative: true,
+    listPrefillFrom: "branchPrefix",
+    kindField: "prScope",
     overlay: "all",
   }),
   setting({

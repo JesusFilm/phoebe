@@ -1250,6 +1250,38 @@ describe("listOpenPhoebePrs", () => {
     expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
     expect(listedBases(calls)).toEqual(["main", "main"]);
   });
+
+  test("the listing admits what any one kind's prScope admits (#655)", () => {
+    // The tenant is on the default "phoebe" and only `checks` widened, so the
+    // shared listing has to carry the Renovate PR for that kind to ever see it.
+    const { github } = clientWith(
+      [
+        JSON.stringify([
+          prRow({ number: 5 }),
+          prRow({ number: 6, headRefName: "renovate/lodash-4.x" }),
+        ]),
+        "[]",
+      ],
+      { workKinds: { checks: { prScope: ["renovate/"] } } },
+    );
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5, 6]);
+  });
+
+  test("a prefix no kind admits is still filtered out of the listing", () => {
+    const { github } = clientWith(
+      [
+        JSON.stringify([
+          prRow({ number: 5 }),
+          prRow({ number: 6, headRefName: "dependabot/npm_and_yarn/lodash-4" }),
+        ]),
+        "[]",
+      ],
+      { workKinds: { checks: { prScope: ["renovate/"] } } },
+    );
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
+  });
 });
 
 describe("listMergedMemberPrs", () => {

@@ -144,6 +144,38 @@ describe("collecting a workspace", () => {
   });
 });
 
+describe("collecting a workspace child whose root is a pointer (#663)", () => {
+  test("the row is the governing config's, with the .env beside it", async () => {
+    const root = tempDir();
+    writeFileSync(
+      join(root, "phoebe.config.ts"),
+      `export const config = { workspace: { depth: 1 } };\n`,
+    );
+    const child = join(root, "widget");
+    mkdirSync(join(child, ".phoebe"), { recursive: true });
+    writeFileSync(
+      join(child, "phoebe.config.ts"),
+      `export const config = { configDir: ".phoebe" };\n`,
+    );
+    const governing = join(child, ".phoebe", "phoebe.config.ts");
+    writeFileSync(governing, TENANT_CONFIG("acme/widget", `\n  readyLabel: "go",`));
+    writeFileSync(join(child, ".phoebe", ".env"), "GH_TOKEN=x\n");
+
+    const report = await collect(join(root, "phoebe.config.ts"));
+
+    expect(report.tenants).toHaveLength(1);
+    const row = report.tenants[0]!;
+    expect(row.error).toBeNull();
+    expect(row.tenant).toBe("acme/widget");
+    expect(row.fields?.["readyLabel"]).toMatchObject({
+      value: "go",
+      source: "file",
+      via: governing,
+    });
+    expect(row.env?.["GH_TOKEN"]).toEqual({ present: true, from: "tenantEnv" });
+  });
+});
+
 // --- output -----------------------------------------------------------------
 
 const REPORT: EffectiveConfigReport = {

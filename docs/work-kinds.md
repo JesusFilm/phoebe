@@ -65,8 +65,12 @@ All three janitors scan open PRs based on the same scope rules (`isPrInScope`):
 
 1. **Cross-repository PRs (forks) are always excluded.**
 2. PRs carrying `prOptOutLabel` (default `ready-for-human`) are excluded.
-3. If `prScope` is `"phoebe"`, only `branchPrefix` branches qualify; `"all"`
-   admits any same-repo PR.
+3. `prScope` decides whose branches qualify: `"phoebe"` only `branchPrefix`
+   ones, `"all"` any same-repo PR, an array exactly the prefixes it names. Each
+   janitor can carry its own
+   ([`configuration.md`](configuration.md#the-array-form-and-per-kind-scope)), so
+   the cycle lists the union of the three and each kind then turns away what its
+   own scope does not admit.
 4. Drafts are filtered by `draftPrs`: `skip-all` drops every draft;
    `skip-non-phoebe` drops drafts on non-Phoebe branches; `include` keeps them.
 

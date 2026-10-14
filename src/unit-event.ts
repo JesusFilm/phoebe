@@ -188,6 +188,45 @@ export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSn
   return next;
 }
 
+/** What a starting child found in its snapshot that no process is doing. */
+export type Inherited = {
+  /** The snapshot with those claims gone, stamped `ts`. */
+  next: StatusSnapshot;
+  /** The units a previous child started and never settled, oldest first. */
+  stranded: CurrentUnit[];
+  /** A previous child's pass was parked on the broker when it went away. */
+  wasWaitingForSlot: boolean;
+};
+
+/**
+ * Drop what a snapshot says is in flight that its new writer is not doing
+ * (pure, #670). `null` when there is nothing to drop, so a clean boot writes
+ * nothing.
+ *
+ * The file outlives the process that wrote it, and {@link applyUnitEvent} only
+ * removes a unit when that unit's own settling event arrives. A child killed
+ * mid-unit never emits one, so its unit stays in `currentUnits` for good: every
+ * later child inherits it, and the report reads the pipeline as `working` and
+ * `wedged? unit past its budget` for as long as the file exists.
+ * `waitingForSlot` strands the same way, and more quietly: only `started`
+ * clears it, so a pass that drained while parked on the broker leaves it set,
+ * and a set flag switches off the `no pass` clause that would notice the next
+ * child's loop stopping.
+ *
+ * A pipeline's snapshot has one writer, and a writer that has just started has
+ * admitted nothing and is waiting on nothing. So both claims are, at that
+ * moment, a dead process's. `lastError` and `lastTimeoutAt` are history, not
+ * claims about now, and are left as they were.
+ */
+export function forgetInherited(prev: StatusSnapshot, ts: string): Inherited | null {
+  if (prev.currentUnits.length === 0 && !prev.waitingForSlot) return null;
+  return {
+    next: { ...prev, currentUnits: [], waitingForSlot: false, updatedAt: ts },
+    stranded: prev.currentUnits,
+    wasWaitingForSlot: prev.waitingForSlot,
+  };
+}
+
 /**
  * Read one snapshot, normalized onto the current shape. The file outlives the
  * engine that wrote it — `phoebe boot` relaunches the engine at a new ref
@@ -243,14 +282,8 @@ export function writeStatus(path: string, snapshot: StatusSnapshot): void {
 
 export type EmitUnitEvent = (event: Omit<UnitEvent, "tenant" | "pipeline" | "ts">) => void;
 
-/**
- * Build the `emitUnitEvent` chokepoint for one tenant: it prints the tagged
- * stdout line and refreshes the `status.json` snapshot on disk. Impurities
- * (clock, logger, fs) are injected so it is unit-tested without a real
- * filesystem. A snapshot write failure is swallowed after logging — observability
- * must never take a work unit down.
- */
-export function createEmitUnitEvent(deps: {
+/** What one pipeline's snapshot writer is built from — its two entry points share it. */
+export type SnapshotWriterDeps = {
   tenant: string;
   pipeline: string;
   statusPath: string;
@@ -259,14 +292,23 @@ export function createEmitUnitEvent(deps: {
   read?: (path: string) => StatusSnapshot | null;
   write?: (path: string, snapshot: StatusSnapshot) => void;
   /**
-   * The snapshot this event folded to, once it is safely on disk. How a
+   * The snapshot a write folded to, once it is safely on disk. How a
    * supervised engine tells its bootstrapper that the file moved (#532): the
    * deployment report carries the raw snapshot, and the bootstrapper learns of
    * a change over the IPC channel it already has rather than by watching the
    * filesystem. Unset for a standalone engine, which has nobody to tell.
    */
   onSnapshot?: (snapshot: StatusSnapshot) => void;
-}): EmitUnitEvent {
+};
+
+/**
+ * Build the `emitUnitEvent` chokepoint for one tenant: it prints the tagged
+ * stdout line and refreshes the `status.json` snapshot on disk. Impurities
+ * (clock, logger, fs) are injected so it is unit-tested without a real
+ * filesystem. A snapshot write failure is swallowed after logging — observability
+ * must never take a work unit down.
+ */
+export function createEmitUnitEvent(deps: SnapshotWriterDeps): EmitUnitEvent {
   const now = deps.now ?? (() => new Date().toISOString());
   const log = deps.log ?? ((line) => console.log(line));
   const read = deps.read ?? readStatus;
@@ -289,6 +331,46 @@ export function createEmitUnitEvent(deps: {
       log(
         `${unitTag(deps.tenant, deps.pipeline)} could not refresh status.json — ${String(error)}`,
       );
+    }
+  };
+}
+
+/**
+ * Build the boot-time half of the snapshot writer (#670): the call a starting
+ * child makes once, before its first pass, to drop what {@link forgetInherited}
+ * finds. Each stranded unit gets one line naming it and when it had started, so
+ * the log says a unit was abandoned and not only that the report went quiet.
+ *
+ * Same dependencies as {@link createEmitUnitEvent}, and the same posture: a
+ * snapshot that cannot be read or written is one log line, never a boot that
+ * failed.
+ */
+export function createForgetInherited(deps: SnapshotWriterDeps): () => void {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const log = deps.log ?? ((line) => console.log(line));
+  const read = deps.read ?? readStatus;
+  const write = deps.write ?? writeStatus;
+  const tag = unitTag(deps.tenant, deps.pipeline);
+
+  return () => {
+    try {
+      const prev = read(deps.statusPath);
+      if (prev === null) return;
+      const inherited = forgetInherited(prev, now());
+      if (inherited === null) return;
+      write(deps.statusPath, inherited.next);
+      for (const { unit, startedAt } of inherited.stranded) {
+        log(
+          `${tag} dropped ${unit.kind} ${unit.id} from status.json — started ${startedAt} ` +
+            `by a process that is gone, and never settled.`,
+        );
+      }
+      if (inherited.wasWaitingForSlot) {
+        log(`${tag} cleared a slot wait in status.json — the pass that was parked is gone.`);
+      }
+      deps.onSnapshot?.(inherited.next);
+    } catch (error) {
+      log(`${tag} could not clear inherited state from status.json — ${String(error)}`);
     }
   };
 }

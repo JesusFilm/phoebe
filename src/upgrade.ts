@@ -588,7 +588,7 @@ type UpgradeSeams = {
     source: GithubSource;
     configPath: string;
     token: string | undefined;
-  }) => number | null;
+  }) => number | null | Promise<number | null>;
   readDockerfile: () => string | null;
   writeDockerfile: (content: string) => void;
   isInContainer: () => boolean;
@@ -614,13 +614,15 @@ export type UpgradeDeps = {
    * Materialize the target engine checkout, probe for `src/migrations/index.ts`,
    * and spawn `phoebe migrate` from that checkout if the index exists. Returns the
    * migrate exit code, or null when the index is absent (no-op). Injectable for
-   * tests; the default calls materializeGithubEngine then spawnSync.
+   * tests; the default calls materializeGithubEngine then spawnSync. A caller
+   * whose process cannot block on either, the companion's window, answers with
+   * a promise instead.
    */
   runMigrations?: (opts: {
     source: GithubSource;
     configPath: string;
     token: string | undefined;
-  }) => number | null;
+  }) => number | null | Promise<number | null>;
   /** Read container/Dockerfile; returns null when the deployment has no container/. */
   readDockerfile?: () => string | null;
   /** Write container/Dockerfile after a pin rewrite. */
@@ -809,7 +811,7 @@ export async function runUpgrade(opts: RunUpgradeOptions): Promise<UpgradeOutcom
       stderr: io.stderr,
     });
     reporter = await createCrashReporterForConfig(configPath);
-    engine = upgradeEngineHalf({
+    engine = await upgradeEngineHalf({
       configPath,
       source,
       ref: opts.ref ?? releaseTag,
@@ -924,14 +926,14 @@ function formatCheckReport(report: UpgradeCheckReport): string {
  * Move the engine pin. Returns what became of the half rather than setting an
  * exit code: the CLI and the companion read the same value (#552).
  */
-export function upgradeEngineHalf(opts: {
+export async function upgradeEngineHalf(opts: {
   configPath: string;
   source: ResolvedEngineSource;
   ref: string | null;
   refKind: RefKind;
   token: string | undefined;
   io: UpgradeSeams;
-}): UpgradeHalfOutcome {
+}): Promise<UpgradeHalfOutcome> {
   const { configPath, source, io } = opts;
   if (source.source === "local") {
     throw new Error(
@@ -986,7 +988,7 @@ export function upgradeEngineHalf(opts: {
   // a broken upgrade must not land. A target with no src/migrations/index.ts
   // skips the step (null return) and proceeds. Per-child failures are reflected in
   // migrate's exit code, not ours: they exit 0 and allow the flip.
-  const migrateExitCode = io.runMigrations({
+  const migrateExitCode = await io.runMigrations({
     // The target ref, not the config's current pin: the whole point is running
     // the *incoming* checkout's migrate so the facility self-upgrades.
     source: { ...(source as GithubSource), ref },

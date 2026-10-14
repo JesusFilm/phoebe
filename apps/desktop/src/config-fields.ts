@@ -27,9 +27,23 @@ export type ConfigRole = "workspace" | "tenant" | "solo";
 
 type Row = Pick<
   ConfigFieldFacts,
-  "path" | "scope" | "type" | "values" | "suggestions" | "env" | "locked" | "via"
+  | "path"
+  | "scope"
+  | "type"
+  | "values"
+  | "suggestions"
+  | "env"
+  | "locked"
+  | "via"
+  | "listAlternative"
 > & {
   fallback?: string | number | boolean;
+  /**
+   * The config path a fresh list for this row starts from (#655), straight off
+   * the catalogue. Resolved against the file being read, so the prefill is this
+   * config's value and not the shipped default when the file states one.
+   */
+  prefillFrom?: string;
 };
 
 /**
@@ -96,6 +110,8 @@ const TENANT_ROWS: readonly Row[] = SETTINGS.filter(
     type: setting.type,
     env: setting.env,
     ...(setting.values === undefined ? {} : { values: setting.values }),
+    ...(setting.listAlternative === undefined ? {} : { listAlternative: setting.listAlternative }),
+    ...(setting.listPrefillFrom === undefined ? {} : { prefillFrom: setting.listPrefillFrom }),
     ...(SUGGESTIONS[setting.path] === undefined ? {} : { suggestions: SUGGESTIONS[setting.path] }),
     ...(typeof fallback === "string" ||
     typeof fallback === "number" ||
@@ -104,6 +120,20 @@ const TENANT_ROWS: readonly Row[] = SETTINGS.filter(
       : {}),
   };
 });
+
+/**
+ * What a fresh list on this row starts from: the value the file states at the
+ * path the catalogue named, else that path's shipped default. Empty when
+ * neither is a string, which leaves the box empty rather than prefilled with a
+ * guess.
+ */
+function listPrefillOf(source: string, prefillFrom: string): readonly string[] {
+  const read = editConfigGetFieldAt(source, prefillFrom.split("."));
+  const stated = read.ok && read.found ? read.literal : undefined;
+  const value =
+    typeof stated === "string" ? stated : (CONFIG_DEFAULTS as Record<string, unknown>)[prefillFrom];
+  return typeof value === "string" && value !== "" ? [value] : [];
+}
 
 const ROWS: Record<ConfigRole, readonly Row[]> = {
   workspace: [...DEPLOYMENT_ROWS, ...FLEET_ROWS],
@@ -128,9 +158,13 @@ export function configFieldsOf(
   // The refs worth offering are the caller's to know: the tip, and the release
   // this companion is. Any branch, tag or commit can still be typed.
   const engineRefs = offer.engineRefs ?? ["main"];
-  for (const { fallback, ...declared } of ROWS[role]) {
-    const row =
+  for (const { fallback, prefillFrom, ...declared } of ROWS[role]) {
+    const withRefs =
       declared.path === "engine.ref" ? { ...declared, suggestions: engineRefs } : declared;
+    const row =
+      prefillFrom === undefined
+        ? withRefs
+        : { ...withRefs, listPrefill: listPrefillOf(source, prefillFrom) };
     const read = editConfigGetFieldAt(source, row.path.split("."));
     if (!read.ok) {
       // The file itself does not parse: no form. A block that is computed is
