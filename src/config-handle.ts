@@ -348,7 +348,14 @@ function findProp(configObj: BNode, key: string): BNode | null {
   return null;
 }
 
-function extractLiteral(node: BNode): LiteralValue | undefined {
+/**
+ * The literal a value node holds, or `undefined` when it is an expression. A
+ * type assertion is unwrapped first: `"high" as const` and `["a"] as const` are
+ * the values they read as, so every getter and setter here agrees on what is a
+ * literal. A setter still splices over the annotated node, assertion and all.
+ */
+function extractLiteral(outer: BNode): LiteralValue | undefined {
+  const node = unwrapTs(outer);
   if (node.type === "StringLiteral") return node.value as string;
   if (node.type === "NumericLiteral") return node.value as number;
   if (node.type === "BooleanLiteral") return node.value as boolean;
@@ -358,8 +365,7 @@ function extractLiteral(node: BNode): LiteralValue | undefined {
   // replace it would show the list and refuse to change it. Only strings —
   // anything else in the brackets is an expression this cannot stand behind.
   if (node.type === "ArrayExpression") {
-    // Each element is unwrapped first, so `["renovate/" as const]` is the list
-    // it reads as, the way `"x" as const` is the string it reads as.
+    // Each element is unwrapped too, so `["renovate/" as const]` is a list.
     const elements = (node.elements as (BNode | null)[]).map((element) =>
       element === null ? null : unwrapTs(element),
     );

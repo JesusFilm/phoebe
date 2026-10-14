@@ -444,6 +444,17 @@ describe("editConfigGetField", () => {
     expect(result.literal).toBeUndefined();
     expect(result.raw).toContain("process.env");
   });
+
+  test("reads through a type assertion, on a scalar and on a list", () => {
+    const content = MINIMAL(`
+  effort: "high" as const,
+  prScope: ["phoebe/", "renovate/"] as const,`);
+    expect(editConfigGetField(content, "effort")).toMatchObject({ found: true, literal: "high" });
+    expect(editConfigGetFieldAt(content, ["prScope"])).toMatchObject({
+      found: true,
+      literal: ["phoebe/", "renovate/"],
+    });
+  });
 });
 
 // ------------------------------------------------------------------ setField
@@ -475,6 +486,16 @@ describe("editConfigSetField", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain("shorthand");
+  });
+
+  test("replaces an asserted list whole, assertion included", () => {
+    const content = MINIMAL(`
+  prScope: ["renovate/"] as const,`);
+    const result = editConfigSetField(content, "prScope", ["phoebe/", "renovate/"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`prScope: ["phoebe/", "renovate/"],`);
+    expect(result.content).not.toContain("as const");
   });
 });
 

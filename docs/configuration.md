@@ -165,7 +165,9 @@ names the variable.
 
 The console's config form offers the list as a third choice beside the two
 enum values, **prefixes**. Picking it opens a comma-separated box that starts
-on your `branchPrefix`. The form trims each entry, drops blanks, and saves an
+on your `branchPrefix`, or on the default `phoebe/` if the file doesn't set one.
+If your config computes `branchPrefix`, the box starts empty, because the form
+can't read the value. The form trims each entry, drops blanks, and saves an
 empty box as `[]`. From a shell, `phoebe config set` takes the same list as a
 JSON array (see [below](#changing-one-field-phoebe-config-set)).
 
