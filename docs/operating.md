@@ -144,6 +144,10 @@ back.
   `branchPrefix` (default `phoebe/`) branches.
 - `prScope: "all"`. Phoebe maintains _every_ same-repo PR (still honouring
   `prOptOutLabel`, `draftPrs`, and the fork exclusion).
+- `prScope: ["renovate/"]`. Phoebe maintains the branch prefixes you name and
+  nothing else, and each janitor can carry its own list
+  ([`configuration.md`](configuration.md#the-array-form-and-per-kind-scope)) —
+  how a dependency bot's red PRs get fixed up without widening anything else.
 
 Cross-repository PRs from forks are **always** excluded.
 
@@ -407,6 +411,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Hand a PR back                                | Remove the label / mark ready-for-review.                                                                                                                                       |
 | Force a janitor to retry                      | Push, advance the base, post new review feedback, or delete the newest failure comment.                                                                                         |
 | Let Phoebe maintain all PRs, not just its own | `prScope: "all"`.                                                                                                                                                               |
+| Let one janitor fix a bot's PRs               | `prScope: ["renovate/"]` on that kind's block, leaving the tenant's alone.                                                                                                      |
 | See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
 | Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
 
@@ -485,6 +490,15 @@ _state_, from that pipeline's own `state/<name>/status.json`:
 never wedged however long it has been idle, and pipelines are never weighed
 against each other — one that polls every 15 minutes is not sick for being
 quieter than the one beside it.
+
+A snapshot outlives the process that wrote it, and a child killed mid-unit never
+gets to say the unit ended. So each child in persistent mode, as it starts, drops
+whatever its pipeline's snapshot still lists as in flight or waiting for a slot,
+and logs every unit it drops with the time that unit had started. Until that next
+start the file still names the dead unit, which is why a stopped deployment can
+read `wedged? unit past its budget` with nothing running. A `--dry-run` or a
+`--run-once` never does this: either may be a second process beside a child whose
+unit is alive.
 
 `(stale)` marks a `state/<name>/` directory this tenant's config no longer
 declares: a renamed or deleted pipeline whose snapshot outlived it. It is

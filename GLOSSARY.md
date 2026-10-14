@@ -23,6 +23,21 @@ One repository Phoebe works, with its own config, credentials and state. A deplo
 one tenant or many.
 _Avoid_: project, target, client
 
+**Asset directory**:
+The directory a tenant's `.env` and prompts are read from, and the working directory of
+its engine. The tenant's own directory unless its config names another with `configDir`.
+_Avoid_: config dir, runtime dir
+
+**Pointer**:
+A `phoebe.config.ts` at a tenant's root that declares `configDir` and no `repoSlug`, so
+the config in that asset directory governs the tenant. It is how a repository deployed
+both as a workspace tenant and on its own keeps one config.
+_Avoid_: stub, redirect, shim
+
+**Governing config**:
+The `phoebe.config.ts` a tenant runs on: the one at its root, or the one a pointer names.
+_Avoid_: real config, effective config (that is the annotated report `phoebe config` prints)
+
 **Fleet**:
 The pipelines a single deployment supervises — the whole (tenant × pipeline) matrix, not the
 tenants alone.

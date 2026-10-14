@@ -98,6 +98,23 @@ describe("the catalogue", () => {
     }
   });
 
+  test("prScope's list form is file-only, and the flag says so (#655)", () => {
+    const entry = settingAt("prScope");
+    expect(entry.listAlternative).toBe(true);
+    expect(entry.listPrefillFrom).toBe("branchPrefix");
+    // Env takes the enum and nothing else, at either depth.
+    expect(entry.values).toEqual(["phoebe", "all"]);
+    expect(kindEnvNames(entry, "checks")).toEqual(["PHOEBE_CHECKS_PR_SCOPE"]);
+  });
+
+  test("a list-alternative field names a path the catalogue holds", () => {
+    for (const entry of SETTINGS) {
+      if (entry.listPrefillFrom === undefined) continue;
+      expect(() => settingAt(entry.listPrefillFrom!)).not.toThrow();
+      expect(entry.listAlternative, `${entry.path} prefills a list it does not take`).toBe(true);
+    }
+  });
+
   test("the three host knobs live on the deployment block", () => {
     const hostKnobs = SETTINGS.filter((entry) => entry.reader === "bootstrapper");
     expect(hostKnobs.map((entry) => entry.path)).toEqual([

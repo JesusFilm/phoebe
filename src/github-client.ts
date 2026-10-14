@@ -33,10 +33,13 @@ import {
 } from "./feature-branch.ts";
 import type { MergedMemberPr } from "./feature-closes.ts";
 import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
+import { resolvePrScopeForKind, widestPrScope } from "./pr-scope.ts";
+import { PR_UNIT_KINDS } from "./sweep-scope.ts";
 import {
   isCompletedBlockerIssue,
   isPrInScope,
   issueBranch,
+  type PrScopeConfig,
   type BlockerPrState,
   type Issue,
   type ReviewThread,
@@ -501,12 +504,12 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 export type CreateGitHubClientOptions = {
   /**
-   * This tenant's resolved config — the source of `repoSlug`, the work labels and
-   * the PR base. Note that two pure helpers the client calls (`issueBranch`,
-   * `isPrInScope`) still read the `resolved-config.ts` Proxy for `branchPrefix`
-   * and the PR scope rather than this value; in production they are the same
-   * object. `main.ts` no longer reads the Proxy (#280); orchestrator.ts is what
-   * keeps it alive.
+   * This tenant's resolved config — the source of `repoSlug`, the work labels,
+   * the PR base and the scope the shared PR listing filters on. Note that one
+   * pure helper the client calls (`issueBranch`) still reads the
+   * `resolved-config.ts` Proxy for `branchPrefix` rather than this value; in
+   * production they are the same object. `main.ts` no longer reads the Proxy
+   * (#280); orchestrator.ts is what keeps it alive.
    */
   config: PhoebeConfig;
   /**
@@ -749,11 +752,43 @@ export function createGitHubClient({
   }
 
   /**
+   * The scope the shared listing filters on: the union of the tenant's
+   * `prScope` and each janitor's own (#655). One `gh pr list` serves all three
+   * kinds, so it has to admit whatever the widest of them admits; each janitor
+   * then turns away what its own scope does not (src/work-kinds/pr-stack.ts).
+   *
+   * Built per call, like `isPrInScope`'s own default, because `config` is
+   * installed after this module is imported.
+   */
+  function scanScope(): PrScopeConfig {
+    return {
+      branchPrefix: config.branchPrefix,
+      prScope: widestPrScope(
+        [
+          config.prScope,
+          ...PR_UNIT_KINDS.map((kind) =>
+            resolvePrScopeForKind({
+              kind,
+              env,
+              workKinds: config.workKinds,
+              configValue: config.prScope,
+            }),
+          ),
+        ],
+        config.branchPrefix,
+      ),
+      draftPrs: config.draftPrs,
+      prOptOutLabel: config.prOptOutLabel,
+    };
+  }
+
+  /**
    * Every open PR based on one branch, narrowed to what this tenant janitors.
    * The cycle calls it once per base: the default branch, then one live feature
    * branch at a time.
    */
   function openPrsBasedOn(base: string): OpenPhoebePr[] {
+    const scope = scanScope();
     type GhOpenPr = {
       number: number;
       headRefName: string;
@@ -775,12 +810,15 @@ export function createGitHubClient({
       "100",
     ])
       .filter((pr) =>
-        isPrInScope({
-          headRefName: asBranchRef(pr.headRefName),
-          isDraft: pr.isDraft,
-          isCrossRepository: pr.isCrossRepository,
-          labels: pr.labels.map((label) => label.name),
-        }),
+        isPrInScope(
+          {
+            headRefName: asBranchRef(pr.headRefName),
+            isDraft: pr.isDraft,
+            isCrossRepository: pr.isCrossRepository,
+            labels: pr.labels.map((label) => label.name),
+          },
+          scope,
+        ),
       )
       .map((pr) => ({
         number: asPrNumber(pr.number),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import { config as sampleUserConfig } from "../phoebe.config.ts";
+import { config as sampleUserConfig } from "../.phoebe/phoebe.config.ts";
 import { asBranchRef, asPrNumber, asSha, type Sha } from "./branded.ts";
 import { resolveConfig } from "./config-schema.ts";
 import { config as installedConfig, setResolvedConfig } from "./resolved-config.ts";
@@ -701,6 +701,36 @@ describe("isPrInScope", () => {
         ...defaultPrScopeConfig,
         prScope: "all",
         draftPrs: "include",
+      }),
+    ).toBe(true);
+  });
+
+  test("a prefix list admits exactly the prefixes it names (#655)", () => {
+    const scope = { ...defaultPrScopeConfig, prScope: ["renovate/"] };
+    expect(isPrInScope(prScanFields({ headRefName: "renovate/lodash-4.x" }), scope)).toBe(true);
+    expect(isPrInScope(prScanFields({ headRefName: "feature/foo" }), scope)).toBe(false);
+    // A tenant may leave its own prefix out, and this is what that means.
+    expect(isPrInScope(prScanFields({ headRefName: "phoebe/issue-1" }), scope)).toBe(false);
+  });
+
+  test("an empty list admits nothing — the spelling for janitors that scan no PRs", () => {
+    const scope = { ...defaultPrScopeConfig, prScope: [] };
+    expect(isPrInScope(prScanFields({ headRefName: "phoebe/issue-1" }), scope)).toBe(false);
+    expect(isPrInScope(prScanFields({ headRefName: "renovate/lodash-4.x" }), scope)).toBe(false);
+  });
+
+  test("a draft on an admitted non-Phoebe prefix is still skipped under skip-non-phoebe", () => {
+    expect(
+      isPrInScope(prScanFields({ headRefName: "renovate/lodash-4.x", isDraft: true }), {
+        ...defaultPrScopeConfig,
+        prScope: ["renovate/", "phoebe/"],
+      }),
+    ).toBe(false);
+    // The same list, the same branch, not a draft: admitted.
+    expect(
+      isPrInScope(prScanFields({ headRefName: "renovate/lodash-4.x" }), {
+        ...defaultPrScopeConfig,
+        prScope: ["renovate/", "phoebe/"],
       }),
     ).toBe(true);
   });

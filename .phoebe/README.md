@@ -6,8 +6,14 @@ isolated worktree, runs the gates, and opens a PR. It's a `phoebe init` runtime
 (config + prompts + container) adapted for this repo's toolchain and for
 running the engine straight from the working tree.
 
-It lives in `.phoebe/` (not the repo root) because the root `phoebe.config.ts`
-is the test fixture, and `phoebe init` won't overwrite it.
+The config here, [`phoebe.config.ts`](phoebe.config.ts), is the only one this
+repository has. The dogfood runs on it. A workspace that lists this checkout as
+a tenant runs on it too, sent here by the pointer at the repo root, and the test
+suite installs it as its fixture. There used to be a second copy at the root,
+and the two drifted: the workspace ran the shipped default model for three weeks
+while this one said Opus (#389). A change to how Phoebe works this repo is now
+one edit, made here. See
+[One config for a repo deployed two ways](../docs/configuration.md#one-config-for-a-repo-deployed-two-ways).
 
 ## What's different from a stock `phoebe init`
 
@@ -71,6 +77,9 @@ ref; flip `engine` to `{ source: "github", ref }` to try that path by hand.
 - A Claude Pro/Max subscription token in `CLAUDE_CODE_OAUTH_TOKEN` — mint one
   with `node scripts/hoist-claude-login.mjs`, which writes it into `.phoebe/.env`.
 - At least one issue on `JesusFilm/phoebe` labeled `ready-for-agent`.
+- Optional: a Sentry auth token in `SENTRY_AUTH_TOKEN` (scope `event:read`) for
+  the `intake` pipeline the config declares. Without it that pipeline alone
+  refuses to start and `work` runs as usual.
 
 ## Run it
 

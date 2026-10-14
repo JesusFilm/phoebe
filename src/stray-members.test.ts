@@ -13,7 +13,7 @@ import {
   type IssueGraphNode,
 } from "./feature-branch.ts";
 import { readMemberships, scanStrayMembers, type FeatureGraphSource } from "./stray-members.ts";
-import { config as sampleUserConfig } from "../phoebe.config.ts";
+import { config as sampleUserConfig } from "../.phoebe/phoebe.config.ts";
 
 const resolved = resolveConfig(sampleUserConfig);
 const WALK: FeatureWalkConfig = {

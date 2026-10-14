@@ -63,6 +63,7 @@ import { applyEnvOverlay } from "./load-config.ts";
 import { pipelineOwnedKinds } from "./pipeline.ts";
 import { ENGINE_CREDENTIAL_KEYS } from "./shell-env.ts";
 import { envNames, kindEnvNames, SETTINGS, settingAt, type Setting } from "./settings-catalogue.ts";
+import { PR_UNIT_KINDS } from "./sweep-scope.ts";
 
 /**
  * The env as three layers, so a value can say where it was set. The engine child
@@ -115,6 +116,7 @@ const PROVIDER_SETTING = settingAt("defaultProvider");
 const MODEL_SETTING = settingAt("model");
 const EFFORT_SETTING = settingAt("effort");
 const RUN_TIMEOUT_SETTING = settingAt("runTimeoutMs");
+const PR_SCOPE_SETTING = settingAt("prScope");
 const POLL_INTERVAL_SETTING = settingAt("pollIntervalMs");
 const BASE_SETTING = settingAt("kinds.issues.base");
 
@@ -668,6 +670,20 @@ function kindFields(opts: {
     ),
     promptFile: promptFileLeaf({ kind, block, pass: opts.pass }),
   };
+
+  // Only the three PR janitors read `prScope` (#655), so only they get the
+  // leaf: an `issues` block that set it would be configuring nothing, and a
+  // row saying what it inherited would imply otherwise.
+  if ((PR_UNIT_KINDS as readonly string[]).includes(kind)) {
+    fields["prScope"] = leafFrom(
+      [
+        ...kindEnv(PR_SCOPE_SETTING),
+        ...fileCandidate(block?.prScope, configPath),
+        ...inherit(globals["prScope"] as EffectiveLeaf, PR_SCOPE_SETTING.path),
+      ],
+      "engine",
+    );
+  }
 
   // Env-only, and only under the issues kind: a forced base is an escape hatch
   // for one run, never something a tenant writes down. Its name predates the

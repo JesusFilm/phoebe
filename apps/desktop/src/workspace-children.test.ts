@@ -95,4 +95,18 @@ describe("the children under a workspace", () => {
       { dir: d.join("odd"), name: "odd", slug: null },
     ]);
   });
+
+  test("a child whose root is a pointer takes its slug from the config it points at (#663)", () => {
+    const d = disk(
+      { ".": ["widget"] },
+      {
+        widget: `export default { configDir: ".phoebe" };\n`,
+        [path.join("widget", ".phoebe")]: child("acme/widget"),
+      },
+    );
+
+    expect(workspaceChildren(ROOT, { depth: 1 }, d)).toEqual([
+      { dir: d.join("widget"), name: "widget", slug: "acme/widget" },
+    ]);
+  });
 });

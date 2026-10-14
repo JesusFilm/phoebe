@@ -25,6 +25,7 @@
 // an optional field does not move it.
 
 import type { CredentialArm } from "./credential-arm.ts";
+import type { ConfigEditValue } from "./config-edit.ts";
 import type { DoctorSection } from "./doctor.ts";
 import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
@@ -266,7 +267,7 @@ export type EditLedgerEntry = {
   /** The dotted path of the leaf that was written. */
   path: string;
   /** What was written. A leaf is a literal; nothing here carries an object. */
-  value: string | number | boolean | null;
+  value: ConfigEditValue;
   at: string;
   /** The allowlisted email the relay stamped on the edit; absent for a shell run. */
   by?: string;

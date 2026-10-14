@@ -55,7 +55,13 @@ import type { DrainSignal } from "./drain.ts";
 import { CredentialRefreshBlockedError, type CredentialClient } from "./credential-client.ts";
 import type { SlotClient } from "./slot-client.ts";
 import type { ReportClient } from "./report-client.ts";
-import { createEmitUnitEvent, type StatusSnapshot, type UnitRef } from "./unit-event.ts";
+import {
+  createEmitUnitEvent,
+  createForgetInherited,
+  type SnapshotWriterDeps,
+  type StatusSnapshot,
+  type UnitRef,
+} from "./unit-event.ts";
 import type {
   AnyWorkKindDefinition,
   WorkKindRunCtx,
@@ -352,6 +358,8 @@ async function runCycle(opts: {
   worktreeList?: string;
   /** Which pipeline this engine is (#418); defaults to the reserved `work`. */
   pipeline?: string;
+  /** The snapshot writer's boot-time half (#670), when a test watches for the call. */
+  forgetInherited?: () => void;
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(
     opts.shas ?? {},
@@ -385,6 +393,7 @@ async function runCycle(opts: {
     emitUnitEvent: (event) => {
       events.push(event.unit);
     },
+    ...(opts.forgetInherited !== undefined ? { forgetInherited: opts.forgetInherited } : {}),
     run: { runOnce: false, dryRun: true, pollIntervalMs: 1_000, ...opts.run },
   });
 
@@ -2890,6 +2899,8 @@ function concurrentEngine(opts: {
   git?: (base: GitRunner) => GitRunner;
   /** Extra environment, over the token every engine here starts with. */
   env?: NodeJS.ProcessEnv;
+  /** The `status.json` this engine boots on — what a previous child left (#670). */
+  inherited?: StatusSnapshot;
 }): {
   drain: ReturnType<typeof manualDrain>;
   lines: string[];
@@ -2906,8 +2917,19 @@ function concurrentEngine(opts: {
     opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {},
   );
   const env: NodeJS.ProcessEnv = { GH_TOKEN: "t0", ...opts.env };
-  let snapshot: StatusSnapshot | null = null;
+  let snapshot: StatusSnapshot | null = opts.inherited ?? null;
   const lines: string[] = [];
+  const snapshotWriter: SnapshotWriterDeps = {
+    tenant: config.repoSlug,
+    pipeline: "work",
+    statusPath: "status.json",
+    log: (line) => lines.push(line),
+    read: () => snapshot,
+    write: (_path, next) => {
+      snapshot = next;
+    },
+    onSnapshot: (next) => opts.reportClient?.snapshot(next),
+  };
   const engine = createEngine({
     config,
     registry: buildRegistry(
@@ -2927,16 +2949,8 @@ function concurrentEngine(opts: {
     slotClient: opts.slotClient ?? null,
     credentialClient: opts.credentialClient ?? null,
     reportClient: opts.reportClient ?? null,
-    emitUnitEvent: createEmitUnitEvent({
-      tenant: config.repoSlug,
-      pipeline: "work",
-      statusPath: "status.json",
-      log: (line) => lines.push(line),
-      read: () => snapshot,
-      write: (_path, next) => {
-        snapshot = next;
-      },
-    }),
+    emitUnitEvent: createEmitUnitEvent(snapshotWriter),
+    forgetInherited: createForgetInherited(snapshotWriter),
     run: {
       runOnce: false,
       dryRun: false,
@@ -3002,6 +3016,110 @@ describe("the deployment report's rail", () => {
 
     engine.drain.request();
     await loop;
+  });
+});
+
+// #670: a child killed mid-unit never settles it, and the snapshot only drops
+// a unit on that unit's own settling event. So the file a new child boots on can
+// claim work nobody is doing — and until this, kept claiming it for good.
+describe("a snapshot inherited from a child that is gone", () => {
+  const strandedConflicts: StatusSnapshot = {
+    tenant: "acme/widget",
+    pipeline: "work",
+    currentUnits: [
+      {
+        unit: { kind: "conflicts", id: "pr:565" },
+        startedAt: "2026-07-01T18:01:06.007Z",
+        runBudgetMs: 2_700_000,
+      },
+    ],
+    waitingForSlot: false,
+    lastError: "push rejected",
+    lastTimeoutAt: null,
+    updatedAt: "2026-08-18T03:12:17.540Z",
+  };
+
+  test("the stranded unit is gone before the first pass, and the log names it", async () => {
+    const gated = gatedKind({ refs: [] });
+    const reported: StatusSnapshot[] = [];
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 1,
+      inherited: strandedConflicts,
+      reportClient: { pass: () => {}, snapshot: (snapshot) => reported.push(snapshot) },
+    });
+    const loop = engine.loop();
+    await settle();
+
+    // Nothing is in flight, and the snapshot — and so the report — now says so.
+    expect(engine.status()?.currentUnits).toEqual([]);
+    expect(reported.at(-1)?.currentUnits).toEqual([]);
+    expect(engine.status()?.lastError).toBe("push rejected");
+    expect(
+      engine.lines.filter((line) => line.includes("dropped conflicts pr:565 from status.json")),
+    ).toHaveLength(1);
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("a unit this child starts is still listed as in flight", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const engine = concurrentEngine({
+      kinds: [gated],
+      concurrency: 1,
+      inherited: strandedConflicts,
+    });
+    const loop = engine.loop();
+    await settle();
+
+    // The reset ran once, at boot. It is not a filter on what the loop admits.
+    expect(engine.status()?.currentUnits.map((current) => current.unit.id)).toEqual(["u:1"]);
+
+    engine.drain.request();
+    await gated.release("u:1");
+    await loop;
+    expect(engine.status()?.currentUnits).toEqual([]);
+  });
+
+  test("a dry run leaves the snapshot alone", async () => {
+    // `--dry-run` is how an agent previews selection from inside the container,
+    // against the same state dir, while the real child has a unit running. That
+    // unit is not stranded, and a preview must not say it is.
+    let calls = 0;
+    await runCycle({
+      config: { workOrder: ["issues"] },
+      github: { listReadyIssues: () => [anIssue(7)] },
+      inContainer: true,
+      run: { dryRun: true },
+      forgetInherited: () => {
+        calls += 1;
+      },
+    });
+    expect(calls).toBe(0);
+  });
+
+  test("nor does --run-once, which may be a second process beside the daemon", async () => {
+    // `docker compose run --rm phoebe --run-once` is a second container on the
+    // same data volume, with a supervisor of its own. Clearing here would hide
+    // the daemon's live unit from the report for the rest of that unit's run.
+    let calls = 0;
+    await runCycle({
+      config: { workOrder: ["issues"] },
+      github: {
+        listReadyIssues: () => [],
+        // The boot-time login cross-check (#346) runs on an executing cycle.
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      },
+      env: { GH_TOKEN: "t" },
+      inContainer: true,
+      run: { runOnce: true, dryRun: false },
+      forgetInherited: () => {
+        calls += 1;
+      },
+    });
+    expect(calls).toBe(0);
   });
 });
 
