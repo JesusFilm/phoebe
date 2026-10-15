@@ -105,7 +105,7 @@ describe("runAgent", () => {
     expect(result).toEqual({ exitCode: 3, resultText: "partial answer" });
   });
 
-  test("tenant prefixes log brackets as [owner/repo:provider]", async () => {
+  test("tenant and pipeline prefix log brackets as [owner/repo:pipeline:provider]", async () => {
     const fake = makeFakeChild();
     const claudeTextLine = JSON.stringify({
       type: "assistant",
@@ -133,10 +133,11 @@ describe("runAgent", () => {
       spawn,
       log: (line) => logged.push(line),
       tenant: "JesusFilm/phoebe",
+      pipeline: "work",
     });
     expect(logged).toEqual([
-      "[JesusFilm/phoebe:claude] Reading file",
-      "[JesusFilm/phoebe:claude] Bash: ls",
+      "[JesusFilm/phoebe:work:claude] Reading file",
+      "[JesusFilm/phoebe:work:claude] Bash: ls",
     ]);
   });
 
@@ -166,11 +167,46 @@ describe("runAgent", () => {
       spawn,
       log: (line) => logged.push(line),
       tenant: "JesusFilm/phoebe",
+      pipeline: "work",
       unit: "issues issue:88",
     });
     expect(logged).toEqual([
-      "[JesusFilm/phoebe:claude][issues issue:88] Reading file",
-      "[JesusFilm/phoebe:claude:stderr][issues issue:88] cli warning",
+      "[JesusFilm/phoebe:work:claude][issues issue:88] Reading file",
+      "[JesusFilm/phoebe:work:claude:stderr][issues issue:88] cli warning",
+    ]);
+  });
+
+  // A caller that knows the tenant but not which pipeline it is — nothing in the
+  // engine is one today, and the bracket should degrade rather than print an
+  // empty segment.
+  test("with a tenant but no pipeline, the bracket falls back to slug and provider", async () => {
+    const fake = makeFakeChild();
+    const claudeTextLine = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Reading file" }] },
+    });
+    const spawn: SpawnAgent = () => {
+      queueMicrotask(() => {
+        fake.emitStdout(`${claudeTextLine}\n`);
+        fake.emitStderr("cli warning\n");
+        fake.close(0);
+      });
+      return fake.child;
+    };
+    const logged: string[] = [];
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "m",
+      prompt: "p",
+      cwd: "/w",
+      env: {},
+      spawn,
+      log: (line) => logged.push(line),
+      tenant: "JesusFilm/phoebe",
+    });
+    expect(logged).toEqual([
+      "[JesusFilm/phoebe:claude] Reading file",
+      "[JesusFilm/phoebe:claude:stderr] cli warning",
     ]);
   });
 

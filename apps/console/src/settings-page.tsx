@@ -26,8 +26,8 @@ export const SAMPLE_LINES: readonly string[] = [
   "[phoebe] boot: engine v0.13.0, 2 pipelines for JesusFilm/phoebe",
   "[phoebe:JesusFilm/phoebe:work] cycle: nothing ready-for-agent, sleeping 30s",
   "[phoebe:JesusFilm/phoebe:research][issue 497] started",
-  "[JesusFilm/phoebe:claude] Reading the ticket and the map…",
-  "[JesusFilm/phoebe:claude:stderr] warning: slow response from the API, retrying",
+  "[JesusFilm/phoebe:work:claude] Reading the ticket and the map…",
+  "[JesusFilm/phoebe:work:claude:stderr] warning: slow response from the API, retrying",
 ];
 
 export function SettingsPage({
