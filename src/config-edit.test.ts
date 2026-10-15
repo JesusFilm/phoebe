@@ -227,6 +227,23 @@ describe("applyConfigEdit — the write", () => {
     expect(disk.get(FILE)).toContain("pollIntervalMs: 30000");
   });
 
+  test("a list lands as a list, and the receipt carries the list (#655)", async () => {
+    const source = CONFIG();
+    const { deps, disk } = harness({ source });
+    const receipt = await applyConfigEdit(
+      edit({
+        path: "prScope",
+        value: ["phoebe/", "renovate/"],
+        fingerprint: fingerprintOf(source),
+      }),
+      deps,
+    );
+    expect(receipt.state).toBe("written");
+    if (receipt.state !== "written") return;
+    expect(receipt.value).toEqual(["phoebe/", "renovate/"]);
+    expect(disk.get(FILE)).toContain(`prScope: ["phoebe/", "renovate/"]`);
+  });
+
   test("the patched source is what the loader is asked about", async () => {
     const source = CONFIG();
     const seen: string[] = [];

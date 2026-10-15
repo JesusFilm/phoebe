@@ -168,7 +168,11 @@ export const config = defineConfig({
           // changeset; Phoebe re-adds it next cycle. `gitIgnoredAuthors` in
           // renovate.json is what keeps Renovate refreshing the branch at all
           // after a push by another author.
-          prScope: ["renovate/"],
+          //
+          // A list is the whole admitted set, so "phoebe/" has to be in it:
+          // `["renovate/"]` alone would take Phoebe's own red PRs away from
+          // this kind.
+          prScope: ["phoebe/", "renovate/"],
         },
         reviews: {
           model: "claude-sonnet-5-5",

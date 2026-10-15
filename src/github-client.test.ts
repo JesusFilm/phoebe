@@ -1282,6 +1282,36 @@ describe("listOpenPhoebePrs", () => {
 
     expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5]);
   });
+
+  test("a per-kind env var widens the listing too", () => {
+    const { exec } = stubExec([
+      JSON.stringify([
+        prRow({ number: 5 }),
+        prRow({ number: 6, headRefName: "dependabot/npm_and_yarn/lodash-4" }),
+      ]),
+      "[]",
+    ]);
+    const github = createGitHubClient({
+      config: resolveConfig(minimalUser()),
+      env: { PHOEBE_REVIEWS_PR_SCOPE: "all" },
+      internal: { exec, sleep: async () => {} },
+    });
+
+    expect(github.listOpenPhoebePrs().map((pr) => pr.number)).toEqual([5, 6]);
+  });
+
+  test("a per-kind env var outside the enum stops the client being built", () => {
+    // Heard at startup, before any `gh` call, rather than on the first cycle.
+    const { exec, calls } = stubExec([]);
+    expect(() =>
+      createGitHubClient({
+        config: resolveConfig(minimalUser()),
+        env: { PHOEBE_CHECKS_PR_SCOPE: "renovate/" },
+        internal: { exec, sleep: async () => {} },
+      }),
+    ).toThrow(/PHOEBE_CHECKS_PR_SCOPE must be one of phoebe, all/);
+    expect(calls).toEqual([]);
+  });
 });
 
 describe("listMergedMemberPrs", () => {
