@@ -6,7 +6,7 @@
 //   [phoebe] …                                   the bootstrapper
 //   [phoebe:<owner>/<repo>:<pipeline>] …         one pipeline's engine
 //   [phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>] …   the same, on behalf of one unit
-//   [<owner>/<repo>:<command>] …                 an agent's own output
+//   [<owner>/<repo>:<pipeline>:<command>] …      an agent's own output
 //
 // The console turns that into tabs: every pipeline seen is one, beside "all"
 // and the bootstrapper, and a workspace child opened from the rail gets a tab
@@ -32,15 +32,15 @@ const AGENT_TAG = /^\[([^\]:]+\/[^\]:]+):([^\]]+)\]/;
 
 /**
  * The channel a line belongs to: `<owner>/<repo>:<pipeline>` for an engine
- * line, `<owner>/<repo>:<command>` for an agent's, `boot` for the bootstrapper's
- * and for anything untagged, which is the runtime's own noise.
+ * line, `<owner>/<repo>:<pipeline>:<command>` for an agent's, `boot` for the
+ * bootstrapper's and for anything untagged, which is the runtime's own noise.
  */
 export function channelOf(line: string): string {
   const pipeline = PIPELINE_TAG.exec(line);
   if (pipeline !== null) return `${pipeline[1]}:${pipeline[2]}`;
   const agent = AGENT_TAG.exec(line);
   if (agent !== null) {
-    // `[owner/repo:claude:stderr]` is the same channel as `[owner/repo:claude]`.
+    // `[owner/repo:work:claude:stderr]` is the same channel as `[owner/repo:work:claude]`.
     const command = (agent[2] as string).replace(/:stderr$/, "");
     return `${agent[1]}:${command}`;
   }
@@ -58,18 +58,21 @@ function isTenantChannel(channel: string): boolean {
 }
 
 /**
- * The tabs to draw for these lines: all, then boot, then cli when a verb has
- * run on the install, then the tenant scope when
+ * The tabs to draw for the channels seen: all, then boot, then cli when a verb
+ * has run on the install, then the tenant scope when
  * there is one (there before its first line, so a child opened from the rail
  * has its tab from the start), then each channel in the order it first spoke.
+ *
+ * The channels are handed over rather than read back off the lines — logs.ts
+ * collects them as they arrive — so the tabs cost no parse per render and a
+ * channel keeps its tab for the session, through a clear and past the line
+ * bound dropping everything it said.
  */
 export function channelsIn(
-  lines: readonly string[],
+  seen: ReadonlySet<string>,
   scope: string | null = null,
   cli = false,
 ): string[] {
-  const seen = new Set<string>();
-  for (const line of lines) seen.add(channelOf(line));
   const ordered = [...seen].filter((channel) => channel !== BOOT_CHANNEL);
   return [
     ALL_CHANNEL,
@@ -82,14 +85,17 @@ export function channelsIn(
   ];
 }
 
-/** The lines a tab shows. */
-export function linesIn(lines: readonly string[], channel: string): string[] {
-  if (channel === ALL_CHANNEL) return [...lines];
-  if (isTenantChannel(channel)) {
-    const prefix = channel.slice(0, -1);
-    return lines.filter((line) => channelOf(line).startsWith(prefix));
-  }
-  return lines.filter((line) => channelOf(line) === channel);
+/**
+ * Whether a line on channel `on` belongs under `channel` — the tab it would
+ * show on, and the scope a clear covers it with. Every line belongs to `all`,
+ * every line under a slug to that tenant's scope, and a pipeline's own lines to
+ * its own tab. Which lines a tab actually draws is logs.ts's, because the marks
+ * a clear leaves are part of the answer.
+ */
+export function inChannel(on: string, channel: string): boolean {
+  if (channel === ALL_CHANNEL) return true;
+  if (isTenantChannel(channel)) return on.startsWith(channel.slice(0, -1));
+  return on === channel;
 }
 
 /**

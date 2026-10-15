@@ -6,7 +6,7 @@
 // has lapsed, the CLI says so on its stderr and exits, every unit fails, and
 // the one place that says why is a line in the container's log:
 //
-//   [acme/repo:claude][issues issue:716] Not logged in · Please run /login
+//   [acme/repo:work:claude][issues issue:716] Not logged in · Please run /login
 //
 // So the log is what this reads. The tail is enough: what matters is whether
 // the most recent thing Claude Code said on an install is a refusal to run,
@@ -19,8 +19,14 @@
 
 import type { ClaudeAuthFacts, ClaudeAuthState } from "phoebe-agent/contracts";
 
-/** The tag the engine puts on an agent's own output: `[owner/repo:claude]` or `[owner/repo:claude:stderr]`. */
-const CLAUDE_TAG = /^\[([^\]:]+\/[^\]:]+):claude(?::stderr)?\]/;
+/**
+ * The tag the engine puts on an agent's own output: `[owner/repo:work:claude]`,
+ * and `…:stderr]` on the error stream. The pipeline segment arrived in #675 and
+ * is optional here, so a tail that still holds lines from an older engine reads
+ * the same. The slug is what the facts are keyed by either way — two pipelines
+ * on one tenant share the one Claude token, so they share an auth state.
+ */
+const CLAUDE_TAG = /^\[([^\]:]+\/[^\]:]+)(?::[^\]:]+)?:claude(?::stderr)?\]/;
 
 /** What the CLI says for each way of not being able to run, most specific first. */
 const REFUSALS: { state: ClaudeAuthState; pattern: RegExp }[] = [

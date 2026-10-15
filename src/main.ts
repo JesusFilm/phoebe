@@ -101,7 +101,7 @@ import { READONLY_WORKTREES_SEGMENT } from "./paths.ts";
 import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
-import { runAgent } from "./providers/run-agent.ts";
+import { runAgent, type SpawnAgent } from "./providers/run-agent.ts";
 import type { Provider } from "./providers/types.ts";
 import {
   assertPromptFilesExist,
@@ -353,6 +353,13 @@ export type EngineOptions = {
    * chokepoint tells it about each `status.json` write.
    */
   reportClient?: ReportClient | null;
+  /**
+   * How an agent child is spawned. Defaults to the real `child_process.spawn`
+   * (src/providers/run-agent.ts). A cycle test hands in a fake so what the
+   * engine puts on an agent's lines — its tenant, its pipeline, its unit — is
+   * assertable without an agent CLI on the box.
+   */
+  spawnAgent?: SpawnAgent;
   /** Per-unit observability (#73): the tagged log line and the status snapshot. */
   emitUnitEvent: EmitUnitEvent;
   /**
@@ -1303,7 +1310,9 @@ export function createEngine(options: EngineOptions): Engine {
       env: agentEnv,
       signal: opts.signal,
       tenant: config.repoSlug,
+      pipeline,
       unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
+      ...(options.spawnAgent !== undefined ? { spawn: options.spawnAgent } : {}),
     });
     if (exitCode !== 0) {
       log.say(`Agent exited with code ${exitCode}.`);

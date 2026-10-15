@@ -113,10 +113,10 @@ describe("the tags at the head of a line", () => {
       ],
       rest: " started",
     });
-    expect(splitTags("[JesusFilm/phoebe:claude:stderr] warning").tags).toEqual([
-      { text: "[JesusFilm/phoebe:claude:stderr]", role: "stderr" },
+    expect(splitTags("[JesusFilm/phoebe:work:claude:stderr] warning").tags).toEqual([
+      { text: "[JesusFilm/phoebe:work:claude:stderr]", role: "stderr" },
     ]);
-    expect(splitTags("[JesusFilm/phoebe:claude] Reading").tags[0]!.role).toBe("agent");
+    expect(splitTags("[JesusFilm/phoebe:work:claude] Reading").tags[0]!.role).toBe("agent");
   });
 
   test("a line with no tag is all message", () => {
@@ -126,10 +126,13 @@ describe("the tags at the head of a line", () => {
   test("draws the tags by role and the message's colour from the palette", () => {
     const palette = consoleThemeById("nord")!.ansi;
     const markup = renderToStaticMarkup(
-      <LogLine line={"[JesusFilm/phoebe:claude] done \u001b[32mok\u001b[0m"} palette={palette} />,
+      <LogLine
+        line={"[JesusFilm/phoebe:work:claude] done \u001b[32mok\u001b[0m"}
+        palette={palette}
+      />,
     );
 
-    expect(markup).toContain('<span class="log-tag agent">[JesusFilm/phoebe:claude]</span>');
+    expect(markup).toContain('<span class="log-tag agent">[JesusFilm/phoebe:work:claude]</span>');
     expect(markup).toContain(`<span style="color:${palette[2]}">ok</span>`);
   });
 });

@@ -116,6 +116,15 @@ ran a verb on the install (a start, a stop, an upgrade, a doctor, a config
 edit), with the runs it has watched kept above the current one. The install
 tab says which verb ran and how it ended, and links there.
 
+The eraser in the console's header clears the tab you are on. The console stops
+drawing that tab's lines and pins itself to the newest line again. The tabs
+stay, and so does the reason the stream ended. Pressed on **all** it covers the
+whole stream, pressed on a pipeline's tab that pipeline alone, and a line
+cleared there is gone from **all** too. Nothing is thrown away. Docker holds the
+output, so a console closed and reopened tails the last two hundred lines
+afresh. On the **cli** tab the button drops the runs kept above the current one
+and the lines that run has printed so far.
+
 The console's header names each pipeline with a unit in flight and the work it
 is on, and counts the install's errors and warnings; pressing the counts lists
 them. A pipeline's tab pulses while it is working and carries its own counts.
