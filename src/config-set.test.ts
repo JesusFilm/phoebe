@@ -12,6 +12,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, test } from "vite-plus/test";
+import { editConfigGetFieldAt } from "./config-handle.ts";
 import {
   formatReceipt,
   localEditId,
@@ -254,7 +255,28 @@ describe("runConfigSet — the verb, with no argv and no stdout", () => {
       value: ["renovate/", "dependabot/"],
     });
     expect(second.state).toBe("written");
-    expect(readFileSync(configPath, "utf8")).toContain(`prScope: ["renovate/","dependabot/"]`);
+    expect(readFileSync(configPath, "utf8")).toContain(`prScope: ["renovate/", "dependabot/"]`);
+    expect(editConfigGetFieldAt(readFileSync(configPath, "utf8"), ["prScope"])).toMatchObject({
+      literal: ["renovate/", "dependabot/"],
+    });
+  });
+
+  test("an empty list is written as one: the spelling for a tenant that only works issues", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({ configPath, path: "prScope", value: [] });
+
+    expect(receipt.state).toBe("written");
+    expect(readFileSync(configPath, "utf8")).toContain("prScope: [],");
+  });
+
+  test("a prefix holding whitespace never loads, so the write is refused", async () => {
+    const configPath = tempConfig(TENANT);
+
+    const receipt = await runConfigSet({ configPath, path: "prScope", value: ["  "] });
+
+    expect(receipt).toMatchObject({ state: "refused", reason: "invalid" });
+    expect(readFileSync(configPath, "utf8")).toBe(TENANT);
   });
 
   test("a list holding a non-string never loads, so the write is refused (#655)", async () => {

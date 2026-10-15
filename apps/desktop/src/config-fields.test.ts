@@ -59,6 +59,10 @@ describe("a tenant's settings", () => {
     // The prefill is this config's own prefix when it states one.
     const renamed = config('  branchPrefix: "bot/",\n  prScope: "all",');
     expect(field(renamed, "prScope")?.listPrefill).toEqual(["bot/"]);
+    // A computed prefix has a value nobody here can read, so the box starts
+    // empty rather than on the shipped default's guess at it.
+    const computed = config('  branchPrefix: process.env.PREFIX!,\n  prScope: "all",');
+    expect(field(computed, "prScope")?.listPrefill).toEqual([]);
     // Nothing else in the catalogue claims it.
     expect(field(source, "draftPrs")).not.toHaveProperty("listAlternative");
   });

@@ -590,6 +590,14 @@ describe("resolveConfig", () => {
     );
   });
 
+  test("a prScope entry holding whitespace is rejected, since no branch name can match it", () => {
+    for (const prScope of [["  "], [" renovate/"], ["renovate/ "]]) {
+      expect(() => resolveConfig(minimalUserConfig({ prScope } as never))).toThrow(
+        /`prScope` must be "phoebe", "all", or an array of branch prefixes, each non-empty and free of whitespace/,
+      );
+    }
+  });
+
   test("fills every optional field from CONFIG_DEFAULTS", () => {
     const resolved = resolveConfig(minimalUserConfig());
     expect(resolved.defaultBranch).toBe(CONFIG_DEFAULTS.defaultBranch);

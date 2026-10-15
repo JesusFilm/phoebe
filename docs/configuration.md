@@ -127,6 +127,13 @@ matched by `startsWith` exactly the way `branchPrefix` is matched. So
 a tenant that only works issues — and a tenant may leave its own prefix out of
 the list on purpose.
 
+Read the list literally, because that is how the engine reads it. A list that
+names `renovate/` and not your `branchPrefix` takes Phoebe's own PRs away from
+whichever kind carries it, feature integration PRs included. If you want the
+bot's branches as well as Phoebe's, name both: `["phoebe/", "renovate/"]`. An
+entry can't be empty, since that would admit every branch, and can't hold
+whitespace, since no branch name does.
+
 Each of the three kinds takes its own `prScope` of the same type, which
 overrides the tenant's for that kind and inherits it when unset. Admitting
 another bot's branches to one janitor is a smaller decision than admitting them
@@ -139,9 +146,9 @@ export default defineConfig({
   pipelines: {
     work: {
       kinds: {
-        // The checks kind fixes a red gate on Renovate's branches. The
-        // conflicts and reviews kinds never see them.
-        checks: { prScope: ["renovate/"] },
+        // The checks kind fixes a red gate on Renovate's branches as well
+        // as Phoebe's own. The conflicts and reviews kinds never see them.
+        checks: { prScope: ["phoebe/", "renovate/"] },
       },
     },
   },
@@ -153,7 +160,16 @@ Phoebe's own by `branchPrefix` alone, so a draft on an admitted `renovate/`
 branch is still skipped under `draftPrs: "skip-non-phoebe"`. And the env
 overrides stay enum-only: `PHOEBE_PR_SCOPE` and the per-kind
 `PHOEBE_<KIND>_PR_SCOPE` take `phoebe` or `all`, and a list is written in the
-config file.
+config file. Any other value stops the engine at startup with an error that
+names the variable.
+
+The console's config form offers the list as a third choice beside the two
+enum values, **prefixes**. Picking it opens a comma-separated box that starts
+on your `branchPrefix`, or on the default `phoebe/` if the file doesn't set one.
+If your config computes `branchPrefix`, the box starts empty, because the form
+can't read the value. The form trims each entry, drops blanks, and saves an
+empty box as `[]`. From a shell, `phoebe config set` takes the same list as a
+JSON array (see [below](#changing-one-field-phoebe-config-set)).
 
 Widening `prScope` is a trust decision, not a tuning knob: a scanned PR's
 branch gets its install hooks executed by the engine
@@ -1248,11 +1264,16 @@ container to read one of those.
 ```sh
 phoebe config set pipelines.work.pollIntervalMs 30000
 phoebe config set defaultProvider claude
+phoebe config set prScope '["phoebe/", "renovate/"]'
 ```
 
 The path is the one `phoebe config` printed. The value is read as JSON when it
 parses as JSON (`42`, `true`, `null`, `"two words"`) and as a plain string
 otherwise, so `claude` and `"claude"` mean the same thing.
+
+A field that takes a list, which today means `prScope` at either depth, takes a
+JSON array of strings. Quote it for your shell. An array holding anything but
+strings is refused, and the message names the element that isn't one.
 
 What happens is deliberately small. The file is parsed, one literal is replaced,
 and every other byte — your comments, your key order, your formatting — is left
