@@ -301,6 +301,10 @@ export const SETTINGS: readonly Setting[] = [
 export const DEPLOYMENT_FACTS: readonly { name: string; why: string }[] = [
   { name: "PHOEBE_ENGINE_DIR", why: "Where the engine checkout lives; set by the compose file." },
   { name: "PHOEBE_DATA_DIR", why: "Where tenant data lives; every derived path hangs off it." },
+  {
+    name: "PHOEBE_DEPLOYMENT_NAME",
+    why: "Who this deployment is; the bootstrapper hands it to each engine for its log lines.",
+  },
   { name: "PHOEBE_GH_LOGIN", why: "The minted GitHub login of the running credential." },
   { name: "PHOEBE_AGENT_VERSION", why: "The container build arg pinning the bootstrapper." },
   {

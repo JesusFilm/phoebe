@@ -14,8 +14,8 @@ const LINES = [
   "[phoebe] boot: engine source local — exec /opt/phoebe-engine/src/cli.ts",
   "[phoebe:JesusFilm/phoebe:work] cycle: nothing ready-for-agent, sleeping 30s",
   "[phoebe:JesusFilm/phoebe:research][issue 497] started",
-  "[JesusFilm/phoebe:work:claude] Reading the ticket…",
-  "[JesusFilm/phoebe:work:claude:stderr] warning: slow",
+  "[phoebe:JesusFilm/phoebe:work][conflicts pr:563][claude] Reading the conflict…",
+  "[phoebe:JesusFilm/phoebe:work][conflicts pr:563][claude:stderr] warning: slow",
   "[phoebe:JesusFilm/youtube-studio:work] cycle: 1 candidate",
   "npm warn deprecated something",
 ];
@@ -26,17 +26,31 @@ describe("which channel a line is on", () => {
     expect(channelOf(LINES[2] as string)).toBe("JesusFilm/phoebe:research");
   });
 
-  test("an agent's lines are the tenant, the pipeline and the command, stderr folded in", () => {
-    expect(channelOf(LINES[3] as string)).toBe("JesusFilm/phoebe:work:claude");
-    expect(channelOf(LINES[4] as string)).toBe("JesusFilm/phoebe:work:claude");
+  // The agent opens with its pipeline's bracket (#686), so its lines, stderr
+  // included, land on the channel the engine's do.
+  test("an agent's lines are its pipeline's channel, stderr and all", () => {
+    expect(channelOf(LINES[3] as string)).toBe("JesusFilm/phoebe:work");
+    expect(channelOf(LINES[4] as string)).toBe("JesusFilm/phoebe:work");
   });
 
-  // The pipeline arrived on the agent bracket (#675) and `:stderr` still has to
-  // fold: it is a suffix on the command, not a fourth segment of its own.
-  test("stderr folds into its channel however many segments precede it", () => {
-    expect(channelOf("[JesusFilm/phoebe:work:claude:stderr] warning")).toBe(
-      "JesusFilm/phoebe:work:claude",
+  // The deployment's name is read off the front of the bracket and left out of
+  // the channel. A directory name may hold a colon, and a solo deployment's name
+  // is its own slug, so the parse anchors on the slug from the right.
+  test("whatever the deployment is called, the channel is the slug and the pipeline", () => {
+    expect(channelOf("[ops:east:JesusFilm/phoebe:work][issue 7] started")).toBe(
+      "JesusFilm/phoebe:work",
     );
+    expect(channelOf("[JesusFilm/phoebe:JesusFilm/phoebe:work] cycle: 1 candidate")).toBe(
+      "JesusFilm/phoebe:work",
+    );
+    expect(channelOf("[JesusFilm/phoebe:JesusFilm/phoebe:work][issue 7][claude:stderr] slow")).toBe(
+      "JesusFilm/phoebe:work",
+    );
+  });
+
+  test("a bracket with no slug in it is no pipeline's", () => {
+    expect(channelOf("[claude] Reading the ticket…")).toBe(BOOT_CHANNEL);
+    expect(channelOf("[phoebe:work] cycle")).toBe(BOOT_CHANNEL);
   });
 
   test("the bootstrapper's lines and untagged noise are boot", () => {
@@ -55,9 +69,14 @@ describe("the tabs", () => {
       BOOT_CHANNEL,
       "JesusFilm/phoebe:work",
       "JesusFilm/phoebe:research",
-      "JesusFilm/phoebe:work:claude",
       "JesusFilm/youtube-studio:work",
     ]);
+  });
+
+  test("give a pipeline one tab, its agent's lines and the engine's together", () => {
+    const labels = channelsIn(SEEN).map(channelLabel);
+    expect(labels.filter((label) => label === "phoebe:work")).toHaveLength(1);
+    expect(labels).not.toContain("phoebe:work:claude");
   });
 
   test("boot is left out until the bootstrapper says something", () => {
@@ -81,9 +100,10 @@ describe("the tabs", () => {
   });
 
   test("a line belongs to its own tab and to all, and to no other pipeline's", () => {
-    expect(inChannel(channelOf(LINES[3] as string), "JesusFilm/phoebe:work:claude")).toBe(true);
-    expect(inChannel(channelOf(LINES[4] as string), "JesusFilm/phoebe:work:claude")).toBe(true);
-    expect(inChannel(channelOf(LINES[1] as string), "JesusFilm/phoebe:work:claude")).toBe(false);
+    expect(inChannel(channelOf(LINES[1] as string), "JesusFilm/phoebe:work")).toBe(true);
+    expect(inChannel(channelOf(LINES[3] as string), "JesusFilm/phoebe:work")).toBe(true);
+    expect(inChannel(channelOf(LINES[4] as string), "JesusFilm/phoebe:work")).toBe(true);
+    expect(inChannel(channelOf(LINES[3] as string), "JesusFilm/phoebe:research")).toBe(false);
     expect(inChannel(channelOf(LINES[0] as string), BOOT_CHANNEL)).toBe(true);
     expect(inChannel(channelOf(LINES[6] as string), BOOT_CHANNEL)).toBe(true);
     for (const line of LINES) expect(inChannel(channelOf(line), ALL_CHANNEL)).toBe(true);
@@ -91,7 +111,6 @@ describe("the tabs", () => {
 
   test("is labelled by the repo and the pipeline, the owner being the same on every tab", () => {
     expect(channelLabel("JesusFilm/phoebe:work")).toBe("phoebe:work");
-    expect(channelLabel("JesusFilm/phoebe:work:claude")).toBe("phoebe:work:claude");
     expect(channelLabel(ALL_CHANNEL)).toBe("all");
     expect(channelLabel(BOOT_CHANNEL)).toBe("boot");
   });

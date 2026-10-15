@@ -19,7 +19,7 @@ import { bridge, install } from "./test-fixture.ts";
 const LINES = [
   "[phoebe] boot: engine source local",
   "[phoebe:JesusFilm/phoebe:work] cycle: 1 candidate",
-  "[JesusFilm/phoebe:work:claude] Reading the ticket…",
+  "[phoebe:JesusFilm/phoebe:research][issue 497][claude] Reading the ticket…",
 ];
 
 const INSTALL = install({ dir: "/repos/phoebe", name: "phoebe", state: "running" });
@@ -259,7 +259,7 @@ describe("the clear button", () => {
     await press(control(box, CLEAR));
 
     expect(drawn(box)).toEqual([]);
-    for (const tab of ["phoebe:work", "phoebe:work:claude"]) {
+    for (const tab of ["phoebe:work", "phoebe:research"]) {
       await open(box, tab);
       expect(drawn(box), tab).toEqual([]);
     }

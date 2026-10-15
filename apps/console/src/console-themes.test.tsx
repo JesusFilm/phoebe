@@ -101,7 +101,7 @@ describe("ANSI codes in a line", () => {
 });
 
 describe("the tags at the head of a line", () => {
-  test("the bootstrapper's, a pipeline's with its unit, and an agent's with stderr", () => {
+  test("the bootstrapper's, and a pipeline's with its unit", () => {
     expect(splitTags("[phoebe] boot: ok")).toEqual({
       tags: [{ text: "[phoebe]", role: "boot" }],
       rest: " boot: ok",
@@ -113,10 +113,48 @@ describe("the tags at the head of a line", () => {
       ],
       rest: " started",
     });
-    expect(splitTags("[JesusFilm/phoebe:work:claude:stderr] warning").tags).toEqual([
-      { text: "[JesusFilm/phoebe:work:claude:stderr]", role: "stderr" },
+  });
+
+  // An agent's line is its pipeline's bracket, its unit's, and the provider's
+  // last (#686). The provider bracket is what the agent colour goes on.
+  test("an agent's line: pipeline, unit, then agent, or stderr", () => {
+    expect(splitTags("[phoebe:JesusFilm/phoebe:work][conflicts pr:563][claude] Reading")).toEqual({
+      tags: [
+        { text: "[phoebe:JesusFilm/phoebe:work]", role: "pipeline" },
+        { text: "[conflicts pr:563]", role: "unit" },
+        { text: "[claude]", role: "agent" },
+      ],
+      rest: " Reading",
+    });
+    expect(
+      splitTags("[phoebe:JesusFilm/phoebe:work][conflicts pr:563][claude:stderr] warning").tags,
+    ).toEqual([
+      { text: "[phoebe:JesusFilm/phoebe:work]", role: "pipeline" },
+      { text: "[conflicts pr:563]", role: "unit" },
+      { text: "[claude:stderr]", role: "stderr" },
     ]);
-    expect(splitTags("[JesusFilm/phoebe:work:claude] Reading").tags[0]!.role).toBe("agent");
+  });
+
+  test("a provider with no unit before it is still the agent", () => {
+    expect(splitTags("[phoebe:JesusFilm/phoebe:work][claude] Reading").tags).toEqual([
+      { text: "[phoebe:JesusFilm/phoebe:work]", role: "pipeline" },
+      { text: "[claude]", role: "agent" },
+    ]);
+  });
+
+  test("a deployment named with a colon, or by its own slug, is still the pipeline tag", () => {
+    expect(splitTags("[ops:east:JesusFilm/phoebe:work] cycle").tags).toEqual([
+      { text: "[ops:east:JesusFilm/phoebe:work]", role: "pipeline" },
+    ]);
+    expect(splitTags("[JesusFilm/phoebe:JesusFilm/phoebe:work] cycle").tags).toEqual([
+      { text: "[JesusFilm/phoebe:JesusFilm/phoebe:work]", role: "pipeline" },
+    ]);
+  });
+
+  // An engine with no tenant writes the provider alone. Nothing says which
+  // pipeline it is, so it draws as a line with no tag.
+  test("a bare provider with no pipeline in front is untagged", () => {
+    expect(splitTags("[claude] Reading")).toEqual({ tags: [], rest: "[claude] Reading" });
   });
 
   test("a line with no tag is all message", () => {
@@ -127,12 +165,12 @@ describe("the tags at the head of a line", () => {
     const palette = consoleThemeById("nord")!.ansi;
     const markup = renderToStaticMarkup(
       <LogLine
-        line={"[JesusFilm/phoebe:work:claude] done \u001b[32mok\u001b[0m"}
+        line={"[phoebe:JesusFilm/phoebe:work][issue 7][claude] done \u001b[32mok\u001b[0m"}
         palette={palette}
       />,
     );
 
-    expect(markup).toContain('<span class="log-tag agent">[JesusFilm/phoebe:work:claude]</span>');
+    expect(markup).toContain('<span class="log-tag agent">[claude]</span>');
     expect(markup).toContain(`<span style="color:${palette[2]}">ok</span>`);
   });
 });

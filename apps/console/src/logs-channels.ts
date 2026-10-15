@@ -3,14 +3,15 @@
 // The container's stdout is one stream for the whole deployment (#73), and every
 // line on it says where it came from (docs/operating.md, "Reading the logs"):
 //
-//   [phoebe] …                                   the bootstrapper
-//   [phoebe:<owner>/<repo>:<pipeline>] …         one pipeline's engine
-//   [phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>] …   the same, on behalf of one unit
-//   [<owner>/<repo>:<pipeline>:<command>] …      an agent's own output
+//   [phoebe] …                                          the bootstrapper
+//   [<deployment>:<owner>/<repo>:<pipeline>] …          one pipeline's engine
+//   [<deployment>:<owner>/<repo>:<pipeline>][<kind> <ref>] …   the same, on behalf of one unit
+//   [<deployment>:<owner>/<repo>:<pipeline>][<kind> <ref>][<provider>] …   the agent on that unit
 //
 // The console turns that into tabs: every pipeline seen is one, beside "all"
 // and the bootstrapper, and a workspace child opened from the rail gets a tab
-// for everything under its slug. Nothing here changes a line; the console shows
+// for everything under its slug. An agent's lines open with its pipeline's
+// bracket, so they share that pipeline's tab (#686). Nothing here changes a line; the console shows
 // them as they came, and a tab only chooses which.
 
 /** Every line, whatever it says. */
@@ -27,24 +28,24 @@ export const BOOT_CHANNEL = "boot";
  */
 export const CLI_CHANNEL = "cli";
 
-const PIPELINE_TAG = /^\[phoebe:([^\]:]+):([^\]]+)\]/;
-const AGENT_TAG = /^\[([^\]:]+\/[^\]:]+):([^\]]+)\]/;
+/**
+ * The pipeline bracket, read from the right: the last segment is the pipeline,
+ * the `owner/repo` before it the slug, and whatever is left in front the
+ * deployment's name. A name is a directory name or a slug, so it may hold a
+ * colon or a slash of its own, which is why the parse anchors on the slug
+ * rather than splitting on the first colon.
+ */
+export const PIPELINE_TAG = /^\[[^\]]+:([^\]:/]+\/[^\]:/]+):([^\]:]+)\]/;
 
 /**
- * The channel a line belongs to: `<owner>/<repo>:<pipeline>` for an engine
- * line, `<owner>/<repo>:<pipeline>:<command>` for an agent's, `boot` for the
- * bootstrapper's and for anything untagged, which is the runtime's own noise.
+ * The channel a line belongs to: `<owner>/<repo>:<pipeline>` for a pipeline's
+ * line, the engine's and its agent's alike, and `boot` for the bootstrapper's
+ * and for anything untagged, which is the runtime's own noise. The deployment's
+ * name is left out: every tab on one console is one deployment's.
  */
 export function channelOf(line: string): string {
   const pipeline = PIPELINE_TAG.exec(line);
-  if (pipeline !== null) return `${pipeline[1]}:${pipeline[2]}`;
-  const agent = AGENT_TAG.exec(line);
-  if (agent !== null) {
-    // `[owner/repo:work:claude:stderr]` is the same channel as `[owner/repo:work:claude]`.
-    const command = (agent[2] as string).replace(/:stderr$/, "");
-    return `${agent[1]}:${command}`;
-  }
-  return BOOT_CHANNEL;
+  return pipeline === null ? BOOT_CHANNEL : `${pipeline[1]}:${pipeline[2]}`;
 }
 
 /** Every channel under one tenant: `<owner>/<repo>:*`. The tab a workspace child opens on. */

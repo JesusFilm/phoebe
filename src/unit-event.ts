@@ -3,14 +3,19 @@
 // With N repos multiplexed into one container, every line must be attributable
 // per repo. The chosen shape is per-tenant-tagged stdout, host-collected, so the
 // container stays log-stateless (no on-disk logs, no rotation): every Phoebe
-// line is `[phoebe:<slug>:<pipeline>]`, even in solo single-tenant mode — one
-// grammar for any host parser, and the un-attributable bare `[phoebe]` is
+// line is `[<deployment>:<slug>:<pipeline>]`, even in solo single-tenant mode —
+// one grammar for any host parser, and the un-attributable bare `[phoebe]` is
 // eliminated.
 //
 // The pipeline segment arrived with #418, when a tenant became several engine
 // processes rather than one. It is on every line including the implicit `work`
 // pipeline's, so the grammar has one shape rather than two — a host parser matching
 // the tag has to match it as a prefix, not as a fixed string.
+//
+// The deployment segment replaced a constant `phoebe` with #686: two deployments
+// feeding one collector stay apart, and the agent a pipeline spawns opens its
+// lines with the same bracket (src/providers/run-agent.ts), so one pipeline's
+// story is one prefix.
 //
 // Two concerns, one file each (#73 Decision 4): stdout is the append-only event
 // *history* (ephemeral in-container); `status.json` is the current-state
@@ -80,11 +85,23 @@ export type UnitEvent = {
 };
 
 /**
- * The stdout tag every engine line carries. Solo mode uses its config's
- * `repoSlug` and the implicit `work` pipeline, never bare and never half-tagged.
+ * The stdout tag every pipeline line carries, the engine's and its agent's alike.
+ * Solo mode uses its config's `repoSlug` and the implicit `work` pipeline,
+ * never bare and never half-tagged.
  */
-export function unitTag(tenant: string, pipeline: string): string {
-  return `[phoebe:${tenant}:${pipeline}]`;
+export function unitTag(deployment: string, tenant: string, pipeline: string): string {
+  return `[${deployment}:${tenant}:${pipeline}]`;
+}
+
+/**
+ * The name the bracket opens with: what the bootstrapper's `deploymentName`
+ * computed, handed down as `PHOEBE_DEPLOYMENT_NAME`. An engine running without
+ * a bootstrapper has nobody to ask, so it names itself the way `deploymentName`
+ * names a solo tenant — by its own `repoSlug`, never by the constant `phoebe`.
+ */
+export function deploymentNameFrom(env: NodeJS.ProcessEnv, repoSlug: string): string {
+  const name = env["PHOEBE_DEPLOYMENT_NAME"];
+  return name !== undefined && name !== "" ? name : repoSlug;
 }
 
 /**
@@ -101,8 +118,8 @@ export type EngineLog = {
   fail(line: string): void;
 };
 
-export function createEngineLog(tenant: string, pipeline: string): EngineLog {
-  const tag = unitTag(tenant, pipeline);
+export function createEngineLog(deployment: string, tenant: string, pipeline: string): EngineLog {
+  const tag = unitTag(deployment, tenant, pipeline);
   return {
     tag,
     say: (line) => console.log(`${tag} ${line}`),
@@ -113,9 +130,9 @@ export function createEngineLog(tenant: string, pipeline: string): EngineLog {
 
 /** A tagged, human-readable stdout line for one event. `id` is the unit's
  *  kind-owned ref (`pr:123`, `issue:88`) and prints as-is (#348). */
-export function formatUnitEventLine(event: UnitEvent): string {
+export function formatUnitEventLine(deployment: string, event: UnitEvent): string {
   const head =
-    `${unitTag(event.tenant, event.pipeline)} ${event.event} ` +
+    `${unitTag(deployment, event.tenant, event.pipeline)} ${event.event} ` +
     `${event.unit.kind} ${event.unit.id}`;
   return event.detail ? `${head} — ${event.detail}` : head;
 }
@@ -284,6 +301,8 @@ export type EmitUnitEvent = (event: Omit<UnitEvent, "tenant" | "pipeline" | "ts"
 
 /** What one pipeline's snapshot writer is built from — its two entry points share it. */
 export type SnapshotWriterDeps = {
+  /** The deployment's name, which opens every line the writer logs (#686). */
+  deployment: string;
   tenant: string;
   pipeline: string;
   statusPath: string;
@@ -321,7 +340,7 @@ export function createEmitUnitEvent(deps: SnapshotWriterDeps): EmitUnitEvent {
       pipeline: deps.pipeline,
       ts: now(),
     };
-    log(formatUnitEventLine(event));
+    log(formatUnitEventLine(deps.deployment, event));
     try {
       const prev = read(deps.statusPath) ?? emptyStatus(deps.tenant, deps.pipeline);
       const next = applyUnitEvent(prev, event);
@@ -329,7 +348,7 @@ export function createEmitUnitEvent(deps: SnapshotWriterDeps): EmitUnitEvent {
       deps.onSnapshot?.(next);
     } catch (error) {
       log(
-        `${unitTag(deps.tenant, deps.pipeline)} could not refresh status.json — ${String(error)}`,
+        `${unitTag(deps.deployment, deps.tenant, deps.pipeline)} could not refresh status.json — ${String(error)}`,
       );
     }
   };
@@ -350,7 +369,7 @@ export function createForgetInherited(deps: SnapshotWriterDeps): () => void {
   const log = deps.log ?? ((line) => console.log(line));
   const read = deps.read ?? readStatus;
   const write = deps.write ?? writeStatus;
-  const tag = unitTag(deps.tenant, deps.pipeline);
+  const tag = unitTag(deps.deployment, deps.tenant, deps.pipeline);
 
   return () => {
     try {

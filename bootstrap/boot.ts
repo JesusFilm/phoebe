@@ -1802,6 +1802,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     arm: deploymentArm,
     host: readHostPlatform(),
   };
+  // Every engine child opens its pipeline lines with this name (#686). Set on the
+  // supervisor's own env so both arms deliver it the way they deliver the rest:
+  // a fleet child copies it off the deployment knobs, a solo child inherits it.
+  process.env["PHOEBE_DEPLOYMENT_NAME"] = identity.name;
   // The config-edit pen (#536, decision #503). Built with the root config's path
   // and nothing else: a workspace's tenant configs sit under the same `:ro`
   // mount and stay the operator's to edit in their own checkouts, and this

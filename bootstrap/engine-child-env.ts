@@ -65,6 +65,10 @@ export const ENGINE_CHILD_DEPLOYMENT_KNOBS = [
   // every derived tenant path hangs off it, so a child that cannot see it looks
   // in the wrong place.
   "PHOEBE_DATA_DIR",
+  // The same kind of fact: who this deployment is (`deploymentName` in boot.ts,
+  // #686). The engine opens every pipeline line with it, so a line read off any
+  // host says which deployment wrote it.
+  "PHOEBE_DEPLOYMENT_NAME",
 ] as const;
 
 /**

@@ -61,6 +61,7 @@ import {
   createEmitUnitEvent,
   createEngineLog,
   createForgetInherited,
+  deploymentNameFrom,
   statusPathFor,
   type EmitUnitEvent,
   type EngineLog,
@@ -307,6 +308,13 @@ export type EngineOptions = {
    */
   pipeline?: string;
   /**
+   * The deployment's name, the stdout tag's first segment (#686): the one the
+   * bootstrapper handed down as `PHOEBE_DEPLOYMENT_NAME`, read once by the CLI.
+   * Defaults to this tenant's `repoSlug`, which is what `deploymentName` calls
+   * a solo deployment and what an engine with no bootstrapper calls itself.
+   */
+  deployment?: string;
+  /**
    * The assembled work-kind registry (#303): built-ins plus this tenant's
    * custom kinds. Defaults to built-ins only — the CLI path assembles the full
    * registry (custom kind modules load asynchronously) and passes it in.
@@ -399,11 +407,13 @@ export function createEngine(options: EngineOptions): Engine {
   // exit after the first (#422).
   const concurrency = runOnce ? 1 : Math.max(1, Math.floor(options.run.concurrency ?? 1));
   const pipeline = options.pipeline ?? DEFAULT_PIPELINE_NAME;
-  // Every line this engine writes carries `[phoebe:<slug>:<pipeline>]` (#418).
-  // With two processes on one tenant interleaving at the kernel, an untagged
-  // line is a line the operator cannot attribute — and the `work` pipeline is tagged
-  // like any other so a host parser has one grammar to match, as a prefix.
-  const log: EngineLog = createEngineLog(config.repoSlug, pipeline);
+  const deployment = options.deployment ?? config.repoSlug;
+  // Every line this engine writes carries `[<deployment>:<slug>:<pipeline>]`
+  // (#418, #686). With two processes on one tenant interleaving at the kernel, an
+  // untagged line is a line the operator cannot attribute — and the `work`
+  // pipeline is tagged like any other so a host parser has one grammar to match,
+  // as a prefix.
+  const log: EngineLog = createEngineLog(deployment, config.repoSlug, pipeline);
   const registry = options.registry ?? buildRegistry(config);
   const git = options.git ?? defaultGit;
   const clock = options.clock ?? defaultClock;
@@ -1309,6 +1319,7 @@ export function createEngine(options: EngineOptions): Engine {
       cwd: opts.worktreeDir,
       env: agentEnv,
       signal: opts.signal,
+      deployment,
       tenant: config.repoSlug,
       pipeline,
       unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
@@ -2562,7 +2573,10 @@ export async function runEngine(
   const pipeline = declaredPipeline(config, pipelineName);
   const pollIntervalMs = resolvePollIntervalMs(pipeline, process.env);
   const concurrency = pipeline.concurrency;
-  const log = createEngineLog(config.repoSlug, pipelineName);
+  // Who this deployment is, read once (#686): the bootstrapper's name for it, or
+  // this tenant's own slug when no bootstrapper is there to say.
+  const deployment = deploymentNameFrom(process.env, config.repoSlug);
+  const log = createEngineLog(deployment, config.repoSlug, pipelineName);
 
   console.log(
     runOnce
@@ -2645,12 +2659,13 @@ export async function runEngine(
   // is no deployment report without a bootstrapper keeping one.
   const reportClient = createReportClient(ipcChannel);
 
-  // Per-repo observability (#73): one tagged `[phoebe:<slug>:<pipeline>]` line
+  // Per-repo observability (#73): one tagged `[<deployment>:<slug>:<pipeline>]` line
   // per unit event + a `status.json` snapshot under this pipeline's own dir in
   // the tenant's state dir (#418), which `phoebe list` reads for the `work`
   // pipeline. The emitter swallows snapshot-write failures, so it is harmless on the
   // host (where the derived state dir may be unwritable).
   const snapshotWriter: SnapshotWriterDeps = {
+    deployment,
     tenant: config.repoSlug,
     pipeline: pipelineName,
     statusPath: statusPathFor(config.paths.stateDir, pipelineName),
@@ -2668,6 +2683,7 @@ export async function runEngine(
     const engine = createEngine({
       config,
       pipeline: pipelineName,
+      deployment,
       registry,
       env: process.env,
       drain,

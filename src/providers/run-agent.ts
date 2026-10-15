@@ -3,6 +3,8 @@
 // (see ../agent-env.ts) — never the orchestrator's full process.env.
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { DEFAULT_PIPELINE_NAME } from "../config-schema.ts";
+import { unitTag } from "../unit-event.ts";
 import type { Provider } from "./types.ts";
 
 export type AgentRunResult = {
@@ -34,22 +36,6 @@ export type SpawnAgent = (
 const defaultSpawn: SpawnAgent = (file, args, opts) =>
   nodeSpawn(file, args, { ...opts, stdio: ["pipe", "pipe", "pipe"] });
 
-/**
- * The first bracket on every line an agent writes: `[owner/repo:work:claude]`,
- * and `…:stderr]` on the error stream. No `phoebe:` prefix — that one marks the
- * engine's own lines, and the asymmetry is what lets an operator tell the loop
- * apart from what it spawned (docs/operating.md, "Reading the logs").
- */
-function agentTag(opts: {
-  tenant: string | undefined;
-  pipeline: string | undefined;
-  provider: string;
-}): string {
-  if (!opts.tenant) return opts.provider;
-  const middle = opts.pipeline ? `${opts.pipeline}:` : "";
-  return `${opts.tenant}:${middle}${opts.provider}`;
-}
-
 export async function runAgent(opts: {
   provider: Provider;
   model: string;
@@ -67,29 +53,49 @@ export async function runAgent(opts: {
    * expires; the `close` handler then settles the promise as usual.
    */
   signal?: AbortSignal;
-  /** Repo slug (`owner/repo`) prepended to the bracket: `[owner/repo:work:cursor]`. */
+  /**
+   * The deployment's name, opening the pipeline bracket the engine's own lines
+   * carry: `[<deployment>:owner/repo:work][issues issue:88][cursor]` (#686).
+   * Defaults to the tenant's slug, as the engine's own default does.
+   */
+  deployment?: string;
+  /**
+   * Repo slug (`owner/repo`). With it, every line opens with the engine's
+   * pipeline bracket and the provider moves to a bracket of its own, last:
+   * `[<deployment>:owner/repo:work][cursor]`. Without it the line is
+   * `[cursor]` alone.
+   */
   tenant?: string;
   /**
-   * Which pipeline spawned this agent, between the slug and the provider:
-   * `[owner/repo:work:cursor]` (#675). A tenant runs one engine process per
-   * pipeline (#418/#420), so without it two pipelines on the same provider pour
-   * their agent output into one stream with nothing to tell them apart.
+   * Which pipeline spawned this agent, the bracket's last segment (#675): a
+   * tenant runs one engine process per pipeline (#418/#420), so without it two
+   * pipelines on the same provider pour their agent output into one stream with
+   * nothing to tell them apart. Defaults to `work`.
    */
   pipeline?: string;
   /**
-   * The unit this agent is working, `<kind> <ref>`, as a second bracket:
-   * `[owner/repo:work:cursor][issues issue:88]`. With several units in flight in
-   * one pipeline (#423), the tenant, pipeline and provider no longer say which
-   * run a line came from. The same shape `ctx.log` and the engine's git and
-   * install output use, so one unit's whole stream greps as one thing.
+   * The unit this agent is working, `<kind> <ref>`, as a bracket between the
+   * pipeline's and the provider's:
+   * `[<deployment>:owner/repo:work][issues issue:88][cursor]`. With several units
+   * in flight in one pipeline (#423), the tenant, pipeline and provider no longer
+   * say which run a line came from. The same shape `ctx.log` and the engine's git
+   * and install output use, so one unit's whole stream greps as one thing.
    */
   unit?: string;
 }): Promise<AgentRunResult> {
   const { provider, model, effort, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
   const log = opts.log ?? ((line: string) => console.log(line));
-  const tag = agentTag({ tenant: opts.tenant, pipeline: opts.pipeline, provider: provider.name });
-  const unitTag = opts.unit ? `[${opts.unit}]` : "";
+  // Everything in front of the provider bracket is the engine's own prefix, so an
+  // agent line differs from an engine line on its pipeline only by that last
+  // bracket (#686).
+  const pipeline = opts.pipeline ?? DEFAULT_PIPELINE_NAME;
+  const unit = opts.unit ? `[${opts.unit}]` : "";
+  const head = opts.tenant
+    ? `${unitTag(opts.deployment ?? opts.tenant, opts.tenant, pipeline)}${unit}`
+    : "";
+  const out = `${head}[${provider.name}]`;
+  const err = `${head}[${provider.name}:stderr]`;
 
   const command = provider.buildCommand({ prompt, model, effort });
   const [file, ...args] = command.argv;
@@ -118,9 +124,9 @@ export async function runAgent(opts: {
       for (const event of provider.parseStreamLine(line)) {
         if (event.type === "text") {
           const text = event.text.trim();
-          if (text) log(`[${tag}]${unitTag} ${text}`);
+          if (text) log(`${out} ${text}`);
         } else if (event.type === "tool_call") {
-          log(`[${tag}]${unitTag} ${event.name}: ${event.args}`);
+          log(`${out} ${event.name}: ${event.args}`);
         } else {
           resultText = event.result;
         }
@@ -135,7 +141,7 @@ export async function runAgent(opts: {
     });
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString().trim();
-      if (text) log(`[${tag}:stderr]${unitTag} ${text}`);
+      if (text) log(`${err} ${text}`);
     });
     child.on("error", reject);
     child.on("close", (code) => {

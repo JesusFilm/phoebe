@@ -105,7 +105,9 @@ describe("runAgent", () => {
     expect(result).toEqual({ exitCode: 3, resultText: "partial answer" });
   });
 
-  test("tenant and pipeline prefix log brackets as [owner/repo:pipeline:provider]", async () => {
+  // An agent line opens with the engine's own bracket for its pipeline, and the
+  // provider takes a bracket of its own, last (#686).
+  test("with a tenant and no unit, the line is the pipeline bracket then the provider", async () => {
     const fake = makeFakeChild();
     const claudeTextLine = JSON.stringify({
       type: "assistant",
@@ -132,18 +134,19 @@ describe("runAgent", () => {
       env: {},
       spawn,
       log: (line) => logged.push(line),
+      deployment: "phoebe",
       tenant: "JesusFilm/phoebe",
       pipeline: "work",
     });
     expect(logged).toEqual([
-      "[JesusFilm/phoebe:work:claude] Reading file",
-      "[JesusFilm/phoebe:work:claude] Bash: ls",
+      "[phoebe:JesusFilm/phoebe:work][claude] Reading file",
+      "[phoebe:JesusFilm/phoebe:work][claude] Bash: ls",
     ]);
   });
 
   // With several units in flight in one pipeline (#423), the tenant and the provider
   // no longer say which run a line came from. The unit does.
-  test("with a unit, log brackets name it beside the tenant and provider", async () => {
+  test("with a unit, its bracket sits between the pipeline's and the provider's", async () => {
     const fake = makeFakeChild();
     const claudeTextLine = JSON.stringify({
       type: "assistant",
@@ -166,20 +169,21 @@ describe("runAgent", () => {
       env: {},
       spawn,
       log: (line) => logged.push(line),
+      deployment: "phoebe",
       tenant: "JesusFilm/phoebe",
       pipeline: "work",
       unit: "issues issue:88",
     });
     expect(logged).toEqual([
-      "[JesusFilm/phoebe:work:claude][issues issue:88] Reading file",
-      "[JesusFilm/phoebe:work:claude:stderr][issues issue:88] cli warning",
+      "[phoebe:JesusFilm/phoebe:work][issues issue:88][claude] Reading file",
+      "[phoebe:JesusFilm/phoebe:work][issues issue:88][claude:stderr] cli warning",
     ]);
   });
 
-  // A caller that knows the tenant but not which pipeline it is — nothing in the
-  // engine is one today, and the bracket should degrade rather than print an
-  // empty segment.
-  test("with a tenant but no pipeline, the bracket falls back to slug and provider", async () => {
+  // A caller that knows the tenant and nothing else — nothing in the engine is one
+  // today. The bracket takes the engine's own defaults rather than printing an
+  // empty segment: the slug names the deployment, and the pipeline is `work`.
+  test("with a tenant alone, the bracket defaults the deployment and the pipeline", async () => {
     const fake = makeFakeChild();
     const claudeTextLine = JSON.stringify({
       type: "assistant",
@@ -205,8 +209,8 @@ describe("runAgent", () => {
       tenant: "JesusFilm/phoebe",
     });
     expect(logged).toEqual([
-      "[JesusFilm/phoebe:claude] Reading file",
-      "[JesusFilm/phoebe:claude:stderr] cli warning",
+      "[JesusFilm/phoebe:JesusFilm/phoebe:work][claude] Reading file",
+      "[JesusFilm/phoebe:JesusFilm/phoebe:work][claude:stderr] cli warning",
     ]);
   });
 

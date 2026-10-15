@@ -584,28 +584,39 @@ worst case is the cap plus that budget. Boot prints both numbers and their
 derivation on one line. Idle polling stays per-pipeline and parallel. The knobs are
 in [`configuration.md`](configuration.md#concurrency-the-pipelines-knob-and-the-fleets-cap).
 
-**Reading the logs.** Every engine line is tagged
-`[phoebe:<owner>/<repo>:<pipeline>]` — the pipeline included, and the
-implicit `work` pipeline is tagged like any other. The bootstrapper's own lines are
-tagged `[phoebe]`. A host log collector matching the tenant tag should match it
-as a **prefix**: a parser pinned to the exact old `[phoebe:<owner>/<repo>]`
-string stops matching. Agent output uses the combined bracket
-`[<owner>/<repo>:<pipeline>:<command>]` (e.g. `[JesusFilm/phoebe:work:cursor]`):
-the pipeline is on the agent's lines too, so two pipelines running the same
-provider stay apart, and the missing `phoebe:` prefix is what keeps an agent's
-lines visually distinct from the engine's. stderr lines add a further suffix:
-`[<owner>/<repo>:<pipeline>:<command>:stderr]`. Match the agent bracket as a
-prefix too — a collector keyed on the slug still catches every agent line, one
-pinned to the exact old `[<owner>/<repo>:<command>]` string does not.
-The container writes no log files. Stdout is the whole story.
+**Reading the logs.** Every line a pipeline writes opens with
+`[<deployment>:<owner>/<repo>:<pipeline>]`. That goes for the engine's lines and
+the agent's alike, and the implicit `work` pipeline is tagged like any other. The
+deployment segment is the name the bootstrapper's `deploymentName` computes. Until
+`relay.name` exists that is the solo tenant's `repoSlug`, or the workspace root's
+directory name. So a solo deployment repeats its slug,
+`[JesusFilm/phoebe:JesusFilm/phoebe:work]`, and a workspace under `/srv/phoebe`
+writes `[phoebe:JesusFilm/phoebe:work]`. An engine run by hand, with no
+bootstrapper, names itself by its own slug. The bootstrapper's own lines are still
+tagged `[phoebe]`.
+
+An agent's line is the same bracket plus one naming the provider, last:
+`[<deployment>:<owner>/<repo>:<pipeline>][<kind> <ref>][claude]`, or
+`[claude:stderr]` for what it wrote to stderr. That last bracket is the only thing
+that tells an agent line from an engine line.
+
+Match the bracket as a **prefix**, never a fixed string. Collectors written
+against the older shapes need a look. One keyed on `[phoebe:` stops matching once
+the deployment is called anything else. One keyed on the engine bracket now
+catches the agent's lines too. One pinned to the agent's old
+`[<owner>/<repo>:<pipeline>:<command>]` bracket stops matching altogether. A
+deployment name can hold a colon, so a parser should read the bracket from the
+right: the last segment is the pipeline, the `owner/repo` before it is the slug,
+and the rest is the deployment. The container writes no log files. Stdout is the
+whole story.
 
 **Which unit said it.** Anything produced on behalf of one work unit adds a
-second bracket naming it: `[phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>]` on a
-kind's own logging and on the git and install output its children produce, and
-`[<owner>/<repo>:<pipeline>:<command>][<kind> <ref>]` on the agent's. It is
-there whatever the pipeline's `concurrency`, so `[issues issue:88]` greps one
-unit's whole story — its clone traffic, its install, its agent — out of a
-pipeline running several.
+bracket naming it after the pipeline's, `[<deployment>:<owner>/<repo>:<pipeline>][<kind> <ref>]`.
+That covers a kind's own logging, the git and install output its children
+produce, and the agent, whose provider bracket follows the unit's. It is there
+whatever the pipeline's `concurrency`, so `[issues issue:88]` greps one unit's
+whole story out of a pipeline running several: its clone traffic, its install,
+its agent.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the
