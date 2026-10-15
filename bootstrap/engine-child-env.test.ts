@@ -61,6 +61,15 @@ describe("buildEngineChildEnv", () => {
     expect(env.PHOEBE_DEPLOYMENT_NAME).toBe("phoebe");
   });
 
+  test("a tenant .env or secret store cannot override the deployment's name (#686)", () => {
+    const env = buildEngineChildEnv({
+      base: { ...base, PHOEBE_DEPLOYMENT_NAME: "fleet" },
+      tenantEnv: { PHOEBE_DEPLOYMENT_NAME: "tenant-env" },
+      secretStore: { PHOEBE_DEPLOYMENT_NAME: "tenant-store" },
+    });
+    expect(env.PHOEBE_DEPLOYMENT_NAME).toBe("fleet");
+  });
+
   test("passes the per-work-kind agent knobs through (#300)", () => {
     const env = buildEngineChildEnv({
       base: { ...base, PHOEBE_REVIEWS_MODEL: "claude-haiku-4-5", PHOEBE_ISSUES_EFFORT: "high" },

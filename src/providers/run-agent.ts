@@ -120,13 +120,21 @@ export async function runAgent(opts: {
       else opts.signal.addEventListener("abort", onAbort, { once: true });
     }
 
+    // One log call per physical line, so every line carries the bracket the
+    // console routes on.
+    const logLines = (prefix: string, text: string): void => {
+      for (const part of text.split("\n")) {
+        const trimmed = part.trim();
+        if (trimmed) log(`${prefix} ${trimmed}`);
+      }
+    };
+
     const handleLine = (line: string): void => {
       for (const event of provider.parseStreamLine(line)) {
         if (event.type === "text") {
-          const text = event.text.trim();
-          if (text) log(`${out} ${text}`);
+          logLines(out, event.text);
         } else if (event.type === "tool_call") {
-          log(`${out} ${event.name}: ${event.args}`);
+          logLines(out, `${event.name}: ${event.args}`);
         } else {
           resultText = event.result;
         }
@@ -140,8 +148,7 @@ export async function runAgent(opts: {
       for (const line of lines) handleLine(line);
     });
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString().trim();
-      if (text) log(`${err} ${text}`);
+      logLines(err, chunk.toString());
     });
     child.on("error", reject);
     child.on("close", (code) => {

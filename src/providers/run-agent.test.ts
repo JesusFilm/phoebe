@@ -214,6 +214,41 @@ describe("runAgent", () => {
     ]);
   });
 
+  test("prefixes every physical line of multi-line text and stderr (#686)", async () => {
+    const fake = makeFakeChild();
+    const textLine = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "one\ntwo" }] },
+    });
+    const spawn: SpawnAgent = () => {
+      queueMicrotask(() => {
+        fake.emitStdout(`${textLine}\n`);
+        fake.emitStderr("warn a\nwarn b\n");
+        fake.close(0);
+      });
+      return fake.child;
+    };
+    const logged: string[] = [];
+    await runAgent({
+      provider: PROVIDERS.claude,
+      model: "m",
+      prompt: "p",
+      cwd: "/w",
+      env: {},
+      spawn,
+      log: (line) => logged.push(line),
+      deployment: "fleet",
+      tenant: "acme/widget",
+      pipeline: "work",
+    });
+    expect(logged).toEqual([
+      "[fleet:acme/widget:work][claude] one",
+      "[fleet:acme/widget:work][claude] two",
+      "[fleet:acme/widget:work][claude:stderr] warn a",
+      "[fleet:acme/widget:work][claude:stderr] warn b",
+    ]);
+  });
+
   test("without tenant, log brackets use bare provider name", async () => {
     const fake = makeFakeChild();
     const claudeTextLine = JSON.stringify({

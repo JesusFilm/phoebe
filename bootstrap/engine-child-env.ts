@@ -264,6 +264,14 @@ export function buildEngineChildEnv(opts: {
   for (const [key, value] of Object.entries(secretStore)) {
     if (value !== "") env[key] = value;
   }
+  // The deployment's name is the supervisor's to assign (#686): a tenant `.env`
+  // or store entry must not make one tenant's lines claim another deployment.
+  const deploymentName = base.PHOEBE_DEPLOYMENT_NAME;
+  if (deploymentName !== undefined && deploymentName !== "") {
+    env.PHOEBE_DEPLOYMENT_NAME = deploymentName;
+  } else {
+    delete env.PHOEBE_DEPLOYMENT_NAME;
+  }
   // Then the pipeline scrub, which is a subtraction and therefore has to come after
   // everything that could add. Reserved keys can never be declared, so nothing
   // here can take away the token, the bot login or the git identity.
