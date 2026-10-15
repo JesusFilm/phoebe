@@ -194,8 +194,13 @@ describe("clearing the cli tab", () => {
     ],
   };
 
+  /** The clear the operator presses with the run as it stands. */
+  function readSoFar(one: VerbRun) {
+    return { runId: one.runId, after: one.lines.at(-1) ?? null };
+  }
+
   test("the run's lines so far go, and what arrives next shows", () => {
-    const mark = { runId: "run-1", lines: run.lines.length };
+    const mark = readSoFar(run);
     const up: RunLine = { runId: "run-1", stream: "stdout", line: "up" };
     const later: VerbRun = { ...run, lines: [...run.lines, up] };
 
@@ -203,8 +208,26 @@ describe("clearing the cli tab", () => {
     expect(runDrawn(later, mark).lines).toEqual([up]);
   });
 
+  // The run store is bounded as well, and a build or a migrate prints enough
+  // to reach it. The mark names the last line it covered rather than counting
+  // them, so the output that arrived since a clear is never mistaken for it.
+  test("a run long enough to drop the line the mark named draws everything left", () => {
+    const mark = readSoFar(run);
+    const since = Array.from({ length: 3 }, (_, at): RunLine => {
+      return { runId: "run-1", stream: "stdout", line: `and on ${at}` };
+    });
+
+    expect(runDrawn({ ...run, lines: since }, mark).lines).toEqual(since);
+  });
+
+  test("a clear on a run that has printed nothing hides nothing of what follows", () => {
+    const mark = readSoFar({ ...run, lines: [] });
+
+    expect(runDrawn(run, mark)).toEqual(run);
+  });
+
   test("a mark left on an earlier run hides nothing of the next one", () => {
-    expect(runDrawn(run, { runId: "run-0", lines: 2 })).toEqual(run);
+    expect(runDrawn(run, { runId: "run-0", after: run.lines[0] as RunLine })).toEqual(run);
     expect(runDrawn(run, null)).toEqual(run);
   });
 });
