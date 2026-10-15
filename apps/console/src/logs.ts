@@ -6,7 +6,7 @@
 // holds more than main would hand a pane opened late.
 
 import { MAX_LOG_LINES } from "phoebe-agent/contracts";
-import type { VerbRun } from "phoebe-agent/contracts";
+import type { RunLine, VerbRun } from "phoebe-agent/contracts";
 import { ALL_CHANNEL, channelOf, inChannel } from "./logs-channels.ts";
 
 /**
@@ -106,17 +106,21 @@ function shifted(marks: ClearMarks, dropped: number): ClearMarks {
 }
 
 /**
- * What a clear on the `cli` tab read: how many of one run's lines sit behind
- * it. That tab is the companion's own store rather than the container's
- * stream (verb-run.ts), so its mark is one run's line count and nothing else.
+ * What a clear on the `cli` tab read: the run it was on, and the last line of
+ * that run it covered — the line itself, not a count of them. That store is
+ * bounded too (`MAX_RUN_LINES`), and a `migrate` or a build prints enough to
+ * reach it, at which point a count would start naming a line that arrived
+ * after the clear. `null` is a clear on a run that had printed nothing yet.
  */
-export type RunMark = { runId: string; lines: number };
+export type RunMark = { runId: string; after: RunLine | null };
 
 /**
- * The run as the `cli` tab draws it: from the mark up when the mark is this
- * run's, whole when the run has moved on since.
+ * The run as the `cli` tab draws it: the lines after the mark when the mark is
+ * this run's, and the whole run when it is not, or when the line the mark named
+ * has gone off the front — everything still held then came in after the clear.
  */
 export function runDrawn(run: VerbRun, mark: RunMark | null): VerbRun {
-  if (mark === null || mark.runId !== run.runId) return run;
-  return { ...run, lines: run.lines.slice(mark.lines) };
+  if (mark === null || mark.runId !== run.runId || mark.after === null) return run;
+  const at = run.lines.indexOf(mark.after);
+  return at === -1 ? run : { ...run, lines: run.lines.slice(at + 1) };
 }

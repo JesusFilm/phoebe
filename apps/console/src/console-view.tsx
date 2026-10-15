@@ -218,7 +218,7 @@ export function ConsoleView({
   const clear = (): void => {
     if (cli) {
       setPast([]);
-      if (run !== null) setRunMark({ runId: run.runId, lines: run.lines.length });
+      if (run !== null) setRunMark({ runId: run.runId, after: run.lines.at(-1) ?? null });
     } else {
       setView((held) => logsCleared(held, shown));
     }
