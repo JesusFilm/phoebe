@@ -44,6 +44,21 @@ describe("what a right-click is on", () => {
     expect(textToCopy(null, read!)).toBeNull();
   });
 
+  // Copy all lines reads the text out of the box as it is laid out, so a clear
+  // (#677) takes the hidden lines out of the copy as well as off the screen:
+  // what the menu offers is always what the console is drawing.
+  test("a cleared console copies the lines still drawn, and counts those", () => {
+    const target = element([
+      { matches: [".log-line"], text: "[phoebe] cycle\n" },
+      { matches: [".logs-lines", "pre"], text: "x", laidOut: "[phoebe] cycle\n" },
+    ]);
+
+    const read = readContext(target, "");
+
+    expect(read).toMatchObject({ request: { kind: "console", lines: 1 } });
+    expect(textToCopy("copy-all", read!)).toBe("[phoebe] cycle");
+  });
+
   test("the console's empty space is the console, with no line under the pointer", () => {
     const target = element([{ matches: [".logs-lines", "pre"], text: "", laidOut: "" }]);
 

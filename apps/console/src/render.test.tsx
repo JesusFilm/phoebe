@@ -1,10 +1,12 @@
 // What the rail and the grid actually put on screen.
 //
 // Rendered to static markup rather than into a DOM, which needs no browser and no
-// jsdom: these are pure components over the facts `facts.ts` rolled up, so the
-// markup is the whole output. The assertions are the ones the page would be wrong
-// without — the four connection words reading as four different things, one bar
-// segment per pipeline, and a deployment that has never reported saying so.
+// jsdom: these are pure components over what they are handed, so the markup is
+// the whole output. The assertions are the ones the page would be wrong without —
+// the four connection words reading as four different things, one bar segment per
+// pipeline, and a deployment that has never reported saying so. Where a test has
+// to press something and watch what the component then holds, it goes in a file of
+// its own that mounts into jsdom (console-clear.test.tsx).
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
