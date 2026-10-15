@@ -27,6 +27,15 @@ export default defineConfig({
     // Vendored agent skill docs keep their upstream formatting; unrendered
     // templates are shaped for consumers' repos, not this one. Vendored
     // third-party bundles are pre-minified and must not be reformatted.
-    ignorePatterns: [".agents/skills/**/*.md", "templates/**", "src/migrations/vendor/**"],
+    // CHANGELOG.md is written by `changeset version` on the release PR and
+    // never by hand: a changeset with two paragraphs renders as a tight list
+    // with a whitespace-only line between them, which the formatter rejects,
+    // and the next `changeset version` would write it back the same way.
+    ignorePatterns: [
+      ".agents/skills/**/*.md",
+      "templates/**",
+      "src/migrations/vendor/**",
+      "CHANGELOG.md",
+    ],
   },
 });

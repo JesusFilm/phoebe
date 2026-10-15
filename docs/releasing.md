@@ -58,7 +58,9 @@ automatically.
    workflow sees the pending changeset(s) and opens (or updates) a
    **"chore: version packages"** PR. That PR bumps `version` in `package.json`,
    folds the changesets into `CHANGELOG.md`, and deletes the consumed changeset
-   files.
+   files. `CHANGELOG.md` is excluded from the formatter in `vite.config.ts`
+   because `changeset version` owns it: a two-paragraph changeset renders in a
+   shape the formatter would rewrite, and the next release would write it back.
 
 3. **Merge the version PR.** That is the release trigger. On that merge the
    workflow finds no pending changesets, runs the `release` script
