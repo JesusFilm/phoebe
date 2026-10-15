@@ -64,8 +64,13 @@ Three things it does not touch:
 ## Every PR carries a changeset
 
 The `changeset` CI check fails any PR that touches `phoebe-agent` without a
-Markdown file under `.changeset/` — write one before pushing. Format, the
-`skip-changeset` label for no-release PRs, and why empty changesets don't pass:
+Markdown file under `.changeset/` — write one before pushing. A PR that changes
+nothing a consumer would notice (docs, CI, tests, a `devDependencies` or tooling
+bump) takes the `skip-changeset` label instead; apply it yourself with
+`gh pr edit <n> --add-label skip-changeset` rather than asking a maintainer. On
+a Renovate PR the split is by dependency type: a runtime `dependencies` bump
+gets a `patch` changeset whose summary is the PR title, anything else gets the
+label. Format, and why empty changesets don't pass:
 [`docs/releasing.md`](docs/releasing.md).
 
 ## Installing Phoebe into a target repo
