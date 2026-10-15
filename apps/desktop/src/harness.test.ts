@@ -825,7 +825,7 @@ describe("the check and the update", () => {
   test("the log tail says where Claude Code could not run", async () => {
     const { harness } = setup(WITH_CLAUDE, 10001, "phoebe", [], true, [
       "[phoebe] boot: ok",
-      "[acme/a:claude][issues issue:716] Not logged in · Please run /login",
+      "[acme/a:work:claude][issues issue:716] Not logged in · Please run /login",
       "[phoebe:acme/a:work] Agent exited with code 1.",
     ]);
 

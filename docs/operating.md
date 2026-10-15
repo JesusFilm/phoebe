@@ -590,17 +590,22 @@ implicit `work` pipeline is tagged like any other. The bootstrapper's own lines 
 tagged `[phoebe]`. A host log collector matching the tenant tag should match it
 as a **prefix**: a parser pinned to the exact old `[phoebe:<owner>/<repo>]`
 string stops matching. Agent output uses the combined bracket
-`[<owner>/<repo>:<command>]` (e.g. `[JesusFilm/phoebe:cursor]`) so agent lines
-stay visually distinct from unit-event lines. stderr lines add a further suffix:
-`[<owner>/<repo>:<command>:stderr]`.
+`[<owner>/<repo>:<pipeline>:<command>]` (e.g. `[JesusFilm/phoebe:work:cursor]`):
+the pipeline is on the agent's lines too, so two pipelines running the same
+provider stay apart, and the missing `phoebe:` prefix is what keeps an agent's
+lines visually distinct from the engine's. stderr lines add a further suffix:
+`[<owner>/<repo>:<pipeline>:<command>:stderr]`. Match the agent bracket as a
+prefix too — a collector keyed on the slug still catches every agent line, one
+pinned to the exact old `[<owner>/<repo>:<command>]` string does not.
 The container writes no log files. Stdout is the whole story.
 
 **Which unit said it.** Anything produced on behalf of one work unit adds a
 second bracket naming it: `[phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>]` on a
 kind's own logging and on the git and install output its children produce, and
-`[<owner>/<repo>:<command>][<kind> <ref>]` on the agent's. It is there whatever
-the pipeline's `concurrency`, so `[issues issue:88]` greps one unit's whole story —
-its clone traffic, its install, its agent — out of a pipeline running several.
+`[<owner>/<repo>:<pipeline>:<command>][<kind> <ref>]` on the agent's. It is
+there whatever the pipeline's `concurrency`, so `[issues issue:88]` greps one
+unit's whole story — its clone traffic, its install, its agent — out of a
+pipeline running several.
 
 **When a unit hangs.** A work unit that exceeds its wall-clock budget
 (`PHOEBE_RUN_TIMEOUT_MS`, default 45 min) is aborted so it can't starve the

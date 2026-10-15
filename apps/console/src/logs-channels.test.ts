@@ -14,8 +14,8 @@ const LINES = [
   "[phoebe] boot: engine source local — exec /opt/phoebe-engine/src/cli.ts",
   "[phoebe:JesusFilm/phoebe:work] cycle: nothing ready-for-agent, sleeping 30s",
   "[phoebe:JesusFilm/phoebe:research][issue 497] started",
-  "[JesusFilm/phoebe:claude] Reading the ticket…",
-  "[JesusFilm/phoebe:claude:stderr] warning: slow",
+  "[JesusFilm/phoebe:work:claude] Reading the ticket…",
+  "[JesusFilm/phoebe:work:claude:stderr] warning: slow",
   "[phoebe:JesusFilm/youtube-studio:work] cycle: 1 candidate",
   "npm warn deprecated something",
 ];
@@ -26,9 +26,17 @@ describe("which channel a line is on", () => {
     expect(channelOf(LINES[2] as string)).toBe("JesusFilm/phoebe:research");
   });
 
-  test("an agent's lines are the tenant and the command, stderr folded in", () => {
-    expect(channelOf(LINES[3] as string)).toBe("JesusFilm/phoebe:claude");
-    expect(channelOf(LINES[4] as string)).toBe("JesusFilm/phoebe:claude");
+  test("an agent's lines are the tenant, the pipeline and the command, stderr folded in", () => {
+    expect(channelOf(LINES[3] as string)).toBe("JesusFilm/phoebe:work:claude");
+    expect(channelOf(LINES[4] as string)).toBe("JesusFilm/phoebe:work:claude");
+  });
+
+  // The pipeline arrived on the agent bracket (#675) and `:stderr` still has to
+  // fold: it is a suffix on the command, not a fourth segment of its own.
+  test("stderr folds into its channel however many segments precede it", () => {
+    expect(channelOf("[JesusFilm/phoebe:work:claude:stderr] warning")).toBe(
+      "JesusFilm/phoebe:work:claude",
+    );
   });
 
   test("the bootstrapper's lines and untagged noise are boot", () => {
@@ -44,7 +52,7 @@ describe("the tabs", () => {
       BOOT_CHANNEL,
       "JesusFilm/phoebe:work",
       "JesusFilm/phoebe:research",
-      "JesusFilm/phoebe:claude",
+      "JesusFilm/phoebe:work:claude",
       "JesusFilm/youtube-studio:work",
     ]);
   });
@@ -55,14 +63,14 @@ describe("the tabs", () => {
   });
 
   test("a tab shows its own lines, unchanged, and all shows every line", () => {
-    expect(linesIn(LINES, "JesusFilm/phoebe:claude")).toEqual([LINES[3], LINES[4]]);
+    expect(linesIn(LINES, "JesusFilm/phoebe:work:claude")).toEqual([LINES[3], LINES[4]]);
     expect(linesIn(LINES, BOOT_CHANNEL)).toEqual([LINES[0], LINES[6]]);
     expect(linesIn(LINES, ALL_CHANNEL)).toEqual(LINES);
   });
 
   test("is labelled by the repo and the pipeline, the owner being the same on every tab", () => {
     expect(channelLabel("JesusFilm/phoebe:work")).toBe("phoebe:work");
-    expect(channelLabel("JesusFilm/phoebe:claude")).toBe("phoebe:claude");
+    expect(channelLabel("JesusFilm/phoebe:work:claude")).toBe("phoebe:work:claude");
     expect(channelLabel(ALL_CHANNEL)).toBe("all");
     expect(channelLabel(BOOT_CHANNEL)).toBe("boot");
   });

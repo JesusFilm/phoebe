@@ -4,9 +4,11 @@
 // possible — until it, `main.ts` had no test at all and the real bugs lived in
 // how it called the pure selectors, not in the selectors themselves.
 //
-// Everything runs under `--dry-run`: the loop selects, prints what it would
+// Most of it runs under `--dry-run`: the loop selects, prints what it would
 // execute, and breaks before the worktree, the agent or the push. That is what
-// makes selection testable on its own, so nothing here fakes an agent spawn.
+// makes selection testable on its own. The tests that have to watch an agent
+// child — what the engine puts on its lines — hand `createEngine` a fake spawn
+// instead, and nothing anywhere here reaches a real agent CLI.
 //
 // Two doubles carry the tests. `stubGitHub` (src/github-stub.ts) throws for
 // any method a test did not declare, so a cycle that reaches further than the
@@ -69,6 +71,7 @@ import type {
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
 import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
+import type { AgentChild, SpawnAgent } from "./providers/run-agent.ts";
 
 // ---------------------------------------------------------------------------
 // The world a cycle runs against
@@ -358,6 +361,8 @@ async function runCycle(opts: {
   worktreeList?: string;
   /** Which pipeline this engine is (#418); defaults to the reserved `work`. */
   pipeline?: string;
+  /** A fake agent spawn, for a cycle that has to reach the agent child (#675). */
+  spawnAgent?: SpawnAgent;
   /** The snapshot writer's boot-time half (#670), when a test watches for the call. */
   forgetInherited?: () => void;
 }): Promise<CycleResult> {
@@ -375,6 +380,7 @@ async function runCycle(opts: {
   const engine = createEngine({
     config,
     ...(opts.pipeline !== undefined ? { pipeline: opts.pipeline } : {}),
+    ...(opts.spawnAgent !== undefined ? { spawnAgent: opts.spawnAgent } : {}),
     registry: buildRegistry(config, opts.customKinds ?? []),
     env: opts.env ?? {},
     ...(opts.inContainer !== undefined ? { inContainer: opts.inContainer } : {}),
@@ -2508,6 +2514,106 @@ describe("the stdout tag", () => {
     for (const line of result.lines) {
       expect(line.startsWith("[phoebe:acme/widget:intake]")).toBe(true);
     }
+  });
+});
+
+// Since #418 a tenant runs one engine process per pipeline, so two pipelines on
+// the same provider used to pour their agent output into one indistinguishable
+// stream (#675). The tag builder is pinned in run-agent.test.ts; what is pinned
+// here is the wiring — that the pipeline reaching the bracket is the one the
+// engine was built with, not a default the call site hardcoded.
+describe("what an agent's own lines carry", () => {
+  /** An agent that says one thing on each stream and exits clean. */
+  function chattyAgent(): SpawnAgent {
+    return () => {
+      const listeners = new Map<string, ((...args: never[]) => void)[]>();
+      const on = (key: string, listener: (...args: never[]) => void): void => {
+        listeners.set(key, [...(listeners.get(key) ?? []), listener]);
+      };
+      const emit = (key: string, ...args: unknown[]): void => {
+        for (const listener of listeners.get(key) ?? []) {
+          (listener as (...a: unknown[]) => void)(...args);
+        }
+      };
+      const child: AgentChild = {
+        stdout: { on: (event, l) => on(`stdout:${event}`, l as never) },
+        stderr: { on: (event, l) => on(`stderr:${event}`, l as never) },
+        stdin: { write: () => {}, end: () => {} },
+        on: (event: string, l) => on(`child:${event}`, l as never),
+      };
+      queueMicrotask(() => {
+        const text = JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Reading the ticket" }] },
+        });
+        emit("stdout:data", Buffer.from(`${text}\n`));
+        emit("stderr:data", Buffer.from("cli warning\n"));
+        emit("child:close", 0);
+      });
+      return child;
+    };
+  }
+
+  /** A scratch kind whose whole run is one `ctx.agent.run()`. */
+  function agentKind(promptFile: string): LoadedCustomKind {
+    const definition: AnyWorkKindDefinition = {
+      name: "nudge",
+      oneShotEligible: true,
+      promptFile,
+      workspace: "scratch",
+      report: {
+        noun: "stale PR(s)",
+        describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
+      },
+      fetch: (ctx) => Promise.resolve({ prs: ctx.github.openPrs() }),
+      select: (gathered: { prs: { number: number }[] }) => {
+        const pick = gathered.prs[0] ?? null;
+        return {
+          unit: pick ? { ref: `pr:${pick.number}`, prNumber: Number(pick.number) } : null,
+          skipped: [],
+          total: gathered.prs.length,
+        };
+      },
+      run: (_unit, ctx: WorkKindRunCtx) => ctx.agent.run(),
+    };
+    return { name: "nudge", definition, options: undefined };
+  }
+
+  /** Run one unit of that kind through a real `createEngine`, on `pipeline`. */
+  async function agentLines(pipeline?: string): Promise<string[]> {
+    const dataBase = tenantRoot();
+    const promptFile = join(dataBase, "nudge-prompt.md");
+    writeFileSync(promptFile, "Nudge PR {{DEFAULT_BRANCH}}.");
+    const result = await runCycle({
+      config: { workOrder: ["nudge"] },
+      customKinds: [agentKind(promptFile)],
+      dataBase,
+      spawnAgent: chattyAgent(),
+      ...(pipeline !== undefined ? { pipeline } : {}),
+      github: {
+        ...prWorld([{ number: 44, issueNumber: 4 }]),
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+      },
+      env: { GH_TOKEN: "t" },
+      inContainer: true,
+      run: { runOnce: true, dryRun: false },
+    });
+    return result.lines.filter((line) => line.includes(":cursor"));
+  }
+
+  test("the default pipeline sits between the slug and the provider", async () => {
+    expect(await agentLines()).toEqual([
+      "[acme/widget:work:cursor][nudge pr:44] Reading the ticket",
+      "[acme/widget:work:cursor:stderr][nudge pr:44] cli warning",
+    ]);
+  });
+
+  test("a second pipeline's agent tags itself apart from the first's", async () => {
+    expect(await agentLines("intake")).toEqual([
+      "[acme/widget:intake:cursor][nudge pr:44] Reading the ticket",
+      "[acme/widget:intake:cursor:stderr][nudge pr:44] cli warning",
+    ]);
   });
 });
 
