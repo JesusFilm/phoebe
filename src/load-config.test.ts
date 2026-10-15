@@ -84,6 +84,14 @@ describe("applyEnvOverlay", () => {
     );
   });
 
+  test("PHOEBE_PR_SCOPE leaves a file's prefix list alone, and cannot spell one", () => {
+    const listed = { ...baseUser(), prScope: ["renovate/"] };
+    expect(applyEnvOverlay(listed, {}).prScope).toEqual(["renovate/"]);
+    expect(() => applyEnvOverlay(listed, { PHOEBE_PR_SCOPE: "renovate/" })).toThrow(
+      /PHOEBE_PR_SCOPE must be one of phoebe, all/,
+    );
+  });
+
   test("PHOEBE_DRAFT_PRS overlays and validates the enum", () => {
     expect(applyEnvOverlay(baseUser(), { PHOEBE_DRAFT_PRS: "include" }).draftPrs).toBe("include");
     expect(() => applyEnvOverlay(baseUser(), { PHOEBE_DRAFT_PRS: "bogus" })).toThrow(

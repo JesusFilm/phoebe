@@ -1,7 +1,10 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "gitIgnoredAuthors": ["phoebe@users.noreply.github.com"],
+  "description": [
+    "`gitIgnoredAuthors` names the address Phoebe commits under on this repo: the noreply identity of the account whose token it runs on. Without it, Renovate treats a branch Phoebe pushed a changeset to as edited by someone else and stops refreshing it. If Phoebe moves to another identity (a GitHub App, a `gitIdentity` in the config), this address moves with it."
+  ],
+  "gitIgnoredAuthors": ["838371+mikeallisonJS@users.noreply.github.com"],
   "packageRules": [
     {
       "description": "Only a runtime dependency bump is a line a consumer would notice, so every other kind opens already labelled and never trips the changeset gate (#655). Phoebe's checks kind writes the changeset for the ones that are left.",

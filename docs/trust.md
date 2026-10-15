@@ -290,6 +290,12 @@ narrower grant is the one to write down. What you are granting is unchanged in
 kind — that branch's install hooks run as the engine's child — so the question
 to ask of a prefix is whether you would merge what arrives on it unread.
 
+A prefix names branches, not the bot that pushes them. Anyone with push access
+can open `renovate/anything`, and Phoebe will run its install hooks the same as
+Renovate's. If that matters for your repo, add a branch ruleset on `renovate/*`
+so that only the bot can create those branches. Without one, the prefix is a
+naming convention and nothing more.
+
 The engine strips its own credentials — `GH_TOKEN`, the `GH_APP_*` pair, and
 every configured provider API key — from the `installCommand` environment
 (`src/shell-env.ts`), so an install hook lands in the operator's toolchain

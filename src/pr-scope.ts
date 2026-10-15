@@ -58,8 +58,12 @@ export function prScopeAdmits(scope: PrScope, branchPrefix: string, branch: stri
  *   3. the tenant's    `prScope` — which `PHOEBE_PR_SCOPE` has already written
  *      onto, since that leaf is an overlay setting
  *
- * A per-kind env value that is neither `phoebe` nor `all` is not an answer, so
- * the next rung is asked — the behaviour every validating reader here has.
+ * A per-kind env value that is neither `phoebe` nor `all` throws, naming the
+ * variable — the answer `PHOEBE_PR_SCOPE` gets from the overlay and an unknown
+ * `PHOEBE_<KIND>_PROVIDER` gets from `selectProviderForKind`. Asking the next
+ * rung instead would run the engine on a scope `phoebe config` does not show,
+ * since that view reports the variable as set. The client resolves the listing
+ * scope as it is built, so the throw lands at startup rather than mid-cycle.
  */
 export function resolvePrScopeForKind(opts: {
   kind: string;
@@ -67,8 +71,16 @@ export function resolvePrScopeForKind(opts: {
   workKinds: WorkKindsField;
   configValue: PrScope;
 }): PrScope {
-  const fromEnv = readEnv(opts.env, kindEnvNames(PR_SCOPE_SETTING, opts.kind))?.value;
-  if (fromEnv !== undefined && PR_SCOPE_ENV_VALUES.includes(fromEnv)) return fromEnv as PrScope;
+  const read = readEnv(opts.env, kindEnvNames(PR_SCOPE_SETTING, opts.kind));
+  if (read !== undefined) {
+    if (!PR_SCOPE_ENV_VALUES.includes(read.value)) {
+      throw new Error(
+        `${read.via} must be one of ${PR_SCOPE_ENV_VALUES.join(", ")} (got "${read.value}"). ` +
+          `A list of branch prefixes is a config-file value.`,
+      );
+    }
+    return read.value as PrScope;
+  }
   return workKindOverride(opts.workKinds, opts.kind)?.prScope ?? opts.configValue;
 }
 

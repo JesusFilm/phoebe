@@ -259,6 +259,12 @@ recreates the container, so nothing is pasted by hand. The same five tabs sit
 beside it, fed by a local read loop rather than a socket. Docker is checked, never
 installed.
 
+A local install's config tab is a form rather than a list of leaves. A setting
+that takes a list as well as its named values offers **prefixes** in its select,
+and picking it opens a comma-separated box the row saves as a list. The settings
+catalogue decides which settings those are, and `prScope`
+([`configuration.md`](configuration.md#pr-scan-scope)) is the only one so far.
+
 A folder that is already a workspace's tenant is not offered `init` over the
 top of its config. It is offered a deployment of its own beside the tenant: the
 scaffold goes into `.phoebe/` under the folder, the tenant's config moves in

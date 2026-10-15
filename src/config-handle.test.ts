@@ -447,6 +447,17 @@ describe("editConfigGetField", () => {
     expect(result.literal).toBeUndefined();
     expect(result.raw).toContain("process.env");
   });
+
+  test("reads through a type assertion, on a scalar and on a list", () => {
+    const content = MINIMAL(`
+  effort: "high" as const,
+  prScope: ["phoebe/", "renovate/"] as const,`);
+    expect(editConfigGetField(content, "effort")).toMatchObject({ found: true, literal: "high" });
+    expect(editConfigGetFieldAt(content, ["prScope"])).toMatchObject({
+      found: true,
+      literal: ["phoebe/", "renovate/"],
+    });
+  });
 });
 
 // ------------------------------------------------------------------ setField
@@ -478,6 +489,16 @@ describe("editConfigSetField", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain("shorthand");
+  });
+
+  test("replaces an asserted list whole, assertion included", () => {
+    const content = MINIMAL(`
+  prScope: ["renovate/"] as const,`);
+    const result = editConfigSetField(content, "prScope", ["phoebe/", "renovate/"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`prScope: ["phoebe/", "renovate/"],`);
+    expect(result.content).not.toContain("as const");
   });
 });
 
@@ -887,6 +908,62 @@ describe("editConfigSetFieldAt", () => {
     if (!result.ok) return;
     expect(result.content).toContain(`effort: "medium",`);
     expect(result.content).not.toContain("as const");
+  });
+
+  test("writes a list the way a person spaces one, and reads the same list back (#655)", () => {
+    const result = editConfigSetFieldAt(MINIMAL(), ["prScope"], ["phoebe/", "renovate/"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`prScope: ["phoebe/", "renovate/"]`);
+    expect(editConfigGetFieldAt(result.content, ["prScope"])).toMatchObject({
+      found: true,
+      literal: ["phoebe/", "renovate/"],
+    });
+  });
+
+  test("saving a hand-written list unchanged leaves the file byte for byte", () => {
+    const content = MINIMAL(`
+  prScope: ["phoebe/", "renovate/"],`);
+    const result = editConfigSetFieldAt(content, ["prScope"], ["phoebe/", "renovate/"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toBe(content);
+  });
+
+  test("an empty list is a literal like any other, so the next edit replaces it", () => {
+    const first = editConfigSetFieldAt(MINIMAL(), ["prScope"], []);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.content).toContain("prScope: [],");
+    const second = editConfigSetFieldAt(first.content, ["prScope"], "all");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.content).toContain(`prScope: "all",`);
+  });
+
+  test("a list that computes an entry is refused, and reads as no literal", () => {
+    const content = MINIMAL(`
+  prScope: [branchPrefix, "renovate/"],`);
+    const result = editConfigSetFieldAt(content, ["prScope"], ["renovate/"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("not a plain literal");
+    expect(editConfigGetFieldAt(content, ["prScope"])).toMatchObject({
+      found: true,
+      literal: undefined,
+    });
+  });
+
+  test("a list whose entries carry `as const` is still the list it reads as", () => {
+    const content = MINIMAL(`
+  prScope: ["renovate/" as const],`);
+    expect(editConfigGetFieldAt(content, ["prScope"])).toMatchObject({
+      literal: ["renovate/"],
+    });
+    const result = editConfigSetFieldAt(content, ["prScope"], ["phoebe/"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content).toContain(`prScope: ["phoebe/"],`);
   });
 });
 

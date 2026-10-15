@@ -5,6 +5,7 @@ import {
   ConfigSpace,
   choicesOf,
   configGroups,
+  draftChanged,
   landingConfigView,
   listDraftOf,
   listOfDraft,
@@ -148,6 +149,28 @@ describe("one config on the config tab", () => {
     expect(listDraftOf(FIELDS[2]!)).toBe("phoebe/");
     // A config that states the empty list states it, and the box says so.
     expect(listDraftOf({ ...FIELDS[2]!, value: [] })).toBe("");
+    // No prefill read (a computed branchPrefix), so the box starts empty.
+    expect(listDraftOf({ ...FIELDS[2]!, listPrefill: undefined })).toBe("");
+  });
+
+  test("an enum value in the file opens on that value, with no list box", () => {
+    for (const value of ["phoebe", "all"]) {
+      const markup = space([{ ...FIELDS[2]!, value }]);
+      expect(markup).toMatch(new RegExp(`data-slot="select-value"[^>]*>${value}<`));
+      expect(markup).not.toContain('aria-label="prScope prefixes"');
+    }
+  });
+
+  test("a list retyped with other spacing is no change; another entry is one", () => {
+    const listed: ConfigFieldFacts = { ...FIELDS[2]!, value: ["renovate/", "dependabot/"] };
+
+    expect(draftChanged(listed, "prefixes", "renovate/, dependabot/")).toBe(false);
+    expect(draftChanged(listed, "prefixes", "renovate/,dependabot/ ,")).toBe(false);
+    expect(draftChanged(listed, "prefixes", "renovate/")).toBe(true);
+    expect(draftChanged(listed, "all", "renovate/, dependabot/")).toBe(true);
+    // Picking the list item over an enum value is a change, even before typing.
+    expect(draftChanged(FIELDS[2]!, "prefixes", "phoebe/")).toBe(true);
+    expect(draftChanged(FIELDS[2]!, "all", "")).toBe(false);
   });
 
   test("a text setting with values worth offering is a box that offers them and takes anything", () => {

@@ -88,10 +88,10 @@ export type ConfigHandle = {
    */
   getField(content: string, key: string): GetFieldResult;
   /**
-   * Set a top-level scalar field to a literal value. Creates the field if
-   * absent. Refuses when the existing value is non-literal.
+   * Set a top-level field to a literal value — a scalar, or a list of strings.
+   * Creates the field if absent. Refuses when the existing value is non-literal.
    */
-  setField(content: string, key: string, value: string | number | boolean): ConfigEditResult;
+  setField(content: string, key: string, value: Exclude<LiteralValue, null>): ConfigEditResult;
   /**
    * Remove a top-level field. No-ops when the key is absent.
    */
@@ -348,7 +348,14 @@ function findProp(configObj: BNode, key: string): BNode | null {
   return null;
 }
 
-function extractLiteral(node: BNode): LiteralValue | undefined {
+/**
+ * The literal a value node holds, or `undefined` when it is an expression. A
+ * type assertion is unwrapped first: `"high" as const` and `["a"] as const` are
+ * the values they read as, so every getter and setter here agrees on what is a
+ * literal. A setter still splices over the annotated node, assertion and all.
+ */
+function extractLiteral(outer: BNode): LiteralValue | undefined {
+  const node = unwrapTs(outer);
   if (node.type === "StringLiteral") return node.value as string;
   if (node.type === "NumericLiteral") return node.value as number;
   if (node.type === "BooleanLiteral") return node.value as boolean;
@@ -358,13 +365,26 @@ function extractLiteral(node: BNode): LiteralValue | undefined {
   // replace it would show the list and refuse to change it. Only strings —
   // anything else in the brackets is an expression this cannot stand behind.
   if (node.type === "ArrayExpression") {
-    const elements = node.elements as (BNode | null)[];
+    // Each element is unwrapped too, so `["renovate/" as const]` is a list.
+    const elements = (node.elements as (BNode | null)[]).map((element) =>
+      element === null ? null : unwrapTs(element),
+    );
     if (elements.some((element) => element === null || element.type !== "StringLiteral")) {
       return undefined;
     }
     return elements.map((element) => (element as BNode).value as string);
   }
   return undefined;
+}
+
+/**
+ * A literal as source text. `JSON.stringify` for a scalar; a list is spaced the
+ * way a person writes one, `["a", "b"]`, so a splice reads like the lines around
+ * it and a list saved unchanged comes back the same text it went in as.
+ */
+function serializeLiteral(value: LiteralValue): string {
+  if (Array.isArray(value)) return `[${value.map((entry) => JSON.stringify(entry)).join(", ")}]`;
+  return JSON.stringify(value);
 }
 
 // ------------------------------------------------------ edit functions
@@ -418,7 +438,7 @@ export function editConfigSetField(
   if (!resolved.ok) return resolved;
 
   const prop = findProp(resolved.configObj, key);
-  const serialized = JSON.stringify(value);
+  const serialized = serializeLiteral(value);
 
   if (prop) {
     if (prop.shorthand as boolean) {
@@ -886,8 +906,8 @@ export function editConfigMoveField(
  * sibling of {@link editConfigSetField}, and the substrate under
  * `phoebe config set` (#503, #536).
  *
- * Strict-literal in both directions. The value written is `JSON.stringify` of a
- * scalar or a string list, so a splice can never introduce an expression; and an
+ * Strict-literal in both directions. The value written is a scalar or a string
+ * list serialized as a literal, so a splice can never introduce an expression; and an
  * existing value that is not already a plain literal is refused rather than
  * overwritten, because a config that computes its own field has an author whose
  * intent a splice cannot read. Object literals the path names but the config does not
@@ -907,7 +927,7 @@ export function editConfigSetFieldAt(
   const located = locatePath(source, resolved.configObj, path);
   if (!located.ok) return located;
 
-  const serialized = JSON.stringify(value);
+  const serialized = serializeLiteral(value);
   if (!located.found) return insertAtPath(source, path, serialized, "");
 
   if (located.prop.shorthand as boolean) {

@@ -21,8 +21,8 @@
 // candidate file, because there is nowhere to put a candidate: the deployment
 // directory is `:ro` and the one writable file is the target itself. Nothing is
 // lost by it. The splice substrate has already parsed the source and replaced
-// one literal with a `JSON.stringify` of a scalar, so the candidate's syntax is
-// a property of the mechanism; what is left to ask is whether the config still
+// one literal with another, a scalar or a list of strings, so the candidate's
+// syntax is a property of the mechanism; what is left to ask is whether the config still
 // loads with that value in it, which is exactly what the loader answers.
 
 import { readFileSync } from "node:fs";
@@ -114,7 +114,9 @@ Usage:
   phoebe config set <path> <value> [--config <path>]
 
   <path>   A dotted path into the config, the same path \`phoebe config\` prints
-  <value>  JSON when it parses as JSON (42, true, null, "a b"), else a string
+  <value>  JSON when it parses as JSON (42, true, null, "a b"), else a string.
+           A field that takes a list takes a JSON array of strings:
+             phoebe config set prScope '["renovate/", "dependabot/"]'
 
 Flags:
   --json           Print the receipt instead of a sentence

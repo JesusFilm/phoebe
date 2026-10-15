@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Full history so changesets can read tags and compute changelogs.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -65,7 +65,7 @@ jobs:
 
       - name: Create Version Packages PR or publish
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@v2.1.2
         with:
           version: vp run version-packages
           publish: vp run release
