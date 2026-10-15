@@ -2,9 +2,11 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "description": [
-    "`gitIgnoredAuthors` names the address Phoebe commits under on this repo: the noreply identity of the account whose token it runs on. Without it, Renovate treats a branch Phoebe pushed a changeset to as edited by someone else and stops refreshing it. If Phoebe moves to another identity (a GitHub App, a `gitIdentity` in the config), this address moves with it."
+    "`gitIgnoredAuthors` names the address Phoebe commits under on this repo: the noreply identity of the account whose token it runs on. Without it, Renovate treats a branch Phoebe pushed a changeset to as edited by someone else and stops refreshing it. If Phoebe moves to another identity (a GitHub App, a `gitIdentity` in the config), this address moves with it.",
+    "`minimumReleaseAge` matches the gate pnpm 11 applies by default: `vp install` refuses any package published less than 1440 minutes ago, and this repo sets nothing to relax it. Without the same number here Renovate resolves a version the moment it is published, CI fails on the age check, and the PR needs a manual retry a day later (#684)."
   ],
   "gitIgnoredAuthors": ["838371+mikeallisonJS@users.noreply.github.com"],
+  "minimumReleaseAge": "1 day",
   "packageRules": [
     {
       "description": "Only a runtime dependency bump is a line a consumer would notice, so every other kind opens already labelled and never trips the changeset gate (#655). Phoebe's checks kind writes the changeset for the ones that are left.",
