@@ -10,9 +10,11 @@
 // companion ran on this install printed (verb-run.ts). A start, an upgrade and
 // a doctor are output too, and the console is where output is read. Open, it follows over the bridge and stops the stream when the
 // install changes underneath it. What it shows is logs.ts's view; this file is
-// the subscription and the drawing.
+// the subscription and the drawing. The eraser in the header clears the tab
+// that is open the way a terminal clears: by marking what has been read, not by
+// throwing lines away (#677).
 
-import { ArrowDownToLine, CircleAlert, Settings, TriangleAlert } from "lucide-react";
+import { ArrowDownToLine, CircleAlert, Eraser, Settings, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type UIEvent } from "react";
 import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
 import type {
@@ -43,13 +45,22 @@ import {
   type RailProblem,
 } from "./local-install.ts";
 import { LogLine } from "./log-line.tsx";
-import { appendLogLine, EMPTY_LOGS, logsEnded, logsSeeded, type LogsView } from "./logs.ts";
+import {
+  appendLogLine,
+  drawnLines,
+  EMPTY_LOGS,
+  logsCleared,
+  logsEnded,
+  logsSeeded,
+  runDrawn,
+  type LogsView,
+  type RunMark,
+} from "./logs.ts";
 import {
   ALL_CHANNEL,
   channelLabel,
   channelsIn,
   CLI_CHANNEL,
-  linesIn,
   tenantChannel,
 } from "./logs-channels.ts";
 import { useInstallRun } from "./verb-run.ts";
@@ -91,25 +102,31 @@ export function ConsoleView({
   const [channel, setChannel] = useState(wanted ?? scope ?? ALL_CHANNEL);
   // The verb the companion is running on this install, or last ran.
   const { run } = useInstallRun(bridge, install.dir);
-  const channels = channelsIn(view.lines, scope, run !== null || wanted === CLI_CHANNEL);
+  const channels = channelsIn(view.channels, scope, run !== null || wanted === CLI_CHANNEL);
   const shown = channels.includes(channel) ? channel : ALL_CHANNEL;
-  const lines = shown === CLI_CHANNEL ? [] : linesIn(view.lines, shown);
   const cli = shown === CLI_CHANNEL;
+  const lines = cli ? [] : drawnLines(view, shown);
   const cliRunning = run !== null && run.exit === undefined;
 
   // Main holds one run per install and the next replaces it. A restart is two,
   // and its stop is worth reading after its start has begun, so the runs this
   // console has watched stay on the tab above the current one, as a terminal
-  // keeps what scrolled past. A few, and only for as long as it is open.
+  // keeps what scrolled past. Only for as long as the console is open, and the
+  // eraser below is how the operator says they are done with them.
   const [past, setPast] = useState<VerbRun[]>([]);
+  // What a clear on that tab read: the run it was on, and how far down it.
+  const [runMark, setRunMark] = useState<RunMark | null>(null);
+  const current = run === null ? null : runDrawn(run, runMark);
   const latest = useRef<VerbRun | null>(null);
   useEffect(() => {
     const before = latest.current;
     if (before !== null && run !== null && before.runId !== run.runId) {
-      setPast((held) => [...held, before].slice(-PAST_RUNS));
+      // As it was drawn, so a run cleared while it ran stays cleared once it
+      // has scrolled up into the runs above the current one.
+      setPast((held) => [...held, runDrawn(before, runMark)].slice(-PAST_RUNS));
     }
     latest.current = run;
-  }, [run]);
+  }, [run, runMark]);
 
   // A verb that starts while the console is open is what the operator just
   // pressed, so its tab comes forward. The run that was already there when the
@@ -183,10 +200,29 @@ export function ConsoleView({
   useEffect(() => {
     const element = box.current;
     if (pinned && element !== null) element.scrollTop = element.scrollHeight;
-  }, [view, pinned, shown, run?.lines.length, past.length]);
+  }, [view, pinned, shown, run?.lines.length, past.length, runMark]);
   const onScroll = (event: UIEvent<HTMLPreElement>): void => {
     const element = event.currentTarget;
     setPinned(element.scrollTop + element.clientHeight >= element.scrollHeight - 4);
+  };
+
+  // There is something to clear while output is drawn: lines on a container's
+  // tab, and on the cli tab the runs above the current one and the current
+  // run's own lines. A run's `$ phoebe <verb>` heading is not output, the way
+  // the ending under the lines is not, so neither is what the button is for.
+  const drawn = cli ? past.length + (current?.lines.length ?? 0) : lines.length;
+  // Read, and done with: what the open tab shows stops being drawn and the pane
+  // pins back to the bottom, so the next line arrives under an empty console.
+  // The lines themselves stay where they are (logs.ts), and Docker holds the
+  // output regardless — a fresh follow re-tails it.
+  const clear = (): void => {
+    if (cli) {
+      setPast([]);
+      if (run !== null) setRunMark({ runId: run.runId, lines: run.lines.length });
+    } else {
+      setView((held) => logsCleared(held, shown));
+    }
+    setPinned(true);
   };
 
   return (
@@ -236,6 +272,17 @@ export function ConsoleView({
               <ProblemCounts problems={header.problems} />
             </button>
           )}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="console-clear"
+            title="Clear the console"
+            aria-label="Clear the console"
+            disabled={drawn === 0}
+            onClick={clear}
+          >
+            <Eraser aria-hidden="true" />
+          </Button>
           {pinned ? null : (
             <Button
               variant="ghost"
@@ -309,10 +356,10 @@ export function ConsoleView({
       ) : null}
       <pre className="logs-lines" ref={box} onScroll={onScroll}>
         {cli ? (
-          run === null ? (
+          current === null ? (
             <span className="console-quiet">Nothing has run on this install yet.</span>
           ) : (
-            [...past, run].map((one) => (
+            [...past, current].map((one) => (
               <span key={one.runId} className="cli-run">
                 <span className="console-quiet">
                   $ phoebe {one.verb}
@@ -367,7 +414,7 @@ export function ConsoleView({
 const NOTHING = { active: false, units: [], problems: [] };
 
 /** How many earlier runs the cli tab keeps above the current one. */
-const PAST_RUNS = 8;
+const PAST_RUNS = 50;
 
 /** The CLI tab's standing: lit while a verb runs, and an error when the last one failed. */
 function cliStatus(run: VerbRun | null): ChannelStatus {
