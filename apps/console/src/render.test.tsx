@@ -2,7 +2,9 @@
 //
 // Rendered to static markup rather than into a DOM, which needs no browser and no
 // jsdom: these are pure components over what they are handed, so the markup is
-// the whole output.
+// the whole output. Where a test has to press something and watch what the
+// component then holds, it goes in a file of its own that mounts into jsdom
+// (console-clear.test.tsx).
 
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
