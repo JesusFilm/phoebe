@@ -23,8 +23,14 @@ automatically.
    The [`changeset`](../.github/workflows/changeset.yml) workflow enforces this
    on every PR: it runs `changeset status` against the base branch and fails the
    check if the package changed with no pending changeset. Docs-only, CI-only,
-   or test-only PRs still don't need one. A maintainer labels those
-   `skip-changeset` and the gate skips itself, and applying the label re-runs it.
+   or test-only PRs still don't need one. Label those `skip-changeset` and the
+   gate skips itself; applying the label re-runs it. Anyone whose token can
+   write labels does this, Phoebe included:
+
+   ```sh
+   gh pr edit <n> --add-label skip-changeset
+   ```
+
    An _empty_ changeset does **not** get past the gate, despite what the CLI's
    error text suggests: it releases no package, so `changeset status` keeps
    failing. The "chore: version packages" PR is exempt by branch name, since
@@ -96,6 +102,11 @@ holds exactly one commit, so the next rebase recreates it and drops that
 changeset; Phoebe re-adds it on the next cycle. The churn is accepted. Every
 bump no consumer would notice opens labelled `skip-changeset` by Renovate
 itself, so this path only ever runs for the bumps that earn a changelog line.
+
+Renovate labels only the PRs it opens after a rule lands, and never relabels
+one already open, so a bump that predates the rule in `renovate.json` arrives
+red with no label. Phoebe applies the same split itself, by dependency type: a
+runtime `dependencies` bump gets the changeset, anything else gets the label.
 
 ## The workspace apps ride the root version
 
