@@ -3,7 +3,7 @@
 // The engine tags every line with where it came from (logs-channels.ts), and
 // the tags are what a reader scans for, so each is coloured by its role: the
 // bootstrapper's `[phoebe]`, a pipeline's `[phoebe:owner/repo:pipeline]`, the
-// unit it is on `[issue 497]`, an agent's `[owner/repo:claude]`, and a
+// unit it is on `[issue 497]`, an agent's `[owner/repo:work:claude]`, and a
 // `:stderr` suffix. The message after the tags is drawn as it came, with any
 // ANSI colour an agent put in it (ansi.ts) shown in the theme's palette.
 

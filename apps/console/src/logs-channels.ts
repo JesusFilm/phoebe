@@ -6,7 +6,7 @@
 //   [phoebe] …                                   the bootstrapper
 //   [phoebe:<owner>/<repo>:<pipeline>] …         one pipeline's engine
 //   [phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>] …   the same, on behalf of one unit
-//   [<owner>/<repo>:<command>] …                 an agent's own output
+//   [<owner>/<repo>:<pipeline>:<command>] …      an agent's own output
 //
 // The console turns that into tabs: every pipeline seen is one, beside "all"
 // and the bootstrapper, and a workspace child opened from the rail gets a tab
@@ -32,15 +32,15 @@ const AGENT_TAG = /^\[([^\]:]+\/[^\]:]+):([^\]]+)\]/;
 
 /**
  * The channel a line belongs to: `<owner>/<repo>:<pipeline>` for an engine
- * line, `<owner>/<repo>:<command>` for an agent's, `boot` for the bootstrapper's
- * and for anything untagged, which is the runtime's own noise.
+ * line, `<owner>/<repo>:<pipeline>:<command>` for an agent's, `boot` for the
+ * bootstrapper's and for anything untagged, which is the runtime's own noise.
  */
 export function channelOf(line: string): string {
   const pipeline = PIPELINE_TAG.exec(line);
   if (pipeline !== null) return `${pipeline[1]}:${pipeline[2]}`;
   const agent = AGENT_TAG.exec(line);
   if (agent !== null) {
-    // `[owner/repo:claude:stderr]` is the same channel as `[owner/repo:claude]`.
+    // `[owner/repo:work:claude:stderr]` is the same channel as `[owner/repo:work:claude]`.
     const command = (agent[2] as string).replace(/:stderr$/, "");
     return `${agent[1]}:${command}`;
   }

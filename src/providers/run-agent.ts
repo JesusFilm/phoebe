@@ -34,6 +34,22 @@ export type SpawnAgent = (
 const defaultSpawn: SpawnAgent = (file, args, opts) =>
   nodeSpawn(file, args, { ...opts, stdio: ["pipe", "pipe", "pipe"] });
 
+/**
+ * The first bracket on every line an agent writes: `[owner/repo:work:claude]`,
+ * and `…:stderr]` on the error stream. No `phoebe:` prefix — that one marks the
+ * engine's own lines, and the asymmetry is what lets an operator tell the loop
+ * apart from what it spawned (docs/operating.md, "Reading the logs").
+ */
+function agentTag(opts: {
+  tenant: string | undefined;
+  pipeline: string | undefined;
+  provider: string;
+}): string {
+  if (!opts.tenant) return opts.provider;
+  const middle = opts.pipeline ? `${opts.pipeline}:` : "";
+  return `${opts.tenant}:${middle}${opts.provider}`;
+}
+
 export async function runAgent(opts: {
   provider: Provider;
   model: string;
@@ -51,21 +67,28 @@ export async function runAgent(opts: {
    * expires; the `close` handler then settles the promise as usual.
    */
   signal?: AbortSignal;
-  /** Repo slug (`owner/repo`) prepended to the bracket: `[owner/repo:cursor]`. */
+  /** Repo slug (`owner/repo`) prepended to the bracket: `[owner/repo:work:cursor]`. */
   tenant?: string;
   /**
+   * Which pipeline spawned this agent, between the slug and the provider:
+   * `[owner/repo:work:cursor]` (#675). A tenant runs one engine process per
+   * pipeline (#418/#420), so without it two pipelines on the same provider pour
+   * their agent output into one stream with nothing to tell them apart.
+   */
+  pipeline?: string;
+  /**
    * The unit this agent is working, `<kind> <ref>`, as a second bracket:
-   * `[owner/repo:cursor][issues issue:88]`. With several units in flight in one
-   * pipeline (#423), the tenant and provider no longer say which run a line came
-   * from. The same shape `ctx.log` and the engine's git and install output use,
-   * so one unit's whole stream greps as one thing.
+   * `[owner/repo:work:cursor][issues issue:88]`. With several units in flight in
+   * one pipeline (#423), the tenant, pipeline and provider no longer say which
+   * run a line came from. The same shape `ctx.log` and the engine's git and
+   * install output use, so one unit's whole stream greps as one thing.
    */
   unit?: string;
 }): Promise<AgentRunResult> {
   const { provider, model, effort, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
   const log = opts.log ?? ((line: string) => console.log(line));
-  const tag = opts.tenant ? `${opts.tenant}:${provider.name}` : provider.name;
+  const tag = agentTag({ tenant: opts.tenant, pipeline: opts.pipeline, provider: provider.name });
   const unitTag = opts.unit ? `[${opts.unit}]` : "";
 
   const command = provider.buildCommand({ prompt, model, effort });
