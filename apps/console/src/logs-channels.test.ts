@@ -6,7 +6,7 @@ import {
   channelOf,
   channelsIn,
   CLI_CHANNEL,
-  linesIn,
+  inChannel,
   tenantChannel,
 } from "./logs-channels.ts";
 
@@ -45,9 +45,12 @@ describe("which channel a line is on", () => {
   });
 });
 
+/** The channels those lines arrived on, as logs.ts collects them. */
+const SEEN = new Set(LINES.map(channelOf));
+
 describe("the tabs", () => {
   test("are all, then boot, then each channel in the order it first spoke", () => {
-    expect(channelsIn(LINES)).toEqual([
+    expect(channelsIn(SEEN)).toEqual([
       ALL_CHANNEL,
       BOOT_CHANNEL,
       "JesusFilm/phoebe:work",
@@ -58,14 +61,32 @@ describe("the tabs", () => {
   });
 
   test("boot is left out until the bootstrapper says something", () => {
-    expect(channelsIn([LINES[1] as string])).toEqual([ALL_CHANNEL, "JesusFilm/phoebe:work"]);
-    expect(channelsIn([])).toEqual([ALL_CHANNEL]);
+    expect(channelsIn(new Set(["JesusFilm/phoebe:work"]))).toEqual([
+      ALL_CHANNEL,
+      "JesusFilm/phoebe:work",
+    ]);
+    expect(channelsIn(new Set())).toEqual([ALL_CHANNEL]);
   });
 
-  test("a tab shows its own lines, unchanged, and all shows every line", () => {
-    expect(linesIn(LINES, "JesusFilm/phoebe:work:claude")).toEqual([LINES[3], LINES[4]]);
-    expect(linesIn(LINES, BOOT_CHANNEL)).toEqual([LINES[0], LINES[6]]);
-    expect(linesIn(LINES, ALL_CHANNEL)).toEqual(LINES);
+  // The tabs are the channels seen, handed over by logs.ts, and not a read of
+  // the lines held: a channel whose lines are all gone — cleared, or dropped by
+  // the bound — keeps its tab, which is where the operator asks what it is
+  // saying now.
+  test("are the channels seen, whether or not a line of theirs is still held", () => {
+    expect(channelsIn(new Set([BOOT_CHANNEL, "acme/a:work"]))).toEqual([
+      ALL_CHANNEL,
+      BOOT_CHANNEL,
+      "acme/a:work",
+    ]);
+  });
+
+  test("a line belongs to its own tab and to all, and to no other pipeline's", () => {
+    expect(inChannel(channelOf(LINES[3] as string), "JesusFilm/phoebe:work:claude")).toBe(true);
+    expect(inChannel(channelOf(LINES[4] as string), "JesusFilm/phoebe:work:claude")).toBe(true);
+    expect(inChannel(channelOf(LINES[1] as string), "JesusFilm/phoebe:work:claude")).toBe(false);
+    expect(inChannel(channelOf(LINES[0] as string), BOOT_CHANNEL)).toBe(true);
+    expect(inChannel(channelOf(LINES[6] as string), BOOT_CHANNEL)).toBe(true);
+    for (const line of LINES) expect(inChannel(channelOf(line), ALL_CHANNEL)).toBe(true);
   });
 
   test("is labelled by the repo and the pipeline, the owner being the same on every tab", () => {
@@ -80,13 +101,18 @@ describe("a workspace child's own tab", () => {
   const scope = tenantChannel("JesusFilm/phoebe");
 
   test("sits after boot, and is there before its first line", () => {
-    expect(channelsIn([], scope)).toEqual([ALL_CHANNEL, scope]);
-    expect(channelsIn(LINES, scope).slice(0, 3)).toEqual([ALL_CHANNEL, BOOT_CHANNEL, scope]);
+    expect(channelsIn(new Set(), scope)).toEqual([ALL_CHANNEL, scope]);
+    expect(channelsIn(SEEN, scope).slice(0, 3)).toEqual([ALL_CHANNEL, BOOT_CHANNEL, scope]);
   });
 
-  test("shows every line under the slug, engine and agent alike, and nobody else's", () => {
-    expect(linesIn(LINES, scope)).toEqual([LINES[1], LINES[2], LINES[3], LINES[4]]);
-    expect(linesIn(LINES, tenantChannel("JesusFilm/youtube-studio"))).toEqual([LINES[5]]);
+  test("takes every line under the slug, engine and agent alike, and nobody else's", () => {
+    for (const line of [LINES[1], LINES[2], LINES[3], LINES[4]]) {
+      expect(inChannel(channelOf(line as string), scope)).toBe(true);
+    }
+    expect(inChannel(channelOf(LINES[5] as string), scope)).toBe(false);
+    expect(
+      inChannel(channelOf(LINES[5] as string), tenantChannel("JesusFilm/youtube-studio")),
+    ).toBe(true);
   });
 
   test("is labelled by the repo alone", () => {
@@ -95,16 +121,16 @@ describe("a workspace child's own tab", () => {
 });
 
 describe("the cli tab", () => {
-  const lines = ["[phoebe] boot: ok", "[phoebe:acme/a:work] cycle"];
+  const seen = new Set([BOOT_CHANNEL, "acme/a:work"]);
 
   test("is there once a verb has run, beside the bootstrapper's and ahead of the pipelines", () => {
-    expect(channelsIn(lines, null, true)).toEqual([
+    expect(channelsIn(seen, null, true)).toEqual([
       ALL_CHANNEL,
       BOOT_CHANNEL,
       CLI_CHANNEL,
       "acme/a:work",
     ]);
-    expect(channelsIn(lines, "acme/a:*", true)).toEqual([
+    expect(channelsIn(seen, "acme/a:*", true)).toEqual([
       ALL_CHANNEL,
       BOOT_CHANNEL,
       CLI_CHANNEL,
@@ -114,7 +140,7 @@ describe("the cli tab", () => {
   });
 
   test("is not a tab until one has, and no container line belongs to it", () => {
-    expect(channelsIn(lines)).not.toContain(CLI_CHANNEL);
+    expect(channelsIn(seen)).not.toContain(CLI_CHANNEL);
     // A container that prints the word is still the container's line.
     expect(channelOf("cli")).toBe(BOOT_CHANNEL);
     expect(channelLabel(CLI_CHANNEL)).toBe("cli");
