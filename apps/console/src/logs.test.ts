@@ -16,7 +16,7 @@ import { ALL_CHANNEL, BOOT_CHANNEL, channelOf, tenantChannel } from "./logs-chan
 const LINES = [
   "[phoebe] boot: engine source local",
   "[phoebe:JesusFilm/phoebe:work] cycle: 1 candidate",
-  "[JesusFilm/phoebe:work:claude] Reading the ticket…",
+  "[phoebe:JesusFilm/phoebe:work][issues issue:88][claude] Reading the ticket…",
   "[phoebe:JesusFilm/youtube-studio:work] cycle: nothing ready",
   "npm warn deprecated something",
 ];
@@ -66,7 +66,6 @@ describe("the channels a view has seen", () => {
     expect([...seeded.channels]).toEqual([
       BOOT_CHANNEL,
       "JesusFilm/phoebe:work",
-      "JesusFilm/phoebe:work:claude",
       "JesusFilm/youtube-studio:work",
     ]);
     expect(seeded.marks.size).toBe(0);
@@ -109,15 +108,16 @@ describe("clearing a tab", () => {
   test("a channel's mark hides that channel's earlier lines and nobody else's", () => {
     const cleared = logsCleared(held(), "JesusFilm/phoebe:work");
 
+    // The agent's line is the pipeline's own (#686), so it goes with the engine's.
     expect(drawnLines(cleared, "JesusFilm/phoebe:work")).toEqual([]);
-    expect(drawnLines(cleared, "JesusFilm/phoebe:work:claude")).toEqual([LINES[2]]);
+    expect(drawnLines(cleared, "JesusFilm/youtube-studio:work")).toEqual([LINES[3]]);
     expect(drawnLines(cleared, BOOT_CHANNEL)).toEqual([LINES[0], LINES[4]]);
   });
 
   test("a line cleared from its own tab is read on all too", () => {
     const cleared = logsCleared(held(), "JesusFilm/phoebe:work");
 
-    expect(drawnLines(cleared, ALL_CHANNEL)).toEqual([LINES[0], LINES[2], LINES[3], LINES[4]]);
+    expect(drawnLines(cleared, ALL_CHANNEL)).toEqual([LINES[0], LINES[3], LINES[4]]);
   });
 
   test("a tenant's mark covers every channel under the slug", () => {

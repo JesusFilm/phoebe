@@ -27,11 +27,11 @@ describe("outputLines", () => {
 describe("prefixedWriter", () => {
   test("stamps every line it is given", () => {
     const written: string[] = [];
-    const write = prefixedWriter("[phoebe:acme/widget:work][issues issue:88]", (line) =>
+    const write = prefixedWriter("[fleet:acme/widget:work][issues issue:88]", (line) =>
       written.push(line),
     );
     write("Installing dependencies");
-    expect(written).toEqual(["[phoebe:acme/widget:work][issues issue:88] Installing dependencies"]);
+    expect(written).toEqual(["[fleet:acme/widget:work][issues issue:88] Installing dependencies"]);
   });
 });
 

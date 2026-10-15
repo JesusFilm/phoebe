@@ -386,7 +386,8 @@ described. The model is [`pipelines.md`](pipelines.md).
   pipelines queue as three streams.
 - A pipeline's death is its own: the container exits only when every pipeline is
   crash-looping at once.
-- Log lines tagged `[phoebe:<owner>/<repo>:<pipeline>]` (match as a prefix).
+- Log lines tagged `[<deployment>:<owner>/<repo>:<pipeline>]` (match as a prefix), where
+  the deployment is the workspace root's directory name.
 - Trust domain: one container = co-locate only mutually trusted repos
   ([`trust.md`](trust.md#one-container--one-trust-domain)).
 - **Phoebe never edits your fleet declaration.** `workspace.tenants` is yours,

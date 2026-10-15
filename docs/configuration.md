@@ -352,7 +352,7 @@ each owns a slice of both rather than the whole thing.
 | Thing                          | Owned by                                                                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `state/<pipeline>/status.json` | The pipeline alone. The deployment report carries every pipeline's, one cell each.                                                                                                          |
-| Stdout lines                   | Tagged `[phoebe:<owner>/<repo>:<pipeline>]`, including `work`'s. Match it as a prefix, not a fixed string.                                                                                  |
+| Stdout lines                   | Tagged `[<deployment>:<owner>/<repo>:<pipeline>]`, including `work`'s and the agent's. Match it as a prefix, not a fixed string.                                                            |
 | The four tracker sweeps        | Scoped to the kinds the pipeline schedules, so two pipelines cover every object exactly once. A pipeline scheduling none of a sweep's kinds skips it.                                       |
 | The origin clone               | Shared. Cloned once, the first clone serialized by a lock under `state/`; a pipeline whose kinds all declare `scratch` never clones at all.                                                 |
 | A worktree                     | Leased with `git worktree lock`, reason `pipeline=<name>#<kind>:<ref> pid=<n>`. A tree anyone else leases — another pipeline, or a sibling unit — is left alone and its unit waits a cycle. |
@@ -365,9 +365,8 @@ names the pipeline _and the unit_ that left it; `git worktree unlock` it by hand
 let that pipeline's next boot do it.
 
 Every line a unit's children print carries that unit:
-`[phoebe:<owner>/<repo>:<pipeline>][<kind> <ref>]` on git and install output, and
-`[owner/repo:<provider>][<kind> <ref>]` on the agent's. Match either as a
-prefix.
+`[<deployment>:<owner>/<repo>:<pipeline>][<kind> <ref>]` on git and install output,
+and the same with `[<provider>]` after it on the agent's. Match it as a prefix.
 
 ### Deprecated top-level aliases
 

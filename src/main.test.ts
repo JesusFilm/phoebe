@@ -98,8 +98,11 @@ function minimalUser(): PhoebeUserConfig {
   };
 }
 
-/** The tag every line this engine writes carries (#418): slug + pipeline. */
-const TAG = "[phoebe:acme/widget:work]";
+/** The deployment both harnesses name their engine, as a bootstrapper would (#686). */
+const DEPLOYMENT = "fleet";
+
+/** The tag every line this engine writes carries (#418, #686): deployment, slug, pipeline. */
+const TAG = "[fleet:acme/widget:work]";
 
 function anIssue(number: number, overrides: Partial<Issue> = {}): Issue {
   return {
@@ -361,6 +364,8 @@ async function runCycle(opts: {
   worktreeList?: string;
   /** Which pipeline this engine is (#418); defaults to the reserved `work`. */
   pipeline?: string;
+  /** The deployment's name (#686); null builds the engine without one. */
+  deployment?: string | null;
   /** A fake agent spawn, for a cycle that has to reach the agent child (#675). */
   spawnAgent?: SpawnAgent;
   /** The snapshot writer's boot-time half (#670), when a test watches for the call. */
@@ -380,6 +385,7 @@ async function runCycle(opts: {
   const engine = createEngine({
     config,
     ...(opts.pipeline !== undefined ? { pipeline: opts.pipeline } : {}),
+    ...(opts.deployment === null ? {} : { deployment: opts.deployment ?? DEPLOYMENT }),
     ...(opts.spawnAgent !== undefined ? { spawnAgent: opts.spawnAgent } : {}),
     registry: buildRegistry(config, opts.customKinds ?? []),
     env: opts.env ?? {},
@@ -414,7 +420,7 @@ async function runCycle(opts: {
 
 /** The one line a dry cycle prints for the unit it picked, or undefined. */
 function selection(result: CycleResult): string | undefined {
-  return result.lines.find((line) => line.startsWith("[phoebe:acme/widget:work] Would execute:"));
+  return result.lines.find((line) => line.startsWith("[fleet:acme/widget:work] Would execute:"));
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +445,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: issue #7 — base origin/main.",
+      "[fleet:acme/widget:work] Would execute: issue #7 — base origin/main.",
     );
   });
 
@@ -450,7 +456,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: research ticket #9 — base origin/main.",
+      "[fleet:acme/widget:work] Would execute: research ticket #9 — base origin/main.",
     );
   });
 
@@ -465,7 +471,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[fleet:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
   });
 
@@ -479,7 +485,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
+      `[fleet:acme/widget:work] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
     );
   });
 
@@ -495,7 +501,7 @@ describe("selecting one unit, per work kind", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
+      `[fleet:acme/widget:work] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
     );
   });
 });
@@ -513,7 +519,7 @@ describe("processingLabel skips", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: issue #8 — base origin/main.",
+      "[fleet:acme/widget:work] Would execute: issue #8 — base origin/main.",
     );
   });
 
@@ -529,7 +535,7 @@ describe("processingLabel skips", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: research ticket #10 — base origin/main.",
+      "[fleet:acme/widget:work] Would execute: research ticket #10 — base origin/main.",
     );
   });
 
@@ -556,7 +562,7 @@ describe("processingLabel skips", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: issue #8 — base origin/main.",
+      "[fleet:acme/widget:work] Would execute: issue #8 — base origin/main.",
     );
   });
 });
@@ -583,7 +589,7 @@ describe("comments with no author", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
+      `[fleet:acme/widget:work] Would execute: review feedback for PR #23 (${issueBranch(9)}).`,
     );
   });
 
@@ -635,7 +641,7 @@ describe("work order", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[fleet:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
   });
 
@@ -647,7 +653,7 @@ describe("work order", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: issue #30 — base origin/main.",
+      "[fleet:acme/widget:work] Would execute: issue #30 — base origin/main.",
     );
   });
 
@@ -661,7 +667,7 @@ describe("work order", () => {
     });
 
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 needs-robot issue(s) but none workable this cycle (waiting on blockers #10).",
+      "[fleet:acme/widget:work] 1 needs-robot issue(s) but none workable this cycle (waiting on blockers #10).",
     );
   });
 });
@@ -691,10 +697,10 @@ describe("watermark skips", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (unchanged failure watermark).",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) skipped (unchanged failure watermark).",
     );
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) but none fixable this cycle.",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) but none fixable this cycle.",
     );
   });
 
@@ -706,7 +712,7 @@ describe("watermark skips", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[fleet:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
   });
 
@@ -729,7 +735,7 @@ describe("watermark skips", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
+      "[fleet:acme/widget:work] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
     );
   });
 
@@ -751,7 +757,7 @@ describe("watermark skips", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
+      `[fleet:acme/widget:work] Would execute: checks fix for PR #22 (${issueBranch(8)}).`,
     );
   });
 });
@@ -787,7 +793,7 @@ describe("stacked-blocker skips", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
   });
 });
@@ -830,7 +836,7 @@ describe("issue bodies survive every work order", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
+      "[fleet:acme/widget:work] 1 failing-CI PR(s) skipped (conflicting, stacked, or watermarked).",
     );
   });
 
@@ -843,7 +849,7 @@ describe("issue bodies survive every work order", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
   });
 });
@@ -879,10 +885,10 @@ describe("the idle report follows workOrder", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) skipped (stacked on open blocker).",
     );
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) but none fixable this cycle.",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) but none fixable this cycle.",
     );
     expect(result.lines.join("\n")).not.toContain("issue(s) but none workable");
   });
@@ -896,7 +902,7 @@ describe("the idle report follows workOrder", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 ready-for-agent issue(s) but none workable this cycle (waiting on blockers #11).",
+      "[fleet:acme/widget:work] 1 ready-for-agent issue(s) but none workable this cycle (waiting on blockers #11).",
     );
     expect(result.lines.join("\n")).not.toContain("conflicting PR(s)");
   });
@@ -911,7 +917,7 @@ describe("the idle report follows workOrder", () => {
       },
     });
 
-    expect(result.lines).toContain("[phoebe:acme/widget:work] No work this cycle — idle.");
+    expect(result.lines).toContain("[fleet:acme/widget:work] No work this cycle — idle.");
   });
 });
 
@@ -928,7 +934,7 @@ describe("an empty cycle", () => {
     });
 
     expect(selection(result)).toBeUndefined();
-    expect(result.lines).toContain("[phoebe:acme/widget:work] No work this cycle — idle.");
+    expect(result.lines).toContain("[fleet:acme/widget:work] No work this cycle — idle.");
     expect(result.events).toEqual([]);
   });
 });
@@ -988,7 +994,7 @@ describe("the un-stick sweep", () => {
       `comment issue #7 ${buildUnstickComment().split("\n")[0]}`,
     ]);
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Un-quarantined issue #7 — its content advanced past the quarantine baseline.",
+      "[fleet:acme/widget:work] Un-quarantined issue #7 — its content advanced past the quarantine baseline.",
     );
   });
 
@@ -1018,7 +1024,7 @@ describe("the un-stick sweep", () => {
       `comment issue #7 ${buildUnstickComment().split("\n")[0]}`,
     ]);
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Un-quarantined issue #7 — tenant is disabled; cleared so it starts fresh when re-enabled.",
+      "[fleet:acme/widget:work] Un-quarantined issue #7 — tenant is disabled; cleared so it starts fresh when re-enabled.",
     );
   });
 
@@ -1087,9 +1093,9 @@ describe("the stale-stack sweep", () => {
 
     expect(writes).toEqual(["unstack 22", "retarget 22 main"]);
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] PR #22 removed from stack #3 — blocker #5 completed without merging its PR.",
+      "[fleet:acme/widget:work] PR #22 removed from stack #3 — blocker #5 completed without merging its PR.",
     );
-    expect(result.lines).toContain("[phoebe:acme/widget:work] PR #22 retargeted onto main.");
+    expect(result.lines).toContain("[fleet:acme/widget:work] PR #22 retargeted onto main.");
   });
 
   test("a member's PR goes back onto its feature branch, not the default branch", async () => {
@@ -1118,7 +1124,7 @@ describe("the stale-stack sweep", () => {
 
     expect(writes).toEqual([`retarget 22 ${featureBranch(1)}`]);
     expect(result.lines).toContain(
-      `[phoebe:acme/widget:work] PR #22 retargeted onto ${featureBranch(1)}.`,
+      `[fleet:acme/widget:work] PR #22 retargeted onto ${featureBranch(1)}.`,
     );
   });
 
@@ -1145,7 +1151,7 @@ describe("the stale-stack sweep", () => {
 
     expect(writes).toEqual([]);
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Could not determine feature membership for PR #22 — " +
+      "[fleet:acme/widget:work] Could not determine feature membership for PR #22 — " +
         "leaving its base unchanged until the next sweep.",
     );
   });
@@ -1186,7 +1192,7 @@ describe("the stale-stack sweep", () => {
     });
 
     expect(writes).toEqual(["retarget 22 main"]);
-    expect(result.lines).toContain("[phoebe:acme/widget:work] PR #22 retargeted onto main.");
+    expect(result.lines).toContain("[fleet:acme/widget:work] PR #22 retargeted onto main.");
   });
 
   test("dissolving one stack retargets all members whose blocker completed in the same sweep", async () => {
@@ -1259,7 +1265,7 @@ describe("keeping the feature branch current with the default branch", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
+      `[fleet:acme/widget:work] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
     );
   });
 
@@ -1304,7 +1310,7 @@ describe("keeping the feature branch current with the default branch", () => {
 
     expect(selection(skipped)).toBeUndefined();
     expect(skipped.lines).toContain(
-      "[phoebe:acme/widget:work] 1 conflicting PR(s) skipped (unchanged failure watermark).",
+      "[fleet:acme/widget:work] 1 conflicting PR(s) skipped (unchanged failure watermark).",
     );
 
     // The same branch is workable again the moment the default branch moves.
@@ -1316,7 +1322,7 @@ describe("keeping the feature branch current with the default branch", () => {
     });
 
     expect(selection(retried)).toBe(
-      `[phoebe:acme/widget:work] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
+      `[fleet:acme/widget:work] Would execute: feature-branch catch-up for PR #99 (${featureBranch(341)}).`,
     );
   });
 
@@ -1339,7 +1345,7 @@ describe("keeping the feature branch current with the default branch", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: checks fix for PR #99 (${featureBranch(341)}).`,
+      `[fleet:acme/widget:work] Would execute: checks fix for PR #99 (${featureBranch(341)}).`,
     );
   });
 });
@@ -1412,7 +1418,7 @@ describe("the feature-closes sweep", () => {
     expect(bodies[0]).toContain("Closes #381");
     expect(bodies[0]).toContain("Part of #341.");
     expect(result.lines).toContain(
-      `[phoebe:acme/widget:work] Integration PR #99 now closes #381 — merged into ${featureBranch(341)}.`,
+      `[fleet:acme/widget:work] Integration PR #99 now closes #381 — merged into ${featureBranch(341)}.`,
     );
   });
 
@@ -1433,7 +1439,7 @@ describe("the feature-closes sweep", () => {
     // readyLabel is the human's and is never touched.
     expect(writes.join("\n")).not.toContain("ready-for-agent");
     expect(result.lines).toContain(
-      `[phoebe:acme/widget:work] Member #381 landed on ${featureBranch(341)} — ` +
+      `[fleet:acme/widget:work] Member #381 landed on ${featureBranch(341)} — ` +
         `merged-to-feature added, processing removed.`,
     );
   });
@@ -1491,7 +1497,7 @@ describe("the feature-closes sweep", () => {
 
     expect(writes).toEqual(["add-label issue #381 merged-to-feature"]);
     expect(result.lines).toContain(
-      `[phoebe:acme/widget:work] Member #381 landed on ${featureBranch(341)} — ` +
+      `[fleet:acme/widget:work] Member #381 landed on ${featureBranch(341)} — ` +
         `merged-to-feature added.`,
     );
   });
@@ -1746,7 +1752,7 @@ describe("--dry-run", () => {
     });
 
     expect(selection(result)).toBe(
-      `[phoebe:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
+      `[fleet:acme/widget:work] Would execute: conflict fix for PR #21 (${issueBranch(7)}).`,
     );
     // No worktree, no push: discovery reads origin and nothing else. Every
     // GitHub write is unstubbed, so one attempted comment would have thrown.
@@ -1817,7 +1823,7 @@ describe("the stranded-unit sweep", () => {
       `comment issue #7 ${buildUnitTimeoutMarker(1)}`,
     ]);
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
+      "[fleet:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
     );
   });
 
@@ -1969,7 +1975,7 @@ describe("the stranded-unit sweep", () => {
 
     expect(result.lines.join("\n")).toContain("PR check failed");
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Re-armed issue #8 — stranded with no PR.",
+      "[fleet:acme/widget:work] Re-armed issue #8 — stranded with no PR.",
     );
   });
 
@@ -1984,7 +1990,7 @@ describe("the stranded-unit sweep", () => {
     expect(writes).toContain("remove-label issue #7 processing");
     expect(writes).toContain("add-label issue #7 ready-for-agent");
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
+      "[fleet:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
     );
   });
 });
@@ -2043,7 +2049,7 @@ describe("a custom kind in the walk", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: stale-PR nudge for PR #44.",
+      "[fleet:acme/widget:work] Would execute: stale-PR nudge for PR #44.",
     );
   });
 
@@ -2061,10 +2067,10 @@ describe("a custom kind in the walk", () => {
 
     expect(selection(result)).toBeUndefined();
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 2 stale PR(s) skipped (already nudged).",
+      "[fleet:acme/widget:work] 2 stale PR(s) skipped (already nudged).",
     );
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 2 stale PR(s) but none workable this cycle.",
+      "[fleet:acme/widget:work] 2 stale PR(s) but none workable this cycle.",
     );
   });
 
@@ -2097,7 +2103,7 @@ describe("a custom kind in the walk", () => {
     });
 
     expect(selection(result)).toBe(
-      "[phoebe:acme/widget:work] Would execute: stale-PR nudge for PR #44.",
+      "[fleet:acme/widget:work] Would execute: stale-PR nudge for PR #44.",
     );
   });
 
@@ -2123,7 +2129,7 @@ describe("a custom kind in the walk", () => {
     });
 
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] 1 stale PR(s) but none workable this cycle.",
+      "[fleet:acme/widget:work] 1 stale PR(s) but none workable this cycle.",
     );
     expect(result.lines.join("\n")).toContain("idle reporter exploded");
   });
@@ -2140,7 +2146,7 @@ describe("a custom kind in the walk", () => {
       github: { ...prWorld([{ number: 44, issueNumber: 4 }]), listReadyIssues: () => [] },
     });
 
-    expect(selection(result)).toBe("[phoebe:acme/widget:work] Would execute: nudge pr:44.");
+    expect(selection(result)).toBe("[fleet:acme/widget:work] Would execute: nudge pr:44.");
   });
 });
 
@@ -2491,7 +2497,7 @@ describe("the run deadline signal", () => {
 // ---------------------------------------------------------------------------
 
 describe("the stdout tag", () => {
-  test("every line an engine writes carries slug and pipeline", async () => {
+  test("every line an engine writes carries deployment, slug and pipeline", async () => {
     const result = await runCycle({
       github: { listReadyIssues: () => [], listResearchIssues: () => [] },
       config: { workOrder: ["issues", "research"] },
@@ -2499,7 +2505,7 @@ describe("the stdout tag", () => {
 
     expect(result.lines).not.toEqual([]);
     for (const line of result.lines) {
-      expect(line.startsWith("[phoebe:acme/widget:work]")).toBe(true);
+      expect(line.startsWith("[fleet:acme/widget:work]")).toBe(true);
     }
   });
 
@@ -2512,7 +2518,20 @@ describe("the stdout tag", () => {
 
     expect(result.lines).not.toEqual([]);
     for (const line of result.lines) {
-      expect(line.startsWith("[phoebe:acme/widget:intake]")).toBe(true);
+      expect(line.startsWith("[fleet:acme/widget:intake]")).toBe(true);
+    }
+  });
+
+  test("an engine told no deployment name opens with its own slug (#686)", async () => {
+    const result = await runCycle({
+      github: { listReadyIssues: () => [] },
+      config: { workOrder: ["issues"] },
+      deployment: null,
+    });
+
+    expect(result.lines).not.toEqual([]);
+    for (const line of result.lines) {
+      expect(line.startsWith("[acme/widget:acme/widget:work]")).toBe(true);
     }
   });
 });
@@ -2520,8 +2539,9 @@ describe("the stdout tag", () => {
 // Since #418 a tenant runs one engine process per pipeline, so two pipelines on
 // the same provider used to pour their agent output into one indistinguishable
 // stream (#675). The tag builder is pinned in run-agent.test.ts; what is pinned
-// here is the wiring — that the pipeline reaching the bracket is the one the
-// engine was built with, not a default the call site hardcoded.
+// here is the wiring — that the deployment and pipeline reaching the bracket are
+// the ones the engine was built with, so an agent line opens with the engine's
+// own bracket (#686), not one a call site hardcoded.
 describe("what an agent's own lines carry", () => {
   /** An agent that says one thing on each stream and exits clean. */
   function chattyAgent(): SpawnAgent {
@@ -2599,20 +2619,26 @@ describe("what an agent's own lines carry", () => {
       inContainer: true,
       run: { runOnce: true, dryRun: false },
     });
-    return result.lines.filter((line) => line.includes(":cursor"));
+    return result.lines;
   }
 
-  test("the default pipeline sits between the slug and the provider", async () => {
-    expect(await agentLines()).toEqual([
-      "[acme/widget:work:cursor][nudge pr:44] Reading the ticket",
-      "[acme/widget:work:cursor:stderr][nudge pr:44] cli warning",
+  /** The lines the agent wrote, told apart from the engine's by the provider bracket. */
+  const fromAgent = (lines: string[]): string[] => lines.filter((line) => line.includes("[cursor"));
+
+  test("an agent line opens with the bracket the pipeline's own lines use", async () => {
+    const lines = await agentLines();
+    expect(fromAgent(lines)).toEqual([
+      "[fleet:acme/widget:work][nudge pr:44][cursor] Reading the ticket",
+      "[fleet:acme/widget:work][nudge pr:44][cursor:stderr] cli warning",
     ]);
+    expect(lines.length).toBeGreaterThan(fromAgent(lines).length);
+    for (const line of lines) expect(line.startsWith(TAG)).toBe(true);
   });
 
   test("a second pipeline's agent tags itself apart from the first's", async () => {
-    expect(await agentLines("intake")).toEqual([
-      "[acme/widget:intake:cursor][nudge pr:44] Reading the ticket",
-      "[acme/widget:intake:cursor:stderr][nudge pr:44] cli warning",
+    expect(fromAgent(await agentLines("intake"))).toEqual([
+      "[fleet:acme/widget:intake][nudge pr:44][cursor] Reading the ticket",
+      "[fleet:acme/widget:intake][nudge pr:44][cursor:stderr] cli warning",
     ]);
   });
 });
@@ -2678,7 +2704,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
       github: { resolveLogin: () => PHOEBE_LOGIN, newestUnitMarkerAuthor: () => PHOEBE_LOGIN },
     });
 
-    expect(result.lines).toContain(`[phoebe:acme/widget:work] ${RUN_ONCE_NOTHING_MESSAGE}`);
+    expect(result.lines).toContain(`[fleet:acme/widget:work] ${RUN_ONCE_NOTHING_MESSAGE}`);
   });
 
   test("an issue pipeline re-arms its own tickets and leaves the research pipeline's alone", async () => {
@@ -2708,7 +2734,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
 
     expect(rearmed).toEqual([7]);
     expect(result.lines).toContain(
-      "[phoebe:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
+      "[fleet:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
     );
   });
 
@@ -2811,7 +2837,7 @@ describe("the worktree lease at the unit boundary", () => {
 
     expect(result.gitCalls).toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
     expect(result.lines).toContain(
-      `[phoebe:acme/widget:work] Broke a stale worktree lease on ${WORKSPACE_DIR} — it was this pipeline's own.`,
+      `[fleet:acme/widget:work] Broke a stale worktree lease on ${WORKSPACE_DIR} — it was this pipeline's own.`,
     );
   });
 
@@ -2820,7 +2846,7 @@ describe("the worktree lease at the unit boundary", () => {
 
     expect(result.gitCalls).not.toContainEqual(["worktree", "unlock", WORKSPACE_DIR]);
     expect(result.lines).toContain(
-      `[phoebe:acme/widget:intake] Worktree ${WORKSPACE_DIR} is leased by pipeline work — leaving it alone.`,
+      `[fleet:acme/widget:intake] Worktree ${WORKSPACE_DIR} is leased by pipeline work — leaving it alone.`,
     );
   });
 
@@ -3026,6 +3052,7 @@ function concurrentEngine(opts: {
   let snapshot: StatusSnapshot | null = opts.inherited ?? null;
   const lines: string[] = [];
   const snapshotWriter: SnapshotWriterDeps = {
+    deployment: DEPLOYMENT,
     tenant: config.repoSlug,
     pipeline: "work",
     statusPath: "status.json",
@@ -3038,6 +3065,7 @@ function concurrentEngine(opts: {
   };
   const engine = createEngine({
     config,
+    deployment: DEPLOYMENT,
     registry: buildRegistry(
       config,
       opts.kinds.map((gated) => gated.kind),
@@ -3698,12 +3726,12 @@ describe("per-unit isolation under concurrency", () => {
 
     const gitLines = engine.lines.filter((line) => line.includes("Counting objects"));
     expect(gitLines).toContain(
-      "[phoebe:acme/widget:work][gated u:1] remote: Counting objects: 12, done.",
+      "[fleet:acme/widget:work][gated u:1] remote: Counting objects: 12, done.",
     );
     expect(gitLines).toContain(
-      "[phoebe:acme/widget:work][gated u:2] remote: Counting objects: 12, done.",
+      "[fleet:acme/widget:work][gated u:2] remote: Counting objects: 12, done.",
     );
-    expect(gitLines.every((line) => line.startsWith("[phoebe:acme/widget:work][gated u:"))).toBe(
+    expect(gitLines.every((line) => line.startsWith("[fleet:acme/widget:work][gated u:"))).toBe(
       true,
     );
 

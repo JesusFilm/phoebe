@@ -9,6 +9,7 @@ import {
   applyUnitEvent,
   createEmitUnitEvent,
   createForgetInherited,
+  deploymentNameFrom,
   emptyStatus,
   forgetInherited,
   formatUnitEventLine,
@@ -30,16 +31,31 @@ const event = (over: Partial<UnitEvent> = {}): UnitEvent => ({
 });
 
 describe("tagging", () => {
-  test("every line is [phoebe:<slug>:<pipeline>], never bare", () => {
-    expect(unitTag("acme/widget", "work")).toBe("[phoebe:acme/widget:work]");
+  test("every line is [<deployment>:<slug>:<pipeline>], never bare", () => {
+    expect(unitTag("fleet", "acme/widget", "work")).toBe("[fleet:acme/widget:work]");
   });
   test("the implicit work pipeline is tagged like any other (#418)", () => {
-    expect(unitTag("acme/widget", "intake")).toBe("[phoebe:acme/widget:intake]");
+    expect(unitTag("fleet", "acme/widget", "intake")).toBe("[fleet:acme/widget:intake]");
   });
   test("formats an event line with optional detail", () => {
-    expect(formatUnitEventLine(event())).toBe("[phoebe:acme/widget:work] started issues 42");
-    expect(formatUnitEventLine(event({ event: "timed-out", detail: "exceeded 45m" }))).toBe(
-      "[phoebe:acme/widget:work] timed-out issues 42 — exceeded 45m",
+    expect(formatUnitEventLine("fleet", event())).toBe(
+      "[fleet:acme/widget:work] started issues 42",
+    );
+    expect(
+      formatUnitEventLine("fleet", event({ event: "timed-out", detail: "exceeded 45m" })),
+    ).toBe("[fleet:acme/widget:work] timed-out issues 42 — exceeded 45m");
+  });
+});
+
+describe("deploymentNameFrom (#686)", () => {
+  test("is the name the bootstrapper handed down", () => {
+    expect(deploymentNameFrom({ PHOEBE_DEPLOYMENT_NAME: "fleet" }, "acme/widget")).toBe("fleet");
+  });
+  test("with no bootstrapper to say, is the engine's own repoSlug — never `phoebe`", () => {
+    expect(deploymentNameFrom({}, "acme/widget")).toBe("acme/widget");
+    expect(deploymentNameFrom({ PHOEBE_DEPLOYMENT_NAME: "" }, "acme/widget")).toBe("acme/widget");
+    expect(unitTag(deploymentNameFrom({}, "acme/widget"), "acme/widget", "work")).toBe(
+      "[acme/widget:acme/widget:work]",
     );
   });
 });
@@ -155,6 +171,7 @@ describe("createEmitUnitEvent", () => {
     const lines: string[] = [];
     let written: StatusSnapshot | null = null;
     const emit = createEmitUnitEvent({
+      deployment: "fleet",
       tenant: "acme/widget",
       pipeline: "work",
       statusPath: "/tmp/state/work/status.json",
@@ -167,7 +184,7 @@ describe("createEmitUnitEvent", () => {
     });
 
     emit({ unit: { kind: "issues", id: "42" }, event: "started" });
-    expect(lines).toEqual(["[phoebe:acme/widget:work] started issues 42"]);
+    expect(lines).toEqual(["[fleet:acme/widget:work] started issues 42"]);
     expect(written).not.toBeNull();
     expect(written!.currentUnits.map((current) => current.unit)).toEqual([
       { kind: "issues", id: "42" },
@@ -182,6 +199,7 @@ describe("createEmitUnitEvent", () => {
     const reported: StatusSnapshot[] = [];
     let written: StatusSnapshot | null = null;
     const emit = createEmitUnitEvent({
+      deployment: "fleet",
       tenant: "acme/widget",
       pipeline: "work",
       statusPath: "/tmp/state/work/status.json",
@@ -201,6 +219,7 @@ describe("createEmitUnitEvent", () => {
   test("a write that failed is not reported as a snapshot the supervisor can trust", () => {
     const reported: StatusSnapshot[] = [];
     const emit = createEmitUnitEvent({
+      deployment: "fleet",
       tenant: "acme/widget",
       pipeline: "work",
       statusPath: "/tmp/state/work/status.json",
@@ -219,6 +238,7 @@ describe("createEmitUnitEvent", () => {
   test("a snapshot write failure is swallowed, not thrown", () => {
     const lines: string[] = [];
     const emit = createEmitUnitEvent({
+      deployment: "fleet",
       tenant: "acme/widget",
       pipeline: "work",
       statusPath: "/tmp/state/work/status.json",
@@ -302,6 +322,7 @@ describe("createForgetInherited", () => {
     let onDisk = found;
     let writes = 0;
     const forget = createForgetInherited({
+      deployment: "fleet",
       tenant: "acme/widget",
       pipeline: "work",
       statusPath: "/tmp/state/work/status.json",
@@ -339,9 +360,9 @@ describe("createForgetInherited", () => {
 
     expect(h.onDisk()?.currentUnits).toEqual([]);
     expect(h.lines).toEqual([
-      "[phoebe:acme/widget:work] dropped conflicts pr:565 from status.json — started " +
+      "[fleet:acme/widget:work] dropped conflicts pr:565 from status.json — started " +
         "2026-09-18T18:01:06.007Z by a process that is gone, and never settled.",
-      "[phoebe:acme/widget:work] dropped issues issue:9 from status.json — started " +
+      "[fleet:acme/widget:work] dropped issues issue:9 from status.json — started " +
         "2026-09-18T18:02:00.000Z by a process that is gone, and never settled.",
     ]);
   });
@@ -368,7 +389,7 @@ describe("createForgetInherited", () => {
     h.forget();
     expect(h.onDisk()?.waitingForSlot).toBe(false);
     expect(h.lines).toEqual([
-      "[phoebe:acme/widget:work] cleared a slot wait in status.json — the pass that was parked is gone.",
+      "[fleet:acme/widget:work] cleared a slot wait in status.json — the pass that was parked is gone.",
     ]);
   });
 
@@ -399,7 +420,7 @@ describe("createForgetInherited", () => {
     );
     expect(() => h.forget()).not.toThrow();
     expect(h.lines).toEqual([
-      "[phoebe:acme/widget:work] could not clear inherited state from status.json — Error: EROFS",
+      "[fleet:acme/widget:work] could not clear inherited state from status.json — Error: EROFS",
     ]);
     // Nothing was written, so nothing is reported as if it had been.
     expect(h.reported).toEqual([]);
@@ -422,6 +443,7 @@ describe("two pipelines on one tenant", () => {
   test("each writes its own snapshot and neither overwrites the other", () => {
     const emitFor = (pipeline: string) =>
       createEmitUnitEvent({
+        deployment: "fleet",
         tenant: "acme/widget",
         pipeline,
         statusPath: statusPathFor(stateDir, pipeline),

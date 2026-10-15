@@ -6,7 +6,7 @@
 // has lapsed, the CLI says so on its stderr and exits, every unit fails, and
 // the one place that says why is a line in the container's log:
 //
-//   [acme/repo:work:claude][issues issue:716] Not logged in · Please run /login
+//   [phoebe:acme/repo:work][issues issue:716][claude] Not logged in · Please run /login
 //
 // So the log is what this reads. The tail is enough: what matters is whether
 // the most recent thing Claude Code said on an install is a refusal to run,
@@ -20,13 +20,35 @@
 import type { ClaudeAuthFacts, ClaudeAuthState } from "phoebe-agent/contracts";
 
 /**
- * The tag the engine puts on an agent's own output: `[owner/repo:work:claude]`,
- * and `…:stderr]` on the error stream. The pipeline segment arrived in #675 and
- * is optional here, so a tail that still holds lines from an older engine reads
- * the same. The slug is what the facts are keyed by either way — two pipelines
- * on one tenant share the one Claude token, so they share an auth state.
+ * The tags the engine puts on an agent's own output. Since #686 that is the
+ * pipeline's bracket, the unit's, then `[claude]` (`[claude:stderr]` on the
+ * error stream): `[<deployment>:owner/repo:work][issues issue:716][claude]`.
+ * The pipeline bracket is read from the right, because a deployment's name may
+ * hold a colon or be a slug itself.
+ *
+ * Before that the agent had a bracket of its own, `[owner/repo:work:claude]`
+ * with the unit after it, and before #675 without the pipeline. A tail can
+ * still hold those lines from an older engine, so they read the same. The slug
+ * is what the facts are keyed by every way: two pipelines on one tenant share
+ * the one Claude token, so they share an auth state.
  */
-const CLAUDE_TAG = /^\[([^\]:]+\/[^\]:]+)(?::[^\]:]+)?:claude(?::stderr)?\]/;
+const CLAUDE_TAG =
+  /^\[[^\]]+:([^\]:/]+\/[^\]:/]+):[^\]:]+\](?:\[[^\] ]+ [^\]]+\])?\[claude(?::stderr)?\]/;
+const OLD_CLAUDE_TAG = /^\[([^\]:]+\/[^\]:]+)(?::[^\]:]+)?:claude(?::stderr)?\]/;
+
+/** The slug a line of Claude's output is on, and what it said, or null for anyone else's line. */
+function claudeLine(line: string): { slug: string; said: string } | null {
+  const tag = CLAUDE_TAG.exec(line);
+  if (tag !== null) return { slug: tag[1]!, said: line.slice(tag[0].length).trim() };
+  const old = OLD_CLAUDE_TAG.exec(line);
+  if (old === null) return null;
+  // The old shape put the unit's bracket after the agent's.
+  const said = line
+    .slice(old[0].length)
+    .replace(/^\[[^\]]*\]\s*/, "")
+    .trim();
+  return { slug: old[1]!, said };
+}
 
 /** What the CLI says for each way of not being able to run, most specific first. */
 const REFUSALS: { state: ClaudeAuthState; pattern: RegExp }[] = [
@@ -55,14 +77,9 @@ const REFUSALS: { state: ClaudeAuthState; pattern: RegExp }[] = [
 export function readClaudeAuth(lines: readonly string[]): ClaudeAuthFacts[] {
   const byTenant = new Map<string, { state: ClaudeAuthState; text: string; recovered: boolean }>();
   for (const raw of lines) {
-    const line = raw.replace(/^\S+Z\s/, "");
-    const tag = CLAUDE_TAG.exec(line);
-    if (tag === null) continue;
-    const slug = tag[1]!;
-    const said = line
-      .slice(tag[0].length)
-      .replace(/^\[[^\]]*\]\s*/, "")
-      .trim();
+    const claude = claudeLine(raw.replace(/^\S+Z\s/, ""));
+    if (claude === null) continue;
+    const { slug, said } = claude;
     const refusal = REFUSALS.find(({ pattern }) => pattern.test(said));
     if (refusal !== undefined) {
       byTenant.set(slug, { state: refusal.state, text: said, recovered: false });

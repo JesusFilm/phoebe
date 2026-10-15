@@ -4,9 +4,9 @@ import { claudeLoginCommand, looksLikeClaudeToken, readClaudeAuth } from "./clau
 const LOG = [
   "[phoebe] boot: ok",
   "[phoebe:acme/a:work][issues issue:716] Preparing worktree",
-  "[acme/a:work:claude][issues issue:716] Not logged in · Please run /login",
+  "[phoebe:acme/a:work][issues issue:716][claude] Not logged in · Please run /login",
   "[phoebe:acme/a:work] Agent exited with code 1.",
-  "[acme/b:work:claude][issues issue:9] Reading the ticket",
+  "[phoebe:acme/b:work][issues issue:9][claude] Reading the ticket",
 ];
 
 describe("what the log says about Claude Code's sign-in", () => {
@@ -18,13 +18,15 @@ describe("what the log says about Claude Code's sign-in", () => {
 
   test("a refusal that Claude got past is not a refusal", () => {
     expect(
-      readClaudeAuth([...LOG, "[acme/a:work:claude][issues issue:717] Reading the ticket"]),
+      readClaudeAuth([...LOG, "[phoebe:acme/a:work][issues issue:717][claude] Reading the ticket"]),
     ).toEqual([]);
   });
 
   test("each way of not running is told apart", () => {
     const states = (said: string) =>
-      readClaudeAuth([`[acme/a:work:claude:stderr] ${said}`]).map((facts) => facts.state);
+      readClaudeAuth([`[phoebe:acme/a:work][issues issue:7][claude:stderr] ${said}`]).map(
+        (facts) => facts.state,
+      );
 
     expect(states("OAuth token has expired. Please run /login")).toEqual(["token-expired"]);
     expect(states("Your subscription has expired")).toEqual(["subscription-lapsed"]);
@@ -37,24 +39,39 @@ describe("what the log says about Claude Code's sign-in", () => {
   test("the engine's own lines and a timestamp in front are not Claude's", () => {
     expect(readClaudeAuth(["[phoebe:acme/a:work] Not logged in is what claude said"])).toEqual([]);
     expect(
-      readClaudeAuth(["2026-10-06T20:19:02.343Z [acme/a:work:claude] Not logged in · Run /login"]),
+      readClaudeAuth([
+        "2026-10-06T20:19:02.343Z [phoebe:acme/a:work][issues issue:7][claude] Not logged in · Run /login",
+      ]),
     ).toEqual([{ slug: "acme/a", state: "not-logged-in", text: "Not logged in · Run /login" }]);
   });
 
-  // The pipeline segment arrived on the agent bracket in #675, and a tail can
-  // hold lines from either side of that. Both read, and both to the same
-  // tenant: one Claude token serves every pipeline on it, so a pipeline that
-  // got past the refusal says the token is good for all of them.
-  test("the bracket reads with or without a pipeline, and the tenant is the key", () => {
+  // The agent took the pipeline's bracket in #686 and before that had its own,
+  // with the pipeline segment arriving in #675. A tail can hold lines from any
+  // of the three, and all read to the same tenant: one Claude token serves every
+  // pipeline on it, so a pipeline that got past the refusal says the token is
+  // good for all of them.
+  test("the bracket reads in every shape the engine has written, and the tenant is the key", () => {
     expect(readClaudeAuth(["[acme/a:claude] Not logged in · Run /login"])).toEqual([
       { slug: "acme/a", state: "not-logged-in", text: "Not logged in · Run /login" },
     ]);
     expect(
+      readClaudeAuth(["[acme/a:work:claude][issues issue:7] Not logged in · Run /login"]),
+    ).toEqual([{ slug: "acme/a", state: "not-logged-in", text: "Not logged in · Run /login" }]);
+    expect(
       readClaudeAuth([
         "[acme/a:work:claude] Not logged in · Run /login",
-        "[acme/a:research:claude] Reading the ticket",
+        "[phoebe:acme/a:research][issues issue:8][claude] Reading the ticket",
       ]),
     ).toEqual([]);
+  });
+
+  test("whatever the deployment is called, the slug is the tenant's", () => {
+    expect(
+      readClaudeAuth([
+        "[ops:east:acme/a:work][issues issue:7][claude] Not logged in · Run /login",
+        "[acme/b:acme/b:work][claude] Not logged in · Run /login",
+      ]).map((facts) => facts.slug),
+    ).toEqual(["acme/a", "acme/b"]);
   });
 });
 

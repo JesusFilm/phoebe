@@ -230,7 +230,7 @@ Ownership is partitioned rather than locked. Each thing on disk has exactly one
 writer, and nothing needs electing.
 
 `state/<pipeline>/status.json` is the pipeline's alone. Stdout lines are tagged
-`[phoebe:<owner>/<repo>:<pipeline>]`, `work` included, so match it as a prefix and
+`[<deployment>:<owner>/<repo>:<pipeline>]`, `work` included, so match it as a prefix and
 not as a fixed string. The four tracker sweeps are scoped to the kinds the pipeline
 schedules, so two pipelines cover every object exactly once and a pipeline scheduling none of
 a sweep's kinds skips it. The origin clone is shared, cloned once with the first

@@ -2,14 +2,15 @@
 //
 // The engine tags every line with where it came from (logs-channels.ts), and
 // the tags are what a reader scans for, so each is coloured by its role: the
-// bootstrapper's `[phoebe]`, a pipeline's `[phoebe:owner/repo:pipeline]`, the
-// unit it is on `[issue 497]`, an agent's `[owner/repo:work:claude]`, and a
-// `:stderr` suffix. The message after the tags is drawn as it came, with any
+// bootstrapper's `[phoebe]`, a pipeline's `[<deployment>:owner/repo:pipeline]`,
+// the unit it is on `[issue 497]`, the agent that wrote it `[claude]`, and a
+// `:stderr` suffix on that. The message after the tags is drawn as it came, with any
 // ANSI colour an agent put in it (ansi.ts) shown in the theme's palette.
 
 import type { CSSProperties } from "react";
 import { parseAnsi, type AnsiSegment, type AnsiStyle } from "./ansi.ts";
 import { type AnsiPalette } from "./console-themes.ts";
+import { PIPELINE_TAG } from "./logs-channels.ts";
 
 /** A tag at the head of a line and what it is. */
 export type Tag = {
@@ -17,10 +18,10 @@ export type Tag = {
   role: "boot" | "pipeline" | "unit" | "agent" | "stderr";
 };
 
-const PIPELINE_TAG = /^\[phoebe:[^\]:]+:[^\]]+\]/;
 const BOOT_TAG = /^\[phoebe\]/;
-const AGENT_TAG = /^\[[^\]:]+\/[^\]:]+:[^\]]+\]/;
-const UNIT_TAG = /^\[[^\]]+\]/;
+// `<kind> <ref>`: the space is what tells a unit from a provider.
+const UNIT_TAG = /^\[[^\] ]+ [^\]]+\]/;
+const PROVIDER_TAG = /^\[[^\] ]+\]/;
 
 /** The tags at the head of a line, in order, and the message after them. */
 export function splitTags(line: string): { tags: Tag[]; rest: string } {
@@ -33,13 +34,16 @@ export function splitTags(line: string): { tags: Tag[]; rest: string } {
     return true;
   };
   if (take(PIPELINE_TAG.exec(rest), "pipeline")) {
-    // A pipeline line may say which unit it is on behalf of.
+    // A pipeline line may say which unit it is on behalf of, and an agent's line
+    // then names the agent, last (#686).
     take(UNIT_TAG.exec(rest), "unit");
-  } else if (take(BOOT_TAG.exec(rest), "boot")) {
-    // Nothing more: the bootstrapper's lines carry one tag.
-  } else if (take(AGENT_TAG.exec(rest), "agent")) {
-    const stderr = tags[tags.length - 1]!;
-    if (stderr.text.endsWith(":stderr]")) stderr.role = "stderr";
+    if (take(PROVIDER_TAG.exec(rest), "agent")) {
+      const provider = tags[tags.length - 1]!;
+      if (provider.text.endsWith(":stderr]")) provider.role = "stderr";
+    }
+  } else {
+    // The bootstrapper's lines carry one tag.
+    take(BOOT_TAG.exec(rest), "boot");
   }
   return { tags, rest };
 }
