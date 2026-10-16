@@ -45,6 +45,7 @@ import {
   type InstallAction,
   type RailChild,
 } from "./local-install.ts";
+import { FOLDER_ATTRIBUTE } from "./context-menu.ts";
 import { HOME_HREF, SETTINGS_HREF } from "./route.ts";
 
 export function Rail({
@@ -311,8 +312,14 @@ function InstallEntry({
       : null;
   // Where it runs, as T3 Code's project list marks each project with its host.
   const platformTitle = hostTitle(host, install.wsl?.distro);
+  // The folder, for the right-click: Open folder and Open in terminal
+  // (context-menu.ts). A tenant's row carries its own, further down.
+  const folderAttribute = { [FOLDER_ATTRIBUTE]: install.dir };
   return (
-    <div className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}>
+    <div
+      className={`rail-entry local state-${reading.tone}${current ? " current" : ""}`}
+      {...folderAttribute}
+    >
       {workspace ? (
         <button
           type="button"
@@ -433,6 +440,7 @@ function InstallEntry({
               <li
                 key={child.dir}
                 className={`rail-child-row${child.dir === selectedChild ? " current" : ""}`}
+                {...{ [FOLDER_ATTRIBUTE]: child.dir }}
               >
                 <button
                   type="button"

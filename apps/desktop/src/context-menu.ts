@@ -3,10 +3,12 @@
 // Electron draws none by itself, so a right-click on the console did nothing.
 // The window says what was clicked (contracts/desktop-bridge.ts, `menu.show`)
 // and main pops the native menu for it: the edit set on a field, Copy on a
-// selection, and on the console's lines Copy, Copy line and Copy all lines
-// beside Select all. Main hands back what was chosen and the window does the
-// copying: the text is already there, and the menu is the only part a renderer
-// cannot draw.
+// selection, on the console's lines Copy, Copy line and Copy all lines beside
+// Select all, and on an install or a tenant on the rail Open folder and Open in
+// terminal. Main hands back what was chosen and the window does the copying:
+// the text is already there, and the menu is the only part a renderer cannot
+// draw. The folder choices main carries out itself (open-folder.ts), since a
+// window can open neither Explorer nor a terminal.
 
 import type { MenuItemConstructorOptions } from "electron";
 import type { ContextMenuChoice, ContextMenuRequest } from "phoebe-agent/contracts";
@@ -41,6 +43,11 @@ export function contextMenuTemplate(
         },
         { type: "separator" },
         { label: "Select all", enabled: request.lines > 0, click: () => choose("select-all") },
+      ];
+    case "folder":
+      return [
+        { label: "Open folder", click: () => choose("open-folder") },
+        { label: "Open in terminal", click: () => choose("open-terminal") },
       ];
   }
 }

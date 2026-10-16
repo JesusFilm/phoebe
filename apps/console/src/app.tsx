@@ -269,17 +269,25 @@ export function App({
       );
       if (read === null) return;
       event.preventDefault();
-      void bridge.menu.show(read.request).then((choice) => {
-        const text = textToCopy(choice, read);
-        if (text !== null) void navigator.clipboard.writeText(text).catch(ignore);
-        if (choice === "select-all" && read.box instanceof Element) {
-          const range = document.createRange();
-          range.selectNodeContents(read.box);
-          const selection = document.getSelection();
-          selection?.removeAllRanges();
-          selection?.addRange(range);
-        }
-      }, ignore);
+      void bridge.menu.show(read.request).then(
+        (choice) => {
+          const text = textToCopy(choice, read);
+          if (text !== null) void navigator.clipboard.writeText(text).catch(ignore);
+          if (choice === "select-all" && read.box instanceof Element) {
+            const range = document.createRange();
+            range.selectNodeContents(read.box);
+            const selection = document.getSelection();
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+          }
+        },
+        (error: unknown) => {
+          // A folder or terminal that would not open: main says why, and the
+          // page has no banner for it, so the reason goes where a devtools
+          // pane can read it.
+          console.warn("The right-click's choice was refused:", error);
+        },
+      );
     };
     document.addEventListener("contextmenu", onContextMenu);
     return () => document.removeEventListener("contextmenu", onContextMenu);

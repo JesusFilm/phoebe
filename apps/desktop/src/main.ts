@@ -57,6 +57,7 @@ import type {
 import { createCompanionAlerts } from "./alerting.ts";
 import { claudeLoginCommand } from "./claude-auth.ts";
 import { contextMenuTemplate } from "./context-menu.ts";
+import { openTerminal } from "./open-folder.ts";
 import { answering, BRIDGE_CHANNELS, BridgeRefusal, type BridgeResult } from "./channels.ts";
 import {
   addInstall,
@@ -609,24 +610,33 @@ app.whenReady().then(
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.menuShow, (event, request: ContextMenuRequest) =>
-      answering<ContextMenuChoice | null>(
-        () =>
-          new Promise((resolve) => {
-            // Chosen before the menu closes, answered when it has: the edit set
-            // and a dismissal both close it with nothing chosen.
-            let chosen: ContextMenuChoice | null = null;
-            const menu = Menu.buildFromTemplate(
-              contextMenuTemplate(request, (choice) => {
-                chosen = choice;
-              }),
-            );
-            const window = BrowserWindow.fromWebContents(event.sender);
-            menu.popup({
-              ...(window === null ? {} : { window }),
-              callback: () => resolve(chosen),
-            });
-          }),
-      ),
+      answering<ContextMenuChoice | null>(async () => {
+        const chosen = await new Promise<ContextMenuChoice | null>((resolve) => {
+          // Chosen before the menu closes, answered when it has: the edit set
+          // and a dismissal both close it with nothing chosen.
+          let choice: ContextMenuChoice | null = null;
+          const menu = Menu.buildFromTemplate(
+            contextMenuTemplate(request, (made) => {
+              choice = made;
+            }),
+          );
+          const window = BrowserWindow.fromWebContents(event.sender);
+          menu.popup({
+            ...(window === null ? {} : { window }),
+            callback: () => resolve(choice),
+          });
+        });
+        // The folder choices are main's to carry out (open-folder.ts): the
+        // window can copy text, but cannot open Explorer or a terminal.
+        if (request.kind === "folder" && chosen === "open-folder") {
+          const failure = await shell.openPath(request.dir);
+          if (failure !== "") throw new BridgeRefusal({ code: "refused", message: failure });
+        }
+        if (request.kind === "folder" && chosen === "open-terminal") {
+          await openTerminal(request.dir);
+        }
+        return chosen;
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.logsFollow, (_event, dir: string) =>
