@@ -61,6 +61,16 @@ describe("the right-click menu", () => {
     ]);
   });
 
+  test("an install or a tenant on the rail opens its folder, or a terminal in it", () => {
+    const chosen: ContextMenuChoice[] = [];
+    const items = pressed(
+      contextMenuTemplate({ kind: "folder", dir: "/repos/one" }, (choice) => chosen.push(choice)),
+      chosen,
+    );
+
+    expect(items).toEqual(["Open folder → open-folder", "Open in terminal → open-terminal"]);
+  });
+
   test("an empty console has nothing to copy or select", () => {
     const items = contextMenuTemplate(
       { kind: "console", selection: "", line: null, lines: 0 },

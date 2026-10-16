@@ -53,10 +53,26 @@ export type ContextMenuRequest =
   /** Selected text anywhere else: copy. */
   | { kind: "text"; selection: string }
   /** The console's lines: copy the selection, the line under the pointer, or every line. */
-  | { kind: "console"; selection: string; line: string | null; lines: number };
+  | { kind: "console"; selection: string; line: string | null; lines: number }
+  /**
+   * An install or a tenant on the rail: open its folder, or a terminal in it.
+   * `dir` is the folder as the companion holds it, so a WSL install's is the
+   * `\wsl.localhost\…` path and main opens that inside the distro.
+   */
+  | { kind: "folder"; dir: string };
 
-/** What the menu chose. The edit set answers nothing: the OS has already done it. */
-export type ContextMenuChoice = "copy" | "copy-line" | "copy-all" | "select-all";
+/**
+ * What the menu chose. The edit set answers nothing: the OS has already done
+ * it. The folder choices are carried out by main before it answers, because a
+ * window cannot open Explorer or a terminal; the answer is for the record.
+ */
+export type ContextMenuChoice =
+  | "copy"
+  | "copy-line"
+  | "copy-all"
+  | "select-all"
+  | "open-folder"
+  | "open-terminal";
 
 /**
  * The global the preload writes the bridge onto, and the only thing the console
@@ -215,7 +231,8 @@ export type DesktopBridge = {
   /**
    * The right-click menu. The window says what was clicked and main draws the
    * OS menu for it, answering with what was chosen; the window does the
-   * copying from text it already has. Null when the menu was dismissed, and
+   * copying from text it already has, and main does the opening of a folder
+   * or a terminal, which only it can. Null when the menu was dismissed, and
    * for the edit set, which the OS carries out itself.
    */
   menu: {

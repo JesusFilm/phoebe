@@ -223,7 +223,12 @@ describe("the installs on the rail", () => {
     expect(rail).toContain('aria-label="Config of acme/a"');
     expect(rail).toContain('aria-label="Config of b"');
     expect(rail.match(/class="rail-child-row current"/g)).toHaveLength(1);
-    expect(rail).toMatch(/class="rail-child-row current"><button[^>]*title="\/repos\/ws\/b"/);
+    expect(rail).toMatch(
+      /class="rail-child-row current" data-folder="\/repos\/ws\/b"><button[^>]*title="\/repos\/ws\/b"/,
+    );
+    // The folder on each row is what the right-click opens (context-menu.ts).
+    expect(rail).toMatch(/class="rail-entry[^"]*" data-folder="\/repos\/ws"/);
+    expect(rail).toContain('data-folder="/repos/ws/a"');
 
     // Without a page to open there is no gear on a child.
     const bare = renderToStaticMarkup(

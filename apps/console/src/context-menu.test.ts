@@ -1,17 +1,32 @@
 import { describe, expect, test } from "vite-plus/test";
 import { readContext, textToCopy, type ElementLike } from "./context-menu.ts";
 
-/** An element by the classes and tags above it, with the text each level holds. */
-function element(chain: { matches: string[]; text: string; laidOut?: string }[]): ElementLike {
+/**
+ * An element by the classes and tags above it, with the text each level holds
+ * and the attributes it carries; `[name]` in a selector matches a level that
+ * carries `name`.
+ */
+function element(
+  chain: {
+    matches: string[];
+    text: string;
+    laidOut?: string;
+    attributes?: Record<string, string>;
+  }[],
+): ElementLike {
+  const matches = (at: number, one: string): boolean => {
+    const attribute = /^\[(.+)\]$/.exec(one);
+    if (attribute !== null) return attribute[1]! in (chain[at]!.attributes ?? {});
+    return chain[at]!.matches.includes(one);
+  };
   const make = (depth: number): ElementLike => ({
     closest: (selector) => {
       for (let at = depth; at < chain.length; at += 1) {
-        if (selector.split(",").some((one) => chain[at]!.matches.includes(one.trim()))) {
-          return make(at);
-        }
+        if (selector.split(",").some((one) => matches(at, one.trim()))) return make(at);
       }
       return null;
     },
+    getAttribute: (name) => chain[depth]!.attributes?.[name] ?? null,
     textContent: chain[depth]!.text,
     ...(chain[depth]!.laidOut === undefined ? {} : { innerText: chain[depth]!.laidOut }),
   });
@@ -66,6 +81,32 @@ describe("what a right-click is on", () => {
       request: { kind: "console", selection: "", line: null, lines: 0 },
       line: null,
     });
+  });
+
+  test("an install or a tenant on the rail is its folder, the nearest one up", () => {
+    const tenant = element([
+      { matches: ["span", ".label"], text: "acme/b" },
+      { matches: ["button", ".rail-child"], text: "acme/b" },
+      {
+        matches: ["li", ".rail-child-row"],
+        text: "",
+        attributes: { "data-folder": "/repos/ws/b" },
+      },
+      { matches: [".rail-entry"], text: "", attributes: { "data-folder": "/repos/ws" } },
+    ]);
+    const install = element([
+      { matches: ["div", ".name"], text: "ws" },
+      { matches: [".rail-entry"], text: "", attributes: { "data-folder": "/repos/ws" } },
+    ]);
+
+    expect(readContext(tenant, "acme/b")).toMatchObject({
+      request: { kind: "folder", dir: "/repos/ws/b" },
+    });
+    expect(readContext(install, "")).toMatchObject({
+      request: { kind: "folder", dir: "/repos/ws" },
+    });
+    expect(textToCopy("open-folder", readContext(install, "")!)).toBeNull();
+    expect(textToCopy("open-terminal", readContext(install, "")!)).toBeNull();
   });
 
   test("a field is the edit set, wherever it is", () => {
