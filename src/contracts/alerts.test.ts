@@ -128,7 +128,7 @@ describe("dark waits five minutes", () => {
         state: "raised",
         pipeline: null,
         since: QUIET_SINCE,
-        detail: "no heartbeat for 5 min",
+        detail: "unreachable for 5 min",
       },
     ]);
   });
@@ -348,14 +348,14 @@ describe("the body both sinks carry", () => {
         state: "raised",
         pipeline: null,
         since: QUIET_SINCE,
-        detail: "no heartbeat for 5 min",
+        detail: "unreachable for 5 min",
       },
       deployment: { name: "acme-site", fingerprint: "fp-widget" },
       consoleOrigin: "https://relay.example/",
     });
 
     expect("pipeline" in body).toBe(false);
-    expect(body.text).toBe("acme-site: dark (no heartbeat for 5 min)");
+    expect(body.text).toBe("acme-site: dark (unreachable for 5 min)");
     expect(body.url).toBe("https://relay.example/#/d/fp-widget");
   });
 
