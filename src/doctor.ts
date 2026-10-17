@@ -622,6 +622,10 @@ export async function gatherRemoteFacts(opts: {
     }
     facts.mintDrop = (deps.mintDrop ?? (() => inspectMintDrop()))();
     facts.reported = readDeploymentReport(deploymentReportPath(opts.dataBase))?.remote ?? null;
+    const budget = facts.reported?.pairRejections;
+    if (budget !== undefined) {
+      facts.rejections = { exhausted: budget.refusing, count: budget.lastMinute };
+    }
     return facts;
   }
   const needed = [join(opts.configDir, "container", `compose.tailscale-${remote.arm}.yml`)];

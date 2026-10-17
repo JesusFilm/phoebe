@@ -123,6 +123,7 @@ export type {
   InitTenantOutcome,
 } from "./init-report.ts";
 export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
+export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
 export type {
   UpgradeCheckReport,
   UpgradeHalfOutcome,

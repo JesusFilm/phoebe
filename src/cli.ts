@@ -284,6 +284,9 @@ Usage:
                                    Delete tenant state no pipeline owns
   phoebe stop [--now]              Drain and stop the deployment container (host-side)
   phoebe start [--build]           Bring the deployment container up detached (host-side)
+  phoebe pair [--operate] [--json] Mint a one-time code to pair the companion over Tailscale
+  phoebe sessions [revoke <id>|--all] [--json]
+                                   The devices paired with this deployment; end a session
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -631,6 +634,17 @@ export async function runCli(): Promise<void> {
   if (args[0] === "start") {
     const { runStartCli } = await import("./start.ts");
     return await runStartCli(args.slice(1));
+  }
+  // The two session verbs (map #690): mint a pairing code, and list or revoke
+  // the sessions it made. Each runs either side of the container wall. Lazy
+  // like their neighbours.
+  if (args[0] === "pair") {
+    const { runPairCli } = await import("./pair.ts");
+    return await runPairCli(args.slice(1));
+  }
+  if (args[0] === "sessions") {
+    const { runSessionsCli } = await import("./sessions.ts");
+    return await runSessionsCli(args.slice(1));
   }
   // The host arm's hand-off of the tailnet URL into the container (map #690):
   // `phoebe start` execs this after reconciling Serve. In-container only.

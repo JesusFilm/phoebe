@@ -151,7 +151,7 @@ describe("the triggers", () => {
     await flush();
 
     h.runner.noteReconcile();
-    const receipt = h.runner.request("request", "ops@example.com");
+    const receipt = h.runner.request("request", "ops@example.com").result;
     await flush();
     expect(h.runs).toEqual(["boot"]);
 
@@ -182,7 +182,7 @@ describe("the triggers", () => {
     h.runner.stop();
     expect(h.armedFor()).toBeNull();
 
-    await expect(h.runner.request("request")).resolves.toEqual({
+    await expect(h.runner.request("request").result).resolves.toEqual({
       outcome: "crashed",
       detail: "the deployment is shutting down",
     });
@@ -194,8 +194,8 @@ describe("one run at a time", () => {
   test("a request during a run joins it and carries its result", async () => {
     const h = harness();
     h.runner.start();
-    const first = h.runner.request("schedule");
-    const joined = h.runner.request("request", "ops@example.com");
+    const first = h.runner.request("schedule").result;
+    const joined = h.runner.request("request", "ops@example.com").result;
     await flush();
 
     expect(h.runs).toEqual(["schedule"]);
@@ -208,7 +208,7 @@ describe("one run at a time", () => {
   test("the joined run keeps the trigger that started it", async () => {
     const h = harness();
     h.runner.start();
-    void h.runner.request("schedule");
+    void h.runner.request("schedule").result;
     void h.runner.request("request", "ops@example.com");
     await flush();
     h.settle({ outcome: "ok", report: healthy });
@@ -248,7 +248,7 @@ describe("the doctor section", () => {
     await flush();
 
     h.advance(6 * 60 * 60 * 1000);
-    void h.runner.request("schedule");
+    void h.runner.request("schedule").result;
     await flush();
     h.settle({ outcome: "timed-out", detail: "killed after 330s without a report" });
     await flush();
@@ -273,7 +273,7 @@ describe("the doctor section", () => {
       onFailure: ({ outcome, detail }) => failures.push(`${outcome}: ${detail}`),
       setTimer: () => ({ clear: () => {} }),
     });
-    await expect(runner.request("request")).resolves.toEqual({
+    await expect(runner.request("request").result).resolves.toEqual({
       outcome: "crashed",
       detail: "spawn ENOENT",
     });
@@ -289,7 +289,7 @@ describe("the doctor section", () => {
     await flush();
     expect(last(h.sections).lastAttempt?.outcome).toBe("crashed");
 
-    void h.runner.request("schedule");
+    void h.runner.request("schedule").result;
     await flush();
     h.settle({ outcome: "ok", report: healthy });
     await flush();

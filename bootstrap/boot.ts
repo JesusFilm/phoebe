@@ -119,11 +119,13 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { readHostPlatform } from "./host-platform.ts";
+import { prepareRemote } from "./remote-boot.ts";
+import { deliverSecret } from "./secret-delivery.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
 import type { InventoryTenant } from "../src/secret-inventory.ts";
 import { createSecretInventory, type SecretInventoryRunner } from "./secret-inventory-runner.ts";
-import type { DeploymentArm, DeploymentIdentity, SlotReport } from "../src/contracts/deployment.ts";
+import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
   superviseFleet,
@@ -1795,13 +1797,21 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // the name and the credential arm come from.
   const deploymentArm: DeploymentArm = workspace !== null ? "workspace" : "solo";
   const dataBase = resolveDataBase(process.env);
-  // Who this deployment is to a console (#505 §3). Read once: neither the name
-  // nor the kernel changes under a running container.
-  const identity: DeploymentIdentity = {
+  // Who this deployment is to a console (#505 §3), and the listener that tells
+  // one so (map #690). Prepared before the model is built because it owns the
+  // identity section — the deployment id is minted onto the volume here —
+  // and started after, because it reports into the model.
+  const remote = prepareRemote({
+    rootConfig,
+    dataBase,
     name: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
     arm: deploymentArm,
     host: readHostPlatform(),
-  };
+    version: LAUNCHER_VERSION,
+    log: (message) => console.log(message),
+    warn: (message) => console.warn(message),
+  });
+  const identity = remote.identity();
   // Every engine child opens its pipeline lines with this name (#686). Set on the
   // supervisor's own env so both arms deliver it the way they deliver the rest:
   // a fleet child copies it off the deployment knobs, a solo child inherits it.
@@ -1812,7 +1822,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // editor cannot reach them because it was never given them.
   const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
   const deployment = createDeploymentState({
-    identity: () => identity,
+    identity: remote.identity,
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
@@ -1836,6 +1846,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `[phoebe] boot: could not write the deployment report — ${describe(error)}. ` +
         `Supervision is unaffected; the report is retried on every change.`,
     ),
+    // The report just moved: every open event stream gets it (map #690). With
+    // no `remote` block, or no stream open, this is a call that does nothing.
+    onReport: () => remote.push(),
   });
   // The secrets inventory (#550): which keys each tenant has and where from,
   // retaken when the tenant set moves and when an edit lands, never on a poll —
@@ -1867,6 +1880,39 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ),
   });
   doctor.start();
+  // The listener (map #690), started once everything a device may ask for
+  // exists: the pen, the doctor runner and the secrets inventory above. The
+  // verbs are the same calls a shell makes, arriving from a request instead of
+  // from argv, so there is one writer and one reconcile path.
+  await remote.start(deployment, {
+    configSet: (edit) => editor.apply(edit),
+    doctorRun: (by) => {
+      const ask = doctor.request("request", by);
+      // The report is where what doctor found goes (#507 §7). Nothing here waits
+      // for it: the receipt has already said which run the asker is watching.
+      void ask.result.catch(() => {});
+      return { outcome: ask.outcome, ...(ask.detail !== undefined ? { detail: ask.detail } : {}) };
+    },
+    secretSet: (request) =>
+      deliverSecret(request, {
+        configPath,
+        dataBase,
+        processEnv: process.env,
+        log: (message) => console.log(message),
+        // A set is the moment an operator wants "did it work" answered (#507
+        // §6), and two things answer it: doctor, whose `declared-env` check
+        // reads the same env the child will hold, and the inventory, whose
+        // provenance is what the page they set it from is watching.
+        onWritten: ({ tenant, by }) => {
+          void secrets.refreshLast();
+          void doctor.request("request", by).result.catch(() => {});
+          console.log(
+            `[phoebe] boot: a remote secret landed for ${tenant} — running doctor and ` +
+              `retaking the secrets inventory.`,
+          );
+        },
+      }),
+  });
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -1933,6 +1979,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
       doctor.stop();
+      await remote.stop();
       // A crash-loop report raced against the process ending is a report lost;
       // the flush waits it out, bounded by the reporter's own timeout (#474).
       // In the `finally` so a supervisor that threw still flushes before the
@@ -2147,6 +2194,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
     doctor.stop();
+    await remote.stop();
     await reporter.flush();
   }
   propagateExit(exit.code, exit.signal);

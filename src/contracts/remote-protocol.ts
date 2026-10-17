@@ -122,6 +122,11 @@ export type RemoteReport = {
   sessions: { active: number; expired: number };
   /** The sessions file differs from what this bootstrapper last wrote (#696). */
   tampered: boolean;
+  /**
+   * The pair budget (#694): rejected attempts in the last minute, and whether
+   * every attempt is being refused for it. Optional, so an older report reads.
+   */
+  pairRejections?: { lastMinute: number; refusing: boolean };
   updatedAt: string;
 };
 
