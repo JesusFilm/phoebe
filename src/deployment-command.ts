@@ -11,7 +11,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
-import { readDeploymentField, type DeploymentCommands } from "./config-schema.ts";
+import {
+  readDeploymentField,
+  readRemoteField,
+  resolveRemote,
+  type DeploymentCommands,
+  type ResolvedRemote,
+} from "./config-schema.ts";
 import {
   assertHostLifecycle,
   defaultCommandRunner,
@@ -67,6 +73,22 @@ export async function readDeploymentCommands(cwd: string): Promise<DeploymentCom
   const configPath = join(cwd, TENANT_CONFIG_FILE);
   if (!existsSync(configPath)) return undefined;
   return readDeploymentField(await loadUserConfig(configPath));
+}
+
+/**
+ * Read the `remote` block for the deployment rooted at `cwd`, resolved, or
+ * `undefined` when there is none (map #690). Read at the moment a host verb
+ * runs, so `phoebe stop` after an arm flip still names the overlay the running
+ * services were started with only if the file says so — the block is boot-time
+ * and the file is its truth. No config file is `undefined`, as above; a block
+ * that will not validate throws, because a mistyped arm must not silently start
+ * a deployment with no listener.
+ */
+export async function readHostRemote(cwd: string): Promise<ResolvedRemote | undefined> {
+  const configPath = join(cwd, TENANT_CONFIG_FILE);
+  if (!existsSync(configPath)) return undefined;
+  const field = readRemoteField(await loadUserConfig(configPath));
+  return field === undefined ? undefined : resolveRemote(field);
 }
 
 /**

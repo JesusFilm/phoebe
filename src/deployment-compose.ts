@@ -9,6 +9,7 @@ import { accessSync, constants, existsSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
+import type { RemoteArm, ResolvedRemote } from "./config-schema.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 
 /** Compose file relative to the deployment directory (scaffold layout). */
@@ -23,6 +24,27 @@ export const DEPLOYMENT_ENV_REL_PATH = ".env";
  * stay equal (asserted in tests).
  */
 export const DRAIN_TIMEOUT_SEC = 3_600;
+
+/**
+ * The overlay a transport arm adds to the Compose argv (map #690): one file per
+ * arm under `container/`, scaffolded by `phoebe init` and inert until the config
+ * names the arm.
+ */
+export function remoteOverlayRelPath(arm: RemoteArm): string {
+  return join("container", `compose.tailscale-${arm}.yml`);
+}
+
+/** Where the arm's overlay sits for one deployment. */
+export function remoteOverlayPath(deployment: DeploymentCompose, arm: RemoteArm): string {
+  return join(deployment.deploymentDir, remoteOverlayRelPath(arm));
+}
+
+/**
+ * The env var the host overlay reads for the loopback port it publishes.
+ * Exported into Compose's environment by `phoebe start` from `remote.port`; not
+ * offered in `.env`, because the config field is its one home.
+ */
+export const REMOTE_PORT_ENV = "PHOEBE_REMOTE_PORT";
 
 export type DeploymentCompose = {
   /** Absolute path to the deployment directory (holds phoebe.config.ts). */
@@ -136,9 +158,12 @@ export function noDockerMessage(command: string): string {
 export function buildComposeArgv(opts: {
   composeFile: string;
   envFile: string | null;
+  /** Overlay files, each added as a further `-f` after the compose file. */
+  overlays?: readonly string[];
   args: readonly string[];
 }): string[] {
   const argv = ["compose", "-f", opts.composeFile];
+  for (const overlay of opts.overlays ?? []) argv.push("-f", overlay);
   if (opts.envFile !== null) {
     argv.push("--env-file", opts.envFile);
   }
@@ -182,12 +207,19 @@ export type CommandRunner = (spec: {
   args: readonly string[];
   cwd?: string;
   inheritStdio?: boolean;
+  /**
+   * The child's whole environment, when the caller has one to set. Absent, the
+   * child inherits this process's — the default every caller had before
+   * `phoebe start` needed to export `PHOEBE_REMOTE_PORT` into Compose.
+   */
+  env?: NodeJS.ProcessEnv;
 }) => Promise<CommandResult>;
 
 export const defaultCommandRunner: CommandRunner = (spec) =>
   new Promise((resolvePromise, reject) => {
     const child = spawn(spec.file, spec.args as string[], {
       cwd: spec.cwd,
+      ...(spec.env === undefined ? {} : { env: spec.env }),
       stdio: spec.inheritStdio === true ? "inherit" : ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -259,23 +291,47 @@ export function wasKilledAfterGrace(row: ComposePsRow): boolean {
   return code === 137;
 }
 
+/**
+ * What the `remote` block adds to a Compose invocation (map #690): the arm's
+ * overlay as a further `-f`, and on the host arm the loopback port exported for
+ * the overlay to read. No block, nothing — the argv is byte for byte the one a
+ * deployment without the block has always built.
+ */
+export function remoteComposeInputs(
+  deployment: DeploymentCompose,
+  remote: ResolvedRemote | undefined,
+): { overlays: string[]; env: Record<string, string> } {
+  if (remote === undefined) return { overlays: [], env: {} };
+  const overlays = [remoteOverlayPath(deployment, remote.arm)];
+  if (remote.arm === "host") return { overlays, env: { [REMOTE_PORT_ENV]: String(remote.port) } };
+  return { overlays, env: {} };
+}
+
 export async function runCompose(opts: {
   deployment: DeploymentCompose;
   args: readonly string[];
   runner?: CommandRunner;
   inheritStdio?: boolean;
+  /** The `remote` block, resolved; adds its overlay and env (see {@link remoteComposeInputs}). */
+  remote?: ResolvedRemote;
+  /** The environment the child runs under. Defaults to this process's. */
+  env?: NodeJS.ProcessEnv;
 }): Promise<CommandResult> {
   const runner = opts.runner ?? defaultCommandRunner;
+  const inputs = remoteComposeInputs(opts.deployment, opts.remote);
   const argv = buildComposeArgv({
     composeFile: opts.deployment.composeFile,
     envFile: opts.deployment.envFile,
+    overlays: inputs.overlays,
     args: opts.args,
   });
+  const extra = Object.keys(inputs.env).length > 0 || opts.env !== undefined;
   const result = await runner({
     file: "docker",
     args: argv,
     cwd: opts.deployment.containerDir,
     inheritStdio: opts.inheritStdio,
+    ...(extra ? { env: { ...(opts.env ?? process.env), ...inputs.env } } : {}),
   });
   if (result.code !== 0 && isMissingRequiredEnvError(result.stderr, result.stdout)) {
     throw new Error(MISSING_ENV_MESSAGE);

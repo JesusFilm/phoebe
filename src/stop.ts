@@ -9,10 +9,14 @@
 // `deployment.stopCommand` runs literally via /bin/sh and every compose-specific
 // step here is skipped. See src/deployment-command.ts.
 
-import type { DeploymentCommands } from "./config-schema.ts";
+import type { DeploymentCommands, ResolvedRemote } from "./config-schema.ts";
 import type { StopOutcome } from "./contracts/stop-outcome.ts";
 import type { VerbIo } from "./contracts/verb-io.ts";
-import { resolveDeploymentCommands, runLifecycleStep } from "./deployment-command.ts";
+import {
+  readHostRemote,
+  resolveDeploymentCommands,
+  runLifecycleStep,
+} from "./deployment-command.ts";
 import {
   assertHostLifecycle,
   composeFailureError,
@@ -91,6 +95,12 @@ type StopDeps = {
    * filesystem-free.
    */
   deploymentCommands?: DeploymentCommands;
+  /**
+   * The `remote` block, resolved (map #690): its arm's overlay joins the Compose
+   * argv, so a sidecar is stopped with the service it shares a namespace with.
+   * {@link runStopCli} reads it off the config; `runStop` only consults the dep.
+   */
+  remote?: ResolvedRemote;
   io?: Partial<VerbIo>;
 };
 
@@ -103,11 +113,13 @@ function formatTimeoutSec(seconds: number): string {
 async function composePs(
   deployment: DeploymentCompose,
   runner: CommandRunner | undefined,
+  remote: ResolvedRemote | undefined,
 ): Promise<ReturnType<typeof parseComposePsJson>> {
   const result = await runCompose({
     deployment,
     args: ["ps", "-a", "--format", "json"],
     ...(runner !== undefined ? { runner } : {}),
+    ...(remote !== undefined ? { remote } : {}),
   });
   if (result.code !== 0) throw composeFailureError(result, "ps");
   return parseComposePsJson(result.stdout);
@@ -156,8 +168,9 @@ export async function runStop(opts: { now: boolean; deps?: StopDeps }): Promise<
     throw new Error(formatResolveFailure(resolved));
   }
   const deployment = resolved;
+  const remote = opts.deps?.remote;
 
-  const rows = await composePs(deployment, opts.deps?.runner);
+  const rows = await composePs(deployment, opts.deps?.runner, remote);
   const service = findPhoebeService(rows);
 
   if (service === undefined) {
@@ -190,12 +203,13 @@ export async function runStop(opts: { now: boolean; deps?: StopDeps }): Promise<
     args: ["stop", "-t", String(timeoutSec)],
     inheritStdio: true,
     ...(opts.deps?.runner !== undefined ? { runner: opts.deps.runner } : {}),
+    ...(remote !== undefined ? { remote } : {}),
   });
   if (stopResult.code !== 0) throw composeFailureError(stopResult, "stop");
 
   // Re-probe: Compose exits 0 whether the container drained or was SIGKILLed
   // after the grace. A unit that never finished must not look like a clean stop.
-  const afterPipelines = await composePs(deployment, opts.deps?.runner);
+  const afterPipelines = await composePs(deployment, opts.deps?.runner, remote);
   const after = findPhoebeService(afterPipelines);
   if (after !== undefined && wasKilledAfterGrace(after)) {
     if (opts.now) {
@@ -238,6 +252,7 @@ export async function runStopCli(argv: readonly string[], deps?: StopDeps): Prom
     inContainer: deps?.inContainer,
     provided: deps?.deploymentCommands,
   });
+  const remote = deps?.remote ?? (await readHostRemote(cwd));
   // The CLI layer is where a line becomes terminal output: `runStop` is handed
   // the sinks, never `process.stdout` (#552).
   const outcome = await runStop({
@@ -246,6 +261,7 @@ export async function runStopCli(argv: readonly string[], deps?: StopDeps): Prom
       ...deps,
       io: { ...PROCESS_IO, ...deps?.io },
       ...(deploymentCommands !== undefined ? { deploymentCommands } : {}),
+      ...(remote !== undefined ? { remote } : {}),
     },
   });
   if (outcome.kind === "killed-mid-run") {

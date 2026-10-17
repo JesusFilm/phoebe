@@ -1,0 +1,83 @@
+# Tailscale sidecar overlay — scaffolded by `phoebe init`, consumer-owned.
+#
+# The sidecar arm of `remote: { tailscale: "sidecar" }` in phoebe.config.ts
+# (docs/remote.md). A `tailscale/tailscale` container joins your tailnet beside
+# the deployment and the `phoebe` service shares its network namespace, so the
+# deployment is reachable as https://<TS_HOSTNAME>.<tailnet>.ts.net from any
+# device on the tailnet and from nowhere else. No port is published on the host.
+#
+# `phoebe start` and `phoebe stop` add this file to their Compose argv when the
+# config names the arm; raw Compose users pass it by hand:
+#
+#   docker compose -f compose.yml -f compose.tailscale-sidecar.yml up -d
+#
+# Inert until the `remote` block appears: nothing here is read otherwise.
+#
+# Three things in `.env` (see `.env.example`): TS_AUTHKEY (required), and
+# optionally TS_EXTRA_ARGS and TS_HOSTNAME.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    environment:
+      # A tagged, non-ephemeral key. An OAuth client secret works directly with
+      # `?ephemeral=false&preauthorized=true` appended, which is what Tailscale's
+      # own examples do; `.env.example` has the exact line.
+      TS_AUTHKEY: "${TS_AUTHKEY:?TS_AUTHKEY is required for the sidecar arm (see .env.example)}"
+      # Authenticate once and keep the node. The image's default re-runs
+      # `tailscale up --authkey` on every start, which breaks the first restart
+      # on a one-off key.
+      TS_AUTH_ONCE: "true"
+      # The node's identity and state, on a volume so a restart is the same
+      # node and not a new one.
+      TS_STATE_DIR: /var/lib/tailscale
+      # The daemon's socket, in the directory both services mount, so the
+      # bootstrapper can ask LocalAPI for this node's DNS name (read-only as
+      # uid 10001; nothing it asks needs more).
+      TS_SOCKET: /var/run/phoebe/tailscaled.sock
+      # Serve's configuration. The directory is mounted, not the file:
+      # containerboot watches the directory for changes and substitutes
+      # ${TS_CERT_DOMAIN} in the file with this node's certificate domain.
+      TS_SERVE_CONFIG: /config/serve.json
+      # The node's name on the tailnet: the Compose project name unless
+      # TS_HOSTNAME overrides it.
+      TS_HOSTNAME: "${TS_HOSTNAME:-${COMPOSE_PROJECT_NAME:-phoebe}}"
+      # `--advertise-tags=tag:phoebe` and friends (see .env.example).
+      TS_EXTRA_ARGS: "${TS_EXTRA_ARGS:-}"
+      # An unauthenticated /healthz that answers 200 once the node has a tailnet
+      # IP, bound to loopback so nothing off the node can reach it.
+      TS_ENABLE_HEALTH_CHECK: "true"
+      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9002/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - phoebe-tailscale:/var/lib/tailscale
+      - phoebe-sockets:/var/run/phoebe
+      - ./tailscale:/config:ro
+
+  phoebe:
+    # One network namespace: the deployment's Unix socket is what Serve proxies
+    # to, and no TCP port exists for netstack to forward around it.
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_started
+    volumes:
+      - phoebe-sockets:/var/run/phoebe
+
+volumes:
+  phoebe-tailscale:
+  # tmpfs-backed and owned by uid 10001 at creation. The sidecar mounts this
+  # first and runs as root, so a plain named volume would come up root-owned
+  # and the bootstrapper could not create its socket in it. Sockets have no
+  # business persisting anyway.
+  phoebe-sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=10001,gid=10001,mode=0755"

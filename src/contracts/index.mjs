@@ -42,6 +42,10 @@ export const CLOSED_EDIT_BLOCKS = [
     why: "the `deployment` block holds the host's lifecycle commands, which run outside the container and are not the container's to rewrite",
   },
   {
+    prefix: "remote",
+    why: "the `remote` block is boot-time and the operator's: edit the file, then `phoebe stop` and `phoebe start`",
+  },
+  {
     prefix: "paths",
     why: "`paths` is derived from `repoSlug` and the data volume; nothing at that path is read from the file",
   },
@@ -50,6 +54,28 @@ export const CLOSED_EDIT_BLOCKS = [
     why: "top-level `workKinds` is the permanent alias for `pipelines.work.kinds` — set it at the path the effective config prints",
   },
 ];
+
+/** The deployment API's protocol integer — see remote-protocol.ts (map #690). */
+export const REMOTE_PROTOCOL = 1;
+
+/** The open descriptor's path — see remote-protocol.ts. */
+export const DESCRIPTOR_PATH = "/.well-known/phoebe/deployment";
+
+/** The sidecar arm's listener socket — see remote-protocol.ts. */
+export const API_SOCKET_PATH = "/var/run/phoebe/api.sock";
+
+/** The paths under `/api` — mirror of `REMOTE_ROUTES` in remote-protocol.ts. */
+export const REMOTE_ROUTES = {
+  descriptor: "/.well-known/phoebe/deployment",
+  pair: "/api/pair",
+  report: "/api/report",
+  events: "/api/events",
+  session: "/api/session",
+  sessions: "/api/sessions",
+  configSet: "/api/config-set",
+  doctorRun: "/api/doctor-run",
+  secrets: "/api/secrets",
+};
 
 /** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
 export const DESKTOP_BRIDGE_GLOBAL = "phoebe";

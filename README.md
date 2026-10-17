@@ -139,6 +139,7 @@ Docs live under [`docs/`](docs/), in two groups.
 - [`docs/github-app-mode.md`](docs/github-app-mode.md), the GitHub App credential arm, for deployments spanning several repos under one org owner.
 - [`docs/claude-subscription-auth.md`](docs/claude-subscription-auth.md), driving the `claude` provider from a subscription rather than an API key.
 - [`docs/console.md`](docs/console.md), the console end to end: the desktop companion, what the console's pages show, alerting, and what stays at a shell.
+- [`docs/remote.md`](docs/remote.md), reaching a deployment from another machine over Tailscale: the two arms, pairing, sessions, the deployment API, and the doctor check.
 - [`docs/phoebe-core-onboarding.md`](docs/phoebe-core-onboarding.md), worked onboarding for `JesusFilm/core` (Nx + pnpm, no vp).
 
 **Working on Phoebe**, changing the engine itself:

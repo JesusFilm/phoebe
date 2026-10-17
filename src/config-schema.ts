@@ -696,6 +696,57 @@ export type ReportingField = {
   includeRef?: boolean;
 };
 
+/**
+ * How this deployment is reached from another machine (map #690, decided in
+ * #691): over Tailscale, with the deployment API behind a paired bearer. The
+ * one field, `tailscale`, says where Tailscale runs.
+ *
+ *   - `"sidecar"` — a `tailscale/tailscale` container joins the tailnet beside
+ *     the deployment (`container/compose.tailscale-sidecar.yml`). The listener
+ *     is a Unix socket Serve proxies to; no TCP port exists. `port` and
+ *     `httpsPort` are refused here: `container/tailscale/serve.json` is that
+ *     arm's truth.
+ *   - `"host"` — the machine's own Tailscale serves a loopback port the
+ *     container publishes (`container/compose.tailscale-host.yml`). `port` is
+ *     the loopback port the host publishes (default 7463); `httpsPort` is the
+ *     tailnet-side port Serve listens on (default 443, the one T3 Code's own
+ *     "Enable Tailscale HTTPS" takes when it is on).
+ *
+ * Root-only and bootstrapper-only, like `relay` was and `engine` is:
+ * `resolveConfig` drops it, no `PHOEBE_*` var overlays it, and a config edit
+ * refuses it. Boot-time, not hot: a change is `phoebe stop` then `phoebe start`,
+ * and the doctor `remote` check says so while the running services do not match
+ * the block. No block: nothing listens, and the deployment is byte for byte
+ * the deployment it was before this field existed.
+ */
+export type RemoteField =
+  | { tailscale: "sidecar" }
+  | { tailscale: "host"; port?: number; httpsPort?: number };
+
+/** The transport arms a `remote` block may name. */
+export type RemoteArm = RemoteField["tailscale"];
+
+/**
+ * The port the container's listener binds on the host arm, inside the
+ * container. A constant, never configured: the overlay publishes it as
+ * `127.0.0.1:${PHOEBE_REMOTE_PORT:-7463}:7463`, and `remote.port` moves only
+ * the host side of that mapping.
+ */
+export const REMOTE_CONTAINER_PORT = 7463;
+
+/** `remote.port` when the host arm leaves it unset. */
+export const DEFAULT_REMOTE_PORT = 7463;
+
+/** `remote.httpsPort` when the host arm leaves it unset. */
+export const DEFAULT_REMOTE_HTTPS_PORT = 443;
+
+/**
+ * The `remote` block with its defaults filled — what every reader on the host
+ * and in the container works from, so no two of them can disagree about which
+ * port a missing field means.
+ */
+export type ResolvedRemote = { arm: "sidecar" } | { arm: "host"; port: number; httpsPort: number };
+
 export type PromptFilesConfig = {
   issue: string;
   conflict: string;
@@ -930,6 +981,13 @@ export type PhoebeUserConfig = {
    * and `resolveConfig` drops it — the `engine` precedent.
    */
   reporting?: ReportingField;
+  /**
+   * How this deployment is reached over Tailscale (see {@link RemoteField}).
+   * Root config only, bootstrapper-only, boot-time: the engine never reads it,
+   * `resolveConfig` drops it, no `PHOEBE_*` var overlays it, and a change takes
+   * effect at the next `phoebe start`.
+   */
+  remote?: RemoteField;
   /**
    * Bootstrapper-only asset directory (#98). Relocates where this tenant's
    * co-located `.env` and prompt/asset files live to a subdirectory of the dir
@@ -1233,6 +1291,100 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
   if (user.reporting !== undefined) {
     validateReportingField(user.reporting);
   }
+  if (user.remote !== undefined) {
+    validateRemoteField(user.remote);
+  }
+}
+
+/** Reject a port that is not a whole number a socket can bind. */
+function assertPort(value: unknown, at: string): void {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(
+      `phoebe.config.ts \`${at}\` must be an integer port between 1 and 65535 ` +
+        `(got ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
+/**
+ * Reject a malformed `remote` block (#691). `tailscale` names one of the two
+ * arms and nothing else is read; the two port fields are the host arm's alone,
+ * because on the sidecar arm the ports are `container/tailscale/serve.json`'s
+ * to declare, and a `port` that sat inert there would look configured while
+ * doing nothing.
+ */
+export function validateRemoteField(remote: RemoteField): void {
+  if (typeof remote !== "object" || remote === null || Array.isArray(remote)) {
+    throw new Error(
+      `phoebe.config.ts \`remote\` must be an object with \`tailscale: "sidecar"\` or ` +
+        `\`tailscale: "host"\` (got ${JSON.stringify(remote)}).`,
+    );
+  }
+  const record = remote as Record<string, unknown>;
+  const arm = record["tailscale"];
+  if (arm !== "sidecar" && arm !== "host") {
+    throw new Error(
+      `phoebe.config.ts \`remote.tailscale\` must be "sidecar" (Tailscale runs beside the ` +
+        `container) or "host" (the machine's own Tailscale serves it) — got ` +
+        `${JSON.stringify(arm)}.`,
+    );
+  }
+  for (const key of Object.keys(record)) {
+    if (key === "tailscale" || key === "port" || key === "httpsPort") continue;
+    throw new Error(
+      `phoebe.config.ts \`remote\` names unknown field "${key}". The block holds only ` +
+        `\`tailscale\`, and on the host arm \`port\` and \`httpsPort\`.`,
+    );
+  }
+  for (const key of ["port", "httpsPort"] as const) {
+    if (record[key] === undefined) continue;
+    if (arm === "sidecar") {
+      throw new Error(
+        `phoebe.config.ts \`remote.${key}\` is a host-arm field. On the sidecar arm the ` +
+          `tailnet port and the socket are declared in container/tailscale/serve.json, ` +
+          `which is that arm's truth — remove \`${key}\` from the block.`,
+      );
+    }
+    assertPort(record[key], `remote.${key}`);
+  }
+}
+
+/**
+ * Read the validated `remote` block off a loaded config, before or instead of
+ * `resolveConfig`, which drops it. `undefined` when there is no block, which
+ * every reader treats as "nothing listens".
+ */
+export function readRemoteField(user: { remote?: unknown }): RemoteField | undefined {
+  if (user.remote === undefined) return undefined;
+  validateRemoteField(user.remote as RemoteField);
+  return user.remote as RemoteField;
+}
+
+/** The block with its defaults filled; see {@link ResolvedRemote}. */
+export function resolveRemote(remote: RemoteField): ResolvedRemote {
+  if (remote.tailscale === "sidecar") return { arm: "sidecar" };
+  return {
+    arm: "host",
+    port: remote.port ?? DEFAULT_REMOTE_PORT,
+    httpsPort: remote.httpsPort ?? DEFAULT_REMOTE_HTTPS_PORT,
+  };
+}
+
+/**
+ * The block as the bootstrapper reads it at boot: lenient, like
+ * {@link readDeploymentHostKnobs}, because boot has nowhere to report a config
+ * error yet and the engine's own `resolveConfig` refuses the same block loudly
+ * a moment later. A block that will not validate is no block.
+ */
+export function readRemoteLeniently(user: unknown): ResolvedRemote | undefined {
+  const block = (user as { remote?: unknown } | null | undefined)?.remote;
+  if (block === undefined) return undefined;
+  try {
+    validateRemoteField(block as RemoteField);
+  } catch {
+    return undefined;
+  }
+  return resolveRemote(block as RemoteField);
 }
 
 /**

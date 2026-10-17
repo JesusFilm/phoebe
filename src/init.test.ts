@@ -112,6 +112,9 @@ describe("planInitOutputs", () => {
       "container/Dockerfile",
       "container/compose.yml",
       "container/compose.local.yml",
+      "container/compose.tailscale-sidecar.yml",
+      "container/compose.tailscale-host.yml",
+      "container/tailscale/serve.json",
       "container/README.md",
       ".gitignore",
     ]);
@@ -234,6 +237,38 @@ describe("runInit", () => {
     expect(report.created).toContain("phoebe.config.ts");
     expect(report.created).toContain("container/Dockerfile");
     expect(report.updated).toEqual([]);
+  });
+
+  test("scaffolds the remote-access overlays, inert, and leaves compose.yml free of them (map #690)", () => {
+    const target = makeTempDir();
+    const first = runInit({ targetDir: target });
+    for (const file of [
+      "container/compose.tailscale-sidecar.yml",
+      "container/compose.tailscale-host.yml",
+      "container/tailscale/serve.json",
+    ]) {
+      expect(first.created).toContain(file);
+      expect(statSync(join(target, file)).isFile()).toBe(true);
+    }
+    // The base file names no overlay and no Tailscale: a deployment with no
+    // `remote` block is byte for byte the deployment it was.
+    expect(readFileSync(join(target, "container/compose.yml"), "utf8")).not.toMatch(/tailscale/i);
+    expect(readFileSync(join(target, ".env.example"), "utf8")).toContain("TS_AUTHKEY=");
+    expect(readFileSync(join(target, ".env.example"), "utf8")).not.toContain("PHOEBE_REMOTE_PORT");
+    expect(readFileSync(join(target, "container/Dockerfile"), "utf8")).toContain(
+      "/run/phoebe-mint",
+    );
+    const serve = JSON.parse(readFileSync(join(target, "container/tailscale/serve.json"), "utf8"));
+    expect(serve.Web["${TS_CERT_DOMAIN}:443"].Handlers["/"].Proxy).toBe(
+      "unix:/var/run/phoebe/api.sock",
+    );
+
+    // A second run leaves every one of them alone — an older install re-runs
+    // init to get them, and gets nothing else changed.
+    const second = runInit({ targetDir: target });
+    expect(second.created).toEqual([]);
+    expect(second.skipped).toContain("container/compose.tailscale-sidecar.yml");
+    expect(second.skipped).toContain("container/tailscale/serve.json");
   });
 
   test("Dockerfile pins `phoebe boot` into ENTRYPOINT so compose command: overrides append flags", () => {

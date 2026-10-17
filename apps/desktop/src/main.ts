@@ -28,7 +28,9 @@ import {
   Menu,
   nativeTheme,
   net,
+  powerMonitor,
   protocol,
+  safeStorage,
   shell,
 } from "electron";
 import electronUpdater from "electron-updater";
@@ -41,6 +43,7 @@ import type {
   CompanionUpdate,
   LocalInstall,
   LocalReportEvent,
+  RemotePassthrough,
   VerbRun,
   VerbRunRequest,
   InstallPatch,
@@ -83,12 +86,14 @@ import { tenantFilesOf } from "./tenant-files.ts";
 import { createHarness } from "./harness.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
+import { createRemoteArm, type RemoteArm } from "./remote-arm.ts";
 import { createUpdateWatch } from "./update-watch.ts";
 import {
   defaultCommandRunner,
   formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
+import { findTailscaleCli, parseTailscaleStatus } from "../../../src/tailscale-serve.ts";
 import { createCompanionUpdates } from "./updates.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
@@ -352,6 +357,40 @@ const runs = createVerbRuns({
   },
 });
 
+/**
+ * The remote arm (map #690): the deployments paired over Tailscale, each with a
+ * supervisor holding its stream, the alert rule run over each as it moves, and
+ * the bearers in the keyring. Built once the app is ready, because `userData`
+ * and `safeStorage` are Electron's to name then; held at module scope for the
+ * same reason the read loop is — a window can come and go, and what a
+ * supervisor knows must not.
+ */
+let remotes: RemoteArm | null = null;
+
+/** The arm, or the refusal every call before the app is ready gets. */
+function remoteArm(): RemoteArm {
+  if (remotes === null) {
+    throw new BridgeRefusal({
+      code: "not-initialised",
+      message: "the companion is still starting",
+    });
+  }
+  return remotes;
+}
+
+/** `tailscale status --json` on this machine, read down to whether it is Running. */
+async function tailscaleStatus(): Promise<{ running: boolean; detail: string } | null> {
+  const cli = findTailscaleCli({ run: defaultCommandRunner, fetchFn: fetch });
+  if (cli === null) return null;
+  const result = await defaultCommandRunner({ file: cli.file, args: ["status", "--json"] }).catch(
+    () => ({ code: 1, stdout: "", stderr: "" }),
+  );
+  if (result.code !== 0) return { running: false, detail: "not answering" };
+  const status = parseTailscaleStatus(result.stdout);
+  if (status === null) return { running: false, detail: "not answering" };
+  return { running: status.backendState === "Running", detail: status.backendState };
+}
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
@@ -376,6 +415,10 @@ function createWindow(): void {
     void shell.openExternal(url);
     return { action: "deny" };
   });
+
+  // A window coming back to the front is a person looking: every remote that
+  // was waiting on its ladder tries now (#697).
+  window.on("focus", () => remotes?.poke());
 
   void window.loadURL(consoleSource(process.argv));
 }
@@ -678,6 +721,63 @@ app.whenReady().then(
       }),
     );
 
+    remotes = createRemoteArm({
+      userDataDir: app.getPath("userData"),
+      safeStorage,
+      // Chromium's network stack rather than Node's, so the machine's proxy
+      // settings apply to a tailnet address the way they do to any other.
+      fetchFn: (input, init) =>
+        net.fetch(
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+          init,
+        ),
+      alerts,
+      tailscaleStatus,
+      emit: {
+        changed: (records) => broadcast(BRIDGE_CHANNELS.remotesChanged, records),
+        report: (event) => broadcast(BRIDGE_CHANNELS.remotesReport, event),
+        alert: (event) => {
+          broadcast(BRIDGE_CHANNELS.remotesAlert, event);
+          showBadge();
+        },
+      },
+      log: (line) => console.log(line),
+    });
+    const arm = remotes;
+    ipcMain.handle(BRIDGE_CHANNELS.remotesList, () => answering(() => remoteArm().list()));
+    ipcMain.handle(
+      BRIDGE_CHANNELS.remotesPair,
+      (_event, input: { url: string; code: string; label: string }) =>
+        answering(() => remoteArm().pair(input)),
+    );
+    ipcMain.handle(
+      BRIDGE_CHANNELS.remotesRequest,
+      (_event, deploymentId: string, passthrough: RemotePassthrough) =>
+        answering(() => remoteArm().request(deploymentId, passthrough)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesSignOut, (_event, deploymentId: string) =>
+      answering(() => remoteArm().signOut(deploymentId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesForget, (_event, deploymentId: string) =>
+      answering(() => remoteArm().forget(deploymentId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesSessions, (_event, deploymentId: string) =>
+      answering(() => remoteArm().sessions(deploymentId)),
+    );
+    ipcMain.handle(
+      BRIDGE_CHANNELS.remotesRevoke,
+      (_event, deploymentId: string, sessionId: string) =>
+        answering(() => remoteArm().revoke(deploymentId, sessionId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesTailscale, () =>
+      answering(() => remoteArm().tailscale()),
+    );
+    // The machine waking and the network coming back are the two other moments
+    // a remote on its ladder should try now rather than wait out a rung (#697).
+    powerMonitor.on("resume", () => arm.poke());
+    powerMonitor.on("unlock-screen", () => arm.poke());
+    arm.start();
+
     createWindow();
     updateWatch.refresh();
 
@@ -702,6 +802,7 @@ app.whenReady().then(
 app.on("before-quit", () => {
   reads.stop();
   logs.stopAll();
+  remotes?.stop();
 });
 
 app.on("window-all-closed", () => {

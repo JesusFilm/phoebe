@@ -37,6 +37,8 @@ export function DeploymentTabPanel({
   now,
   empty,
   writes = {},
+  overview,
+  frozen = false,
 }: {
   tab: DeploymentTab;
   reading: ReportReading;
@@ -46,8 +48,15 @@ export function DeploymentTabPanel({
   now: Date;
   /** What to say on a tab with no report — the arm's own words. */
   empty: ReactNode;
-  /** What this arm lets an operator change, drawn under the tab it belongs to. */
-  writes?: { config?: ReactNode; secrets?: ReactNode };
+  /**
+   * What this arm lets an operator change, drawn under the tab it belongs to.
+   * `doctor` is the run-doctor control, where the arm has one.
+   */
+  writes?: { config?: ReactNode; secrets?: ReactNode; doctor?: ReactNode };
+  /** Drawn under the overview's cards: the Devices panel (map #690). */
+  overview?: ReactNode;
+  /** The report is the last one received, not a current one: grey it (map #690). */
+  frozen?: boolean;
 }) {
   if (tab === "config") return <ConfigTab config={config} writes={writes.config} />;
   if (reading.kind !== "read") {
@@ -65,16 +74,24 @@ export function DeploymentTabPanel({
       </section>
     );
   }
-  switch (tab) {
-    case "overview":
-      return <OverviewTab reading={reading} connection={connection} now={now} />;
-    case "pipelines":
-      return <PipelinesTab reading={reading} />;
-    case "doctor":
-      return <DoctorTab />;
-    case "secrets":
-      return <SecretsTab writes={writes.secrets} />;
-  }
+  const body = ((): ReactNode => {
+    switch (tab) {
+      case "overview":
+        return (
+          <>
+            <OverviewTab reading={reading} connection={connection} now={now} />
+            {overview}
+          </>
+        );
+      case "pipelines":
+        return <PipelinesTab reading={reading} />;
+      case "doctor":
+        return <DoctorTab reading={reading} now={now} writes={writes.doctor} />;
+      case "secrets":
+        return <SecretsTab writes={writes.secrets} />;
+    }
+  })();
+  return frozen ? <div className="greyed">{body}</div> : body;
 }
 
 const TAB_HEADINGS: Record<DeploymentTab, string> = {
@@ -111,6 +128,15 @@ function OverviewTab({
         <h2>Connection</h2>
         <p>
           <strong>{connection.arm}</strong> <span className="mono">{connection.detail}</span>
+          {connection.link === undefined ? null : (
+            <a
+              className="chip route-chip"
+              href={connection.link.href}
+              title={connection.link.title}
+            >
+              {connection.link.text}
+            </a>
+          )}
         </p>
         <p className="muted">{connection.note}</p>
       </section>
@@ -224,18 +250,69 @@ function PipelinesTab({ reading }: { reading: Extract<ReportReading, { kind: "re
 }
 
 /**
- * Doctor. The report has no doctor section yet — the bootstrapper's periodic run
- * is its own ticket — so this tab says that rather than showing an empty pass.
- * An empty checklist reads as ten checks that passed.
+ * Doctor: what the last run found, with its age, and the control that asks for
+ * another where the arm has one. A report with no section says so rather than
+ * showing an empty pass — an empty checklist reads as ten checks that passed.
  */
-function DoctorTab() {
+function DoctorTab({
+  reading,
+  now,
+  writes,
+}: {
+  reading: Extract<ReportReading, { kind: "read" }>;
+  now: Date;
+  writes?: ReactNode;
+}) {
+  const section = reading.report.doctor;
+  const report = section?.report ?? null;
   return (
     <section>
       <h2>Doctor</h2>
-      <p className="muted">
-        This report carries no doctor section, so there is nothing to show. Run doctor from the
-        install tab to see its checks now.
-      </p>
+      {section === undefined || section === null || report === null ? (
+        <p className="muted">This report carries no doctor run yet, so there is nothing to show.</p>
+      ) : (
+        <>
+          <p className="muted">
+            Last run {section.at === null ? "never" : `${age(section.at, now)} ago`}
+            {section.trigger === null ? "" : ` (${section.trigger})`}
+            {section.running === undefined ? "" : " · a run is in flight"}
+          </p>
+          <table className="rows">
+            <thead>
+              <tr>
+                <th>Check</th>
+                <th>State</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.checks.map((check) => (
+                <tr key={check.id}>
+                  <td className="mono">{check.id}</td>
+                  <td>
+                    <span className={`chip check ${check.state}`}>{check.state}</span>
+                  </td>
+                  <td>{check.detail}</td>
+                </tr>
+              ))}
+              {report.tenants.flatMap((tenant) =>
+                tenant.checks.map((check) => (
+                  <tr key={`${tenant.path}#${check.id}`}>
+                    <td className="mono">
+                      {tenant.slug ?? tenant.path} · {check.id}
+                    </td>
+                    <td>
+                      <span className={`chip check ${check.state}`}>{check.state}</span>
+                    </td>
+                    <td>{check.detail}</td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
+        </>
+      )}
+      {writes}
     </section>
   );
 }

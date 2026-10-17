@@ -467,3 +467,198 @@ describe("runStartCli config threading", () => {
     expect(log.out.join("\n")).toMatch(/Started\./);
   });
 });
+
+describe("runStart with a `remote` block (map #690)", () => {
+  const exists = deploymentExists(false);
+
+  test("no block: no overlay, no env export, and --remove-orphans always", async () => {
+    const { runner, calls } = scriptedRunner([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+      psJson({ State: "running" }),
+    ]);
+    const outcome = await runStart({
+      build: false,
+      deps: { cwd: "/deploy", dockerAvailable: true, exists, runner, waitMs: async () => {} },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    const up = calls.find((c) => c.args.includes("up"))!;
+    expect(up.args).toEqual([
+      "compose",
+      "-f",
+      "/deploy/container/compose.yml",
+      "up",
+      "-d",
+      "--remove-orphans",
+    ]);
+    expect(calls.every((c) => !("env" in c))).toBe(true);
+  });
+
+  test("sidecar arm: the overlay joins every Compose call, nothing is exported, Serve is not touched", async () => {
+    const { runner, calls } = scriptedRunner([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+      psJson({ State: "running" }),
+    ]);
+    let served = 0;
+    const outcome = await runStart({
+      build: true,
+      deps: {
+        cwd: "/deploy",
+        dockerAvailable: true,
+        exists,
+        runner,
+        waitMs: async () => {},
+        remote: { arm: "sidecar" },
+        serve: async () => {
+          served += 1;
+          return { state: "ready", url: "https://x" };
+        },
+      },
+    });
+    expect(outcome).toEqual({ kind: "started" });
+    expect(served).toBe(0);
+    for (const call of calls) {
+      expect(call.args.slice(0, 5)).toEqual([
+        "compose",
+        "-f",
+        "/deploy/container/compose.yml",
+        "-f",
+        "/deploy/container/compose.tailscale-sidecar.yml",
+      ]);
+    }
+    const up = calls.find((c) => c.args.includes("up"))!;
+    expect(up.args.slice(-4)).toEqual(["up", "-d", "--build", "--remove-orphans"]);
+  });
+
+  test("host arm: overlay, PHOEBE_REMOTE_PORT from remote.port, Serve reconciled, URL handed over", async () => {
+    const { runner, calls } = scriptedRunner([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+      psJson({ State: "running" }),
+      { code: 0, stdout: "", stderr: "" }, // phoebe remote-url
+    ]);
+    const log = lines();
+    const asked: Array<{ port: number; httpsPort: number }> = [];
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        dockerAvailable: true,
+        exists,
+        runner,
+        io: log.io,
+        env: { PATH: "/usr/bin" },
+        waitMs: async () => {},
+        remote: { arm: "host", port: 9000, httpsPort: 8443 },
+        serve: async (ports) => {
+          asked.push(ports);
+          return { state: "ready", url: "https://beast.tail4f2c.ts.net:8443" };
+        },
+      },
+    });
+    expect(outcome).toEqual({
+      kind: "started",
+      serve: { state: "ready", url: "https://beast.tail4f2c.ts.net:8443" },
+    });
+    expect(asked).toEqual([{ port: 9000, httpsPort: 8443 }]);
+    const up = calls.find((c) => c.args.includes("up"))!;
+    expect(up.args).toContain("/deploy/container/compose.tailscale-host.yml");
+    const handoff = calls[3]!;
+    expect(handoff.args.slice(-6)).toEqual([
+      "exec",
+      "-T",
+      "phoebe",
+      "phoebe",
+      "remote-url",
+      "https://beast.tail4f2c.ts.net:8443",
+    ]);
+    expect(log.out.join("\n")).toContain(
+      "Reachable on the tailnet at https://beast.tail4f2c.ts.net:8443",
+    );
+  });
+
+  test("host arm: a refused Serve is reported, the URL is not handed over, and the start still counts", async () => {
+    const { runner, calls } = scriptedRunner([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+      psJson({ State: "running" }),
+    ]);
+    const log = lines();
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        dockerAvailable: true,
+        exists,
+        runner,
+        io: log.io,
+        waitMs: async () => {},
+        remote: { arm: "host", port: 7463, httpsPort: 443 },
+        serve: async () => ({ state: "refused", detail: "a mapping points elsewhere." }),
+      },
+    });
+    expect(outcome).toEqual({
+      kind: "started",
+      serve: { state: "refused", detail: "a mapping points elsewhere." },
+    });
+    expect(calls.some((c) => c.args.includes("remote-url"))).toBe(false);
+    expect(log.err.join("\n")).toMatch(/Serve not reconciled: a mapping points elsewhere/);
+  });
+
+  test("already running on the host arm still reconciles Serve", async () => {
+    const { runner } = scriptedRunner([
+      psJson({ State: "running" }),
+      { code: 0, stdout: "", stderr: "" }, // remote-url
+    ]);
+    let served = 0;
+    const outcome = await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        dockerAvailable: true,
+        exists,
+        runner,
+        remote: { arm: "host", port: 7463, httpsPort: 443 },
+        serve: async () => {
+          served += 1;
+          return { state: "pending", url: "https://x.ts.net" };
+        },
+      },
+    });
+    expect(outcome).toEqual({
+      kind: "already-running",
+      serve: { state: "pending", url: "https://x.ts.net" },
+    });
+    expect(served).toBe(1);
+  });
+});
+
+describe("the env the host overlay reads", () => {
+  test("PHOEBE_REMOTE_PORT rides on the Compose child's env, over this process's", async () => {
+    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const runner: CommandRunner = async (spec) => {
+      envs.push(spec.env);
+      if (spec.args.includes("ps"))
+        return envs.length === 1
+          ? { code: 0, stdout: "", stderr: "" }
+          : psJson({ State: "running" });
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await runStart({
+      build: false,
+      deps: {
+        cwd: "/deploy",
+        dockerAvailable: true,
+        exists: deploymentExists(false),
+        runner,
+        env: { PATH: "/usr/bin", HOME: "/home/me" },
+        waitMs: async () => {},
+        remote: { arm: "host", port: 9000, httpsPort: 443 },
+        serve: async () => ({ state: "refused", detail: "no" }),
+      },
+    });
+    for (const env of envs)
+      expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/me", PHOEBE_REMOTE_PORT: "9000" });
+  });
+});

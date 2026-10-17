@@ -43,6 +43,7 @@ import type {
   EditReceipt,
   LocalInstall,
   LocalReportEvent,
+  RemoteRecord,
   SecretSetOutcome,
   VerbRun,
   VerbRunRequest,
@@ -72,6 +73,8 @@ import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
 import { HarnessSection } from "./harness-section.tsx";
+import { hostnameOf } from "./reachability.ts";
+import { LocalDevices, RemoteStep } from "./remote-step.tsx";
 import { receiptOfRun, useInstallRun } from "./verb-run.ts";
 
 export function InstallPage({
@@ -84,12 +87,24 @@ export function InstallPage({
   onTenant,
   onUpdate,
   onForget,
+  joined = null,
+  defaultLabel = "this companion",
+  onOpenRemote,
+  onPaired,
 }: {
   install: LocalInstall;
   bridge: DesktopBridge;
   /** The last read main emitted for this install, or null before the first. */
   report: LocalReportEvent | null;
   now: Date;
+  /** The paired record with this install's deployment id, when there is one (map #690). */
+  joined?: RemoteRecord | null;
+  /** The label this companion offers when it pairs itself. */
+  defaultLabel?: string;
+  /** The chip: open the same deployment's remote route. */
+  onOpenRemote?: (record: RemoteRecord) => void;
+  /** Pair this companion landed: the remote list has moved. */
+  onPaired?: (record: RemoteRecord) => void;
   /** Back to the console (console-view.tsx), the view the rail opens. */
   onConsole?: () => void;
   /** The console on its cli tab: where a verb's output is read. */
@@ -135,6 +150,16 @@ export function InstallPage({
       <div className="page-body">
         <div className="install-title">
           <h1>{install.name}</h1>
+          {joined === null || onOpenRemote === undefined ? null : (
+            <button
+              type="button"
+              className="chip route-chip"
+              title="the same deployment over Tailscale, as any other device sees it"
+              onClick={() => onOpenRemote(joined)}
+            >
+              ↗ {hostnameOf(joined.url)}
+            </button>
+          )}
           {onConsole === undefined ? null : (
             <Button
               variant="ghost"
@@ -204,15 +229,52 @@ export function InstallPage({
                 {...(onTenant === undefined ? {} : { onTenant })}
               />
             }
+            remote={
+              install.state === "not-initialised" || install.tenantOnly === true ? null : (
+                <RemoteStep
+                  install={install}
+                  bridge={bridge}
+                  report={report}
+                  run={run}
+                  running={running}
+                  onStart={start}
+                  joined={joined}
+                  defaultLabel={defaultLabel}
+                  onOpenRemote={onOpenRemote ?? (() => undefined)}
+                  onPaired={onPaired ?? (() => undefined)}
+                />
+              )
+            }
           />
         ) : (
           <>
             <DeploymentTabPanel
               tab={tab}
               reading={reading}
-              connection={localConnection(install)}
+              connection={{
+                ...localConnection(install),
+                ...(joined === null
+                  ? {}
+                  : {
+                      link: {
+                        href: `#/r/${encodeURIComponent(joined.deploymentId)}`,
+                        text: `↗ ${hostnameOf(joined.url)}`,
+                        title: "the same deployment over Tailscale, as any other device sees it",
+                      },
+                    }),
+              }}
               config={config}
               now={now}
+              overview={
+                <LocalDevices
+                  install={install}
+                  report={report}
+                  run={run}
+                  running={running}
+                  now={now}
+                  onStart={start}
+                />
+              }
               empty={
                 <NoReport
                   install={install}
@@ -331,6 +393,7 @@ export function InstallTab({
   onCancel,
   onCli,
   harness,
+  remote,
 }: {
   install: LocalInstall;
   environment: CompanionEnvironment | null;
@@ -344,6 +407,8 @@ export function InstallTab({
   onCli?: () => void;
   /** The AI harness section (harness-section.tsx), which needs the bridge this tab does not hold. */
   harness?: ReactNode;
+  /** The Remote step (remote-step.tsx), after Run: pairing over Tailscale (map #690). */
+  remote?: ReactNode;
 }) {
   const offered = offeredVerbs(install);
   // Forget asks first. One click on a quiet button, and an install is gone from
@@ -464,6 +529,8 @@ export function InstallTab({
         )}
         {trouble === null ? null : <p className="refusal">{trouble}</p>}
       </section>
+
+      {remote}
 
       {harness}
 

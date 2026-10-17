@@ -27,3 +27,25 @@ describe("parseRoute", () => {
     }
   });
 });
+
+describe("a remote route (map #690)", () => {
+  test("is the record's deployment id, with an optional tab", async () => {
+    const { parseRoute, remoteHref } = await import("./route.ts");
+    expect(parseRoute("#/r/dep_YT")).toEqual({ page: "remote", deploymentId: "dep_YT", tab: null });
+    expect(parseRoute("#/r/dep_YT/doctor")).toEqual({
+      page: "remote",
+      deploymentId: "dep_YT",
+      tab: "doctor",
+    });
+    expect(parseRoute("#/r/dep_YT/nope")).toEqual({ page: "home" });
+    expect(parseRoute("#/r/dep_YT/doctor/more")).toEqual({ page: "home" });
+    expect(parseRoute("#/r")).toEqual({ page: "home" });
+    expect(remoteHref("dep_YT")).toBe("#/r/dep_YT");
+    expect(remoteHref("dep_YT", "config")).toBe("#/r/dep_YT/config");
+    expect(parseRoute(remoteHref("a/b", "secrets"))).toEqual({
+      page: "remote",
+      deploymentId: "a/b",
+      tab: "secrets",
+    });
+  });
+});

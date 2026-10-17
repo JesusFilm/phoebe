@@ -1,25 +1,34 @@
-// What main knows about alerts (#524, map #497).
+// What main knows about alerts (#524, map #497; the remote arm from map #690).
 //
-// Two arms end here for two different reasons. The relay's alerts are already
-// decided by the time main sees them — the relay ran the edge rule over the
-// links it holds and sent what crossed, and main only passes them on. A local
-// install has no relay, so main runs the same rule itself, over the report the
-// read loop just finished (#556). One rule for both, imported from
-// `phoebe-agent/contracts`, which is the whole point of that file being pure
-// (#524 §3): a notification and a webhook can never disagree about whether
-// something is wrong.
+// Two arms end here, and main runs the one edge rule over both. A local
+// install's report comes off the read loop (#556) with no socket behind it, so
+// `connection` is null and only the three report-borne conditions apply. A
+// remote's report comes off its supervisor's stream (remote-supervisor.ts),
+// and the companion holds the clocks the relay used to: `connection` is the
+// derived reachability, `quietForMs` is measured from the last thing heard,
+// and `maybeReplaced` is whether the descriptor's id moved. One rule for both,
+// imported from `phoebe-agent/contracts`, which is the whole point of that file
+// being pure (#524 §3): two readers can never disagree about whether something
+// is wrong.
 //
-// **The first read of an install seeds and says nothing** (#524 §3). A
+// **The first read of a subject seeds and says nothing** (#524 §3). A
 // companion that relaunches onto a fleet that was already wedged must not
 // re-fire everything; the seeding read records what it found as already
-// notified, so the next read only produces what has moved since. That mirrors
-// the relay's own `alerts.json`, which exists for the same restart (#515 §5).
+// notified, so the next read only produces what has moved since. A local
+// install's notified map lives here for the process; a remote's is persisted on
+// its record (remotes.ts), so a relaunch dates darkness from real last contact,
+// re-fires nothing already notified, and can still clear what it raised.
+//
+// **Blocked is never evaluated** (#697). Blocked means unknown — the pairing
+// no longer works — so nothing is raised, nothing is cleared, and the badge
+// does not count it; the row's warning tone is the whole of it.
 //
 // **The raised set is per subject, not per edge.** The badge is the count of
-// deployments and local installs in any raised condition (#524 §4), so what is
-// kept here is a set of condition keys per subject and what is answered is how
-// many of those sets are non-empty. Three wedged pipelines on one deployment are
-// one badge.
+// subjects in any raised condition (#524 §4), so what is kept here is a set of
+// condition keys per subject and what is answered is how many of those sets
+// are non-empty. Three wedged pipelines on one deployment are one badge. A
+// subject is a **route** (#699): a deployment reachable as a folder on this
+// machine and as a remote is two subjects, counted twice while both see it.
 //
 // Nothing here touches Electron, and nothing here shows anything. Raising the
 // notification is the renderer's (#524 §2); setting the badge is main's, from
@@ -35,7 +44,10 @@ import type {
   LocalReportEvent,
   NotifiedAlerts,
   PipelineAlertFacts,
+  Reachability,
+  RemoteAlertEvent,
   ReportAlertFacts,
+  StoredReport,
 } from "phoebe-agent/contracts";
 // The rule and its sentence, from the file itself rather than from the
 // package's entry. `index.mjs` is mirrored by hand and deliberately does not
@@ -51,6 +63,29 @@ export type CompanionAlertsOptions = {
   clock?: () => Date;
 };
 
+/** One remote as the rule reads it: the record's clocks and the supervisor's reading. */
+export type RemoteAlertInput = {
+  deploymentId: string;
+  name: string;
+  reachability: Reachability;
+  /** The last thing heard, ISO, or null before anything was. */
+  lastHeardAt: string | null;
+  /** The descriptor's id moved under the stored one. */
+  maybeReplaced: boolean;
+  report: StoredReport | null;
+  /** The map as persisted on the record. */
+  notified: NotifiedAlerts;
+  /** Has a first evaluation already seeded the map? */
+  seeded: boolean;
+};
+
+/** What a remote evaluation hands back: the alerts to raise, and the map to persist. */
+export type RemoteAlertOutcome = {
+  alerts: RemoteAlertEvent[];
+  notified: NotifiedAlerts;
+  seeded: boolean;
+};
+
 export type CompanionAlerts = {
   /**
    * One finished local read. Returns the alerts to raise — empty on the read
@@ -58,22 +93,102 @@ export type CompanionAlerts = {
    * which is almost all of them.
    */
   local: (event: LocalReportEvent) => LocalAlertEvent[];
+  /**
+   * One remote, re-evaluated: on every supervisor emission, and on the clock
+   * that carries a dark remote past the five-minute mark. The map comes in off
+   * the record and goes back out to be persisted; a blocked remote is handed
+   * straight back with nothing raised.
+   */
+  remote: (input: RemoteAlertInput) => RemoteAlertOutcome;
   /** Forget one install: a removed folder must not leave a count behind. */
   forgetInstall: (dir: string) => void;
-  /** Deployments and local installs in any raised condition (#524 §4). */
+  /** Forget one remote: a signed-out or forgotten record must not leave a count behind. */
+  forgetRemote: (deploymentId: string) => void;
+  /** Subjects — local installs and remote routes — in any raised condition (#524 §4). */
   badge: () => number;
 };
 
 /** The conditions each subject has raised, by subject. */
 type Raised = Map<string, Set<string>>;
 
+/** Where the `url` on a remote's alert points: the remote route's page. */
+export function remoteAlertUrl(deploymentId: string): string {
+  return `${COMPANION_ORIGIN}/#/r/${encodeURIComponent(deploymentId)}`;
+}
+
 export function createCompanionAlerts(options: CompanionAlertsOptions = {}): CompanionAlerts {
   const clock = options.clock ?? (() => new Date());
   /** Last notified per install, keyed by directory — the local `alerts.json`. */
   const notified = new Map<string, NotifiedAlerts>();
   const raisedLocal: Raised = new Map();
+  /** Raised per remote route, keyed by deployment id. Rebuilt from the persisted map on first sight. */
+  const raisedRemote: Raised = new Map();
 
   return {
+    remote(input) {
+      if (input.reachability === "blocked") {
+        return { alerts: [], notified: input.notified, seeded: input.seeded };
+      }
+      const held: NotifiedAlerts = { ...input.notified };
+      // The persisted map says what was raised before this process started; the
+      // badge has to count it from the first evaluation, not from the next edge.
+      if (!raisedRemote.has(input.deploymentId)) {
+        for (const [key, entry] of Object.entries(held)) {
+          mark(raisedRemote, input.deploymentId, key, entry.state);
+        }
+      }
+      const at = clock().toISOString();
+      const heardAt = input.lastHeardAt === null ? null : Date.parse(input.lastHeardAt);
+      const quiet =
+        heardAt === null || !Number.isFinite(heardAt)
+          ? null
+          : Math.max(0, clock().getTime() - heardAt);
+      const edges = alertEdges({
+        facts: {
+          fingerprint: input.deploymentId,
+          name: input.name,
+          connection: input.reachability,
+          quietForMs: input.reachability === "connected" ? null : quiet,
+          quietSince:
+            input.reachability === "connected" || heardAt === null ? null : input.lastHeardAt,
+          maybeReplaced: input.maybeReplaced,
+          report: reportFactsOf(input.report),
+        },
+        notified: held,
+        now: at,
+      });
+      for (const edge of edges) {
+        held[edge.key] = { state: edge.state, at, since: edge.since };
+        mark(raisedRemote, input.deploymentId, edge.key, edge.state);
+      }
+      if (!input.seeded) return { alerts: [], notified: held, seeded: true };
+      return {
+        seeded: true,
+        notified: held,
+        alerts: edges.map((edge) => ({
+          type: "alert",
+          deploymentId: input.deploymentId,
+          at,
+          alert: {
+            schema: ALERT_SCHEMA,
+            kind: "alert",
+            condition: edge.condition,
+            state: edge.state,
+            deployment: { name: input.name, keyFingerprint: input.deploymentId },
+            ...(edge.pipeline !== null ? { pipeline: edge.pipeline } : {}),
+            since: edge.since,
+            detail: edge.detail,
+            text: alertText({ name: input.name, edge }),
+            url: remoteAlertUrl(input.deploymentId),
+          } satisfies AlertMessage,
+        })),
+      };
+    },
+
+    forgetRemote(deploymentId) {
+      raisedRemote.delete(deploymentId);
+    },
+
     local(event) {
       const seeding = !notified.has(event.install);
       const held = notified.get(event.install) ?? {};
@@ -123,7 +238,7 @@ export function createCompanionAlerts(options: CompanionAlertsOptions = {}): Com
       raisedLocal.delete(dir);
     },
 
-    badge: () => raisedLocal.size,
+    badge: () => raisedLocal.size + raisedRemote.size,
   };
 }
 
@@ -145,7 +260,11 @@ function mark(raised: Raised, subject: string, key: string, state: "raised" | "c
  * waking someone at 3 a.m. about a pipeline that is fine.
  */
 export function reportAlertFacts(event: LocalReportEvent): ReportAlertFacts | null {
-  const stored = event.report;
+  return reportFactsOf(event.report);
+}
+
+/** The same projection off a stored report alone, which is all a remote has. */
+export function reportFactsOf(stored: StoredReport | null): ReportAlertFacts | null {
   if (stored === null || stored.schema !== DEPLOYMENT_SCHEMA) return null;
   const body = stored.report;
   if (!isRecord(body)) return null;

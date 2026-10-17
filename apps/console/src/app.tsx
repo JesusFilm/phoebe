@@ -15,6 +15,7 @@ import type {
   HarnessReport,
   LocalInstall,
   LocalReportEvent,
+  RemoteRecord,
   VerbRunRequest,
   CompanionEnvironment,
   InstallPatch,
@@ -53,8 +54,11 @@ import {
   type RunActivity,
 } from "./run-activity.ts";
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
+import { AddRemote } from "./add-remote.tsx";
 import { Rail } from "./rail.tsx";
-import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { RemotePage } from "./remote-page.tsx";
+import { defaultDeviceLabel, hostSections, localJoins, remoteJoins } from "./remote-routes.ts";
+import { ADD_HREF, HOME_HREF, HOME_ROUTE, parseRoute, remoteHref, type Route } from "./route.ts";
 import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
@@ -144,6 +148,7 @@ export function App({
     globalThis.focus();
     const subject = notifiable.subject;
     if (subject?.arm === "local") setOpenInstall(subject.install);
+    if (subject?.arm === "remote") window.location.hash = remoteHref(subject.deploymentId);
   }, []);
 
   const notifier = useMemo(
@@ -330,6 +335,96 @@ export function App({
     return bridge.installs.alerts((event) => notify(event.alert, "local"));
   }, [bridge, notify]);
 
+  // The remote arm (map #690): the paired records, one read and then main's
+  // pushes. A supervisor emission replaces its record whole — the record is
+  // the report and the reachability together, the way a local read is.
+  const [remotes, setRemotes] = useState<RemoteRecord[]>([]);
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.remotes.list().then(
+      (listed) => {
+        if (live) setRemotes(listed);
+      },
+      () => undefined,
+    );
+    const offChanges = bridge.remotes.changes((changed) => setRemotes(changed));
+    const offReports = bridge.remotes.reports((event) =>
+      setRemotes((held) =>
+        held.some((record) => record.deploymentId === event.deploymentId)
+          ? held.map((record) =>
+              record.deploymentId === event.deploymentId ? event.record : record,
+            )
+          : [...held, event.record],
+      ),
+    );
+    const offAlerts = bridge.remotes.alerts((event) => notify(event.alert, "remote"));
+    return () => {
+      live = false;
+      offChanges();
+      offReports();
+      offAlerts();
+    };
+  }, [bridge, notify]);
+
+  // This machine's Tailscale, asked once a minute: main caches the answer, and
+  // the rail's line above the host sections is read off it.
+  const [tailscale, setTailscale] = useState<{ running: boolean; detail: string } | null>(null);
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    const ask = (): void => {
+      bridge.remotes.tailscale().then(
+        (answer) => {
+          if (live) setTailscale(answer);
+        },
+        () => undefined,
+      );
+    };
+    ask();
+    const timer = setInterval(ask, 60_000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [bridge]);
+
+  // The add-remote modal: open from the rail or the home page, or from a
+  // blocked row with its address filled in (pair again).
+  const [adding, setAdding] = useState<{ prefill: string } | null>(null);
+  const pairAgain = useCallback((record: RemoteRecord) => setAdding({ prefill: record.url }), []);
+
+  /** A pair landed: the record joins the list, or replaces the one it re-paired. */
+  const paired = useCallback((record: RemoteRecord) => {
+    setRemotes((held) =>
+      held.some((candidate) => candidate.deploymentId === record.deploymentId)
+        ? held.map((candidate) =>
+            candidate.deploymentId === record.deploymentId ? record : candidate,
+          )
+        : [...held, record],
+    );
+  }, []);
+
+  /** Sign out removes the row; forget drops a blocked one without a request. */
+  const dropRemote = useCallback(
+    (record: RemoteRecord, how: "signOut" | "forget") => {
+      if (bridge === null) return;
+      const call = how === "signOut" ? bridge.remotes.signOut : bridge.remotes.forget;
+      void call(record.deploymentId).then(
+        () => {
+          setRemotes((held) =>
+            held.filter((candidate) => candidate.deploymentId !== record.deploymentId),
+          );
+          if (window.location.hash.startsWith(`#/r/${encodeURIComponent(record.deploymentId)}`)) {
+            window.location.hash = HOME_HREF;
+          }
+        },
+        () => undefined,
+      );
+    },
+    [bridge],
+  );
+
   // Opening an install asks for a read rather than waiting up to 15 s for the
   // next one. On a stopped install this is the refresh that answers with the
   // directory's facts and no report (#527 §6).
@@ -504,6 +599,21 @@ export function App({
 
   const open = installs.find((install) => install.dir === openInstall) ?? null;
   const update = useCompanionUpdate(bridge);
+  // The join (map #690, #699): a deployment that is a folder here and also
+  // paired shows twice, once per route, each with a chip to the other.
+  const joinsByInstall = useMemo(
+    () => localJoins(installs, reports, remotes),
+    [installs, reports, remotes],
+  );
+  const joinsByRemote = useMemo(
+    () => remoteJoins(installs, reports, remotes),
+    [installs, reports, remotes],
+  );
+  const openRemote =
+    route.page === "remote"
+      ? (remotes.find((record) => record.deploymentId === route.deploymentId) ?? null)
+      : null;
+  const deviceLabel = defaultDeviceLabel(null);
 
   return (
     <div className="frame">
@@ -529,6 +639,12 @@ export function App({
         problems={installProblems}
         {...(platform === null ? {} : { platform })}
         update={update}
+        remotes={remotes}
+        selectedRemote={route.page === "remote" ? route.deploymentId : null}
+        now={now}
+        tailscale={tailscale}
+        localJoins={joinsByInstall}
+        remoteJoins={joinsByRemote}
         {...(bridge === null
           ? {}
           : {
@@ -577,6 +693,18 @@ export function App({
               },
               onDownload: () => void bridge.updates.download().catch(noop),
               onRestart: () => void bridge.updates.restart().catch(noop),
+              // The machines on the tailnet (map #690): a row opens its remote
+              // route, the one add below the sections opens the modal.
+              onRemote: (deploymentId: string) => {
+                setOpenInstall(null);
+                window.location.hash = remoteHref(deploymentId);
+              },
+              onAddRemote: () => setAdding({ prefill: "" }),
+              onPairAgain: pairAgain,
+              onOpenRemoteRoute: (record: RemoteRecord) => {
+                setOpenInstall(null);
+                window.location.hash = remoteHref(record.deploymentId);
+              },
             })}
       />
       <section className="pane">
@@ -587,6 +715,7 @@ export function App({
             open,
             view: openView,
             tenant: openTenant,
+            remote: openRemote,
             child:
               open?.workspace?.children
                 .filter((child) => child.dir === openChild)
@@ -657,7 +786,46 @@ export function App({
             now={now}
             onUpdate={updateInstall}
             onForget={forgetInstall}
+            joined={joinsByInstall[open.dir] ?? null}
+            defaultLabel={deviceLabel}
+            onOpenRemote={(record) => {
+              setOpenInstall(null);
+              window.location.hash = remoteHref(record.deploymentId);
+            }}
+            onPaired={paired}
           />
+        ) : route.page === "remote" && bridge !== null ? (
+          openRemote === null ? (
+            <main className="main">
+              <h1>Not paired</h1>
+              <p className="muted">
+                This companion holds no pairing for{" "}
+                <span className="mono">{route.deploymentId}</span>. Add it from the rail with a
+                pairing link, or an address and a code.
+              </p>
+            </main>
+          ) : (
+            <RemotePage
+              key={openRemote.deploymentId}
+              record={openRemote}
+              bridge={bridge}
+              tab={route.tab ?? "overview"}
+              now={now}
+              joined={joinsByRemote[openRemote.deploymentId] ?? null}
+              onTab={(tab) => {
+                window.location.hash = remoteHref(openRemote.deploymentId, tab);
+              }}
+              onPairAgain={pairAgain}
+              onSignOut={(record) => dropRemote(record, "signOut")}
+              onForget={(record) => dropRemote(record, "forget")}
+              onOpenLocal={(install) => {
+                setOpenView("console");
+                setOpenTenant(null);
+                setOpenChannel(null);
+                setOpenInstall(install.dir);
+              }}
+            />
+          )
         ) : route.page === "settings" ? (
           <SettingsPage
             surface={surface}
@@ -677,13 +845,37 @@ export function App({
         ) : (
           <CompanionHome
             installs={installs}
+            remotes={remotes}
+            now={now}
+            tailscale={tailscale}
             onAdd={bridge === null ? undefined : () => addInstall()}
             onAddWsl={
               bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")
             }
+            onAddRemote={bridge === null ? undefined : () => setAdding({ prefill: "" })}
+            onPairAgain={pairAgain}
           />
         )}
       </section>
+      {adding !== null && bridge !== null ? (
+        <AddRemote
+          bridge={bridge}
+          defaultLabel={deviceLabel}
+          prefill={adding.prefill}
+          records={remotes}
+          joinedInstallOf={(deploymentId) =>
+            remoteJoins(installs, reports, [{ deploymentId } as RemoteRecord])[deploymentId] ?? null
+          }
+          tailscaleRunning={tailscale === null ? null : tailscale.running}
+          onPaired={paired}
+          onClose={() => setAdding(null)}
+          onOpen={(deploymentId) => {
+            setAdding(null);
+            setOpenInstall(null);
+            window.location.hash = remoteHref(deploymentId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -695,17 +887,81 @@ export function App({
  */
 function CompanionHome({
   installs,
+  remotes,
+  now,
+  tailscale,
   onAdd,
   onAddWsl,
+  onAddRemote,
+  onPairAgain,
 }: {
   installs: LocalInstall[];
+  /** The paired records, as one heading per host with its cards under it (map #690). */
+  remotes: readonly RemoteRecord[];
+  now: Date;
+  tailscale: { running: boolean; detail: string } | null;
   onAdd: (() => void) | undefined;
   /** The picker opened among the WSL distros. Only on a machine that has some. */
   onAddWsl: (() => void) | undefined;
+  onAddRemote: (() => void) | undefined;
+  onPairAgain: (record: RemoteRecord) => void;
 }) {
+  const sections = hostSections(remotes, now);
   return (
     <main className="main">
       <h1>Phoebe</h1>
+      {tailscale !== null && !tailscale.running ? (
+        <p className="warning" role="status">
+          Tailscale is off on this machine, so no remote below can be reached. Start it; every
+          remote retries at once.
+        </p>
+      ) : null}
+      {sections.map((section) => (
+        <section key={section.host} className="machine" aria-label={section.host}>
+          <h2>
+            <span className="mono">{section.host}</span>{" "}
+            <span className="muted small">
+              {section.rows.length === 1 ? "1 deployment" : `${section.rows.length} deployments`}
+            </span>
+          </h2>
+          <ul className="cards">
+            {section.rows.map((row) => (
+              <li
+                key={row.record.deploymentId}
+                className={`cell${row.attention ? " attention" : ""}`}
+              >
+                <a href={remoteHref(row.record.deploymentId)}>
+                  <strong>{row.record.name}</strong>
+                </a>{" "}
+                <span className={`muted ${row.tone}`}>{row.text}</span>
+                {row.blocked === null ? null : (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() =>
+                        row.blocked?.action === "update" ? undefined : onPairAgain(row.record)
+                      }
+                    >
+                      {row.blocked.action}
+                    </button>
+                  </>
+                )}
+                {row.expiry === null ? null : <div className="warning small">{row.expiry}</div>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+      {onAddRemote === undefined ? null : (
+        <p className="actions">
+          <button type="button" onClick={onAddRemote}>
+            + add a remote
+          </button>{" "}
+          <span className="muted small">paste a pairing link, or an address and a code</span>
+        </p>
+      )}
       <section>
         <h2>This machine</h2>
         {installs.length === 0 ? (

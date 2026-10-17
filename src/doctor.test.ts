@@ -27,6 +27,7 @@ import {
   tenantCredential,
   tenantRow,
   tenantTokenCheck,
+  remoteCheck,
 } from "./doctor.ts";
 import { createDeadline, DEADLINE_DETAIL } from "./doctor-deadline.ts";
 
@@ -1259,5 +1260,184 @@ describe("reading one tenant's store (#504)", () => {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, "secrets.json"), "not json");
     expect(readTenantSecretStore("acme/widget", dataBase, {}).values).toBeNull();
+  });
+});
+
+describe("remoteCheck (map #690)", () => {
+  const healthySidecar = {
+    remote: { arm: "sidecar" as const },
+    vantage: "container" as const,
+    listener: { answering: true, where: "/var/run/phoebe/api.sock" },
+    localApi: {
+      status: {
+        backendState: "Running",
+        dnsName: "phoebe.tail4f2c.ts.net",
+        certDomain: "phoebe.tail4f2c.ts.net",
+      },
+      servesSocket: true,
+    },
+    mintDrop: { path: "/run/phoebe-mint", exists: true, isDirectory: true, ownedByRoot: true },
+    reported: {
+      configured: true,
+      arm: "sidecar" as const,
+      url: "https://phoebe.tail4f2c.ts.net",
+      sessions: { active: 1, expired: 0 },
+      tampered: false,
+      updatedAt: "2026-10-16T00:00:00.000Z",
+    },
+  };
+
+  test("no block is unknown, and says the deployment is read locally", () => {
+    expect(remoteCheck({ remote: undefined, vantage: "host" })).toEqual({
+      id: "remote",
+      state: "unknown",
+      detail: expect.stringMatching(/no `remote` block/),
+    });
+  });
+
+  test("a block that will not parse fails, so the typo is not hidden behind 'no block'", () => {
+    const check = remoteCheck({
+      remote: undefined,
+      vantage: "host",
+      configError: "remote.tailscale must be…",
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain("remote.tailscale must be");
+  });
+
+  test("sidecar, healthy, from inside: ok, names the vantage point, the node and the URL", () => {
+    const check = remoteCheck(healthySidecar);
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("sidecar arm, in the container");
+    expect(check.detail).toContain("listener answers on /var/run/phoebe/api.sock");
+    expect(check.detail).toContain("node phoebe.tail4f2c.ts.net");
+    expect(check.detail).toContain("https://phoebe.tail4f2c.ts.net");
+  });
+
+  test("sidecar with LocalAPI down fails and names the sidecar service", () => {
+    const check = remoteCheck({
+      ...healthySidecar,
+      localApi: { status: null, servesSocket: null },
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(/LocalAPI does not answer.*compose\.tailscale-sidecar\.yml/);
+  });
+
+  test("sidecar not yet on the tailnet warns; Serve not proxying to the socket fails", () => {
+    const waiting = remoteCheck({
+      ...healthySidecar,
+      localApi: {
+        status: { backendState: "NeedsLogin", dnsName: null, certDomain: null },
+        servesSocket: true,
+      },
+    });
+    expect(waiting.state).toBe("warn");
+    expect(waiting.detail).toContain("NeedsLogin");
+    const unserved = remoteCheck({
+      ...healthySidecar,
+      localApi: { ...healthySidecar.localApi, servesSocket: false },
+    });
+    expect(unserved.state).toBe("fail");
+    expect(unserved.detail).toMatch(/serve\.json is not applied/);
+  });
+
+  test("a listener that does not answer fails and says the block is boot-time", () => {
+    const check = remoteCheck({
+      ...healthySidecar,
+      listener: { answering: false, where: "/var/run/phoebe/api.sock", detail: "ENOENT" },
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(
+      /nothing answers the descriptor.*ENOENT.*phoebe stop.*phoebe start/,
+    );
+  });
+
+  test("the mint drop missing, or not root's, fails naming the path", () => {
+    const missing = remoteCheck({
+      ...healthySidecar,
+      mintDrop: { path: "/run/phoebe-mint", exists: false, isDirectory: false, ownedByRoot: false },
+    });
+    expect(missing.state).toBe("fail");
+    expect(missing.detail).toMatch(/\/run\/phoebe-mint is missing.*phoebe pair/);
+    const stolen = remoteCheck({
+      ...healthySidecar,
+      mintDrop: { path: "/run/phoebe-mint", exists: true, isDirectory: true, ownedByRoot: false },
+    });
+    expect(stolen.state).toBe("fail");
+    expect(stolen.detail).toMatch(/not owned by root/);
+  });
+
+  test("a tampered sessions file fails; an exhausted rejection budget warns", () => {
+    const tampered = remoteCheck({
+      ...healthySidecar,
+      reported: { ...healthySidecar.reported, tampered: true },
+    });
+    expect(tampered.state).toBe("fail");
+    expect(tampered.detail).toMatch(/sessions\.json differs/);
+    const busy = remoteCheck({ ...healthySidecar, rejections: { exhausted: true, count: 12 } });
+    expect(busy.state).toBe("warn");
+    expect(busy.detail).toMatch(/12 pair attempts rejected/);
+  });
+
+  test("host arm, healthy, from the host: ok with the URL Serve answers on", () => {
+    const check = remoteCheck({
+      remote: { arm: "host", port: 7463, httpsPort: 443 },
+      vantage: "host",
+      overlays: { present: ["/d/container/compose.tailscale-host.yml"], missing: [] },
+      services: { running: ["phoebe"], publishedPorts: ["127.0.0.1:7463:7463"] },
+      serve: { state: "ready", url: "https://beast.tail4f2c.ts.net" },
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("host arm, from the host");
+    expect(check.detail).toContain("https://beast.tail4f2c.ts.net serves this deployment");
+  });
+
+  test("host arm with a foreign mapping fails with the mapping named", () => {
+    const check = remoteCheck({
+      remote: { arm: "host", port: 7463, httpsPort: 443 },
+      vantage: "host",
+      overlays: { present: ["x"], missing: [] },
+      services: { running: ["phoebe"], publishedPorts: ["127.0.0.1:7463:7463"] },
+      serve: {
+        state: "refused",
+        detail:
+          "https://beast.ts.net already proxies to http://127.0.0.1:3000, which is not this deployment.",
+      },
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain("already proxies to http://127.0.0.1:3000");
+  });
+
+  test("the running services not matching the arm warns and says stop then start", () => {
+    const noSidecar = remoteCheck({
+      remote: { arm: "sidecar" },
+      vantage: "host",
+      overlays: { present: ["x", "y"], missing: [] },
+      services: { running: ["phoebe"], publishedPorts: [] },
+    });
+    expect(noSidecar.state).toBe("warn");
+    expect(noSidecar.detail).toMatch(/no tailscale service running.*phoebe stop.*phoebe start/);
+    const leftover = remoteCheck({
+      remote: { arm: "host", port: 7463, httpsPort: 443 },
+      vantage: "host",
+      overlays: { present: ["x"], missing: [] },
+      services: { running: ["phoebe", "tailscale"], publishedPorts: ["127.0.0.1:7463:7463"] },
+      serve: { state: "ready", url: "https://x" },
+    });
+    expect(leftover.state).toBe("warn");
+    expect(leftover.detail).toMatch(/sidecar is still running/);
+  });
+
+  test("a missing overlay fails and points at phoebe init", () => {
+    const check = remoteCheck({
+      remote: { arm: "sidecar" },
+      vantage: "host",
+      overlays: { present: [], missing: ["/d/container/compose.tailscale-sidecar.yml"] },
+      services: { running: [], publishedPorts: [] },
+    });
+    expect(check.state).toBe("fail");
+    expect(check.detail).toMatch(
+      /missing \/d\/container\/compose\.tailscale-sidecar\.yml.*phoebe init/,
+    );
   });
 });

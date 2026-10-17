@@ -23,8 +23,8 @@
 // in progress, not an incident (#515 §3).
 //
 // **Darkness waits five minutes.** The console says "dark" at the 60 s mark
-// because that is when the relay stops believing the socket; the alert waits
-// until {@link ALERT_DARK_AFTER_MS}, so a container restart or a flapping
+// because that is when the companion stops believing the socket; the alert
+// waits until {@link ALERT_DARK_AFTER_MS}, so a container restart or a flapping
 // uplink never wakes anyone (#515 §4).
 //
 // **A dark deployment's other conditions are frozen.** Its reports are stale,
@@ -281,7 +281,7 @@ function darkness(facts: ConnectionAlertFacts, darkAfterMs: number): Observation
   return {
     state: "raised",
     since: facts.quietSince ?? "",
-    detail: `no heartbeat for ${minutesOf(facts.quietForMs)}`,
+    detail: `unreachable for ${coarseDurationOf(facts.quietForMs)}`,
   };
 }
 
@@ -343,9 +343,16 @@ function departed(
   return null;
 }
 
-/** `no heartbeat for 5 min` — whole minutes, floored, never `0 min`. */
-function minutesOf(ms: number): string {
-  return `${Math.max(Math.floor(ms / 60_000), 1)} min`;
+/**
+ * `5 min`, `3 h`, `2 d` — the coarse words the console uses for a duration,
+ * so a week unreachable reads as `7 d` and not `10080 min`. Never `0 min`.
+ */
+function coarseDurationOf(ms: number): string {
+  const minutes = Math.max(Math.floor(ms / 60_000), 1);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h`;
+  return `${Math.floor(hours / 24)} d`;
 }
 
 /**
