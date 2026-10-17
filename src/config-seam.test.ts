@@ -91,9 +91,15 @@ describe("config seam", () => {
 
   const repoLiterals = [config.repoSlug, config.repoUrl, config.readyLabel, config.branchPrefix];
 
+  // Two fixed paths of the deployment API (map #690) carry the product's name
+  // followed by a slash, which is also the default branch prefix. They name a
+  // URL and a socket, not a branch, so they are taken out before the scan.
+  const PATH_LITERALS = ["/.well-known/phoebe/deployment", "/var/run/phoebe/api.sock"];
+
   test("engine body never mentions the config's repo-specific literals", () => {
     for (const file of engineBodyFiles()) {
-      const source = readFileSync(file, "utf8");
+      let source = readFileSync(file, "utf8");
+      for (const path of PATH_LITERALS) source = source.replaceAll(path, "");
       for (const literal of repoLiterals) {
         expect(source, `${file} must not contain "${literal}"`).not.toContain(literal);
       }

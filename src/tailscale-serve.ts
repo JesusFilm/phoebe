@@ -21,11 +21,9 @@
 
 import { accessSync, constants, readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { DESCRIPTOR_PATH } from "./contracts/remote-protocol.ts";
 import type { ServeOutcome } from "./contracts/start-outcome.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
-
-/** The open descriptor's path; the same one the deployment serves. */
-export const DESCRIPTOR_PATH = "/.well-known/phoebe/deployment";
 
 /** The App Store build keeps its CLI inside the bundle, off PATH. */
 export const MACOS_BUNDLE_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";

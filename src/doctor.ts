@@ -531,7 +531,7 @@ export type DescriptorProbe = (
   where: { socketPath: string } | { host: string; port: number },
 ) => Promise<{ answering: boolean; detail?: string }>;
 
-/** `GET /.well-known/phoebe/deployment` over node:http, on a socket or loopback. */
+/** GET the descriptor over node:http, on a socket or loopback. */
 export const defaultDescriptorProbe: DescriptorProbe = (where) =>
   new Promise((resolve) => {
     const req = httpRequest(

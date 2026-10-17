@@ -13,13 +13,8 @@ import type { DeploymentArm } from "./deployment.ts";
 /** The protocol this build speaks. Mirrored by hand in index.mjs. */
 export const REMOTE_PROTOCOL = 1;
 
-/**
- * The one open read: who answers here, before any code is spent. Spelled in
- * pieces because config-seam.test.ts forbids the default branch prefix (the
- * product's name followed by a slash) anywhere in the engine body, and this
- * path is the one legitimate place those characters meet.
- */
-export const DESCRIPTOR_PATH = ["", ".well-known", "phoebe", "deployment"].join("/");
+/** The one open read: who answers here, before any code is spent. */
+export const DESCRIPTOR_PATH = "/.well-known/phoebe/deployment";
 
 /**
  * The listener's Unix socket on the sidecar arm, in the directory both
