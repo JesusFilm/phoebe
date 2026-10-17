@@ -7,12 +7,11 @@ import { describe, expect, test } from "vite-plus/test";
 import type {
   ChildLiveness,
   ConfigReport,
-  DeploymentIdentity,
   DeploymentReport,
   FleetCell,
-  RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
+import type { RemoteReport } from "./contracts/remote-protocol.ts";
 import type { DoctorSection } from "./contracts/doctor.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
 import { COMPOSE_REL_PATH } from "./deployment-compose.ts";
@@ -21,7 +20,7 @@ import {
   formatBootstrapperLine,
   formatDoctorLine,
   formatProcessLine,
-  formatRelayLine,
+  formatRemoteLine,
   formatStateLine,
   formatStatusReport,
   LIST_DEPRECATION_NOTICE,
@@ -35,8 +34,6 @@ import {
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
 const MINUTES_AGO = (n: number): string => new Date(NOW - n * 60_000).toISOString();
-/** Who the deployment is — the relay line reads its name and key from here (#540). */
-const IDENTITY: DeploymentIdentity = { name: "acme", arm: "workspace" };
 
 function tenant(fields: Partial<TenantFacts> = {}): TenantFacts {
   return {
@@ -85,7 +82,7 @@ function report(fields: {
   cells?: FleetCell[];
   tenants?: TenantFacts[];
   children?: ChildLiveness[];
-  relay?: RelayReport;
+  remote?: RemoteReport;
   doctor?: DoctorSection;
   bootstrapper?: Partial<DeploymentReport["bootstrapper"]>;
 }): DeploymentReport {
@@ -116,11 +113,12 @@ function report(fields: {
       omitted: 0,
       updatedAt: MINUTES_AGO(2),
     },
-    relay: fields.relay ?? {
+    remote: fields.remote ?? {
       configured: false,
-      state: "unpaired",
-      nextRetryAt: null,
-      lastClose: null,
+      arm: null,
+      url: null,
+      sessions: { active: 0, expired: 0 },
+      tampered: false,
       updatedAt: MINUTES_AGO(2),
     },
     doctor: fields.doctor ?? { report: null, at: null, trigger: null, updatedAt: MINUTES_AGO(2) },
@@ -230,41 +228,58 @@ describe("the bootstrapper line", () => {
   });
 });
 
-describe("the relay line", () => {
+describe("the remote line", () => {
   test("no section and an unconfigured one both print nothing", () => {
-    expect(formatRelayLine(undefined, IDENTITY, NOW)).toBeNull();
+    expect(formatRemoteLine(undefined, NOW)).toBeNull();
     expect(
-      formatRelayLine(
+      formatRemoteLine(
         {
           configured: false,
-          state: "unpaired",
-          nextRetryAt: null,
-          lastClose: null,
+          arm: null,
+          url: null,
+          sessions: { active: 0, expired: 0 },
+          tampered: false,
           updatedAt: MINUTES_AGO(5),
         },
-        IDENTITY,
         NOW,
       ),
     ).toBeNull();
   });
 
-  test("a configured relay is one line of facts", () => {
-    const line = formatRelayLine(
+  test("a configured remote is one line of facts", () => {
+    const line = formatRemoteLine(
       {
         configured: true,
-        state: "reconnecting",
-        nextRetryAt: new Date(NOW + 30_000).toISOString(),
-        lastClose: { code: 1006, reason: "", at: MINUTES_AGO(3) },
+        arm: "sidecar",
+        url: "https://phoebe.tail1234.ts.net",
+        sessions: { active: 2, expired: 1 },
+        tampered: false,
         updatedAt: MINUTES_AGO(3),
       },
-      { ...IDENTITY, name: "relay.example", keyFingerprint: "SHA256:abc" },
       NOW,
     );
-    expect(line).toContain("relay.example");
-    expect(line).toContain("reconnecting 3m");
-    expect(line).toContain("next retry in 30s");
-    expect(line).toContain("last close 1006");
-    expect(line).toContain("SHA256:abc");
+    expect(line).toContain("sidecar arm");
+    expect(line).toContain("https://phoebe.tail1234.ts.net");
+    expect(line).toContain("2 devices paired (1 expired)");
+    expect(line).toContain("updated 3m ago");
+    expect(line).not.toContain("tampered");
+  });
+
+  test("a host arm with no URL yet says so, and a tampered file is named", () => {
+    const line = formatRemoteLine(
+      {
+        configured: true,
+        arm: "host",
+        url: null,
+        sessions: { active: 1, expired: 0 },
+        tampered: true,
+        updatedAt: MINUTES_AGO(3),
+      },
+      NOW,
+    )!;
+    expect(line).toContain("no tailnet URL yet");
+    expect(line).toContain("1 device paired");
+    expect(line).toContain("tampered");
   });
 });
 
@@ -344,16 +359,17 @@ describe("the two lines per pipeline", () => {
 });
 
 describe("the text view", () => {
-  test("priority order: bootstrapper, relay, fleet, doctor", () => {
+  test("priority order: bootstrapper, remote, fleet, doctor", () => {
     const text = view({
       report: report({
         cells: [cell({ pipeline: "work" })],
         children: [child({ id: "/etc/phoebe/children/widget#work" })],
-        relay: {
+        remote: {
           configured: true,
-          state: "connected",
-          nextRetryAt: null,
-          lastClose: null,
+          arm: "sidecar",
+          url: "https://phoebe.tail1234.ts.net",
+          sessions: { active: 0, expired: 0 },
+          tampered: false,
           updatedAt: MINUTES_AGO(120),
         },
         doctor: doctorSection(),
@@ -365,7 +381,7 @@ describe("the text view", () => {
       .map((line) => line.split(/\s{2,}/)[0]);
     expect(order).toEqual([
       "[phoebe] bootstrapper",
-      "[phoebe] relay",
+      "[phoebe] remote",
       "[phoebe] fleet",
       "[phoebe] doctor",
     ]);

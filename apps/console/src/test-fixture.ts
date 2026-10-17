@@ -210,11 +210,12 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       slots: { capacity: 2, inUse: 1, waiting: 0, overGranted: 0, floorBudget: 0 },
       updatedAt: ago(12),
     },
-    relay: {
-      configured: true,
-      state: "connected",
-      nextRetryAt: null,
-      lastClose: null,
+    remote: {
+      configured: false,
+      arm: null,
+      url: null,
+      sessions: { active: 0, expired: 0 },
+      tampered: false,
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },

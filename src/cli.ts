@@ -132,7 +132,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, status, list, config, purge, upgrade, doctor, migrate, stop, start, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, secret, purge, upgrade, doctor, migrate, stop, start, pair, sessions, remote-url, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -315,6 +315,10 @@ Profiles (mutually exclusive; default is solo):
     container/Dockerfile         Runtime image (Node 24 + git + gh, entrypoint: phoebe boot)
     container/compose.yml        Compose config for the long-lived boot container
     container/compose.local.yml  Dev overlay to run an engine checkout from your host
+    container/compose.tailscale-sidecar.yml
+    container/compose.tailscale-host.yml
+    container/tailscale/serve.json
+                                 Remote-access overlays, inert without a "remote" block (docs/remote.md)
 
   --workspace writes into [dir]:
     phoebe.config.ts             engine + workspace: { depth: 1 } only (no per-repo fields)
@@ -627,6 +631,12 @@ export async function runCli(): Promise<void> {
   if (args[0] === "start") {
     const { runStartCli } = await import("./start.ts");
     return await runStartCli(args.slice(1));
+  }
+  // The host arm's hand-off of the tailnet URL into the container (map #690):
+  // `phoebe start` execs this after reconciling Serve. In-container only.
+  if (args[0] === "remote-url") {
+    const { runRemoteUrlCli } = await import("./remote-url.ts");
+    return await runRemoteUrlCli(args.slice(1));
   }
 
   const parsed = parseCliArgs(args);

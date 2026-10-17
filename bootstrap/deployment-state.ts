@@ -55,11 +55,11 @@ import type {
   EditLedgerEntry,
   FleetCell,
   ReconcileState,
-  RelayReport,
   SlotReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
+import type { RemoteReport } from "../src/contracts/remote-protocol.ts";
 import {
   EFFECTIVE_CONFIG_VERSION,
   type TenantEffectiveConfig,
@@ -103,28 +103,27 @@ export type EngineReport =
   | { kind: "status"; snapshot: StatusSnapshot };
 
 /**
- * The relay section as the link reports it (#540) — everything but the stamp,
- * which the report owns.
+ * The remote section as the listener reports it (map #690) — everything but
+ * the stamp, which the report owns.
  */
-export type RelayStatus = Omit<RelayReport, "updatedAt">;
+export type RemoteStatus = Omit<RemoteReport, "updatedAt">;
 
 /**
- * A deployment that dials nothing. Not an absent section: "this deployment has
- * no relay" is a fact a console states, and it states it from here.
+ * A deployment with no `remote` block. Not an absent section: "nothing listens"
+ * is a fact a console states, and it states it from here.
  */
-export const UNCONFIGURED_RELAY: RelayStatus = {
+export const UNCONFIGURED_REMOTE: RemoteStatus = {
   configured: false,
-  state: "unpaired",
-  nextRetryAt: null,
-  lastClose: null,
+  arm: null,
+  url: null,
+  sessions: { active: 0, expired: 0 },
+  tampered: false,
 };
 
 export type DeploymentStateDeps = {
   /**
    * Who this deployment is (#505). Read at publish time rather than handed over
-   * once: `keyFingerprint` appears the moment a first pairing completes, and a
-   * deployment that paired mid-run should not have to wait for a restart to say
-   * so.
+   * once, so a fact that lands mid-run shows up without a restart.
    */
   identity: () => DeploymentIdentity;
   /** The data volume's mount point — the report's home and the tenants' state dirs. */
@@ -168,9 +167,9 @@ export type DeploymentStateDeps = {
   /** The report could not be written. One log line; never a throw. */
   onWriteError?: (error: unknown) => void;
   /**
-   * The report moved and was written (#542). The relay link's cue to push it;
-   * the link reads the report itself through {@link DeploymentState.latest}, so
-   * this is a signal rather than a delivery. Never called when nothing changed,
+   * The report moved and was written (#542). The event stream's cue to push it;
+   * the listener reads the report itself through {@link DeploymentState.latest},
+   * so this is a signal rather than a delivery. Never called when nothing changed,
    * which is what makes the push "on change" rather than "on a timer".
    */
   onReport?: () => void;
@@ -217,10 +216,11 @@ export type DeploymentState = {
   /** The live pipeline matrix, as of this poll. */
   notePipelines: (pipelines: readonly SupervisedPipeline[]) => void;
   /**
-   * Where the relay link stands (#540). Never called on a deployment with no
-   * `relay` block — that is what leaves the section at {@link UNCONFIGURED_RELAY}.
+   * Where the remote listener stands (map #690): the arm, the URL once learned,
+   * the session counts, the tampered flag. Never called on a deployment with no
+   * `remote` block — that is what leaves the section at {@link UNCONFIGURED_REMOTE}.
    */
-  noteRelay: (status: RelayStatus) => void;
+  noteRemote: (status: RemoteStatus) => void;
   /**
    * The tenants discovery is holding right now, with their reasons. Nothing is
    * held until something says so, which is also solo's whole answer: the root is
@@ -231,7 +231,7 @@ export type DeploymentState = {
   publish: () => void;
   /**
    * The report as it was last written, or null before the first one. What the
-   * relay link sends, and the only copy: a reader that held its own would be
+   * event stream sends, and the only copy: a reader that held its own would be
    * holding a second answer to a question with one (#542).
    */
   latest: () => DeploymentReport | null;
@@ -298,7 +298,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     quarantinedSha: null as string | null,
   };
   let reconcile: ReconcileState = { phase: "idle", since: iso(now()) };
-  let relay: RelayStatus = UNCONFIGURED_RELAY;
+  let remote: RemoteStatus = UNCONFIGURED_REMOTE;
   // "Never": a deployment that has not run doctor yet says so, rather than
   // leaving the section out and making every reader handle its absence.
   let doctor: Omit<DoctorSection, "updatedAt"> = { report: null, at: null, trigger: null };
@@ -527,7 +527,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           children: livenessOf(at),
           slots: deps.slots(),
         },
-        relay,
+        remote,
         fleet: buildFleet(at),
         doctor,
         config: {
@@ -550,7 +550,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       deps.onWriteError?.(error);
       return;
     }
-    // Outside the try: a relay that throws on the way to a socket is not a
+    // Outside the try: a listener that throws on the way to a socket is not a
     // failure to write the report, and must not be reported as one.
     deps.onReport?.();
   };
@@ -663,8 +663,8 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       publish();
     },
 
-    noteRelay(status) {
-      relay = status;
+    noteRemote(status) {
+      remote = status;
       publish();
     },
 

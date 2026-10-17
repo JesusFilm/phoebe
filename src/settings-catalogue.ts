@@ -311,6 +311,10 @@ export const DEPLOYMENT_FACTS: readonly { name: string; why: string }[] = [
     name: "PHOEBE_DOCTOR_LEASES",
     why: "The credential leases the bootstrapper hands a doctor child it spawned.",
   },
+  {
+    name: "PHOEBE_REMOTE_PORT",
+    why: "The loopback port the host overlay publishes; `phoebe start` exports it from `remote.port`, which is its one home.",
+  },
 ];
 
 const BY_PATH = new Map(SETTINGS.map((entry) => [entry.path, entry]));

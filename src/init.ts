@@ -141,6 +141,22 @@ function planContainerOutputs(): PlannedOutput[] {
       destRelPath: "container/compose.local.yml",
       source: { kind: "template", templateRelPath: "container/compose.local.yml" },
     },
+    // The two Tailscale overlays and Serve's config (map #690): written
+    // unconditionally and inert until the config carries a `remote` block.
+    // An older install re-runs `phoebe init` to get them; nothing it already
+    // has is touched.
+    {
+      destRelPath: "container/compose.tailscale-sidecar.yml",
+      source: { kind: "template", templateRelPath: "container/compose.tailscale-sidecar.yml" },
+    },
+    {
+      destRelPath: "container/compose.tailscale-host.yml",
+      source: { kind: "template", templateRelPath: "container/compose.tailscale-host.yml" },
+    },
+    {
+      destRelPath: "container/tailscale/serve.json",
+      source: { kind: "template", templateRelPath: "container/tailscale/serve.json" },
+    },
   ];
 }
 

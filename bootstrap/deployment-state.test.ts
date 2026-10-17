@@ -456,71 +456,76 @@ describe("the fleet matrix", () => {
   });
 });
 
-describe("the relay section (#540)", () => {
-  test("a deployment that dials nothing says so rather than staying silent", () => {
+describe("the remote section (map #690)", () => {
+  test("a deployment with no `remote` block says so rather than staying silent", () => {
     const h = harness();
     h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
-    expect(h.latest()!.relay).toMatchObject({
+    expect(h.latest()!.remote).toMatchObject({
       configured: false,
-      state: "unpaired",
-      nextRetryAt: null,
-      lastClose: null,
+      arm: null,
+      url: null,
+      sessions: { active: 0, expired: 0 },
+      tampered: false,
     });
   });
 
-  test("the link's word goes straight into the report", () => {
+  test("the listener's word goes straight into the report", () => {
     const h = harness();
-    h.state.noteRelay({
+    h.state.noteRemote({
       configured: true,
-      state: "connected",
-      nextRetryAt: null,
-      lastClose: null,
+      arm: "sidecar",
+      url: "https://phoebe.tail1234.ts.net",
+      sessions: { active: 2, expired: 1 },
+      tampered: false,
     });
-    expect(h.latest()!.relay).toMatchObject({ configured: true, state: "connected" });
+    expect(h.latest()!.remote).toMatchObject({
+      configured: true,
+      arm: "sidecar",
+      url: "https://phoebe.tail1234.ts.net",
+      sessions: { active: 2, expired: 1 },
+    });
   });
 
-  test("a link that went down and is retrying is one publish, not a stream of them", () => {
+  test("the same status twice is one publish, not two", () => {
     const h = harness();
-    const reconnecting = {
+    const status = {
       configured: true,
-      state: "reconnecting" as const,
-      nextRetryAt: "2026-05-05T00:00:05.000Z",
-      lastClose: { code: 1006, reason: "", at: "2026-05-05T00:00:00.000Z" },
+      arm: "host" as const,
+      url: null,
+      sessions: { active: 0, expired: 0 },
+      tampered: false,
     };
-    h.state.noteRelay(reconnecting);
+    h.state.noteRemote(status);
     const after = h.written.length;
-    h.state.noteRelay({ ...reconnecting });
+    h.state.noteRemote({ ...status });
     expect(h.written.length).toBe(after);
   });
 
-  test("the identity the model publishes is re-read, so a pairing mid-run shows up", () => {
-    let fingerprint: string | undefined;
+  test("the identity the model publishes is re-read, so a fact that lands mid-run shows up", () => {
+    let deploymentId: string | undefined;
     const h = harness({
       identity: () => ({
         name: "acme/widget",
         arm: "solo",
-        ...(fingerprint !== undefined ? { keyFingerprint: fingerprint } : {}),
-        relayUrl: "wss://relay.example.com/deployments",
+        ...(deploymentId !== undefined ? { deploymentId } : {}),
       }),
     });
     h.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
-    expect(h.latest()!.identity.keyFingerprint).toBeUndefined();
+    expect(h.latest()!.identity.deploymentId).toBeUndefined();
 
-    fingerprint = "a-fresh-fingerprint";
-    h.state.noteRelay({
+    deploymentId = "dep_0123456789ABCDEFGHJKMNPQRS";
+    h.state.noteRemote({
       configured: true,
-      state: "connected",
-      nextRetryAt: null,
-      lastClose: null,
+      arm: "host",
+      url: null,
+      sessions: { active: 0, expired: 0 },
+      tampered: false,
     });
-    expect(h.latest()!.identity).toMatchObject({
-      keyFingerprint: "a-fresh-fingerprint",
-      relayUrl: "wss://relay.example.com/deployments",
-    });
+    expect(h.latest()!.identity).toMatchObject({ deploymentId: "dep_0123456789ABCDEFGHJKMNPQRS" });
   });
 });
 
-describe("the report the relay link reads", () => {
+describe("the report the event stream reads", () => {
   test("`latest` is the report as last written, and null before the first", () => {
     const h = harness();
     expect(h.state.latest()).toBeNull();
