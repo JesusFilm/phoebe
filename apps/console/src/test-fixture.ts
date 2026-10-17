@@ -31,6 +31,11 @@ import type {
   TenantFacts,
   VerbRun,
   VerbRunRequest,
+  PairResult,
+  RemoteAlertEvent,
+  RemoteRecord,
+  RemoteReportEvent,
+  SessionRow,
 } from "phoebe-agent/contracts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
@@ -271,6 +276,28 @@ export function environment(overrides: Partial<CompanionEnvironment> = {}): Comp
  */
 export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
   return {
+    remotes: {
+      list: () => Promise.resolve(answers.remotes ?? []),
+      pair: () =>
+        Promise.resolve(
+          answers.pairResult ?? { outcome: "unreachable", detail: "nothing answered" },
+        ),
+      request: () => Promise.resolve({ status: 404, body: { error: "not-found" } }),
+      signOut: () => Promise.resolve(),
+      forget: () => Promise.resolve(),
+      sessions: () => Promise.resolve(answers.sessions ?? []),
+      revoke: () => Promise.resolve({ outcome: "revoked" }),
+      changes: () => () => undefined,
+      reports: (onReport) => {
+        for (const event of answers.remoteReports ?? []) onReport(event);
+        return () => undefined;
+      },
+      alerts: (onAlert) => {
+        for (const event of answers.remoteAlerts ?? []) onAlert(event);
+        return () => undefined;
+      },
+      tailscale: () => Promise.resolve(answers.tailscale ?? { running: true, detail: "Running" }),
+    },
     version: () => Promise.resolve("0.13.0"),
     environment: () => Promise.resolve(answers.environment ?? environment()),
     installs: {
@@ -398,6 +425,13 @@ export type BridgeAnswers = {
   reports?: LocalReportEvent[];
   /** What main raised over a local install (#559). */
   alerts?: LocalAlertEvent[];
+  /** The remote arm (map #690): the records, what a pair answers, the devices list, the events. */
+  remotes?: RemoteRecord[];
+  pairResult?: PairResult;
+  sessions?: SessionRow[];
+  remoteReports?: RemoteReportEvent[];
+  remoteAlerts?: RemoteAlertEvent[];
+  tailscale?: { running: boolean; detail: string } | null;
   /** Where the companion's own update stands (#525 §3). */
   update?: CompanionUpdate;
   /** Collects the update buttons the page pressed. */

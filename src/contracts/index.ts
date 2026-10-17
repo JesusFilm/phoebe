@@ -125,6 +125,17 @@ export type {
 export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
 export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
 export type {
+  BlockedReason,
+  PairResult,
+  Reachability,
+  RemoteAlertEvent,
+  RemotePassthrough,
+  RemoteRecord,
+  RemoteReportEvent,
+  RemoteResponse,
+  RevokeOutcome,
+} from "./remote-record.ts";
+export type {
   UpgradeCheckReport,
   UpgradeHalfOutcome,
   UpgradeOutcome,
