@@ -243,6 +243,28 @@ export function stored(
   };
 }
 
+/** One paired record (map #690), connected and reporting, with the fields a test cares about spelled out. */
+export function remote(overrides: Partial<RemoteRecord> = {}): RemoteRecord {
+  return {
+    deploymentId: "dep_YT",
+    url: "https://youtube-studio.tail4f2c.ts.net",
+    name: "youtube-studio",
+    label: "Mike's MacBook",
+    arm: "host",
+    protocol: 1,
+    scopes: ["read", "operate"],
+    expiresAt: new Date(NOW.getTime() + 20 * 86_400_000).toISOString(),
+    sessionId: "ses_me",
+    pairedAt: ago(3600),
+    lastHeardAt: ago(5),
+    lastReport: stored(
+      report({ identity: { name: "youtube-studio", arm: "solo", deploymentId: "dep_YT" } }),
+    ),
+    reachability: "connected",
+    ...overrides,
+  };
+}
+
 // ── the companion's side ──────────────────────────────────────────────────
 
 /** One local install, with only the fields a test cares about spelled out. */

@@ -26,12 +26,18 @@ export type DeploymentTab = (typeof DEPLOYMENT_TABS)[number];
  * usually answering one of the three questions and not the other two.
  */
 export type ConnectionCard = {
-  /** The arm, in the operator's words: a local install, or a relay. */
+  /** The arm, in the operator's words: a local install, or a remote. */
   arm: string;
-  /** What identifies it — a path on this machine, a fingerprint on a relay. */
+  /** What identifies it — a path on this machine, a tailnet address. */
   detail: string;
   /** How these facts arrived. */
   note: string;
+  /**
+   * The chip to the same deployment's other route (map #690): `↗ <hostname>`
+   * on a local install that is also paired, `↗ this machine` on the remote
+   * route of a folder here. Absent when the deployment is reached one way.
+   */
+  link?: { href: string; text: string; title: string };
 };
 
 /** The config as the page can show it, from wherever this arm reads one. */

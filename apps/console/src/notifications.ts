@@ -7,12 +7,14 @@
 // banner says.
 //
 // **A clear replaces its raise in place** (#524 §5). Every notification carries
-// the tag `<deployment or install>:<condition>`, so the OS folds the pair: at
-// most one banner per (deployment, condition) is on screen, the clear overwrites
-// the raise, and an overnight dark that recovered is still there in the morning
-// saying it recovered. That is also why the tag leaves the pipeline out — the
-// alert's own key has it, and folding three wedged pipelines into one line is
-// what keeps a bad afternoon from being twenty banners.
+// a tag the OS folds on, so the clear overwrites the raise and an overnight
+// dark that recovered is still there in the morning saying it recovered.
+//
+// **The tag is per route** (map #690, the owner's call in #699):
+// `<route>/<deployment>/<pipeline>:<condition>`, where the route is `local`
+// for a folder on this machine and `remote` for a paired record. A deployment
+// reachable two ways is evaluated on each, so a wedge counts twice on the
+// badge and notifies twice while both routes see it.
 //
 // **Three manners, all decided** (#524 §6). Silent, because a sound is a
 // second interruption nobody asked for. Suppressed while the window is focused,
@@ -26,9 +28,21 @@ import type { AlertBody } from "phoebe-agent/contracts";
 
 /** Which arm an alert came in on, and therefore which page a click opens. */
 export type AlertSubject =
-  | { arm: "relay"; fingerprint: string }
+  /** A paired record, named by its deployment id (map #690). */
+  | { arm: "remote"; deploymentId: string }
   /** A local install, named by its directory (#527 §12). */
   | { arm: "local"; install: string };
+
+/** The tag one route's alert folds on. */
+export function alertTag(input: {
+  arm: AlertSubject["arm"];
+  id: string;
+  pipeline: string | null;
+  condition: string;
+}): string {
+  const pipeline = input.pipeline === null ? "" : `/${input.pipeline}`;
+  return `${input.arm}/${input.id}${pipeline}:${input.condition}`;
+}
 
 /** One banner, ready for whatever is going to show it. */
 export type Notifiable = {
@@ -58,20 +72,23 @@ export function notificationFor(input: {
   if (!input.enabled || input.focused) return null;
   const { alert } = input;
   if (alert.kind === "test") {
-    return { tag: "test", title: "Phoebe relay", body: alert.text, subject: null, pipeline: null };
+    return { tag: "test", title: "Phoebe", body: alert.text, subject: null, pipeline: null };
   }
   const name = alert.deployment.name;
+  // The local arm names an install by its directory, the remote arm a record
+  // by its deployment id; both ride in the body's `keyFingerprint` slot.
   const id = alert.deployment.keyFingerprint;
+  const pipeline = alert.pipeline ?? null;
   return {
-    tag: `${id}:${alert.condition}`,
+    tag: alertTag({ arm: input.arm, id, pipeline, condition: alert.condition }),
     title: name,
     // The name is the title, so the sentence drops the prefix it carries for a
     // webhook, where there is nowhere else to put it. Sliced rather than rebuilt
     // because the sentence is the alert's, not this file's (#515 §9).
     body: withoutPrefix(alert.text, `${name}: `),
     subject:
-      input.arm === "relay" ? { arm: "relay", fingerprint: id } : { arm: "local", install: id },
-    pipeline: alert.pipeline ?? null,
+      input.arm === "remote" ? { arm: "remote", deploymentId: id } : { arm: "local", install: id },
+    pipeline,
   };
 }
 
