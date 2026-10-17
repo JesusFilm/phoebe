@@ -194,7 +194,7 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs eleven checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -216,6 +216,14 @@ per-pipeline stop verb, because hot `disabled: true` is the stop.
   before that mount existed looks identical until the first edit fails, so the
   check names the volume line to add and the restart that picks it up. In-container
   only, like **supervisor**.
+- **remote.** The `remote` block against what is running ([`remote.md`](remote.md)):
+  `unknown` with no block. In the container, that the listener answers the
+  descriptor, that the sidecar's node is on the tailnet and Serve proxies to the
+  socket, that the mint drop exists and is root's, that the sessions file has not
+  moved under the bootstrapper, and that the pair budget is not exhausted. From
+  the host, that the arm's overlay files exist, that the running services and
+  published ports match the arm, and on the host arm the same read-only Serve
+  inspection `phoebe start` runs. The line says which vantage point answered.
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
@@ -409,6 +417,8 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Let one janitor fix a bot's PRs               | `prScope: ["phoebe/", "renovate/"]` on that kind's block, leaving the tenant's alone.                                                                                           |
 | See what a setting resolves to, and why       | `phoebe config` (add `--json` for a machine).                                                                                                                                   |
 | Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
+| See the deployment from another machine       | Add a `remote` block, `phoebe stop`, `phoebe start`, then `phoebe pair` and paste the link into the companion ([`remote.md`](remote.md)).                                       |
+| See who is paired, or end a session           | `phoebe sessions`; `phoebe sessions revoke <id>` or `--all`.                                                                                                                    |
 
 ## Running many repos in one container
 

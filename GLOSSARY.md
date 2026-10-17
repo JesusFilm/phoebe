@@ -6,8 +6,9 @@ repository, does it in a container, and pushes the result as a pull request.
 This file is the glossary. For how the pieces fit together see
 [`docs/architecture.md`](docs/architecture.md); for the mechanics of each kind of work see
 [`docs/work-kinds.md`](docs/work-kinds.md); for running more than one stream of work in a
-tenant see [`docs/pipelines.md`](docs/pipelines.md); for the console, the relay and the
-companion see [`docs/console.md`](docs/console.md).
+tenant see [`docs/pipelines.md`](docs/pipelines.md); for the console and the companion see
+[`docs/console.md`](docs/console.md), and for reaching a deployment from another machine
+see [`docs/remote.md`](docs/remote.md).
 
 ## Language
 
@@ -65,7 +66,7 @@ _Avoid_: supervisor, launcher, wrapper
 The whole object one deployment hands a console: identity, what the bootstrapper is doing,
 the fleet matrix with each pipeline's state derived, and the last doctor run with its age.
 One fixed-size file, `state/deployment.json`, rewritten when something moves: read locally,
-and shipped as-is to a relay. A consumer renders it and derives nothing of its own.
+and served as-is over the deployment API. A consumer renders it and derives nothing of its own.
 _Avoid_: snapshot (that is `status.json`), state (that is the directory), status (that is
 the CLI verb), manifest
 
@@ -107,7 +108,7 @@ _Avoid_: origin, provenance, toggle
 
 **Config edit**:
 One field patch to a config file — `{ path, value }` against a fingerprint — applied in
-place by the splice substrate, at a shell or through the relay. Never a whole file, and
+place by the splice substrate, at a shell or over the deployment API. Never a whole file, and
 never more than one leaf.
 _Avoid_: change, update, patch (that is the wire shape, not the act)
 
@@ -140,11 +141,18 @@ tombstone and not a revocation — revoking a secret is rotating it.
 _Avoid_: unset, delete, revoke
 
 **Arm**:
-One of a mutually exclusive pair of shapes a deployment takes, resolved rather than
-configured. The deployment arms are **solo** (one tenant) and **workspace** (a fleet); the
-credential arms are **PAT** (an operator-supplied token) and **App** (a minted GitHub App
-installation token).
+One of a mutually exclusive pair of shapes a deployment takes, resolved or declared. The
+deployment arms are **solo** (one tenant) and **workspace** (a fleet); the credential arms
+are **PAT** (an operator-supplied token) and **App** (a minted GitHub App installation
+token); the transport arms are **sidecar** (Tailscale in a container beside the deployment)
+and **host** (the machine's own Tailscale serving a loopback port).
 _Avoid_: mode, variant, flavour
+
+**Remote deployment**:
+A deployment reached over the deployment API through Tailscale, with a `remote` block on its
+root config, rather than over `compose exec` on this machine. The same deployment can be
+both, and the companion draws each route.
+_Avoid_: relayed deployment, remote install
 
 ### Preparing work
 
@@ -362,13 +370,14 @@ _Avoid_: job, task, command
 **Device notification**:
 The OS notification the companion raises from an alert. A rendering of the alert, never
 its own record: it carries no state the fleet row does not already have, there is no list
-of them and no acknowledging one. Tagged by (deployment, condition), so a clear replaces
-the raise it is about rather than piling up beside it.
+of them and no acknowledging one. Tagged by (route, condition), so a clear replaces the
+raise it is about rather than piling up beside it.
 _Avoid_: push (rejected on desktop, undecided on mobile), toast, banner
 
 **Badge**:
-The count on the companion's dock or taskbar icon: how many local installs are in a raised
-condition right now. Subjects, not edges — three wedged pipelines on one install are one. Zero clears it, and there is no tray item beside it.
+The count on the companion's dock or taskbar icon: how many rows on the rail are in a raised
+condition right now. Subjects, not edges. Three wedged pipelines on one row are one, and a
+deployment reachable two ways is two rows. Zero clears it, and there is no tray item beside it.
 _Avoid_: counter, indicator, unread count
 
 **Local read loop**:
@@ -391,8 +400,69 @@ secret value, and nothing else today. Never persisted, never logged, and never e
 _Avoid_: parameter, payload, input
 
 **Alert**:
-What the companion raises when a local install or one of its pipelines crosses into or out
-of a named condition: `wedged`, `crash-looping`, `doctor-fail`. Every raise has a matching
-clear, and the edge rule that decides is one pure function. It is a transition, never a
-record.
+What the companion raises when a deployment or one of its pipelines crosses into or out of a
+named condition: `wedged`, `crash-looping`, `doctor-fail`, and for a remote `dark` and
+`replaced`. Every raise has a matching clear, and the edge rule that decides is one pure
+function. It is a transition, never a record.
 _Avoid_: incident, page
+
+**Route**:
+One way of reaching a deployment: **local**, a folder on this machine read over
+`compose exec`, or **remote**, a paired record read over the deployment API. A deployment
+can have both, and each is a row and a page of its own.
+_Avoid_: connection, link, source
+
+**Descriptor**:
+The open self-description a deployment serves at `/.well-known/phoebe/deployment`, carrying
+its id, name, protocol, version and arm, so a client can judge a link before spending a code.
+_Avoid_: manifest, version endpoint
+
+**Session**:
+One paired device's standing with one deployment: a bearer token, a scope, a 30-day
+expiry. The deployment keeps only the token's hash.
+_Avoid_: device token, login, connection
+
+**Scope**:
+What a session may do: `read` sees, `operate` changes the deployment's files or store.
+Fixed when the code is minted.
+_Avoid_: role, permission, level
+
+**Pairing code**:
+The one-time code `phoebe pair` mints, twelve characters shown as `XXXX-XXXX-XXXX`,
+spendable once within five minutes for a session.
+_Avoid_: pairing token, invite, OTP
+
+**Pairing link**:
+The `https://<node>.ts.net[:port]/pair#code=…` URL a mint prints and a QR encodes. The
+companion parses host and code from it; the deployment never reads the fragment.
+_Avoid_: invite link, magic link
+
+**Mint drop**:
+The root-only directory, `/run/phoebe-mint`, through which a pairing code's hash reaches
+the bootstrapper. On no volume, empty at rest.
+_Avoid_: mint secret, mailbox
+
+**Devices list**:
+Every session a deployment holds, as the console's Devices panel and `phoebe sessions`
+show it. A forged row is on this list, which is the point of listing every row.
+_Avoid_: connections, clients, people
+
+**Sign out**:
+A device ending its own session. Revoking is another device, or a shell, ending it.
+_Avoid_: unpair, disconnect, leave
+
+**Reachability**:
+The companion's own reading of whether a remote can be reached: connected, disconnected,
+dark, blocked. Derived from the stream and the last successful read, never reported by the
+deployment.
+_Avoid_: status, health, presence
+
+**Dark**:
+A remote the companion has not heard from for 60 s. The row says how long; the alert waits
+five minutes.
+_Avoid_: offline, down, unreachable (that is the alert's wording, not the state)
+
+**Blocked**:
+A remote whose pairing no longer works, waiting for the person to pair again: expired,
+revoked, replaced, or a newer protocol. Never an alert, never retried on its own.
+_Avoid_: unauthenticated, locked out, signed out

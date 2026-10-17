@@ -1026,6 +1026,31 @@ asks it once more only for a config that has no block at all, and a present
 block, `true` or `false`, is never asked again. What each event carries and how
 it is sent is [`operating.md` → Crash reporting](operating.md#crash-reporting).
 
+## Remote access (`remote`)
+
+Root-only, bootstrapper-only and boot-time. `remote` says the deployment can be
+reached from another machine over Tailscale, and where Tailscale runs:
+
+```ts
+remote: { tailscale: "sidecar" },
+// or
+remote: { tailscale: "host", port: 7463, httpsPort: 443 },
+```
+
+| Field       | Arm    | Default | Meaning                                                                                                              |
+| ----------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `tailscale` | both   | none    | `"sidecar"` runs a `tailscale/tailscale` container beside the deployment; `"host"` uses the machine's own Tailscale. |
+| `port`      | `host` | `7463`  | The loopback port the host publishes the container's listener on.                                                    |
+| `httpsPort` | `host` | `443`   | The tailnet-side port Serve listens on.                                                                              |
+
+The two port fields are refused on the sidecar arm, where
+`container/tailscale/serve.json` holds that arm's ports. The engine never reads
+the block, `resolveConfig` drops it, no `PHOEBE_*` variable overlays it, and a
+config edit from the console refuses it; a change takes effect at the next
+`phoebe stop` and `phoebe start`. With no block the container listens on
+nothing, exactly as before the field existed. The whole feature, both arms, the
+pairing walkthrough and the sessions, is [`remote.md`](remote.md).
+
 ## Settings (`PHOEBE_*`)
 
 Every setting Phoebe reads from the environment is one entry in the **settings
