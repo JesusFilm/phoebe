@@ -393,14 +393,16 @@ describe("sessions over the API", () => {
     expect(JSON.stringify(list)).not.toContain("tokenHash");
     const me = list.sessions.find((row) => row["label"] === "operator")!;
     const other = list.sessions.find((row) => row["label"] === "reader")!;
-    expect(list.self).toBe(me["id"]);
-    const self = await fetch(`${h.url}/api/sessions/${me["id"]}`, {
+    const myId = String(me["id"]);
+    const otherId = String(other["id"]);
+    expect(list.self).toBe(myId);
+    const self = await fetch(`${h.url}/api/sessions/${myId}`, {
       method: "DELETE",
       headers: auth(operator),
     });
     expect(self.status).toBe(409);
     expect(await self.json()).toEqual({ error: "revoke-self" });
-    const gone = await fetch(`${h.url}/api/sessions/${other["id"]}`, {
+    const gone = await fetch(`${h.url}/api/sessions/${otherId}`, {
       method: "DELETE",
       headers: auth(operator),
     });
