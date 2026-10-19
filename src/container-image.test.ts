@@ -199,6 +199,27 @@ describe("the two Dockerfiles stay in step", () => {
     expect(dogfood).toBe(scaffold);
   });
 
+  test("identical mint-drop directory", () => {
+    // `phoebe pair` drops a pairing-code hash under /run/phoebe-mint and the
+    // bootstrapper picks it up only from a root-owned file (ADR 0002). The
+    // directory has to exist in the image, made while still root, or the drop
+    // is "unanswered" with nothing to say why.
+    const mintLine = (source: string) =>
+      instructionsOnly(source)
+        .split("\n")
+        .find((line) => line.includes("mkdir -p /run/phoebe-mint"));
+    const scaffold = mintLine(read(SCAFFOLD_DOCKERFILE));
+    expect(scaffold).toBeDefined();
+    expect(scaffold).toContain("chown root:root /run/phoebe-mint");
+    expect(mintLine(read(DOGFOOD_DOCKERFILE))).toBe(scaffold);
+    for (const relPath of Object.values(DOCKERFILES)) {
+      const dockerfile = read(relPath);
+      expect(instructionIndex(dockerfile, /mkdir -p \/run\/phoebe-mint/)).toBeLessThan(
+        instructionIndex(dockerfile, /^USER phoebe$/),
+      );
+    }
+  });
+
   test("identical privilege-drop instructions", () => {
     const dropInstructions = (source: string) =>
       instructionsOnly(source)
