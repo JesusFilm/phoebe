@@ -206,7 +206,11 @@ export function prepareRemote(options: PrepareRemoteOptions): PreparedRemote {
         const { where } = await api.listen(
           remote.arm === "sidecar" ? { arm: "sidecar" } : { arm: "host" },
         );
-        log(`[phoebe] boot: deployment API listening on ${where} (${remote.arm} arm).`);
+        log(
+          remote.arm === "host"
+            ? `[phoebe] boot: deployment API listening on the container's ${where}, published on the host's 127.0.0.1:${remote.port} (host arm).`
+            : `[phoebe] boot: deployment API listening on ${where} (sidecar arm).`,
+        );
       } catch (error) {
         warn(
           `[phoebe] boot: the deployment API could not listen — ${describe(error)}. Nothing is reachable.`,

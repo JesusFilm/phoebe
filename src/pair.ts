@@ -43,6 +43,7 @@ import { readDeploymentCommands, readHostRemote } from "./deployment-command.ts"
 import { defaultCommandRunner, runCompose } from "./deployment-compose.ts";
 import { bootIsMainProcess, isInsideContainer } from "./execution-gate.ts";
 import { resolveDataBase } from "./paths.ts";
+import { readRemoteUrl } from "./remote-url.ts";
 import { PHOEBE_SERVICE } from "./status.ts";
 import { reconcileServe } from "./tailscale-serve.ts";
 import { PROCESS_IO, SILENT_IO } from "./verb-io.ts";
@@ -133,7 +134,11 @@ export async function runPairInContainer(
         "then `phoebe stop` and `phoebe start`.",
     );
   }
-  if (remote.url === null) {
+  // On the host arm the URL arrives through `phoebe remote-url`, and the
+  // bootstrapper reads that file on a timer — so a `phoebe pair` straight
+  // after `phoebe start` can beat the report. The file is the same truth.
+  const url = remote.url ?? (remote.arm === "host" ? readRemoteUrl(dataBase) : null);
+  if (url === null) {
     throw new Error(
       remote.arm === "sidecar"
         ? "the sidecar has not joined the tailnet yet — the deployment has no URL to put in a link. " +
@@ -167,7 +172,7 @@ export async function runPairInContainer(
   if (answer.kind === "refused")
     throw new Error(`the deployment refused the code: ${answer.detail}`);
   return {
-    url: pairingLink(remote.url, formatCode(code)),
+    url: pairingLink(url, formatCode(code)),
     code: formatCode(code),
     expiresAt,
     scopes,

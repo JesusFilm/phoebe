@@ -90,7 +90,11 @@ async function harness(
   });
   apis.push(api);
   const { where } = await api.listen({ arm: "host", port: 0 });
-  return { base, api, url: `http://${where}`, clock, reports, logged, pending, sessions, calls };
+  // Bound on every interface so Docker's published port reaches it; reached
+  // here over loopback, as the overlay publishes it.
+  expect(where).toMatch(/^0\.0\.0\.0:\d+$/);
+  const url = `http://127.0.0.1:${where.split(":")[1]}`;
+  return { base, api, url, clock, reports, logged, pending, sessions, calls };
 }
 
 function mint(h: Harness, code: string, scopes: ("read" | "operate")[] = ["read"]): void {

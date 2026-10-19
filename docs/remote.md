@@ -132,7 +132,11 @@ Encrypt, which takes tens of seconds; after that it is instant.
 ### The host arm
 
 Nothing in `.env`. `phoebe start` adds the host overlay, which publishes the
-container's listener on `127.0.0.1:<port>`, and then reconciles Serve:
+container's listener on `127.0.0.1:<port>` and nowhere else (inside the
+container it listens on all of its own interfaces, since Docker forwards a
+published port to the container's address, not its loopback), waits up to
+thirty seconds for the bootstrapper to start listening, and then reconciles
+Serve:
 
 1. Finds the `tailscale` CLI: on `PATH`, then the macOS App Store bundle at
    `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, then `tailscale.exe`

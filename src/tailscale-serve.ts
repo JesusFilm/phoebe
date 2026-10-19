@@ -38,6 +38,13 @@ export const PROBE_TIMEOUT_MS = 2_500;
  */
 export const CERTIFICATE_WAIT_MS = 60_000;
 export const CERTIFICATE_POLL_MS = 1_000;
+/**
+ * How long a reconcile waits for the container's listener before refusing
+ * (see {@link inspectServe}'s `listenerWaitMs`). A one-shot probe straight
+ * after `up -d` would refuse every ordinary boot.
+ */
+export const LISTENER_WAIT_MS = 30_000;
+export const LISTENER_POLL_MS = 1_000;
 
 /** Why a `tailscale` invocation failed, as much as is safe to say. */
 export type ServeStderrClass =
@@ -270,10 +277,22 @@ export type ServeInspection =
  * descriptor off loopback, refuse a foreign mapping, and probe the tailnet URL.
  */
 export async function inspectServe(
-  opts: { port: number; httpsPort: number },
+  opts: {
+    port: number;
+    httpsPort: number;
+    /**
+     * How long to wait for the container's listener before calling nothing
+     * there a refusal. Zero (the doctor's read) probes once; `phoebe start`
+     * reconciles the moment `up -d` returns and gives the bootstrapper its few
+     * seconds to load the config and listen.
+     */
+    listenerWaitMs?: number;
+  },
   deps: ServeDeps,
 ): Promise<ServeInspection> {
   const log = deps.log ?? (() => {});
+  const sleep = deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = deps.now ?? Date.now;
   const cli = findTailscaleCli(deps);
   if (cli === null) {
     return {
@@ -308,8 +327,18 @@ export async function inspectServe(
   const target = loopbackTarget(opts.port);
 
   // The deployment's own descriptor, off the loopback port the overlay
-  // publishes. Nothing there means nothing to serve.
-  const own = await probeDescriptor(target, deps.fetchFn);
+  // publishes. Nothing there means nothing to serve — after the wait, if any.
+  const listenerDeadline = now() + (opts.listenerWaitMs ?? 0);
+  let own = await probeDescriptor(target, deps.fetchFn);
+  let waited = false;
+  while (own.kind !== "descriptor" && now() < listenerDeadline) {
+    if (!waited) {
+      log(`[phoebe] waiting for the container's listener on ${target}.`);
+      waited = true;
+    }
+    await sleep(LISTENER_POLL_MS);
+    own = await probeDescriptor(target, deps.fetchFn);
+  }
   if (own.kind !== "descriptor") {
     return {
       state: "refused",
@@ -374,7 +403,7 @@ export async function reconcileServe(
   const sleep = deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = deps.now ?? Date.now;
 
-  const seen = await inspectServe(opts, deps);
+  const seen = await inspectServe({ ...opts, listenerWaitMs: LISTENER_WAIT_MS }, deps);
   if (seen.state !== "unmapped") return seen;
   const { url, cli, target, deploymentId } = seen;
 

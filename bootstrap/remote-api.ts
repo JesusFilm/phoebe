@@ -6,8 +6,12 @@
 // arm it is a Unix socket Serve proxies to, never a TCP port — in userspace
 // mode netstack forwards an unserved tailnet port to loopback, so a loopback
 // listener would answer every tailnet device around Serve. On the host arm it
-// is `127.0.0.1:7463`, published loopback-only and served by the machine's own
-// Tailscale. `listen` takes the arm; everything else here is the same.
+// is TCP 7463 on every interface of the *container's own* network namespace —
+// Docker forwards a published port to the container's address, never to its
+// loopback, so a loopback bind there would answer nothing. What makes it
+// loopback-only is the overlay, which publishes it as `127.0.0.1:<port>` on
+// the host and nowhere else; the machine's own Tailscale serves that. `listen`
+// takes the arm; everything else here is the same.
 //
 // **Bearer only.** No route reads a cookie; `Origin` and `Sec-Fetch-Site` are
 // ignored, since no page on this origin exists to be attacked through. The
@@ -503,10 +507,12 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
           return;
         }
         const port = target.port ?? REMOTE_CONTAINER_PORT;
-        httpServer.listen(port, "127.0.0.1", () => {
+        // All of the container's interfaces (see the header): the overlay's
+        // `127.0.0.1:` publish is the loopback-only part, on the host side.
+        httpServer.listen(port, "0.0.0.0", () => {
           const bound = httpServer.address();
           const actual = typeof bound === "object" && bound !== null ? bound.port : port;
-          resolve({ where: `127.0.0.1:${actual}` });
+          resolve({ where: `0.0.0.0:${actual}` });
         });
       });
     },

@@ -16,6 +16,7 @@ import {
   serveTargetOn,
   tailnetUrl,
   type ServeDeps,
+  LISTENER_WAIT_MS,
 } from "./tailscale-serve.ts";
 
 const DNS = "beast.tail4f2c.ts.net";
@@ -87,7 +88,10 @@ function deps(
   extra: Partial<ServeDeps> = {},
 ): ServeDeps & { logged: string[] } {
   const logged: string[] = [];
+  // A fake clock, so a wait never spends real time: `sleep` is what moves it.
+  let clock = 0;
   return {
+    now: () => clock,
     run: cli.run,
     fetchFn,
     env: { PATH: "/usr/bin" },
@@ -96,7 +100,9 @@ function deps(
     },
     platform: "linux",
     readProcVersion: () => "Linux version 6.6",
-    sleep: async () => {},
+    sleep: async (ms) => {
+      clock += ms;
+    },
     log: (line) => logged.push(line),
     logged,
     ...extra,
@@ -231,6 +237,46 @@ describe("reconcileServe", () => {
     expect(outcome).toEqual({ state: "ready", url: URL_443 });
     expect(cli.calls).toContainEqual(["serve", "--bg", "--https=443", LOOPBACK]);
     expect(d.logged.join("\n")).toMatch(/waiting for .* certificate/);
+  });
+
+  test("waits for the container's listener before inspecting", async () => {
+    // `phoebe start` reconciles the moment `up -d` returns; the bootstrapper
+    // takes a few seconds to listen, and a one-shot probe would refuse the boot.
+    const cli = fakeCli({});
+    const fetchFn = fakeFetch({
+      [LOOPBACK]: [
+        new Error("ECONNREFUSED"),
+        new Error("ECONNREFUSED"),
+        { status: 200, body: OWN },
+      ],
+      [URL_443]: [new Error("ECONNREFUSED"), { status: 200, body: OWN }],
+    });
+    const d = deps(cli, fetchFn);
+    const outcome = await reconcileServe(PORTS, d);
+    expect(outcome).toEqual({ state: "ready", url: URL_443 });
+    expect(d.logged.join("\n")).toMatch(
+      /waiting for the container's listener on http:\/\/127\.0\.0\.1:7463/,
+    );
+    expect(cli.calls).toContainEqual(["serve", "--bg", "--https=443", LOOPBACK]);
+  });
+
+  test("a listener that never comes up is refused after the wait, with the overlay named", async () => {
+    const cli = fakeCli({});
+    const d = deps(cli, fakeFetch({}));
+    const outcome = await reconcileServe(PORTS, d);
+    expect(outcome.state).toBe("refused");
+    expect((outcome as { detail: string }).detail).toMatch(/compose\.tailscale-host\.yml/);
+    expect(d.now!()).toBeGreaterThanOrEqual(LISTENER_WAIT_MS);
+    expect(cli.calls).not.toContainEqual(expect.arrayContaining(["serve", "--bg"]));
+  });
+
+  test("the doctor's read-only inspection probes the listener once", async () => {
+    const cli = fakeCli({});
+    const d = deps(cli, fakeFetch({}));
+    const outcome = await inspectServe(PORTS, d);
+    expect(outcome.state).toBe("refused");
+    expect(d.now!()).toBe(0);
+    expect(d.logged.join("\n")).not.toMatch(/waiting for the container's listener/);
   });
 
   test("a stale mapping (502) is mapped over, like an unreachable one", async () => {

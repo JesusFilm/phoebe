@@ -9,6 +9,7 @@ import { afterEach, describe, expect, test } from "vite-plus/test";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import { hashCode, normalizeCode } from "../bootstrap/pairing-codes.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
+import { writeRemoteUrl } from "./remote-url.ts";
 import {
   formatPairOutcome,
   pairingLink,
@@ -99,6 +100,25 @@ describe("in the container", () => {
         { cwd: "/", uid: 0, bootAlive: true, env: { PHOEBE_DATA_DIR: base } },
       ),
     ).rejects.toThrow(/run `phoebe start` on the host/);
+  });
+
+  test("on the host arm, the URL file counts before the report has caught up", async () => {
+    // `phoebe pair` writes the URL through `remote-url` and execs the mint in
+    // the same breath; the bootstrapper re-reads the file every ten seconds.
+    const base = tmp();
+    withReport(base, { ...SIDECAR_UP, arm: "host", url: null });
+    writeRemoteUrl(base, "https://beast.tail1.ts.net:7463");
+    const outcome = await runPairInContainer(
+      { operate: false },
+      {
+        cwd: "/",
+        uid: 0,
+        bootAlive: true,
+        env: { PHOEBE_DATA_DIR: base },
+        ask: async () => ({ kind: "ok", detail: "" }),
+      },
+    );
+    expect(outcome.url).toBe(`https://beast.tail1.ts.net:7463/pair#code=${outcome.code}`);
   });
 
   test("mints: the drop carries the hash and never the code, the ack returns the outcome", async () => {
