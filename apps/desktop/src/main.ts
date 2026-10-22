@@ -18,6 +18,7 @@
 // them.
 
 import { spawn } from "node:child_process";
+import { accessSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -77,6 +78,7 @@ import {
   watchContainerEvents,
 } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { createBootstrap, makeHas, type BootstrapSpawner } from "./bootstrap.ts";
 import { probeDocker } from "./docker.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
@@ -400,14 +402,58 @@ app.whenReady().then(
       return { ok: true, value: __COMPANION_VERSION__ };
     });
 
-    ipcMain.handle(BRIDGE_CHANNELS.environment, () =>
-      answering<CompanionEnvironment>(async () => ({
+    async function readEnvironment(): Promise<CompanionEnvironment> {
+      return {
         companionVersion: __COMPANION_VERSION__,
         platform: process.platform,
         docker: await probeDocker(),
         wslDistros: await listWslDistros(),
-      })),
+      };
+    }
+    ipcMain.handle(BRIDGE_CHANNELS.environment, () =>
+      answering<CompanionEnvironment>(readEnvironment),
     );
+
+    // Setting up this machine (bootstrap.ts). The shell is the platform's own:
+    // `cmd.exe` so that `start` and winget resolve as they do at a prompt,
+    // `sh` everywhere else. Nothing here is elevated by the companion; the
+    // command itself is what asks (UAC, Homebrew's prompt, pkexec).
+    const runShell: BootstrapSpawner = (command) =>
+      process.platform === "win32"
+        ? spawn("cmd.exe", ["/d", "/s", "/c", `"${command}"`], {
+            windowsHide: true,
+            windowsVerbatimArguments: true,
+            stdio: ["ignore", "pipe", "pipe"],
+          })
+        : spawn("sh", ["-c", command], { stdio: ["ignore", "pipe", "pipe"] });
+    const has = makeHas(process.platform, process.env["PATH"], (file) => accessSync(file));
+    const bootstrap = createBootstrap({
+      machine: async () => ({
+        platform: process.platform,
+        docker: await probeDocker(),
+        has,
+        env: process.env,
+      }),
+      spawn: runShell,
+      probe: () => probeDocker(),
+      onLine: (line) => broadcast(BRIDGE_CHANNELS.bootstrapLine, line),
+      onExit: (exit) => broadcast(BRIDGE_CHANNELS.bootstrapExit, exit),
+      // Docker coming up changes what every page says, so the whole
+      // environment goes out, not the one field.
+      onDocker: () => {
+        void readEnvironment().then(
+          (environment) => broadcast(BRIDGE_CHANNELS.environmentChanged, environment),
+          () => undefined,
+        );
+      },
+    });
+    ipcMain.handle(BRIDGE_CHANNELS.bootstrapPlan, () => answering(bootstrap.plan));
+    ipcMain.handle(
+      BRIDGE_CHANNELS.bootstrapRun,
+      (_event, step: { tool: "docker"; need: "install" | "start" }) =>
+        answering(() => bootstrap.run(step)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.bootstrapCurrent, () => answering(() => bootstrap.current()));
 
     // The companion's own updates (#525 §3). Built here rather than at import
     // time because the feed it chooses is read from `companion.json`, and the

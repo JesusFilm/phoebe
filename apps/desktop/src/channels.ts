@@ -7,6 +7,12 @@ import type { DesktopBridgeError } from "phoebe-agent/contracts";
 export const BRIDGE_CHANNELS = {
   version: "phoebe:version",
   environment: "phoebe:environment",
+  environmentChanged: "phoebe:environment/changed",
+  bootstrapPlan: "phoebe:bootstrap/plan",
+  bootstrapRun: "phoebe:bootstrap/run",
+  bootstrapCurrent: "phoebe:bootstrap/current",
+  bootstrapLine: "phoebe:bootstrap/line",
+  bootstrapExit: "phoebe:bootstrap/exit",
   installsList: "phoebe:installs/list",
   installsPick: "phoebe:installs/pick",
   installsAdd: "phoebe:installs/add",

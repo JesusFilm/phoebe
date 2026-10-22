@@ -99,8 +99,10 @@ export type LocalInstallChild = {
  * demand rather than held, because Docker Desktop stopping is a thing that
  * happens between two clicks.
  *
- * Docker is **checked, never installed** (#522 §2). A missing daemon is a
- * sentence and a link, not a download.
+ * Docker is probed here and set up elsewhere: a missing or stopped Docker is
+ * a sentence, and the setup page (contracts/bootstrap.ts) is where the button
+ * under it lives. The companion downloads no installer of its own; it runs
+ * the machine's package manager, on a click, with the command shown first.
  */
 export type CompanionEnvironment = {
   /** The companion's version — the root package's (#521 §4). */
