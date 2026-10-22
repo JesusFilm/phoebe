@@ -1,10 +1,18 @@
-// The companion's own updates: one check, one click, one install on quit
-// (#525 §3).
+// The companion's own updates: a check at launch, every four hours and on
+// request; a download on a click; an install on quit or on a restart (#525 §3,
+// revised in #722).
 //
 // `electron-updater` does the fetching. What lives here is every decision about
 // it, held away from Electron so the rules are testable: when a check may run,
 // what a refusal says, and which state the window is shown. Main supplies the
 // updater and turns its events into the five calls at the bottom of this file.
+//
+// #525 §3 chose one check at launch and no poll, so an operator who left the
+// companion open for a week never heard of a release. The revision keeps the
+// one rule that mattered there: nothing downloads without a click. A check is
+// a read of `latest.yml` and nothing else, so it can run on a timer; a
+// download is 120 MB and an install swaps the app out, so both still wait to
+// be asked.
 //
 // Three flags carry three of the decisions, set once and never moved:
 // `autoDownload` false, because nothing downloads without a click; `allowDowngrade`
@@ -23,6 +31,12 @@ import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { BridgeRefusal } from "./channels.ts";
 import { feedFor, RELEASES_PAGE, type FeedChoice, type UpdateFeed } from "./update-feed.ts";
 
+/**
+ * How often a running companion asks again. Four hours: a release is a
+ * merge a human makes a few times a week, and a check is one small GET.
+ */
+export const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
+
 /** The slice of `electron-updater`'s `autoUpdater` this drives. */
 export type UpdaterControls = {
   autoDownload: boolean;
@@ -40,7 +54,12 @@ export type UpdaterControls = {
  */
 export type CompanionUpdates = {
   state: () => CompanionUpdate;
-  /** The launch check: read the feed, point the updater at it, ask. */
+  /**
+   * A check: read the feed, point the updater at it, ask. Fired at launch, on
+   * the timer, and from the settings page. A no-op while a download is in
+   * flight or a build is staged, because a fresh `checking` would throw away
+   * the one state the operator is waiting on.
+   */
   check: () => Promise<void>;
   download: () => Promise<void>;
   restart: () => void;
@@ -104,6 +123,7 @@ export function createCompanionUpdates(deps: UpdatesDeps): CompanionUpdates {
 
     check: async () => {
       if (blocked !== null) return;
+      if (state.kind === "downloading" || state.kind === "ready") return;
       try {
         const choice = await deps.feed();
         const feed = feedFor(choice);
