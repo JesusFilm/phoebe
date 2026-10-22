@@ -89,7 +89,7 @@ import {
   formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
-import { createCompanionUpdates } from "./updates.ts";
+import { CHECK_EVERY_MS, createCompanionUpdates } from "./updates.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 import {
@@ -427,12 +427,16 @@ app.whenReady().then(
     autoUpdater.on("update-available", (info) => updates.available(info.version));
     autoUpdater.on("update-not-available", () => updates.notAvailable());
     autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
-    autoUpdater.on("update-downloaded", (info) => updates.downloaded(info.version));
+    autoUpdater.on("update-downloaded", (info) => {
+      updates.downloaded(info.version);
+      void offerRestart(info.version);
+    });
     autoUpdater.on("error", (error) => updates.failed(error));
 
     ipcMain.handle(BRIDGE_CHANNELS.updateState, () =>
       answering<CompanionUpdate>(() => updates.state()),
     );
+    ipcMain.handle(BRIDGE_CHANNELS.updateCheck, () => answering<void>(updates.check));
     ipcMain.handle(BRIDGE_CHANNELS.updateDownload, () => answering<void>(updates.download));
     ipcMain.handle(BRIDGE_CHANNELS.updateRestart, () => answering<void>(() => updates.restart()));
 
@@ -681,10 +685,35 @@ app.whenReady().then(
     createWindow();
     updateWatch.refresh();
 
-    // One check, and no poll (#525 §3). It is fired after the window exists so
-    // the first thing the operator sees is the window rather than a wait on
-    // github.com, and nothing it finds moves anything on its own.
+    // The launch check, fired after the window exists so the first thing the
+    // operator sees is the window rather than a wait on github.com, and then
+    // the same check every four hours (updates.ts). Nothing either finds moves
+    // anything on its own: a build downloads on a click and installs on quit.
     void updates.check();
+    setInterval(() => void updates.check(), CHECK_EVERY_MS);
+
+    /**
+     * The operator asked for the download, so once it lands they are asked
+     * one more thing: now, or on the next quit. Later is the quiet choice,
+     * and the rail's line keeps the Restart now button for whenever they
+     * are ready.
+     */
+    async function offerRestart(version: string): Promise<void> {
+      const options = {
+        type: "info" as const,
+        message: `Phoebe ${version} is downloaded.`,
+        detail: "Restart now to run it, or keep working and it installs when you quit.",
+        buttons: ["Restart now", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+      };
+      const window = BrowserWindow.getAllWindows()[0];
+      const { response } =
+        window === undefined
+          ? await dialog.showMessageBox(options)
+          : await dialog.showMessageBox(window, options);
+      if (response === 0) updates.restart();
+    }
 
     // macOS keeps the process alive with no windows; clicking the dock icon is
     // the ask for one back.

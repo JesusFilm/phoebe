@@ -1,10 +1,10 @@
-// The update rules: one check, nothing without a click, and two companions that
-// do not update at all.
+// The update rules: a check whenever asked, nothing downloaded without a click,
+// and two companions that do not update at all.
 
 import { describe, expect, test } from "vite-plus/test";
 import type { CompanionUpdate } from "phoebe-agent/contracts";
 import { RELEASES_PAGE, type FeedChoice, type UpdateFeed } from "./update-feed.ts";
-import { createCompanionUpdates, type UpdaterControls } from "./updates.ts";
+import { CHECK_EVERY_MS, createCompanionUpdates, type UpdaterControls } from "./updates.ts";
 
 /** An updater that records what it was asked to do and answers nothing. */
 function fakeUpdater() {
@@ -75,6 +75,30 @@ describe("the launch check", () => {
     ]);
     expect(calls).toEqual(["check"]);
     expect(arm.state()).toEqual({ kind: "checking" });
+  });
+
+  test("asks again whenever asked, and the timer is four hours", async () => {
+    const { arm, calls } = updates();
+    await arm.check();
+    arm.notAvailable();
+    await arm.check();
+
+    expect(calls).toEqual(["check", "check"]);
+    expect(arm.state()).toEqual({ kind: "checking" });
+    expect(CHECK_EVERY_MS).toBe(4 * 60 * 60 * 1000);
+  });
+
+  test("a check cannot interrupt a download or forget a staged build", async () => {
+    const { arm, calls } = updates();
+    arm.available("0.14.0");
+    await arm.download();
+    await arm.check();
+    expect(arm.state()).toEqual({ kind: "downloading", version: "0.14.0", percent: 0 });
+
+    arm.downloaded("0.14.0");
+    await arm.check();
+    expect(arm.state()).toEqual({ kind: "ready", version: "0.14.0" });
+    expect(calls).toEqual(["download"]);
   });
 
   test("a feed nobody could read asks nothing", async () => {

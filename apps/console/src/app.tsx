@@ -666,12 +666,16 @@ export function App({
             notifications={notifications}
             consoleTheme={consoleTheme}
             autoCheckUpdates={autoCheckUpdates}
+            update={update}
             {...(bridge === null
               ? {}
               : {
                   onNotifications: chooseNotifications,
                   onConsoleTheme: chooseConsoleTheme,
                   onAutoCheckUpdates: chooseAutoCheckUpdates,
+                  onCheckUpdate: () => void bridge.updates.check().catch(noop),
+                  onDownloadUpdate: () => void bridge.updates.download().catch(noop),
+                  onRestartUpdate: () => void bridge.updates.restart().catch(noop),
                 })}
           />
         ) : (

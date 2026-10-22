@@ -260,6 +260,12 @@ export type DesktopBridge = {
   updates: {
     /** Where the update stands now. Answers on macOS too, with `unsupported`. */
     state: () => Promise<CompanionUpdate>;
+    /**
+     * Ask the feed now rather than wait for the timer. Nothing on an
+     * unsupported companion, and nothing while a download is in flight or a
+     * build is staged.
+     */
+    check: () => Promise<void>;
     /** Fetch the available build. Refused unless one is waiting to be fetched. */
     download: () => Promise<void>;
     /** Install the downloaded build now instead of on the next quit. */

@@ -73,6 +73,62 @@ describe("the settings page", () => {
   });
 });
 
+describe("the companion's own update on the settings page", () => {
+  function row(update: Parameters<typeof SettingsPage>[0]["update"], live = true) {
+    return renderToStaticMarkup(
+      <SettingsPage
+        surface="companion"
+        environment={null}
+        systemDark
+        notifications
+        consoleTheme="system"
+        update={update}
+        {...(live ? { onCheckUpdate: noop, onDownloadUpdate: noop, onRestartUpdate: noop } : {})}
+      />,
+    );
+  }
+
+  test("says how updates work, and nothing more before main has answered", () => {
+    const page = row(null);
+    expect(page).toContain("downloads only when you ask");
+    expect(page).not.toContain("Check for updates</button>");
+  });
+
+  test("up to date, with the button to ask again", () => {
+    const page = row({ kind: "current" });
+    expect(page).toContain("Phoebe is up to date.");
+    expect(page).toContain('<button type="button">Check for updates</button>');
+    expect(row({ kind: "current" }, false)).not.toContain("Check for updates</button>");
+  });
+
+  test("the next step is the one button shown", () => {
+    expect(row({ kind: "available", version: "0.16.0" })).toContain(
+      'Phoebe 0.16.0 is available.</span><button type="button">Download</button>',
+    );
+    expect(row({ kind: "downloading", version: "0.16.0", percent: 42 })).toContain(
+      "Downloading Phoebe 0.16.0… 42%",
+    );
+    expect(row({ kind: "ready", version: "0.16.0" })).toContain(
+      'Phoebe 0.16.0 installs when you quit.</span><button type="button">Restart now</button>',
+    );
+  });
+
+  test("a failed check and an unsupported companion each say why", () => {
+    const failed = row({ kind: "unread", message: "ENOTFOUND github.com" });
+    expect(failed).toContain("The last check did not finish: ENOTFOUND github.com");
+    expect(failed).toContain("Check for updates</button>");
+
+    const mac = row({
+      kind: "unsupported",
+      reason: "the macOS build is unsigned",
+      releases: "https://github.com/JesusFilm/phoebe/releases",
+    });
+    expect(mac).toContain("does not update itself: the macOS build is unsigned.");
+    expect(mac).toContain('href="https://github.com/JesusFilm/phoebe/releases"');
+    expect(mac).not.toContain("Check for updates</button>");
+  });
+});
+
 describe("the gear at the foot of the rail", () => {
   test("is a bare gear onto the settings page on both surfaces, never a selected place", () => {
     const companion = renderToStaticMarkup(<Rail surface="companion" installs={[]} />);
