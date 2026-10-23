@@ -35,56 +35,82 @@ function vp(args, cwd) {
   return spawn(`vp ${args}`, { cwd, env, stdio: "inherit", shell: true });
 }
 
-/** A whole process tree, which is what a shell-spawned child is on Windows. */
+/**
+ * Stop a whole process tree, which is what a shell-spawned child is on Windows.
+ * Resolves once taskkill is done: exiting while it runs kills only part of the
+ * tree, and leaves the dev server holding the port.
+ */
 function stop(child) {
-  if (child.exitCode !== null) return;
-  if (WINDOWS) {
-    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  } else {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (!WINDOWS) {
     child.kill("SIGTERM");
+    return Promise.resolve();
   }
+  const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+  return new Promise((resolve) => {
+    killer.on("exit", resolve);
+    killer.on("error", resolve);
+  });
 }
 
+/** The child's exit code, once it has one. */
 function exited(child) {
   return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
 }
 
+/** The console's own document, so another app's server on the port does not count. */
+const CONSOLE_MARKER = "<title>Phoebe console</title>";
+
+/** Poll until the console answers, or false at the deadline. */
 async function waitForDevServer(deadline) {
   while (Date.now() < deadline) {
     try {
-      await fetch(DEV_URL);
-      return true;
+      const res = await fetch(DEV_URL);
+      if (res.ok && (await res.text()).includes(CONSOLE_MARKER)) return true;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Nothing listening yet.
     }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
 }
 
 const devServer = vp("dev", CONSOLE);
+// Listened for from the start, so an exit before the wait begins is not missed.
+const devServerExit = exited(devServer);
 let electron = null;
 
-const quit = () => {
-  if (electron !== null) stop(electron);
-  stop(devServer);
-};
+/** Stop Electron and the dev server, resolving once both are down. */
+const quit = () => Promise.all([electron === null ? null : stop(electron), stop(devServer)]);
 process.on("SIGINT", quit);
 process.on("SIGTERM", quit);
 
-if (!(await waitForDevServer(Date.now() + WAIT_FOR_DEV_MS))) {
-  console.error(`ui: the console dev server did not answer at ${DEV_URL} within a minute`);
-  quit();
+// The dev server dying ends the wait too: a startup error, a port another app
+// holds (the port is strict), or Ctrl-C, which stops it through quit().
+const ready = await Promise.race([
+  waitForDevServer(Date.now() + WAIT_FOR_DEV_MS).then((answered) =>
+    answered ? "ready" : "timeout",
+  ),
+  devServerExit.then(() => "exited"),
+]);
+if (ready !== "ready") {
+  console.error(
+    ready === "exited"
+      ? "ui: the console dev server exited before it answered"
+      : `ui: the console dev server did not answer at ${DEV_URL} within a minute`,
+  );
+  await quit();
   process.exit(1);
 }
 
 const built = await exited(vp("run build", DESKTOP));
 if (built !== 0) {
   console.error("ui: the companion's main and preload did not build");
-  quit();
+  await quit();
   process.exit(built);
 }
 
 electron = vp("exec electron . --dev", DESKTOP);
 const code = await exited(electron);
-stop(devServer);
+await stop(devServer);
 process.exit(code);
