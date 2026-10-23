@@ -20,6 +20,7 @@
 // click that fetches it happens.
 
 import type { CompanionUpdate } from "./companion-update.ts";
+import type { GithubTokenVerdict } from "./github-token.ts";
 import type { LogLine, LogsEnded } from "./container-logs.ts";
 import type {
   CompanionEnvironment,
@@ -266,6 +267,14 @@ export type DesktopBridge = {
     restart: () => Promise<void>;
     /** Every change of state, pushed. Returns the unsubscribe. */
     changes: (onUpdate: (update: CompanionUpdate) => void) => () => void;
+  };
+  /**
+   * GitHub, for the setup steps (contracts/github-token.ts). The token travels
+   * as an argument and is held for the call; the verdict carries no value.
+   */
+  github: {
+    /** The five non-mutating probes against `slug`, with `token`. */
+    verifyToken: (slug: string, token: string) => Promise<GithubTokenVerdict>;
   };
   /** The operator's preferences, as `companion.json` holds them (#527 §12). */
   preferences: {
