@@ -30,20 +30,41 @@ const WINDOWS = process.platform === "win32";
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
-/** Run `vp …` in a directory. `shell` so that `vp` resolves to vp.cmd on Windows. */
+/** Every child started, so a quit can stop whichever are still running. */
+const children = new Set();
+
+/**
+ * Run `vp …` in a directory. `shell` so that `vp` resolves to vp.cmd on
+ * Windows. Elsewhere the child leads its own process group, so stop() can
+ * signal the shell, vp and Vite together. A group of its own is in the
+ * terminal's background, where reading the keyboard would suspend it, so no
+ * child gets stdin: Vite's key shortcuts are the only thing that used it.
+ */
 function vp(args, cwd) {
-  return spawn(`vp ${args}`, { cwd, env, stdio: "inherit", shell: true });
+  const child = spawn(`vp ${args}`, {
+    cwd,
+    env,
+    stdio: ["ignore", "inherit", "inherit"],
+    shell: true,
+    detached: !WINDOWS,
+  });
+  children.add(child);
+  return child;
 }
 
 /**
- * Stop a whole process tree, which is what a shell-spawned child is on Windows.
- * Resolves once taskkill is done: exiting while it runs kills only part of the
- * tree, and leaves the dev server holding the port.
+ * Stop a child's whole process tree: a shell, vp, and what vp runs.
+ * On Windows this resolves once taskkill is done, because exiting while it
+ * runs kills only part of the tree and leaves the dev server holding the port.
  */
 function stop(child) {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   if (!WINDOWS) {
-    child.kill("SIGTERM");
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      // The group is already gone.
+    }
     return Promise.resolve();
   }
   const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
@@ -61,38 +82,54 @@ function exited(child) {
 /** The console's own document, so another app's server on the port does not count. */
 const CONSOLE_MARKER = "<title>Phoebe console</title>";
 
-/** Poll until the console answers, or false at the deadline. */
+/**
+ * Poll until the console answers, or false at the deadline. Each request is
+ * cut off at the deadline too, so a server that accepts the connection and
+ * then never answers cannot hold the wait past it.
+ */
 async function waitForDevServer(deadline) {
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(DEV_URL);
+      const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+      const res = await fetch(DEV_URL, { signal });
       if (res.ok && (await res.text()).includes(CONSOLE_MARKER)) return true;
     } catch {
-      // Nothing listening yet.
+      // Nothing listening yet, or the request ran into the deadline.
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
 }
 
-const devServer = vp("dev", CONSOLE);
-// Listened for from the start, so an exit before the wait begins is not missed.
-const devServerExit = exited(devServer);
-let electron = null;
+/** Set by the first quit, and what every later step checks before it starts. */
+let stopping = null;
 
-/** Stop Electron and the dev server, resolving once both are down. */
-const quit = () => Promise.all([electron === null ? null : stop(electron), stop(devServer)]);
+/** Stop every child still running, once, resolving when they are down. */
+const quit = () => (stopping ??= Promise.all([...children].map(stop)));
+
+/** After a signal: wait for the children, then leave without starting anything. */
+async function leaveIfStopping() {
+  if (stopping === null) return;
+  await stopping;
+  process.exit(1);
+}
+
 process.on("SIGINT", quit);
 process.on("SIGTERM", quit);
 
-// The dev server dying ends the wait too: a startup error, a port another app
-// holds (the port is strict), or Ctrl-C, which stops it through quit().
+const devServer = vp("dev", CONSOLE);
+// Listened for from the start, so an exit before the wait begins is not missed.
+const devServerExit = exited(devServer);
+
+// The dev server dying ends the wait too: a startup error, or a port another
+// app holds (the port is strict).
 const ready = await Promise.race([
   waitForDevServer(Date.now() + WAIT_FOR_DEV_MS).then((answered) =>
     answered ? "ready" : "timeout",
   ),
   devServerExit.then(() => "exited"),
 ]);
+await leaveIfStopping();
 if (ready !== "ready") {
   console.error(
     ready === "exited"
@@ -104,13 +141,13 @@ if (ready !== "ready") {
 }
 
 const built = await exited(vp("run build", DESKTOP));
+await leaveIfStopping();
 if (built !== 0) {
   console.error("ui: the companion's main and preload did not build");
   await quit();
   process.exit(built);
 }
 
-electron = vp("exec electron . --dev", DESKTOP);
-const code = await exited(electron);
-await stop(devServer);
+const code = await exited(vp("exec electron . --dev", DESKTOP));
+await quit();
 process.exit(code);
