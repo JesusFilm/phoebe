@@ -47,6 +47,7 @@
     "build": "echo \"phoebe-agent ships raw TypeScript — the root builds nothing; apps/* do\"",
     "prepublishOnly": "vp run -r build",
     "phoebe": "bash .phoebe/run.sh",
+    "ui": "node scripts/ui.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"

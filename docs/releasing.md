@@ -183,6 +183,18 @@ cd apps/desktop && vp run package
 The artifacts land in `apps/desktop/release/`, which is gitignored. `vp run package`
 builds for the platform you are on and publishes nothing.
 
+To run the companion from the checkout without packaging it, with the console
+hot-reloading as you edit:
+
+```sh
+vp run ui
+```
+
+That starts the console's dev server, waits for it, builds the companion's main
+and preload, and opens Electron against the dev server. Closing the window
+stops the dev server too. Changes under `apps/console/src` show up on save;
+changes under `apps/desktop/src` need the script run again.
+
 ## One thing is built before it is published
 
 The engine and the bootstrapper ship raw `.ts` and run under Node 24
