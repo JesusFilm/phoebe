@@ -22,6 +22,8 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
+  GithubAppCreated,
+  GithubAppRequest,
   GithubTokenVerdict,
   LocalInstall,
   LocalReportEvent,
@@ -40,10 +42,34 @@ import { providerOf } from "./harness.ts";
 import { secretSetRequest } from "./local-install.ts";
 
 export const GH_TOKEN_KEY = "GH_TOKEN";
+export const GH_APP_ID_KEY = "GH_APP_ID";
 
-/** Whether the steps apply to this install at all: a solo install that is not up yet. */
+/**
+ * Whose App it would be: the one owner every tenant's slug shares, or the solo
+ * install's. Null with nothing to read; `mixed` when the tenants span owners,
+ * which the App arm cannot serve (docs/github-app-mode.md §1).
+ */
+export function appOwnerOf(
+  install: LocalInstall,
+  slug: string | null,
+): { owner: string | null; mixed: boolean } {
+  if (install.workspace === undefined) {
+    return { owner: slug === null ? null : (slug.split("/")[0] ?? null), mixed: false };
+  }
+  const owners = new Set<string>();
+  for (const child of install.workspace.children) {
+    const owner = child.slug?.split("/")[0];
+    if (owner !== undefined && owner.length > 0 && !isPlaceholderSlug(child.slug ?? "")) {
+      owners.add(owner);
+    }
+  }
+  if (owners.size > 1) return { owner: null, mixed: true };
+  return { owner: [...owners][0] ?? null, mixed: false };
+}
+
+/** Whether the steps apply to this install at all: an install of its own that is not up yet. */
 export function setupApplies(install: LocalInstall, report: LocalReportEvent | null): boolean {
-  if (install.tenantOnly === true || install.workspace !== undefined) return false;
+  if (install.tenantOnly === true) return false;
   if (install.state === "not-initialised") return true;
   if (install.state === "running") return false;
   return report !== null && report.install === install.dir && !report.directory.envPresent;
@@ -56,6 +82,7 @@ export function SetupSteps({
   running,
   onStart,
   onVerifyToken,
+  onCreateApp,
 }: {
   install: LocalInstall;
   report: LocalReportEvent | null;
@@ -64,14 +91,21 @@ export function SetupSteps({
   onStart: (request: VerbRunRequest) => void;
   /** The five-grant probe, through main. Absent where there is no bridge. */
   onVerifyToken?: (slug: string, token: string) => Promise<GithubTokenVerdict>;
+  /** The App manifest flow, through main. Absent where there is no bridge. */
+  onCreateApp?: (request: GithubAppRequest) => Promise<GithubAppCreated>;
 }) {
   const initialised = install.state !== "not-initialised";
+  const workspace = install.workspace !== undefined;
   const fields = report?.install === install.dir ? report.directory.configFields : undefined;
   const stated = slugOf(fields);
   const placeholder = stated !== null && isPlaceholderSlug(stated);
   const slug = placeholder ? null : stated;
+  const { owner: appOwner, mixed: mixedOwners } = appOwnerOf(install, slug);
   const provider = providerOf(fields);
   const providerKey = provider === null ? null : PROVIDER_KEYS[provider];
+  // The App, once GitHub answered. Its id is in the .env; the install link is
+  // what the step still has to say.
+  const [app, setApp] = useState<GithubAppCreated | null>(null);
 
   // Which keys a `secret set` run saved this session, read off each run's exit.
   const [saved, setSaved] = useState<ReadonlySet<string>>(() => new Set());
@@ -111,20 +145,39 @@ export function SetupSteps({
       ),
     },
     {
-      done: saved.has(GH_TOKEN_KEY),
-      title: "Give Phoebe access to the repository",
-      body: (
-        <GithubStep
-          install={install}
-          slug={slug}
-          placeholder={placeholder ? stated : null}
-          initialised={initialised}
-          running={running}
-          saved={saved.has(GH_TOKEN_KEY)}
-          onStart={onStart}
-          {...(onVerifyToken === undefined ? {} : { onVerifyToken })}
-        />
-      ),
+      done: saved.has(GH_TOKEN_KEY) || app !== null,
+      title: workspace
+        ? "Give Phoebe access to the repositories"
+        : "Give Phoebe access to the repository",
+      body:
+        app !== null ? (
+          <AppCreated app={app} />
+        ) : (
+          <>
+            {workspace ? null : (
+              <GithubStep
+                install={install}
+                slug={slug}
+                placeholder={placeholder ? stated : null}
+                initialised={initialised}
+                running={running}
+                saved={saved.has(GH_TOKEN_KEY)}
+                onStart={onStart}
+                {...(onVerifyToken === undefined ? {} : { onVerifyToken })}
+              />
+            )}
+            {saved.has(GH_TOKEN_KEY) ? null : (
+              <AppStep
+                workspace={workspace}
+                owner={appOwner}
+                mixed={mixedOwners}
+                initialised={initialised}
+                onCreated={setApp}
+                {...(onCreateApp === undefined ? {} : { onCreateApp })}
+              />
+            )}
+          </>
+        ),
     },
     {
       done: providerKey !== null && saved.has(providerKey),
@@ -404,6 +457,129 @@ function ProviderStep({
           Save as {providerKey ?? "…"}
         </button>
       </form>
+    </>
+  );
+}
+
+/**
+ * The App arm from the setup steps: one App for every repository under one
+ * owner, created through GitHub's manifest flow (contracts/github-app.ts). On
+ * a workspace it is the step; on a solo install it is the other way, under
+ * the token.
+ */
+function AppStep({
+  workspace,
+  owner,
+  mixed,
+  initialised,
+  onCreated,
+  onCreateApp,
+}: {
+  workspace: boolean;
+  owner: string | null;
+  mixed: boolean;
+  initialised: boolean;
+  onCreated: (app: GithubAppCreated) => void;
+  onCreateApp?: (request: GithubAppRequest) => Promise<GithubAppCreated>;
+}) {
+  const [name, setName] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [trouble, setTrouble] = useState<string | null>(null);
+  const chosen = name ?? (owner === null ? "" : `phoebe-${owner.toLowerCase()}`);
+
+  function create(): void {
+    if (owner === null || onCreateApp === undefined) return;
+    setPending(true);
+    setTrouble(null);
+    onCreateApp({ owner, name: chosen.trim() }).then(
+      (created) => {
+        setPending(false);
+        onCreated(created);
+      },
+      (error: unknown) => {
+        setPending(false);
+        setTrouble(error instanceof Error ? error.message : String(error));
+      },
+    );
+  }
+
+  return (
+    <div className="app-step">
+      {workspace ? (
+        <p className="muted">
+          A workspace serves several repositories, and the App arm gives it one credential for all
+          of them: a GitHub App whose tokens Phoebe mints itself, one per tenant, an hour at a time.
+          Phoebe registers it for you through GitHub&apos;s manifest flow with the five permissions
+          it needs; GitHub shows one page to confirm, and the App&apos;s id and key come straight
+          back into this install&apos;s <code>.env</code>.
+        </p>
+      ) : (
+        <p className="muted">
+          Or a GitHub App instead of a token: one credential whose tokens Phoebe mints itself, which
+          also serves more repositories later. Phoebe registers it through GitHub&apos;s manifest
+          flow; GitHub shows one page to confirm.
+        </p>
+      )}
+      {mixed ? (
+        <p className="refusal">
+          The tenants span more than one owner, and a GitHub App belongs to one. Give each tenant
+          its own <code>GH_TOKEN</code> in its <code>.env</code> instead.
+        </p>
+      ) : owner === null ? (
+        <p className="muted">
+          {initialised
+            ? "No tenant states a repoSlug yet, so there is no owner to register the App under. Set the slugs first."
+            : "Initialise the folder first."}
+        </p>
+      ) : (
+        <form
+          className="verbs"
+          onSubmit={(event) => {
+            event.preventDefault();
+            create();
+          }}
+        >
+          <input
+            aria-label="GitHub App name"
+            className="mono"
+            value={chosen}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={
+              pending || !initialised || onCreateApp === undefined || chosen.trim().length === 0
+            }
+          >
+            {pending ? "Waiting for GitHub…" : `Create a GitHub App under ${owner}`}
+          </button>
+        </form>
+      )}
+      {pending ? (
+        <p className="muted">
+          A browser tab opened on GitHub. Confirm the App there; this step moves on when GitHub
+          answers. App names are unique across GitHub, so a name that is taken comes back as a
+          refusal to change here.
+        </p>
+      ) : null}
+      {trouble === null ? null : <p className="refusal">The App was not created: {trouble}</p>}
+    </div>
+  );
+}
+
+/** The step once the App exists: what is in the .env, and the one thing left on GitHub. */
+function AppCreated({ app }: { app: GithubAppCreated }) {
+  return (
+    <>
+      <p className="muted">
+        <code>{app.name}</code> is registered under {app.owner} as App {app.id}. Its id and private
+        key are in <code>{app.envFile}</code> as <code>{GH_APP_ID_KEY}</code> and{" "}
+        <code>GH_APP_PRIVATE_KEY</code>.
+      </p>
+      <p>
+        <a href={app.installUrl}>Install {app.name} on the repositories Phoebe serves</a>, and only
+        those. Phoebe mints a token per tenant from the installation.
+      </p>
     </>
   );
 }
