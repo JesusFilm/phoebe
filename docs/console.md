@@ -40,8 +40,19 @@ is checked against the repository with the five probes
 saved as `GH_TOKEN` into the `.env` when every grant answers. A grant that
 did not answer is named, with the save still offered. The third step asks for
 the key of whichever provider the config names, and points at Sign in to Claude
-for a subscription instead of a key. A workspace's tenants are not walked this
-way yet.
+for a subscription instead of a key.
+
+A workspace takes the same steps with a different second one. Its tenants
+share one owner, so the companion offers to register a **GitHub App** under
+that owner through GitHub's manifest flow: it opens a browser tab on a page
+that posts the App's name and the five permissions to GitHub, GitHub shows one
+page to confirm, and the App's id and private key come back to the companion,
+which writes them into the deployment `.env` as `GH_APP_ID` and
+`GH_APP_PRIVATE_KEY`. One thing is left on GitHub, and the step links to it:
+installing the App on the repositories Phoebe serves. A solo install is offered
+the same App below its token field, for a deployment that will grow. Tenants
+that span owners are told to give each its own `GH_TOKEN` instead
+([`github-app-mode.md`](github-app-mode.md)).
 
 A folder that is already a workspace's tenant is not offered `init` over the
 top of its config. It is offered a deployment of its own beside the tenant: the

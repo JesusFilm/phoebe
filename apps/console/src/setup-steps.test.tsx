@@ -3,7 +3,7 @@
 import type { ConfigFieldFacts, VerbRunRequest } from "phoebe-agent/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vite-plus/test";
-import { GH_TOKEN_KEY, setupApplies, SetupSteps } from "./setup-steps.tsx";
+import { appOwnerOf, GH_TOKEN_KEY, setupApplies, SetupSteps } from "./setup-steps.tsx";
 import { directory, install, localReport } from "./test-fixture.ts";
 
 function field(path: string, value: string): ConfigFieldFacts {
@@ -54,6 +54,77 @@ describe("whether the steps apply", () => {
     expect(setupApplies(facts, null)).toBe(false);
     expect(setupApplies(install({ state: "running" }), report)).toBe(false);
     expect(setupApplies(install({ state: "not-initialised", tenantOnly: true }), null)).toBe(false);
+    expect(
+      setupApplies(install({ state: "not-initialised", workspace: { children: [] } }), null),
+    ).toBe(true);
+  });
+});
+
+describe("whose App it would be", () => {
+  test("the solo install's owner, or the one owner a workspace's tenants share", () => {
+    expect(appOwnerOf(install(), "JesusFilm/phoebe")).toEqual({ owner: "JesusFilm", mixed: false });
+    expect(appOwnerOf(install(), null)).toEqual({ owner: null, mixed: false });
+
+    const fleet = install({
+      workspace: {
+        children: [
+          { dir: "/repos/fleet/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/fleet/b", name: "b", slug: "acme/b" },
+          { dir: "/repos/fleet/c", name: "c", slug: "your-org/your-repo" },
+        ],
+      },
+    });
+    expect(appOwnerOf(fleet, null)).toEqual({ owner: "acme", mixed: false });
+
+    const mixed = install({
+      workspace: {
+        children: [
+          { dir: "/repos/fleet/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/fleet/b", name: "b", slug: "beta/b" },
+        ],
+      },
+    });
+    expect(appOwnerOf(mixed, null)).toEqual({ owner: null, mixed: true });
+  });
+});
+
+describe("the App path", () => {
+  test("a workspace's second step is the App, named after the owner", () => {
+    const fleet = install({
+      state: "stopped",
+      workspace: { children: [{ dir: "/repos/fleet/a", name: "a", slug: "acme/a" }] },
+    });
+    const markup = page({ install: fleet, onCreateApp: () => Promise.reject(new Error("static")) });
+
+    expect(markup).toContain("Give Phoebe access to the repositories");
+    expect(markup).toContain('aria-label="GitHub App name" class="mono" value="phoebe-acme"');
+    expect(markup).toContain("Create a GitHub App under acme");
+    expect(markup).not.toContain('aria-label="GitHub token"');
+  });
+
+  test("tenants that span owners are sent to per-tenant tokens", () => {
+    const mixed = install({
+      state: "stopped",
+      workspace: {
+        children: [
+          { dir: "/repos/fleet/a", name: "a", slug: "acme/a" },
+          { dir: "/repos/fleet/b", name: "b", slug: "beta/b" },
+        ],
+      },
+    });
+    const markup = page({ install: mixed, onCreateApp: () => Promise.reject(new Error("static")) });
+
+    expect(markup).toContain("The tenants span more than one owner");
+    expect(markup).not.toContain("Create a GitHub App");
+  });
+
+  test("a solo install is offered the App under its token field", () => {
+    const markup = page({ onCreateApp: () => Promise.reject(new Error("static")) });
+    const token = markup.indexOf('aria-label="GitHub token"');
+    const app = markup.indexOf("Or a GitHub App instead of a token");
+    expect(token).toBeGreaterThan(-1);
+    expect(app).toBeGreaterThan(token);
+    expect(markup).toContain("Create a GitHub App under JesusFilm");
   });
 });
 

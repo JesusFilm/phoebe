@@ -8,6 +8,7 @@ import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contra
 import type {
   ChildLiveness,
   CompanionEnvironment,
+  GithubAppCreated,
   GithubTokenVerdict,
   CompanionUpdate,
   ConfigReport,
@@ -358,6 +359,12 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
           ? Promise.reject(new Error("no verdict in this test"))
           : Promise.resolve(answers.tokenVerdict);
       },
+      createApp: (dir, request) => {
+        answers.appRequests?.push({ dir, ...request });
+        return answers.appCreated === undefined
+          ? Promise.reject(new Error("no App in this test"))
+          : Promise.resolve(answers.appCreated);
+      },
     },
     updates: {
       state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
@@ -413,6 +420,9 @@ export type BridgeAnswers = {
   /** What a GitHub token check answers, and which checks were asked for. */
   tokenVerdict?: GithubTokenVerdict;
   tokenChecks?: { slug: string; token: string }[];
+  /** What creating a GitHub App answers, and what was asked for. */
+  appCreated?: GithubAppCreated;
+  appRequests?: { dir: string; owner: string; name: string }[];
 };
 
 /** The directory facts main derives with no container involved (#527 §6). */

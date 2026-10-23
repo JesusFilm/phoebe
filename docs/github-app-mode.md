@@ -88,6 +88,12 @@ five-permission table.
 
 ## 3. Registering the App
 
+The companion does this for you. On a workspace's install tab, the setup
+steps' second step registers the App through GitHub's manifest flow with the
+permissions below, writes its id and key into the deployment `.env`, and
+links to the install page ([`console.md`](console.md)). What follows is the
+same by hand.
+
 ### Permissions
 
 The App needs the same five grants that §2 of
@@ -111,23 +117,28 @@ Install the App on exactly the repos your tenants point at. Installing it on
 repos outside your fleet widens the blast radius of the App key with no
 operational benefit. Phoebe only reads the tenants it is configured to serve.
 
-### Generate and base64 the private key
+### Generate the private key
 
 On the App settings page, generate a private key. It downloads as a `.pem`
-file. Base64-encode it for the env-file:
-
-```bash
-base64 -w 0 path/to/private-key.pem
-```
+file.
 
 ### The two env vars
 
 Add to the deployment `.env`:
 
-| Env var              | Value                                                  |
-| -------------------- | ------------------------------------------------------ |
-| `PHOEBE_APP_ID`      | The App's numeric id (shown on the App settings page). |
-| `PHOEBE_APP_KEY_B64` | The base64-encoded private key from above.             |
+| Env var              | Value                                                                     |
+| -------------------- | ------------------------------------------------------------------------- |
+| `GH_APP_ID`          | The App's numeric id (shown on the App settings page).                    |
+| `GH_APP_PRIVATE_KEY` | The PEM, on one line in double quotes with `\n` where it has line breaks. |
+
+Compose expands `\n` inside a double-quoted value when it reads the file, so
+the bootstrapper sees the PEM as GitHub wrote it. One way to produce the line:
+
+```bash
+printf 'GH_APP_PRIVATE_KEY="%s\\n"\n' "$(awk 'NF {printf "%s\\n", $0}' path/to/private-key.pem | sed 's/\\n$//')"
+```
+
+The companion writes exactly this line when it registers the App.
 
 Do **not** set `GH_TOKEN` in the deployment-level `.env`. That is now a
 per-tenant field (see [Migrating](#7-moving-an-existing-deployment-to-the-app-arm)).
