@@ -40,6 +40,17 @@ export const BRIDGE_CHANNELS = {
   updateChanged: "phoebe:updates/changed",
   preferencesGet: "phoebe:preferences/get",
   preferencesSet: "phoebe:preferences/set",
+  remotesList: "phoebe:remotes/list",
+  remotesPair: "phoebe:remotes/pair",
+  remotesRequest: "phoebe:remotes/request",
+  remotesSignOut: "phoebe:remotes/sign-out",
+  remotesForget: "phoebe:remotes/forget",
+  remotesSessions: "phoebe:remotes/sessions",
+  remotesRevoke: "phoebe:remotes/revoke",
+  remotesChanged: "phoebe:remotes/changed",
+  remotesReport: "phoebe:remotes/report",
+  remotesAlert: "phoebe:remotes/alert",
+  remotesTailscale: "phoebe:remotes/tailscale",
 } as const;
 
 /**

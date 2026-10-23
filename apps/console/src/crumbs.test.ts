@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
 import { routeCrumbs } from "./crumbs.ts";
-import { install } from "./test-fixture.ts";
+import { install, remote } from "./test-fixture.ts";
 
 const base = {
   surface: "companion" as const,
@@ -38,5 +38,38 @@ describe("where the console is, for the pane's top line", () => {
     expect(routeCrumbs({ ...base, route: { page: "add" } })).toEqual(["Home"]);
     expect(routeCrumbs({ ...base, route: { page: "settings" } })).toEqual(["Settings"]);
     expect(routeCrumbs({ ...base, surface: "browser" })).toEqual(["Home"]);
+  });
+});
+
+describe("a remote route's crumbs (map #690)", () => {
+  test("the host, then the deployment, then the tab", () => {
+    const record = remote;
+    const base = {
+      surface: "companion" as const,
+      open: null,
+      view: "console" as const,
+      tenant: null,
+    };
+    expect(
+      routeCrumbs({
+        ...base,
+        route: { page: "remote", deploymentId: "dep_YT", tab: null },
+        remote: record(),
+      }),
+    ).toEqual(["youtube-studio.tail4f2c.ts.net", "youtube-studio"]);
+    expect(
+      routeCrumbs({
+        ...base,
+        route: { page: "remote", deploymentId: "dep_YT", tab: "doctor" },
+        remote: record(),
+      }),
+    ).toEqual(["youtube-studio.tail4f2c.ts.net", "youtube-studio", "doctor"]);
+    expect(
+      routeCrumbs({
+        ...base,
+        route: { page: "remote", deploymentId: "dep_X", tab: null },
+        remote: null,
+      }),
+    ).toEqual(["dep_X", "not paired"]);
   });
 });

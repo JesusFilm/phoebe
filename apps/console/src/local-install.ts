@@ -181,6 +181,14 @@ export function outcomeReading(outcome: VerbOutcome): string {
       return receiptReading(outcome.outcome);
     case "secret set":
       return secretSetReading(outcome.outcome);
+    case "pair":
+      // The code is in the outcome and stays there: the line says it was
+      // minted and what it is good for, never what it is.
+      return `code minted (${outcome.outcome.scopes.join("+")}), spendable until ${outcome.outcome.expiresAt}`;
+    case "sessions":
+      return outcome.outcome.revoked > 0
+        ? `${outcome.outcome.revoked} session${outcome.outcome.revoked === 1 ? "" : "s"} revoked, ${outcome.outcome.sessions.length} left`
+        : `${outcome.outcome.sessions.length} session${outcome.outcome.sessions.length === 1 ? "" : "s"}`;
   }
 }
 

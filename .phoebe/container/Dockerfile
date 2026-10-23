@@ -132,6 +132,21 @@ LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
 # the container refuses every non-dry-run unit.
 RUN touch /.phoebe-container
 
+# The mint drop (docs/remote.md, ADR 0002): the one directory only root writes,
+# where `phoebe pair` leaves a pairing-code hash for the bootstrapper. Created
+# root-owned 0755 before the drop below; identical to the scaffold, and asserted
+# so in src/container-image.test.ts.
+RUN mkdir -p /run/phoebe-mint && chown root:root /run/phoebe-mint && chmod 0755 /run/phoebe-mint
+
+# DOGFOOD DEVIATION: a `phoebe` on PATH that runs the mounted bootstrapper.
+#
+# The scaffold's `npm install -g` puts one there; this image carries no Phoebe
+# code (see above), but the host verbs that exec into the container — `phoebe
+# pair`, `phoebe sessions`, the `remote-url` hand-off — exec plain `phoebe`, so
+# the dogfood needs the same name to resolve. A two-line shim onto the mount.
+RUN printf '#!/bin/sh\nexec node /opt/phoebe-engine/bootstrap/cli.ts "$@"\n' > /usr/local/bin/phoebe \
+ && chmod 0755 /usr/local/bin/phoebe
+
 # The privilege drop. Everything past this line runs unprivileged. Identical to
 # the shipped template, and asserted so.
 #

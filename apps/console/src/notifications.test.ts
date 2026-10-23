@@ -40,13 +40,13 @@ const SHOWING = { enabled: true, focused: false } as const;
 describe("whether to interrupt at all", () => {
   test("nothing is shown with the preference off (#524 §8)", () => {
     expect(
-      notificationFor({ alert: alert(), arm: "relay", enabled: false, focused: false }),
+      notificationFor({ alert: alert(), arm: "remote", enabled: false, focused: false }),
     ).toBeNull();
   });
 
   test("nothing is shown while the window is focused (#524 §6)", () => {
     expect(
-      notificationFor({ alert: alert(), arm: "relay", enabled: true, focused: true }),
+      notificationFor({ alert: alert(), arm: "remote", enabled: true, focused: true }),
     ).toBeNull();
   });
 
@@ -54,14 +54,14 @@ describe("whether to interrupt at all", () => {
     const cleared = alert({ state: "cleared", text: "acme-site: no longer dark" });
 
     expect(
-      notificationFor({ alert: cleared, arm: "relay", enabled: true, focused: true }),
+      notificationFor({ alert: cleared, arm: "remote", enabled: true, focused: true }),
     ).toBeNull();
   });
 });
 
 describe("what the banner says", () => {
   test("the name is the title and the sentence is the body", () => {
-    const shown = notificationFor({ alert: alert(), arm: "relay", ...SHOWING })!;
+    const shown = notificationFor({ alert: alert(), arm: "remote", ...SHOWING })!;
 
     expect(shown.title).toBe("acme-site");
     expect(shown.body).toBe("dark (no heartbeat for 5 min)");
@@ -70,7 +70,7 @@ describe("what the banner says", () => {
   test("a sentence that does not lead with the name is carried whole", () => {
     const odd = alert({ text: "something else entirely" });
 
-    expect(notificationFor({ alert: odd, arm: "relay", ...SHOWING })!.body).toBe(
+    expect(notificationFor({ alert: odd, arm: "remote", ...SHOWING })!.body).toBe(
       "something else entirely",
     );
   });
@@ -85,23 +85,25 @@ describe("what the banner says", () => {
       url: "https://relay.example/",
     };
 
-    const shown = notificationFor({ alert: probe, arm: "relay", ...SHOWING })!;
+    const shown = notificationFor({ alert: probe, arm: "remote", ...SHOWING })!;
 
-    expect(shown.title).toBe("Phoebe relay");
+    expect(shown.title).toBe("Phoebe");
     expect(shown.subject).toBeNull();
   });
 });
 
 describe("the tag, which is how a clear replaces its raise (#524 §5)", () => {
-  test("is the deployment and the condition", () => {
-    expect(notificationFor({ alert: alert(), arm: "relay", ...SHOWING })!.tag).toBe("ff00:dark");
+  test("is the route, the deployment and the condition (map #690)", () => {
+    expect(notificationFor({ alert: alert(), arm: "remote", ...SHOWING })!.tag).toBe(
+      "remote/ff00:dark",
+    );
   });
 
   test("so a clear lands on the raise it is about", () => {
-    const raise = notificationFor({ alert: alert(), arm: "relay", ...SHOWING })!;
+    const raise = notificationFor({ alert: alert(), arm: "remote", ...SHOWING })!;
     const clear = notificationFor({
       alert: alert({ state: "cleared", text: "acme-site: no longer dark" }),
-      arm: "relay",
+      arm: "remote",
       ...SHOWING,
     })!;
 
@@ -109,43 +111,46 @@ describe("the tag, which is how a clear replaces its raise (#524 §5)", () => {
   });
 
   test("and two conditions on one deployment do not fold into each other", () => {
-    const dark = notificationFor({ alert: alert(), arm: "relay", ...SHOWING })!;
+    const dark = notificationFor({ alert: alert(), arm: "remote", ...SHOWING })!;
     const replaced = notificationFor({
       alert: alert({ condition: "replaced" }),
-      arm: "relay",
+      arm: "remote",
       ...SHOWING,
     })!;
 
     expect(replaced.tag).not.toBe(dark.tag);
   });
 
-  test("two pipelines of one deployment do fold, which is what stops twenty banners", () => {
+  test("two pipelines of one deployment are two tags: the tag is per route and pipeline", () => {
     const one = notificationFor({
       alert: alert({ condition: "wedged", pipeline: "acme-site/sentry" }),
-      arm: "relay",
+      arm: "remote",
       ...SHOWING,
     })!;
     const two = notificationFor({
       alert: alert({ condition: "wedged", pipeline: "acme-site/build" }),
-      arm: "relay",
+      arm: "remote",
       ...SHOWING,
     })!;
 
-    expect(two.tag).toBe(one.tag);
+    expect(two.tag).not.toBe(one.tag);
+    expect(one.tag).toBe("remote/ff00/acme-site/sentry:wedged");
   });
 
   test("a local install is tagged by its directory, the local arm's identity", () => {
     const local = alert({ deployment: { name: "youtube-studio", keyFingerprint: "/repos/ys" } });
 
-    expect(notificationFor({ alert: local, arm: "local", ...SHOWING })!.tag).toBe("/repos/ys:dark");
+    expect(notificationFor({ alert: local, arm: "local", ...SHOWING })!.tag).toBe(
+      "local//repos/ys:dark",
+    );
   });
 });
 
 describe("where a click goes (#524 §6)", () => {
-  test("a relay alert points at the deployment", () => {
-    const shown = notificationFor({ alert: alert(), arm: "relay", ...SHOWING })!;
+  test("a remote alert points at the record", () => {
+    const shown = notificationFor({ alert: alert(), arm: "remote", ...SHOWING })!;
 
-    expect(shown.subject).toEqual({ arm: "relay", fingerprint: "ff00" });
+    expect(shown.subject).toEqual({ arm: "remote", deploymentId: "ff00" });
   });
 
   test("a local alert points at the install", () => {
@@ -160,7 +165,7 @@ describe("where a click goes (#524 §6)", () => {
   test("the pipeline rides along, for the tab a click should land on", () => {
     const wedged = alert({ condition: "wedged", pipeline: "acme-site/sentry" });
 
-    expect(notificationFor({ alert: wedged, arm: "relay", ...SHOWING })!.pipeline).toBe(
+    expect(notificationFor({ alert: wedged, arm: "remote", ...SHOWING })!.pipeline).toBe(
       "acme-site/sentry",
     );
   });
@@ -171,13 +176,13 @@ describe("the notifier", () => {
     const fake = recorder();
     const notifier = createNotifier({ Notification: fake.Notification, open: () => {} });
 
-    notifier.show({ alert: alert(), arm: "relay", ...SHOWING });
+    notifier.show({ alert: alert(), arm: "remote", ...SHOWING });
 
     expect(fake.shown).toEqual([
       {
         title: "acme-site",
         body: "dark (no heartbeat for 5 min)",
-        tag: "ff00:dark",
+        tag: "remote/ff00:dark",
         silent: true,
       },
     ]);
@@ -187,7 +192,7 @@ describe("the notifier", () => {
     const fake = recorder();
     const notifier = createNotifier({ Notification: fake.Notification, open: () => {} });
 
-    const shown = notifier.show({ alert: alert(), arm: "relay", enabled: true, focused: true });
+    const shown = notifier.show({ alert: alert(), arm: "remote", enabled: true, focused: true });
 
     expect(shown).toBeNull();
     expect(fake.shown).toEqual([]);
@@ -200,11 +205,11 @@ describe("the notifier", () => {
       Notification: fake.Notification,
       open: (notifiable) => opened.push(notifiable),
     });
-    notifier.show({ alert: alert(), arm: "relay", ...SHOWING });
+    notifier.show({ alert: alert(), arm: "remote", ...SHOWING });
 
     fake.click(0);
 
     expect(opened).toHaveLength(1);
-    expect(opened[0]!.subject).toEqual({ arm: "relay", fingerprint: "ff00" });
+    expect(opened[0]!.subject).toEqual({ arm: "remote", deploymentId: "ff00" });
   });
 });

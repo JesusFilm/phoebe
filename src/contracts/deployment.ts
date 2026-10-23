@@ -29,6 +29,7 @@ import type { ConfigEditValue } from "./config-edit.ts";
 import type { DoctorSection } from "./doctor.ts";
 import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
+import type { RemoteReport } from "./remote-protocol.ts";
 import type { SecretsSection } from "./secrets.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
@@ -39,13 +40,6 @@ export const DEPLOYMENT_SCHEMA = 1;
 export type DeploymentArm = "solo" | "workspace";
 
 /**
- * Who this deployment is (#505 §3). `name` is `relay.name`, or the solo
- * tenant's `repoSlug`, or the workspace root's directory name;
- * `keyFingerprint` is absent until the deployment has a relay key on its
- * volume, which is what makes it identifiable to anything outside the
- * container, and `relayUrl` is absent until the config names one.
- */
-/**
  * The kind of machine a deployment runs on, as far as its bootstrapper can tell
  * from inside the container: the kernel it sees. A WSL2 kernel is `wsl` whether
  * the daemon is Docker Desktop's or a distro's own, a LinuxKit kernel is Docker
@@ -54,12 +48,18 @@ export type DeploymentArm = "solo" | "workspace";
  */
 export type HostPlatform = "windows" | "macos" | "linux" | "wsl";
 
+/**
+ * Who this deployment is (#505 §3, reshaped by map #690). `name` is the solo
+ * tenant's `repoSlug` or the workspace root's directory name; `deploymentId`
+ * is the random id minted once onto the data volume (`state/deployment-id`),
+ * the one thing a paired client keys a deployment on — a wiped volume is a new
+ * deployment, and that is what the companion's `replaced` reason detects.
+ */
 export type DeploymentIdentity = {
   name: string;
-  keyFingerprint?: string;
+  /** `dep_` and 26 Crockford base32 characters. Absent only on a report older than map #690. */
+  deploymentId?: string;
   arm: DeploymentArm;
-  /** The relay this deployment dials, as `relay.url` names it. */
-  relayUrl?: string;
   /**
    * Where this deployment runs. Optional because a bootstrapper from before it
    * was reported says nothing here, and an addition moves no schema.
@@ -213,40 +213,12 @@ export type FleetReport = {
 };
 
 /**
- * Where this deployment stands with its relay (#540). Three words, and each one
- * answers a different question an operator actually asks.
- *
- * `unpaired` is the honest answer both before a first pairing and after a
- * refusal that no retry will fix: there is no live link and none is coming
- * without a human. `reconnecting` is a link that exists and a socket that does
- * not — the retry is scheduled and `nextRetryAt` says when. `connected` means
- * the handshake completed and the socket is open right now.
+ * The remote section (map #690): how this deployment is reached over Tailscale,
+ * if at all. Present whether or not a `remote` block exists, because "nothing
+ * listens" is a fact a console states rather than infers from a missing key.
+ * The shape is `RemoteReport` in remote-protocol.ts.
  */
-export type RelayState = "connected" | "reconnecting" | "unpaired";
-
-/** How the last connection ended, in the relay's own close code. */
-export type RelayClose = {
-  /** 4001–4005 are the relay's (see contracts/relay-protocol.ts); 1006 is a drop. */
-  code: number;
-  /** Whatever the far side said, or "" when it said nothing. */
-  reason: string;
-  at: string;
-};
-
-/**
- * The relay section — the bootstrapper's, not the engine's. Present whether or
- * not a relay is configured, because "this deployment dials nothing" is a fact
- * a console has to be able to state rather than infer from a missing key.
- */
-export type RelayReport = {
-  /** Is there a `relay.url` in the root config at all? */
-  configured: boolean;
-  state: RelayState;
-  /** When the next dial is due, while reconnecting. Null otherwise. */
-  nextRetryAt: string | null;
-  lastClose: RelayClose | null;
-  updatedAt: string;
-};
+export type { RemoteReport } from "./remote-protocol.ts";
 
 /**
  * One config edit this deployment applied to its own files and has not seen
@@ -269,7 +241,7 @@ export type EditLedgerEntry = {
   /** What was written. A leaf is a literal; nothing here carries an object. */
   value: ConfigEditValue;
   at: string;
-  /** The allowlisted email the relay stamped on the edit; absent for a shell run. */
+  /** Who asked: the paired session's `pairedAs` or `device:<label>`; absent for a shell run. */
   by?: string;
 };
 
@@ -326,7 +298,7 @@ export type DeploymentReport = {
   schema: number;
   identity: DeploymentIdentity;
   bootstrapper: BootstrapperReport;
-  relay: RelayReport;
+  remote: RemoteReport;
   fleet: FleetReport;
   /**
    * What the last `phoebe doctor` run found, with its age (#507 §4). The

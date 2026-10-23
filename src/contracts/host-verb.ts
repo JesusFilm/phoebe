@@ -17,6 +17,7 @@ import type { EditReceipt } from "./config-edit.ts";
 import type { DoctorReport } from "./doctor.ts";
 import type { InitOutcome } from "./init-report.ts";
 import type { FleetMigrateReport } from "./migrate-report.ts";
+import type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
 import type { SecretSetOutcome } from "./secret-set.ts";
 import type { StartOutcome } from "./start-outcome.ts";
 import type { StopOutcome } from "./stop-outcome.ts";
@@ -31,7 +32,9 @@ export type HostVerb =
   | "migrate"
   | "doctor"
   | "config set"
-  | "secret set";
+  | "secret set"
+  | "pair"
+  | "sessions";
 
 /** A finished verb run, tagged by the verb that produced it. */
 export type VerbOutcome =
@@ -42,7 +45,11 @@ export type VerbOutcome =
   | { verb: "migrate"; outcome: FleetMigrateReport }
   | { verb: "doctor"; outcome: DoctorReport }
   | { verb: "config set"; outcome: EditReceipt }
-  | { verb: "secret set"; outcome: SecretSetOutcome };
+  | { verb: "secret set"; outcome: SecretSetOutcome }
+  // The two session verbs (map #690). `pair`'s outcome carries the code; the
+  // run's lines never do.
+  | { verb: "pair"; outcome: PairOutcome }
+  | { verb: "sessions"; outcome: SessionsOutcome };
 
 /** The outcome type of one verb — `OutcomeOf<"stop">` is `StopOutcome`. */
 export type OutcomeOf<V extends HostVerb> = Extract<VerbOutcome, { verb: V }>["outcome"];

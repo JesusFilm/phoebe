@@ -1,15 +1,15 @@
 // `state/deployment.json` — the file half of the deployment report (#532, #501).
 //
 // One deployment keeps one of these on its data volume, and it is the single
-// read model: `phoebe status` reads it, the relay sender ships it, the companion
-// renders what the relay forwarded. The type it holds is in contracts
+// read model: `phoebe status` reads it, the deployment API streams it, the
+// companion renders what it received. The type it holds is in contracts
 // (src/contracts/deployment.ts), where a browser can load it; the live model
 // that produces one is bootstrap/deployment-state.ts. This module owns three
 // things those two deliberately do not: where the file lives, how it is
 // replaced, and when it is worth replacing at all.
 //
-// **Where.** `<dataBase>/state/deployment.json`, beside the relay key #505 puts
-// on the same volume. Tenant data nests two segments deep
+// **Where.** `<dataBase>/state/deployment.json`, beside the sessions file and
+// the deployment id map #690 puts on the same volume. Tenant data nests two segments deep
 // (`<dataBase>/<owner>/<repo>/`), so a deployment-level `state/` directory
 // cannot be confused with a tenant's.
 //
@@ -25,8 +25,8 @@
 // written with the pass clocks and the stamps taken out; if what is left is
 // identical, nothing is written and the file keeps the stamps it had. That is
 // what makes "rewritten on change" true rather than "rewritten on a timer", and
-// it is the same rule #507 states for the relay: pushed when the wedged flag
-// flips, not once per pass.
+// it is the same rule #507 states for the event stream: pushed when the wedged
+// flag flips, not once per pass.
 //
 // A section's own `updatedAt` therefore means "when this section last moved",
 // not "when we last looked" — which is the only reading that survives a console
@@ -42,8 +42,8 @@ import {
   type DeploymentReport,
   type EditLedgerEntry,
   type FleetReport,
-  type RelayReport,
 } from "../src/contracts/deployment.ts";
+import type { RemoteReport } from "../src/contracts/remote-protocol.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
 import type { SecretsSection } from "../src/contracts/secrets.ts";
 
@@ -63,7 +63,7 @@ export function deploymentReportPath(dataBase: string): string {
 export type DeploymentDraft = {
   identity: DeploymentIdentity;
   bootstrapper: Omit<BootstrapperReport, "updatedAt">;
-  relay: Omit<RelayReport, "updatedAt">;
+  remote: Omit<RemoteReport, "updatedAt">;
   fleet: Omit<FleetReport, "updatedAt">;
   doctor: Omit<DoctorSection, "updatedAt">;
   config: Omit<ConfigReport, "updatedAt">;
@@ -128,8 +128,11 @@ export function stampReport(
   const bootstrapperMoved =
     previous === null ||
     contentOf(unstamped(previous.bootstrapper)) !== contentOf(draft.bootstrapper);
-  const relayMoved =
-    previous === null || contentOf(unstamped(previous.relay)) !== contentOf(draft.relay);
+  // The remote section is optional on the wire for the same reason config is:
+  // a report written before map #690 has none.
+  const remoteMoved =
+    previous?.remote === undefined ||
+    contentOf(unstamped(previous.remote)) !== contentOf(draft.remote);
   const fleetMoved =
     previous === null || contentOf(unstamped(previous.fleet)) !== contentOf(draft.fleet);
   // The doctor section moves on its own clock — a run starting, a run landing,
@@ -159,7 +162,7 @@ export function stampReport(
   if (
     !identityMoved &&
     !bootstrapperMoved &&
-    !relayMoved &&
+    !remoteMoved &&
     !fleetMoved &&
     !doctorMoved &&
     !configMoved &&
@@ -176,9 +179,9 @@ export function stampReport(
       ...draft.bootstrapper,
       updatedAt: bootstrapperMoved ? now : (previous?.bootstrapper.updatedAt ?? now),
     },
-    relay: {
-      ...draft.relay,
-      updatedAt: relayMoved ? now : (previous?.relay.updatedAt ?? now),
+    remote: {
+      ...draft.remote,
+      updatedAt: remoteMoved ? now : (previous?.remote?.updatedAt ?? now),
     },
     fleet: {
       ...draft.fleet,

@@ -14,7 +14,11 @@ import {
   readDeploymentField,
   readDeploymentHostKnobs,
   readReportingField,
+  readRemoteField,
+  readRemoteLeniently,
   resolveConfig,
+  resolveRemote,
+  validateRemoteField,
   validateUserConfig,
   workKindOverride,
   type PhoebeUserConfig,
@@ -1025,5 +1029,80 @@ describe("reporting field (#474)", () => {
     ["on", "`reporting` must be an object"],
   ])("rejects %j at resolve time", (reporting, message) => {
     expect(() => resolve({ ...base, reporting } as never)).toThrow(message);
+  });
+});
+
+describe("the `remote` block (map #690)", () => {
+  test("both arms parse, and the host arm's ports are optional", () => {
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ remote: { tailscale: "sidecar" } })),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(minimalUserConfig({ remote: { tailscale: "host" } })),
+    ).not.toThrow();
+    expect(() =>
+      validateUserConfig(
+        minimalUserConfig({ remote: { tailscale: "host", port: 8443, httpsPort: 8443 } }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("`port` and `httpsPort` are refused on the sidecar arm, naming serve.json", () => {
+    expect(() =>
+      validateRemoteField({ tailscale: "sidecar", port: 7463 } as unknown as never),
+    ).toThrow(/remote\.port.*serve\.json/);
+    expect(() =>
+      validateRemoteField({ tailscale: "sidecar", httpsPort: 443 } as unknown as never),
+    ).toThrow(/remote\.httpsPort.*serve\.json/);
+  });
+
+  test("an unknown arm, an unknown field and a bad port are each named", () => {
+    expect(() => validateRemoteField({ tailscale: "funnel" } as unknown as never)).toThrow(
+      /remote\.tailscale.*"sidecar".*"host"/,
+    );
+    expect(() => validateRemoteField({ tailscale: "host", url: "x" } as unknown as never)).toThrow(
+      /unknown field "url"/,
+    );
+    expect(() => validateRemoteField({ tailscale: "host", port: 0 })).toThrow(
+      /remote\.port.*1 and 65535/,
+    );
+    expect(() => validateRemoteField({ tailscale: "host", httpsPort: 44.3 })).toThrow(
+      /remote\.httpsPort/,
+    );
+    expect(() => validateRemoteField("sidecar" as unknown as never)).toThrow(/must be an object/);
+  });
+
+  test("resolveConfig drops it — the engine never sees the block", () => {
+    const resolved = resolveConfig(
+      minimalUserConfig({ remote: { tailscale: "host", port: 9000 } }),
+    );
+    expect("remote" in resolved).toBe(false);
+  });
+
+  test("resolveRemote fills the host arm's defaults and leaves the sidecar bare", () => {
+    expect(resolveRemote({ tailscale: "sidecar" })).toEqual({ arm: "sidecar" });
+    expect(resolveRemote({ tailscale: "host" })).toEqual({
+      arm: "host",
+      port: 7463,
+      httpsPort: 443,
+    });
+    expect(resolveRemote({ tailscale: "host", port: 9000, httpsPort: 8443 })).toEqual({
+      arm: "host",
+      port: 9000,
+      httpsPort: 8443,
+    });
+  });
+
+  test("readRemoteField is strict and readRemoteLeniently is not", () => {
+    expect(readRemoteField({})).toBeUndefined();
+    expect(readRemoteField({ remote: { tailscale: "sidecar" } })).toEqual({ tailscale: "sidecar" });
+    expect(() => readRemoteField({ remote: { tailscale: "nope" } })).toThrow(/remote\.tailscale/);
+    expect(readRemoteLeniently({ remote: { tailscale: "nope" } })).toBeUndefined();
+    expect(readRemoteLeniently({ remote: { tailscale: "host" } })).toEqual({
+      arm: "host",
+      port: 7463,
+      httpsPort: 443,
+    });
+    expect(readRemoteLeniently(null)).toBeUndefined();
   });
 });

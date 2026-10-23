@@ -8,8 +8,19 @@
 // home. A console that threw on a hand-typed hash would be a blank page where a
 // wrong URL should be a wrong page.
 
-/** Which page the console is showing. */
-export type Route = { page: "home" } | { page: "add" } | { page: "settings" };
+import type { DeploymentTab } from "./tabs.ts";
+
+/**
+ * Which page the console is showing. A **remote route** is one paired record,
+ * by the deployment id it is keyed on (map #690): `#/r/<id>[/<tab>]`. A local
+ * install has no hash of its own — the rail opens it in place — so the two do
+ * not collide.
+ */
+export type Route =
+  | { page: "home" }
+  | { page: "add" }
+  | { page: "settings" }
+  | { page: "remote"; deploymentId: string; tab: DeploymentTab | null };
 
 export const HOME_ROUTE: Route = { page: "home" };
 
@@ -32,6 +43,13 @@ export const SETTINGS_ROUTE: Route = { page: "settings" };
 
 export const SETTINGS_HREF = "#/settings";
 
+/** The hash for one remote route, and optionally one of its tabs. */
+export function remoteHref(deploymentId: string, tab?: DeploymentTab): string {
+  return `#/r/${encodeURIComponent(deploymentId)}${tab === undefined ? "" : `/${tab}`}`;
+}
+
+const TABS: readonly string[] = ["overview", "pipelines", "doctor", "secrets", "config"];
+
 /** One hash as a route. Everything that is not a page this console has is home. */
 export function parseRoute(hash: string): Route {
   const segments = hash
@@ -40,5 +58,14 @@ export function parseRoute(hash: string): Route {
     .filter((segment) => segment !== "");
   if (segments[0] === "add" && segments[1] === undefined) return ADD_ROUTE;
   if (segments[0] === "settings" && segments[1] === undefined) return SETTINGS_ROUTE;
+  if (segments[0] === "r" && segments[1] !== undefined && segments[3] === undefined) {
+    const tab = segments[2];
+    if (tab !== undefined && !TABS.includes(tab)) return HOME_ROUTE;
+    return {
+      page: "remote",
+      deploymentId: decodeURIComponent(segments[1]),
+      tab: tab === undefined ? null : (tab as DeploymentTab),
+    };
+  }
   return HOME_ROUTE;
 }

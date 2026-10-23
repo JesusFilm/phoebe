@@ -78,3 +78,25 @@ key for its provider.
 The local checkout tree is for discovery and config, nothing else. Phoebe still
 clones each tenant privately under `/data/repos/<owner>/<repo>/`. The `:ro` flag
 is what guarantees the host workspace is never a working copy.
+
+## Remote access overlays
+
+Two more Compose files sit beside `compose.yml`, and a Serve config under
+`tailscale/`. All three are inert until `phoebe.config.ts` carries a `remote`
+block ([`docs/remote.md`](../../docs/remote.md) in the engine repo):
+
+| File                            | Arm       | What it adds                                                                                                                                                                                                              |
+| ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose.tailscale-sidecar.yml` | `sidecar` | A `tailscale/tailscale` service the `phoebe` service shares a network namespace with, a tmpfs volume for the sockets, and the node's state volume. Reads `TS_AUTHKEY`, `TS_EXTRA_ARGS` and `TS_HOSTNAME` from `.env`. |
+| `compose.tailscale-host.yml`    | `host`    | Publishes the container's listener on `127.0.0.1:${PHOEBE_REMOTE_PORT:-7463}`, loopback only.                                                                                                                             |
+| `tailscale/serve.json`          | `sidecar` | What the sidecar's Serve proxies: HTTPS on 443 to the deployment's Unix socket. Mounted as a directory, because containerboot watches the directory.                                                                      |
+
+`phoebe start` and `phoebe stop` add the arm's overlay to their own argv. Raw
+Compose users add it by hand:
+
+```bash
+docker compose -f compose.yml -f compose.tailscale-sidecar.yml --env-file ../.env up -d
+```
+
+`compose.yml` itself does not change, so a deployment with no `remote` block
+is the deployment it was.
