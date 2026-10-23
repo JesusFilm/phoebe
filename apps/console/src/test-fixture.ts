@@ -8,6 +8,7 @@ import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contra
 import type {
   ChildLiveness,
   CompanionEnvironment,
+  GithubTokenVerdict,
   CompanionUpdate,
   ConfigReport,
   DeploymentReport,
@@ -350,6 +351,14 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       ended: () => () => undefined,
     },
+    github: {
+      verifyToken: (slug, token) => {
+        answers.tokenChecks?.push({ slug, token });
+        return answers.tokenVerdict === undefined
+          ? Promise.reject(new Error("no verdict in this test"))
+          : Promise.resolve(answers.tokenVerdict);
+      },
+    },
     updates: {
       state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
       download: () => {
@@ -401,6 +410,9 @@ export type BridgeAnswers = {
   update?: CompanionUpdate;
   /** Collects the update buttons the page pressed. */
   updateCalls?: string[];
+  /** What a GitHub token check answers, and which checks were asked for. */
+  tokenVerdict?: GithubTokenVerdict;
+  tokenChecks?: { slug: string; token: string }[];
 };
 
 /** The directory facts main derives with no container involved (#527 §6). */
