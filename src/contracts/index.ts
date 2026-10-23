@@ -199,3 +199,4 @@ export type {
   GithubTokenKind,
   GithubTokenVerdict,
 } from "./github-token.ts";
+export type { GithubAppCreated, GithubAppRequest } from "./github-app.ts";
