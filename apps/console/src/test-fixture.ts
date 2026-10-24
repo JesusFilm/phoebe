@@ -6,6 +6,9 @@
 
 import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
 import type {
+  BootstrapNeed,
+  BootstrapPlan,
+  BootstrapTool,
   ChildLiveness,
   CompanionEnvironment,
   CompanionUpdate,
@@ -272,6 +275,23 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
   return {
     version: () => Promise.resolve("0.13.0"),
     environment: () => Promise.resolve(answers.environment ?? environment()),
+    environmentChanges: () => () => undefined,
+    bootstrap: {
+      plan: () => Promise.resolve(answers.bootstrapPlan ?? { steps: [], blocked: [] }),
+      run: (step) => {
+        answers.bootstrapRuns?.push(step);
+        return Promise.resolve({
+          tool: step.tool,
+          need: step.need,
+          command: "",
+          startedAt: "2026-10-22T12:00:00.000Z",
+          lines: [],
+        });
+      },
+      current: () => Promise.resolve(null),
+      lines: () => () => undefined,
+      exits: () => () => undefined,
+    },
     installs: {
       list: () => Promise.resolve(answers.installs ?? []),
       pick: () => Promise.resolve(answers.picked ?? null),
@@ -401,6 +421,9 @@ export type BridgeAnswers = {
   update?: CompanionUpdate;
   /** Collects the update buttons the page pressed. */
   updateCalls?: string[];
+  /** What the setup page is offered, and the steps it asked to run. */
+  bootstrapPlan?: BootstrapPlan;
+  bootstrapRuns?: { tool: BootstrapTool; need: BootstrapNeed }[];
 };
 
 /** The directory facts main derives with no container involved (#527 §6). */

@@ -193,3 +193,14 @@ export type {
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { LocalAlertEvent } from "./local-report.ts";
 export type { CompanionUpdate } from "./companion-update.ts";
+export { MAX_BOOTSTRAP_LINES } from "./bootstrap.ts";
+export type {
+  BootstrapBlocked,
+  BootstrapExit,
+  BootstrapLine,
+  BootstrapNeed,
+  BootstrapPlan,
+  BootstrapRun,
+  BootstrapStep,
+  BootstrapTool,
+} from "./bootstrap.ts";
