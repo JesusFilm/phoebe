@@ -78,6 +78,7 @@ import {
 } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { probeDocker } from "./docker.ts";
+import { verifyGithubToken } from "./github-token.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
 import { createHarness } from "./harness.ts";
@@ -429,6 +430,13 @@ app.whenReady().then(
     autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
     autoUpdater.on("update-downloaded", (info) => updates.downloaded(info.version));
     autoUpdater.on("error", (error) => updates.failed(error));
+
+    // The token is an argument here for the same reason a secret's value is
+    // a run argument (contracts/verb-run.ts): it is held for the call, and
+    // nothing that outlives the call carries it.
+    ipcMain.handle(BRIDGE_CHANNELS.githubVerifyToken, (_event, slug: string, token: string) =>
+      answering(() => verifyGithubToken(slug, token)),
+    );
 
     ipcMain.handle(BRIDGE_CHANNELS.updateState, () =>
       answering<CompanionUpdate>(() => updates.state()),

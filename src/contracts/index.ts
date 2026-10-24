@@ -193,3 +193,9 @@ export type {
 export type { SecretSetOutcome, SecretWriter } from "./secret-set.ts";
 export type { LocalAlertEvent } from "./local-report.ts";
 export type { CompanionUpdate } from "./companion-update.ts";
+export type {
+  GithubGrant,
+  GithubGrantId,
+  GithubTokenKind,
+  GithubTokenVerdict,
+} from "./github-token.ts";

@@ -87,6 +87,9 @@ const bridge: DesktopBridge = {
     lines: (onLine) => subscribe<LogLine>(BRIDGE_CHANNELS.logsLine, onLine),
     ended: (onEnded) => subscribe<LogsEnded>(BRIDGE_CHANNELS.logsEnded, onEnded),
   },
+  github: {
+    verifyToken: (slug, token) => call(BRIDGE_CHANNELS.githubVerifyToken, slug, token),
+  },
   updates: {
     state: () => call(BRIDGE_CHANNELS.updateState),
     download: () => call(BRIDGE_CHANNELS.updateDownload),
