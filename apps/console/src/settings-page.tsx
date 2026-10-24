@@ -10,7 +10,7 @@
 // thing that is still true of it.
 
 import type { CSSProperties } from "react";
-import type { CompanionEnvironment } from "phoebe-agent/contracts";
+import type { CompanionEnvironment, CompanionUpdate } from "phoebe-agent/contracts";
 import { ConsoleThemePicker } from "./console-theme-picker.tsx";
 import {
   consoleThemeProperties,
@@ -40,6 +40,10 @@ export function SettingsPage({
   onConsoleTheme,
   autoCheckUpdates = false,
   onAutoCheckUpdates,
+  update = null,
+  onCheckUpdate,
+  onDownloadUpdate,
+  onRestartUpdate,
 }: {
   surface: Surface;
   /** What main found on this machine, or null before it answered. */
@@ -53,6 +57,11 @@ export function SettingsPage({
   /** Check every install's agent versions on a timer (update-alert.tsx). */
   autoCheckUpdates?: boolean;
   onAutoCheckUpdates?: (wanted: boolean) => void;
+  /** The companion's own update, as main knows it. Null before it answered. */
+  update?: CompanionUpdate | null;
+  onCheckUpdate?: () => void;
+  onDownloadUpdate?: () => void;
+  onRestartUpdate?: () => void;
 }) {
   if (surface === "browser") {
     return (
@@ -161,7 +170,112 @@ export function SettingsPage({
             </dd>
           </dl>
         )}
+        <p className="muted">
+          The companion looks for a newer build of itself shortly after launch and every four hours.
+          A new one downloads only when you ask, and installs when you quit, or sooner with Restart
+          now.
+        </p>
+        <CompanionUpdateRow
+          update={update}
+          {...(onCheckUpdate === undefined ? {} : { onCheck: onCheckUpdate })}
+          {...(onDownloadUpdate === undefined ? {} : { onDownload: onDownloadUpdate })}
+          {...(onRestartUpdate === undefined ? {} : { onRestart: onRestartUpdate })}
+        />
       </section>
     </main>
   );
+}
+
+/**
+ * Where the companion's own update stands, as one row with the one button that
+ * is the next step. The rail's foot says the same for the three states worth
+ * interrupting for; this row also says "up to date", which is what a person
+ * who came to the settings page to ask is here for.
+ */
+function CompanionUpdateRow({
+  update,
+  onCheck,
+  onDownload,
+  onRestart,
+}: {
+  update: CompanionUpdate | null;
+  onCheck?: () => void;
+  onDownload?: () => void;
+  onRestart?: () => void;
+}) {
+  if (update === null) return null;
+  const check =
+    onCheck === undefined ? null : (
+      <button type="button" onClick={onCheck}>
+        Check for updates
+      </button>
+    );
+  switch (update.kind) {
+    case "unsupported":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span>
+            This companion does not update itself: {update.reason}.{" "}
+            <a href={update.releases}>Releases</a>
+          </span>
+        </div>
+      );
+    case "checking":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span className="muted">Checking for a newer Phoebe…</span>
+        </div>
+      );
+    case "current":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span>Phoebe is up to date.</span>
+          {check}
+        </div>
+      );
+    case "available":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span>Phoebe {update.version} is available.</span>
+          {onDownload === undefined ? null : (
+            <button type="button" onClick={onDownload}>
+              Download
+            </button>
+          )}
+        </div>
+      );
+    case "downloading":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span className="muted">
+            Downloading Phoebe {update.version}… {update.percent}%
+          </span>
+        </div>
+      );
+    case "ready":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span>Phoebe {update.version} installs when you quit.</span>
+          {onRestart === undefined ? null : (
+            <button type="button" onClick={onRestart}>
+              Restart now
+            </button>
+          )}
+        </div>
+      );
+    case "unread":
+      return (
+        <div className="settings-row">
+          <span className="settings-label">Update</span>
+          <span className="muted">The last check did not finish: {update.message}</span>
+          {check}
+        </div>
+      );
+  }
 }
