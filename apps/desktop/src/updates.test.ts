@@ -35,7 +35,7 @@ function fakeUpdater() {
 /** A packaged Linux companion — the case where updates happen. */
 function updates(
   choice: FeedChoice = { kind: "latest" },
-  over: { platform?: string; packaged?: boolean } = {},
+  over: { platform?: string; packaged?: boolean; feed?: () => Promise<FeedChoice> } = {},
 ) {
   const { updater, calls, feeds } = fakeUpdater();
   const seen: CompanionUpdate[] = [];
@@ -43,7 +43,7 @@ function updates(
     updater,
     platform: over.platform ?? "linux",
     packaged: over.packaged ?? true,
-    feed: () => Promise.resolve(choice),
+    feed: over.feed ?? (() => Promise.resolve(choice)),
     onChange: (update) => seen.push(update),
   });
   return { arm, updater, calls, feeds, seen };
@@ -99,6 +99,35 @@ describe("the launch check", () => {
     await arm.check();
     expect(arm.state()).toEqual({ kind: "ready", version: "0.14.0" });
     expect(calls).toEqual(["download"]);
+  });
+
+  test("a check still reading its feed when a download starts stays out of the way", async () => {
+    let answer: (choice: FeedChoice) => void = () => undefined;
+    const feed = () => new Promise<FeedChoice>((resolve) => (answer = resolve));
+    const { arm, calls } = updates(undefined, { feed });
+
+    const pending = arm.check();
+    arm.available("0.14.0");
+    await arm.download();
+    answer({ kind: "latest" });
+    await pending;
+
+    expect(arm.state()).toEqual({ kind: "downloading", version: "0.14.0", percent: 0 });
+    arm.progress(63);
+    expect(arm.state()).toEqual({ kind: "downloading", version: "0.14.0", percent: 63 });
+    expect(calls).toEqual(["download"]);
+  });
+
+  test("a feed that fails under a download does not mark it unread", async () => {
+    const feed = () => Promise.reject(new Error("relay down"));
+    const { arm } = updates(undefined, { feed });
+    arm.available("0.14.0");
+    const pending = arm.check();
+    // check() returned before the feed was read; the download starts under it.
+    await arm.download();
+    await pending;
+
+    expect(arm.state()).toEqual({ kind: "downloading", version: "0.14.0", percent: 0 });
   });
 
   test("a feed nobody could read asks nothing", async () => {

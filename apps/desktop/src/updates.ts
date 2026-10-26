@@ -118,14 +118,25 @@ export function createCompanionUpdates(deps: UpdatesDeps): CompanionUpdates {
     );
   }
 
+  /**
+   * Whether a check has nothing to add right now: a download is in flight or
+   * a build is staged, and a "checking" or "unread" over either would lose it.
+   */
+  function busy(): boolean {
+    return state.kind === "downloading" || state.kind === "ready";
+  }
+
   return {
     state: () => state,
 
     check: async () => {
       if (blocked !== null) return;
-      if (state.kind === "downloading" || state.kind === "ready") return;
+      if (busy()) return;
       try {
         const choice = await deps.feed();
+        // The feed can take a while (it may ask a relay), and the operator can
+        // start a download meanwhile. Ask again before touching the state.
+        if (busy()) return;
         const feed = feedFor(choice);
         if (feed === null) {
           // Signed in to a relay that did not answer. No feed, no check — see
@@ -137,6 +148,7 @@ export function createCompanionUpdates(deps: UpdatesDeps): CompanionUpdates {
         deps.updater.setFeedURL(feed);
         await deps.updater.checkForUpdates();
       } catch (error) {
+        if (busy()) return;
         settle({ kind: "unread", message: messageOf(error) });
       }
     },
