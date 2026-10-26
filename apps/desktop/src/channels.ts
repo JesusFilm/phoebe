@@ -41,6 +41,7 @@ export const BRIDGE_CHANNELS = {
   logsLine: "phoebe:logs/line",
   logsEnded: "phoebe:logs/ended",
   updateState: "phoebe:updates/state",
+  updateCheck: "phoebe:updates/check",
   updateDownload: "phoebe:updates/download",
   updateRestart: "phoebe:updates/restart",
   updateChanged: "phoebe:updates/changed",

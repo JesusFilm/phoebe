@@ -101,6 +101,7 @@ const bridge: DesktopBridge = {
   },
   updates: {
     state: () => call(BRIDGE_CHANNELS.updateState),
+    check: () => call(BRIDGE_CHANNELS.updateCheck),
     download: () => call(BRIDGE_CHANNELS.updateDownload),
     restart: () => call(BRIDGE_CHANNELS.updateRestart),
     changes: (onUpdate) => subscribe<CompanionUpdate>(BRIDGE_CHANNELS.updateChanged, onUpdate),

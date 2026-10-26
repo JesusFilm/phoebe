@@ -47,6 +47,7 @@
     "build": "echo \"phoebe-agent ships raw TypeScript — the root builds nothing; apps/* do\"",
     "prepublishOnly": "vp run -r build",
     "phoebe": "bash .phoebe/run.sh",
+    "ui": "node scripts/ui.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"
@@ -60,7 +61,7 @@
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@12.14.0",
+  "packageManager": "pnpm@12.15.0",
   "phoebe": {
     "minBootstrap": "0.7.0"
   }

@@ -189,10 +189,17 @@ The edge rule is one pure function in `phoebe-agent/contracts`.
 ## Getting the companion
 
 Distribution is CI artifacts on the `phoebe-agent@x.y.z` GitHub Release, mac
-arm64, Windows x64 and Linux x64. **Unsigned, this round.** `electron-updater`
-checks once at launch and installs on quit, and the macOS updater is switched off
-until there is a Developer ID to notarise with. Self-building from source stays
-documented and supported.
+arm64, Windows x64 and Linux x64. **Unsigned, this round.** Self-building from
+source stays documented and supported.
+
+The companion looks for a newer build of itself shortly after launch, every four
+hours while it is open, and whenever **Check for updates** is pressed on the
+settings page. What it finds is a line at the foot of the rail and a row under
+**This companion** in Settings. Nothing downloads until you press **Download**;
+once it has, a dialog asks whether to restart now, and **Later** means the new
+build installs when you next quit. The macOS updater is switched off until there
+is a Developer ID to notarise with, and that row says so, with the release page
+to download from by hand.
 
 ## What stays at a shell
 

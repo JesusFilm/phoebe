@@ -77,8 +77,7 @@ automatically.
    `package` job builds the desktop app on three runners and attaches the
    artifacts to the GitHub Release at the `phoebe-agent@x.y.z` tag that was just
    pushed. Nobody triggers it separately. See
-   [the companion's artifacts](#the-companions-artifacts) — that job is written
-   and waiting on a maintainer to paste it in.
+   [the companion's artifacts](#the-companions-artifacts).
 
 So publishing always waits on a human merging the version PR. Nothing reaches npm
 straight from a feature branch, and no build of the app exists that a release did
@@ -156,13 +155,16 @@ bundle. Getting an Apple Developer ID and a Windows certificate for JesusFilm is
 a task of its own; when it lands it adds credentials to the `package` job and
 flips one clause in [`apps/desktop/src/updates.ts`](../apps/desktop/src/updates.ts).
 
-**The `package` job is not in `release.yml` yet.** Everything it needs is in the
-repo — the config, the script, the ignore rule — but the agent that wrote them
-holds a token that GitHub will not let write a workflow file, so the job itself
-travels in the body of the pull request for
-[#561](https://github.com/JesusFilm/phoebe/issues/561) rather than in the tree.
-Pasting it into `release.yml` is the one step left, and this paragraph goes with
-it.
+**The `package` job runs after `release` in the same workflow.** It is gated
+on that job's `published` output and uploads onto the release at the version
+the `release` job names, so a push to main that only refreshes the version PR
+builds nothing. A platform whose build produced none of its artifacts fails its
+own job, which is how a release missing a `latest*.yml` shows up as red rather
+than as a companion that never finds an update. Until 0.15.0 the job lived in
+the body of the pull request for
+[#561](https://github.com/JesusFilm/phoebe/issues/561), because the agent that
+wrote it could not write a workflow file, which is why no release before then
+carries the app.
 
 Nothing about packaging is in the `ready` gate
 ([#521 §6](https://github.com/JesusFilm/phoebe/issues/521)): it needs an Electron
@@ -182,6 +184,18 @@ cd apps/desktop && vp run package
 
 The artifacts land in `apps/desktop/release/`, which is gitignored. `vp run package`
 builds for the platform you are on and publishes nothing.
+
+To run the companion from the checkout without packaging it, with the console
+hot-reloading as you edit:
+
+```sh
+vp run ui
+```
+
+That starts the console's dev server, waits for it, builds the companion's main
+and preload, and opens Electron against the dev server. Closing the window
+stops the dev server too. Changes under `apps/console/src` show up on save;
+changes under `apps/desktop/src` need the script run again.
 
 ## One thing is built before it is published
 
