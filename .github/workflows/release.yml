@@ -122,6 +122,11 @@ jobs:
     needs: release
     if: needs.release.outputs.published == 'true'
     runs-on: ${{ matrix.os }}
+    # Only the upload needs the token, and only to write release assets. The
+    # workflow-level grant also carries pull-requests and id-token for the
+    # release job; neither has any business on a runner executing a build.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -133,7 +138,11 @@ jobs:
           - os: ubuntu-latest
             artifacts: release/*.AppImage release/latest-linux.yml
     steps:
+      # Nothing in this job runs git against the remote; the upload authenticates
+      # through GH_TOKEN below, so the checkout keeps no credential behind.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: voidzero-dev/setup-vp@v1
         with:
@@ -155,8 +164,9 @@ jobs:
 
       # Onto the release `changeset publish` tagged, rather than a release of the
       # app's own: one tag, one version, both halves of a release under it.
-      # `nullglob` plus the empty check turns a target that silently produced
-      # nothing into a failed job rather than a release that looks complete.
+      # Every pattern has to match something: a manifest without its installer
+      # is a release that looks complete and updates nothing, so a target that
+      # silently produced less than the row lists fails the job here.
       - name: Attach the artifacts to the release
         working-directory: apps/desktop
         shell: bash
@@ -164,10 +174,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(${{ matrix.artifacts }})
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "electron-builder produced none of: ${{ matrix.artifacts }}" >&2
-            exit 1
-          fi
-          gh release upload "phoebe-agent@${{ needs.release.outputs.version }}"             "${files[@]}" --clobber
+          files=()
+          for pattern in ${{ matrix.artifacts }}; do
+            if ! compgen -G "$pattern" > /dev/null; then
+              echo "electron-builder produced no file matching: $pattern" >&2
+              exit 1
+            fi
+            while IFS= read -r match; do files+=("$match"); done < <(compgen -G "$pattern")
+          done
+          gh release upload "phoebe-agent@${{ needs.release.outputs.version }}" "${files[@]}" --clobber
