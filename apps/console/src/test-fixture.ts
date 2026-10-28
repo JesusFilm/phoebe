@@ -352,6 +352,10 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
     },
     updates: {
       state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
+      check: () => {
+        answers.updateCalls?.push("check");
+        return Promise.resolve();
+      },
       download: () => {
         answers.updateCalls?.push("download");
         return Promise.resolve();
