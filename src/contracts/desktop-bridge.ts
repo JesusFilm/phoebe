@@ -28,6 +28,7 @@ import type {
   BootstrapTool,
 } from "./bootstrap.ts";
 import type { CompanionUpdate } from "./companion-update.ts";
+import type { GithubAppCreated, GithubAppRequest } from "./github-app.ts";
 import type { GithubTokenVerdict } from "./github-token.ts";
 import type { LogLine, LogsEnded } from "./container-logs.ts";
 import type {
@@ -289,6 +290,12 @@ export type DesktopBridge = {
   github: {
     /** The five non-mutating probes against `slug`, with `token`. */
     verifyToken: (slug: string, token: string) => Promise<GithubTokenVerdict>;
+    /**
+     * Register a GitHub App through GitHub's manifest flow and put its id and
+     * key into the deployment `.env` under `dir`. Opens the browser; resolves
+     * when GitHub has answered. Refused while one is in flight.
+     */
+    createApp: (dir: string, request: GithubAppRequest) => Promise<GithubAppCreated>;
   };
   /**
    * Setting up this machine (contracts/bootstrap.ts): what the companion

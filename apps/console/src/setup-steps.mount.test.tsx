@@ -7,6 +7,7 @@ import type { ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type {
   ConfigFieldFacts,
+  GithubAppCreated,
   GithubTokenVerdict,
   VerbRun,
   VerbRunRequest,
@@ -216,6 +217,66 @@ describe("checking a token", () => {
     expect(box.textContent).toContain("The check did not run: ENOTFOUND api.github.com");
     expect(started).toEqual([]);
     expect(input.value).toBe(TOKEN);
+  });
+});
+
+describe("creating an App", () => {
+  test("asks main with the owner and the name, then shows the install link and ticks the step", async () => {
+    const asked: { owner: string; name: string }[] = [];
+    const created: GithubAppCreated = {
+      id: "12345",
+      slug: "phoebe-jesusfilm",
+      name: "phoebe-jesusfilm",
+      owner: "JesusFilm",
+      htmlUrl: "https://github.com/apps/phoebe-jesusfilm",
+      installUrl: "https://github.com/apps/phoebe-jesusfilm/installations/new",
+      envFile: "/repos/youtube-studio/.env",
+    };
+    const box = await mount(
+      steps(
+        {
+          onCreateApp: (request) => {
+            asked.push(request);
+            return Promise.resolve(created);
+          },
+        },
+        [],
+      ),
+    );
+
+    const button = [...box.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith("Create a GitHub App"),
+    );
+    expect(button).toBeDefined();
+    await act(async () =>
+      button!.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+    );
+
+    expect(asked).toEqual([{ owner: "JesusFilm", name: "phoebe-jesusfilm" }]);
+    expect(box.textContent).toContain(
+      "phoebe-jesusfilm is registered under JesusFilm as App 12345",
+    );
+    expect(
+      box.querySelector('a[href="https://github.com/apps/phoebe-jesusfilm/installations/new"]'),
+    ).not.toBeNull();
+    expect(box.querySelector('input[aria-label="GitHub token"]')).toBeNull();
+    const done = [...box.querySelectorAll("li.step.done h3")].map((h) => h.textContent ?? "");
+    expect(done.some((text) => text.includes("Give Phoebe access to the repository"))).toBe(true);
+  });
+
+  test("a refusal from GitHub is said, and the form stays", async () => {
+    const box = await mount(
+      steps({ onCreateApp: () => Promise.reject(new Error("Name has already been taken")) }, []),
+    );
+    const button = [...box.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith("Create a GitHub App"),
+    )!;
+    await act(async () =>
+      button.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+    );
+
+    expect(box.textContent).toContain("The App was not created: Name has already been taken");
+    expect(box.querySelector('input[aria-label="GitHub App name"]')).not.toBeNull();
   });
 });
 

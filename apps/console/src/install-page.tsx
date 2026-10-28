@@ -213,6 +213,7 @@ export function InstallPage({
                   trouble={trouble}
                   onStart={start}
                   onVerifyToken={(slug, token) => bridge.github.verifyToken(slug, token)}
+                  onCreateApp={(request) => bridge.github.createApp(install.dir, request)}
                 />
               ) : null
             }

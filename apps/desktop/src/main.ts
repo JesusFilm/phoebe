@@ -80,6 +80,7 @@ import {
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { createBootstrap, makeHas, type BootstrapSpawner } from "./bootstrap.ts";
 import { probeDocker } from "./docker.ts";
+import { appRequestArg, createGithubApp } from "./github-app.ts";
 import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
@@ -487,6 +488,19 @@ app.whenReady().then(
       answering(() => {
         if (typeof token !== "string") throw new Error("The token must be a string.");
         return verifyGithubToken(repoSlugArg(slug), token);
+      }),
+    );
+    // The manifest flow (github-app.ts): a loopback listener for the minutes
+    // the operator is on GitHub, the browser opened on it, the key written
+    // into the install's .env on the way back. The install has to be held, so
+    // a dir nobody added cannot be written to.
+    ipcMain.handle(BRIDGE_CHANNELS.githubCreateApp, (_event, dir: string, request: unknown) =>
+      answering(async () => {
+        const asked = appRequestArg(request);
+        const install = await heldInstall(dir);
+        return createGithubApp(install.dir, asked, {
+          open: (url) => shell.openExternal(url),
+        });
       }),
     );
 

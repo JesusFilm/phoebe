@@ -101,6 +101,7 @@ const bridge: DesktopBridge = {
   },
   github: {
     verifyToken: (slug, token) => call(BRIDGE_CHANNELS.githubVerifyToken, slug, token),
+    createApp: (dir, request) => call(BRIDGE_CHANNELS.githubCreateApp, dir, request),
   },
   updates: {
     state: () => call(BRIDGE_CHANNELS.updateState),
