@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/desktop/assets/icon/phoebe.svg" width="112" alt="Phoebe's mark: a wax seal pressed with an olive sprig" />
+  <img src="apps/desktop/assets/icon/phoebe.svg" width="112" alt="Phoebe's mark: an olive sprig" />
 </p>
 
 # Phoebe
