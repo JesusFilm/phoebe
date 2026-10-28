@@ -1,4 +1,4 @@
-// Phoebe orchestration engine — an away-from-keyboard (AFK) worker loop.
+// Phoebe orchestration engine — the unattended worker loop behind the software factory.
 //
 // Picks ready-labelled issues off the configured repo one at a time and
 // works each in a git worktree off the container's private clone, on its own

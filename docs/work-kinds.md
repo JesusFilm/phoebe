@@ -184,7 +184,7 @@ native `blocked-by`, and no assignment-as-claim. Those are follow-ups. Double-wo
 avoidance relies on branch/PR existence, same as `issues`.
 
 This kind was built against wayfinder's protocol on purpose: research tickets are
-the part of planning that is itself AFK-able. The coupling stops at the label,
+the part of planning that can itself run unattended. The coupling stops at the label,
 though, and the default is only a default. See
 [`preparing-work.md`](preparing-work.md) for the pipeline this sits at the end of.
 

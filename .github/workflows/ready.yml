@@ -110,14 +110,14 @@ jobs:
         run: |
           set -euo pipefail
           npx --no-install phoebe --help | tee help.out
-          grep -q "phoebe — AFK coding agent" help.out
+          grep -q "phoebe — software factory for GitHub repositories" help.out
 
       - name: phoebe-agent --help
         working-directory: ${{ runner.temp }}/smoke
         run: |
           set -euo pipefail
           npx --no-install phoebe-agent --help | tee help.out
-          grep -q "phoebe — AFK coding agent" help.out
+          grep -q "phoebe — software factory for GitHub repositories" help.out
 
       # Exercise the scaffolder against the packed artifact: it reads templates/
       # and prompts/ out of the installed package, so a missing `files` entry
