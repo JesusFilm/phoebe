@@ -48,6 +48,8 @@ module.exports = {
   files: [
     "dist/**",
     "package.json",
+    // The PNG main.ts hands to the window and the dock (scripts/build-icon.mjs).
+    "assets/icon/phoebe-256.png",
     "!node_modules/phoebe-agent/{apps,docs,scripts,console,.changeset,.github,.agents,.claude}/**",
     "!node_modules/phoebe-agent/*.md",
   ],
@@ -73,7 +75,10 @@ module.exports = {
     url: "https://github.com/JesusFilm/phoebe/releases/latest/download",
   },
 
+  // The icon, in the container each platform wants. All three are rendered
+  // from one SVG by scripts/build-icon.mjs; edit the geometry there, not these.
   mac: {
+    icon: "assets/icon/phoebe.icns",
     target: [
       { target: "dmg", arch: ["arm64"] },
       { target: "zip", arch: ["arm64"] },
@@ -81,9 +86,11 @@ module.exports = {
     category: "public.app-category.developer-tools",
   },
   win: {
+    icon: "assets/icon/phoebe.ico",
     target: [{ target: "nsis", arch: ["x64"] }],
   },
   linux: {
+    icon: "assets/icon/phoebe-512.png",
     target: [{ target: "AppImage", arch: ["x64"] }],
     category: "Development",
     // Named, because the default is derived from the package name and AppImage

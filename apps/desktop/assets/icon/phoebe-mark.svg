@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="83 76 346 360" width="346" height="360">
+  <title>Phoebe</title>
+  <mask id="seal" maskUnits="userSpaceOnUse" x="83" y="76" width="346" height="360">
+    <path d="M 414 256 Q 446.2 317.8 383.8 348.9 Q 373.6 417.8 304.8 406.3 Q 256 456 207.2 406.3 Q 138.4 417.8 128.2 348.9 Q 65.8 317.8 98 256 Q 65.8 194.2 128.2 163.1 Q 138.4 94.2 207.2 105.7 Q 256 56 304.8 105.7 Q 373.6 94.2 383.8 163.1 Q 446.2 194.2 414 256 Z" fill="#fff" stroke="#000" stroke-width="12" stroke-linejoin="round" paint-order="stroke"/>
+    <g transform="translate(169.6 379.7)">
+      <path d="M 0 0 Q 70 -120 160 -230" fill="none" stroke="#000" stroke-width="14" stroke-linecap="round"/>
+      <path d="M 27.2 -39.1 Q -24.3 -69.3 -4.4 -125.5 Q 47.1 -95.4 27.2 -39.1 Z" fill="#000"/>
+      <path d="M 39.9 -70.3 Q 72.7 -111.3 118.4 -85.6 Q 85.6 -44.6 39.9 -70.3 Z" fill="#000"/>
+      <path d="M 69.7 -104.4 Q 23.2 -137.2 46.1 -189.2 Q 92.6 -156.5 69.7 -104.4 Z" fill="#000"/>
+      <path d="M 87.3 -139.7 Q 117.3 -175.6 158.1 -152.5 Q 128 -116.6 87.3 -139.7 Z" fill="#000"/>
+      <path d="M 118.7 -172.7 Q 80.1 -204 104.4 -247.3 Q 143 -216 118.7 -172.7 Z" fill="#000"/>
+      <path d="M 138.3 -207.1 Q 162.4 -238.6 197.1 -219.2 Q 172.9 -187.7 138.3 -207.1 Z" fill="#000"/>
+      <path d="M 23.9 -14.2 a 13 13 0 1 0 26 0 a 13 13 0 1 0 -26 0 Z" fill="#000"/>
+      <path d="M 56 -23.8 a 11 11 0 1 0 22 0 a 11 11 0 1 0 -22 0 Z" fill="#000"/>
+    </g>
+  </mask>
+  <rect x="83" y="76" width="346" height="360" fill="#0F766E" mask="url(#seal)"/>
+</svg>
