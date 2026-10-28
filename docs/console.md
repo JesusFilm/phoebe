@@ -25,8 +25,21 @@ watermarks are in [`operating.md`](operating.md). The words are in
 A **local install** is a repository folder on this machine that the companion
 drives through Docker Compose. You point it at a folder, and an **install** tab
 runs the host verbs in place with their output streaming into the window: `init`,
-`start`, `stop`, `upgrade --check` and `doctor`. Docker is checked, never
-installed.
+`start`, `stop`, `upgrade --check` and `doctor`.
+
+**Setting up this machine.** A deployment runs under Docker Compose, so a
+machine with no Docker, or a Docker that is not running, can start nothing
+local. The companion opens on a setup page when that is so, and the home page
+and the install tab link there while it stays so. The page shows what is wrong
+and, under it, the command the companion would run to fix it: Docker Desktop
+through winget on Windows and Homebrew on macOS, the distro's package manager
+under `pkexec` on Linux, and the platform's own way to start a Docker that is
+installed but stopped. Nothing runs until you press the button, the OS asks for
+whatever permission the step needs, and the output streams onto the page. Once
+the daemon answers, the page says so. The companion downloads no installer of
+its own; where the package manager is missing, the page says so and links to
+Docker's download. **Continue without Docker** is always there, because a
+machine that only watches deployments elsewhere has no need of a daemon.
 
 A folder that is already a workspace's tenant is not offered `init` over the
 top of its config. It is offered a deployment of its own beside the tenant: the

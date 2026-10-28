@@ -10,6 +10,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AlertBody,
+  BootstrapNeed,
+  BootstrapPlan,
+  BootstrapRun,
+  BootstrapTool,
   CompanionUpdate,
   DesktopBridge,
   HarnessReport,
@@ -42,7 +46,12 @@ import {
 } from "./harness.ts";
 import { InstallPage } from "./install-page.tsx";
 import { TenantPage } from "./tenant-page.tsx";
-import type { InstallAction, RailChild, RailProblem } from "./local-install.ts";
+import {
+  dockerReading,
+  type InstallAction,
+  type RailChild,
+  type RailProblem,
+} from "./local-install.ts";
 import {
   busyInstalls,
   NO_ACTIVITY,
@@ -54,7 +63,8 @@ import {
 } from "./run-activity.ts";
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
-import { ADD_HREF, HOME_ROUTE, parseRoute, type Route } from "./route.ts";
+import { ADD_HREF, HOME_ROUTE, parseRoute, SETUP_HREF, type Route } from "./route.ts";
+import { SetupPage } from "./setup-page.tsx";
 import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
@@ -391,19 +401,36 @@ export function App({
   useEffect(() => {
     if (bridge === null) return;
     let live = true;
-    bridge.environment().then(
-      (probed) => {
-        if (!live) return;
-        setWslDistros(probed.wslDistros);
-        setPlatform(probed.platform);
-        setEnvironment(probed);
-      },
-      () => undefined,
-    );
+    const take = (probed: CompanionEnvironment): void => {
+      if (!live) return;
+      setWslDistros(probed.wslDistros);
+      setPlatform(probed.platform);
+      setEnvironment(probed);
+    };
+    bridge.environment().then(take, () => undefined);
+    // Main pushes the facts again as Docker comes up after a setup step.
+    const stop = bridge.environmentChanges(take);
     return () => {
       live = false;
+      stop();
     };
   }, [bridge]);
+
+  // Setting up this machine (setup-page.tsx): the plan main offers, read again
+  // whenever the facts move, and the step running now with its lines.
+  const { plan: setupPlan, run: setupRun, runStep } = useBootstrap(bridge, environment);
+
+  // The first thing a machine without Docker sees is the setup page, once per
+  // launch. A later launch asks again, because a stopped Docker Desktop is the
+  // commonest reason to be here and it is a thing that happens between two
+  // launches. "Continue without Docker" is the way past it.
+  const sentToSetup = useRef(false);
+  useEffect(() => {
+    if (environment === null || sentToSetup.current) return;
+    sentToSetup.current = true;
+    if (dockerReading(environment).kind === "ready") return;
+    if (parseRoute(window.location.hash).page === "home") window.location.hash = SETUP_HREF;
+  }, [environment]);
 
   // Which installs have a run in flight, for the rail's spinner
   // (run-activity.ts). Runs the rail starts are known from their id; runs the
@@ -658,6 +685,13 @@ export function App({
             onUpdate={updateInstall}
             onForget={forgetInstall}
           />
+        ) : route.page === "setup" ? (
+          <SetupPage
+            environment={environment}
+            plan={setupPlan}
+            run={setupRun}
+            {...(bridge === null ? {} : { onRun: runStep })}
+          />
         ) : route.page === "settings" ? (
           <SettingsPage
             surface={surface}
@@ -681,6 +715,7 @@ export function App({
         ) : (
           <CompanionHome
             installs={installs}
+            dockerReady={environment === null || dockerReading(environment).kind === "ready"}
             onAdd={bridge === null ? undefined : () => addInstall()}
             onAddWsl={
               bridge === null || wslDistros.length === 0 ? undefined : () => addInstall("wsl")
@@ -699,10 +734,13 @@ export function App({
  */
 function CompanionHome({
   installs,
+  dockerReady,
   onAdd,
   onAddWsl,
 }: {
   installs: LocalInstall[];
+  /** False when Docker is missing or stopped, which is a line and a link to the setup page. */
+  dockerReady: boolean;
   onAdd: (() => void) | undefined;
   /** The picker opened among the WSL distros. Only on a machine that has some. */
   onAddWsl: (() => void) | undefined;
@@ -712,6 +750,12 @@ function CompanionHome({
       <h1>Phoebe</h1>
       <section>
         <h2>This machine</h2>
+        {dockerReady ? null : (
+          <p className="refusal">
+            Docker is not ready on this machine, so no local install can start.{" "}
+            <a href={SETUP_HREF}>Set up this machine</a>.
+          </p>
+        )}
         {installs.length === 0 ? (
           <p className="muted">
             No local install yet. A local install is a repository folder on this machine that the
@@ -803,6 +847,63 @@ function useNow(everyMs: number): Date {
 }
 
 function noop(): void {}
+
+/**
+ * The setup page's half of the bridge: the plan, read whenever the machine's
+ * facts move, and the step running now, followed line by line. Main holds the
+ * run, so a window that opens mid-install reads what it has so far.
+ */
+function useBootstrap(
+  bridge: DesktopBridge | null,
+  environment: CompanionEnvironment | null,
+): {
+  plan: BootstrapPlan | null;
+  run: BootstrapRun | null;
+  runStep: (step: { tool: BootstrapTool; need: BootstrapNeed }) => void;
+} {
+  const [plan, setPlan] = useState<BootstrapPlan | null>(null);
+  const [run, setRun] = useState<BootstrapRun | null>(null);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.bootstrap.plan().then((read) => {
+      if (live) setPlan(read);
+    }, ignore);
+    return () => {
+      live = false;
+    };
+  }, [bridge, environment]);
+
+  useEffect(() => {
+    if (bridge === null) return;
+    let live = true;
+    bridge.bootstrap.current().then((held) => {
+      if (live) setRun(held);
+    }, ignore);
+    const stopLines = bridge.bootstrap.lines((line) =>
+      setRun((held) => (held === null ? held : { ...held, lines: [...held.lines, line] })),
+    );
+    const stopExits = bridge.bootstrap.exits((exit) =>
+      setRun((held) => (held === null ? held : { ...held, exit })),
+    );
+    return () => {
+      live = false;
+      stopLines();
+      stopExits();
+    };
+  }, [bridge]);
+
+  const runStep = useCallback(
+    (step: { tool: BootstrapTool; need: BootstrapNeed }) => {
+      if (bridge === null) return;
+      bridge.bootstrap.run(step).then(setRun, ignore);
+    },
+    [bridge],
+  );
+
+  return { plan, run, runStep };
+}
 
 /**
  * The top line of the right pane: where the console is (crumbs.ts), the way T3

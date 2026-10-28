@@ -1,10 +1,11 @@
 // The Docker check (#527 §15, #522 §2).
 //
-// **Checked, never installed.** The companion is an installer for Phoebe, not
-// for Docker: it looks for the binary, asks the daemon whether it is up, and
-// reads Compose's version. What it does with a missing one is print a sentence
-// and a link. Downloading and running someone else's installer on an operator's
-// machine is not something a window with a button on it should do.
+// This module only looks: for the binary, for the daemon, for Compose's
+// version. What the companion does about a missing one lives in bootstrap.ts,
+// and it is not a download of someone else's installer. It is the machine's
+// own package manager, run on a click, with the command shown first. #522 §2
+// drew the line at "checked, never installed"; the setup page moved it to
+// "never without asking, never from anywhere but the platform's own source".
 //
 // Three separate answers rather than one boolean, because they need three
 // different sentences: no binary is "install Docker", a binary with no daemon is

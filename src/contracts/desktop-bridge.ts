@@ -19,6 +19,14 @@
 // the window is where an operator learns a newer build exists and where the
 // click that fetches it happens.
 
+import type {
+  BootstrapExit,
+  BootstrapLine,
+  BootstrapNeed,
+  BootstrapPlan,
+  BootstrapRun,
+  BootstrapTool,
+} from "./bootstrap.ts";
 import type { CompanionUpdate } from "./companion-update.ts";
 import type { LogLine, LogsEnded } from "./container-logs.ts";
 import type {
@@ -273,6 +281,26 @@ export type DesktopBridge = {
     /** Every change of state, pushed. Returns the unsubscribe. */
     changes: (onUpdate: (update: CompanionUpdate) => void) => () => void;
   };
+  /**
+   * Setting up this machine (contracts/bootstrap.ts): what the companion
+   * would run to get Docker installed or started, and the one step at a time
+   * it runs on a click.
+   */
+  bootstrap: {
+    /** What this machine needs and what can be offered, read fresh. */
+    plan: () => Promise<BootstrapPlan>;
+    /** Run one step from the plan. Refused while one runs, or when the plan no longer offers it. */
+    run: (step: { tool: BootstrapTool; need: BootstrapNeed }) => Promise<BootstrapRun>;
+    /** The step running now or the last one, or null when none has run. */
+    current: () => Promise<BootstrapRun | null>;
+    lines: (onLine: (line: BootstrapLine) => void) => () => void;
+    exits: (onExit: (exit: BootstrapExit) => void) => () => void;
+  };
+  /**
+   * The machine's facts, pushed whenever main learns they moved: after a setup
+   * step, as Docker comes up. Returns the unsubscribe.
+   */
+  environmentChanges: (onChange: (environment: CompanionEnvironment) => void) => () => void;
   /** The operator's preferences, as `companion.json` holds them (#527 §12). */
   preferences: {
     get: () => Promise<CompanionPreferences>;
