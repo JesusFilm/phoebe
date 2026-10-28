@@ -6,6 +6,7 @@ import {
   grantReading,
   isPlaceholderSlug,
   looksLikeToken,
+  providerKeyOf,
   slugOf,
   tokenPageUrl,
 } from "./github-token.ts";
@@ -93,5 +94,26 @@ describe("the readings", () => {
     expect(looksLikeToken("  github_pat_11AAAA_eXaMpLe_eXaMpLe\n")).toBe(true);
     expect(looksLikeToken("github_pat")).toBe(false);
     expect(looksLikeToken("github_pat_11AAAA eXaMpLe_eXaMpLe")).toBe(false);
+  });
+});
+
+describe("providerKeyOf", () => {
+  test("reads the config's providerEnv override, else the default", () => {
+    expect(providerKeyOf([], "claude")).toBe("ANTHROPIC_API_KEY");
+    expect(providerKeyOf(undefined, "codex")).toBe("OPENAI_KEY");
+    expect(
+      providerKeyOf(
+        [field("providerEnv.claude", { state: "set", value: "CLAUDE_CODE_OAUTH_TOKEN" })],
+        "claude",
+      ),
+    ).toBe("CLAUDE_CODE_OAUTH_TOKEN");
+    // Another provider's override is not this one's.
+    expect(
+      providerKeyOf([field("providerEnv.claude", { state: "set", value: "X_KEY" })], "cursor"),
+    ).toBe("CURSOR_API_KEY");
+    // A computed name cannot be guessed.
+    expect(
+      providerKeyOf([field("providerEnv.claude", { state: "computed", raw: "k" })], "claude"),
+    ).toBeNull();
   });
 });

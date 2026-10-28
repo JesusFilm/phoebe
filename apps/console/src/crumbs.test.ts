@@ -37,6 +37,7 @@ describe("where the console is, for the pane's top line", () => {
     expect(routeCrumbs(base)).toEqual(["Home"]);
     expect(routeCrumbs({ ...base, route: { page: "add" } })).toEqual(["Home"]);
     expect(routeCrumbs({ ...base, route: { page: "settings" } })).toEqual(["Settings"]);
+    expect(routeCrumbs({ ...base, route: { page: "setup" } })).toEqual(["Set up this machine"]);
     expect(routeCrumbs({ ...base, surface: "browser" })).toEqual(["Home"]);
   });
 });

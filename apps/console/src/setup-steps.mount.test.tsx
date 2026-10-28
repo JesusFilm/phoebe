@@ -78,6 +78,44 @@ async function mount(element: ReactElement): Promise<HTMLElement> {
   return box;
 }
 
+/** Render the last mounted root again, as a parent handing down new props would. */
+async function rerender(element: ReactElement): Promise<void> {
+  const root = roots[roots.length - 1]!;
+  await act(async () => root.render(element));
+}
+
+function secretRun(runId: string, exit?: { code: number; key?: string }): VerbRun {
+  return {
+    runId,
+    install: INSTALL.dir,
+    verb: "secret set",
+    startedAt: "2026-10-22T12:00:00.000Z",
+    lines: [],
+    ...(exit === undefined
+      ? {}
+      : {
+          exit: {
+            runId,
+            code: exit.code,
+            ...(exit.key === undefined
+              ? {}
+              : {
+                  outcome: {
+                    verb: "secret set" as const,
+                    outcome: {
+                      key: exit.key,
+                      tenant: null,
+                      writer: "host-env" as const,
+                      target: "/repos/youtube-studio/.env",
+                      at: "2026-10-22T12:00:01.000Z",
+                    },
+                  },
+                }),
+          },
+        }),
+  };
+}
+
 function tokenField(box: HTMLElement): HTMLInputElement {
   const found = box.querySelector<HTMLInputElement>('input[aria-label="GitHub token"]');
   if (found === null) throw new Error("no token field");
@@ -239,6 +277,103 @@ describe("creating an App", () => {
 
     expect(box.textContent).toContain("The App was not created: Name has already been taken");
     expect(box.querySelector('input[aria-label="GitHub App name"]')).not.toBeNull();
+  });
+});
+
+describe("checking a second token", () => {
+  test("a check that could not run does not leave the last token's grants up", async () => {
+    let answer = (): Promise<GithubTokenVerdict> => Promise.resolve(verdict(false));
+    const box = await mount(steps({ onVerifyToken: () => answer() }, []));
+    const input = tokenField(box);
+    await type(input, TOKEN);
+    await submit(input);
+    expect(box.querySelector("li.missing")).not.toBeNull();
+
+    answer = () => Promise.reject(new Error("ENOTFOUND api.github.com"));
+    await type(input, `${TOKEN}_2`);
+    await submit(input);
+
+    expect(box.textContent).toContain("The check did not run: ENOTFOUND api.github.com");
+    expect(box.querySelector(".token-verdict")).toBeNull();
+    expect(box.textContent).not.toContain("save it anyway");
+  });
+});
+
+describe("a save that did not land", () => {
+  const checked = { onVerifyToken: () => Promise.resolve(verdict(true)) };
+
+  test("a save that exits non-zero takes the verdict away and says so", async () => {
+    const started: VerbRunRequest[] = [];
+    const box = await mount(steps(checked, started));
+    const input = tokenField(box);
+    await type(input, TOKEN);
+    await submit(input);
+    expect(started).toHaveLength(1);
+
+    await rerender(steps({ ...checked, run: secretRun("run-9"), running: true }, started));
+    expect(box.textContent).toContain("Every grant answered.");
+
+    await rerender(steps({ ...checked, run: secretRun("run-9", { code: 1 }) }, started));
+    expect(box.textContent).not.toContain("Every grant answered.");
+    expect(box.textContent).toContain("Saving GH_TOKEN failed (exit 1).");
+    expect(box.querySelector('input[aria-label="GitHub token"]')).not.toBeNull();
+  });
+
+  test("a save main refused takes the verdict away and says why", async () => {
+    const started: VerbRunRequest[] = [];
+    const box = await mount(steps(checked, started));
+    const input = tokenField(box);
+    await type(input, TOKEN);
+    await submit(input);
+
+    await rerender(steps({ ...checked, trouble: "phoebe start is already running" }, started));
+    expect(box.textContent).not.toContain("Every grant answered.");
+    expect(box.textContent).toContain("The save did not start: phoebe start is already running");
+  });
+
+  test("a run that was already there when the save was asked is not the save's", async () => {
+    const started: VerbRunRequest[] = [];
+    const earlier = secretRun("run-1", { code: 1 });
+    const box = await mount(steps({ ...checked, run: earlier }, started));
+    const input = tokenField(box);
+    await type(input, TOKEN);
+    await submit(input);
+
+    await rerender(steps({ ...checked, run: earlier }, started));
+    expect(box.textContent).toContain("Every grant answered.");
+    expect(box.textContent).not.toContain("failed");
+  });
+});
+
+describe("the provider step", () => {
+  test("saves the key under the name the config's providerEnv gives it", async () => {
+    const started: VerbRunRequest[] = [];
+    const report = localReport({
+      install: INSTALL.dir,
+      facts: INSTALL,
+      directory: directory({
+        envPresent: false,
+        configFields: [
+          field("repoSlug", "JesusFilm/phoebe"),
+          field("defaultProvider", "claude"),
+          field("providerEnv.claude", "CLAUDE_CODE_OAUTH_TOKEN"),
+        ],
+      }),
+      report: null,
+    });
+    const box = await mount(steps({ report }, started));
+    const input = box.querySelector<HTMLInputElement>('input[aria-label="Provider key"]')!;
+    await type(input, "sk-ant-oat01-example");
+    await submit(input);
+
+    expect(started).toEqual([
+      {
+        install: INSTALL.dir,
+        verb: "secret set",
+        key: "CLAUDE_CODE_OAUTH_TOKEN",
+        value: "sk-ant-oat01-example",
+      },
+    ]);
   });
 });
 

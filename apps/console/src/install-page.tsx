@@ -65,6 +65,7 @@ import {
   secretWriterReading,
   versionReading,
 } from "./local-install.ts";
+import { SETUP_HREF } from "./route.ts";
 import { ChevronRight, TerminalSquare } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { ConfigSpace } from "./config-form.tsx";
@@ -209,6 +210,7 @@ export function InstallPage({
                   report={report}
                   run={run}
                   running={running}
+                  trouble={trouble}
                   onStart={start}
                   onVerifyToken={(slug, token) => bridge.github.verifyToken(slug, token)}
                   onCreateApp={(request) => bridge.github.createApp(install.dir, request)}
@@ -693,7 +695,7 @@ function Versions({
   );
 }
 
-/** Docker as the companion found it — checked, never installed (#522 §2). */
+/** Docker as the companion found it. The buttons that change that are on the setup page. */
 function DockerCheck({ environment }: { environment: CompanionEnvironment | null }) {
   const reading = dockerReading(environment);
   switch (reading.kind) {
@@ -702,16 +704,15 @@ function DockerCheck({ environment }: { environment: CompanionEnvironment | null
     case "missing":
       return (
         <p className="refusal">
-          <code>docker</code> is not on this machine&apos;s PATH. Phoebe drives Docker Compose and
-          does not install it —{" "}
-          <a href="https://docs.docker.com/get-started/get-docker/">get Docker</a>, then reopen this
-          tab.
+          <code>docker</code> is not on this machine&apos;s PATH, and Phoebe drives Docker Compose.{" "}
+          <a href={SETUP_HREF}>Set up this machine</a> installs it.
         </p>
       );
     case "daemon-down":
       return (
         <p className="refusal">
-          Docker is installed but its daemon did not answer. Start Docker, then reopen this tab.
+          Docker is installed but its daemon did not answer.{" "}
+          <a href={SETUP_HREF}>Set up this machine</a> starts it.
         </p>
       );
     case "ready":

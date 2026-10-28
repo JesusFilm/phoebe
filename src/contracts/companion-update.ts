@@ -6,10 +6,12 @@
 // what it is allowed to move *to* is the relay's business, which is the rule
 // #525 §5 calls **follows the relay**.
 //
-// Everything here is a state rather than a verb, because nothing about an update
-// happens on its own: the check runs once at launch, the download waits for a
-// click, and the install waits for the app to quit. A tool that drives Docker on
-// the operator's machine does not swap itself out while they are watching.
+// Everything here is a state rather than a verb, because nothing that costs
+// anything happens on its own: the check runs at launch, every four hours and
+// when the settings page asks, but the download waits for a click and the
+// install waits for the app to quit or for a restart the operator chose. A tool
+// that drives Docker on the operator's machine does not swap itself out while
+// they are watching.
 
 /**
  * Where an update stands, as the companion's main process knows it.
@@ -19,8 +21,8 @@
  *    from a checkout. `reason` is the sentence to show and `releases` the page to
  *    send the operator to, because "nothing happens" is not an answer a window
  *    can render (#527's note on #525).
- *  - `checking` — the launch check is in flight. Where every supported companion
- *    starts, since the check is fired as soon as the window is up.
+ *  - `checking` — a check is in flight. Where every supported companion
+ *    starts, since the first one is fired as soon as the window is up.
  *  - `current` — the feed offers nothing newer. Includes the case where the feed
  *    is pinned to a relay older than this companion: `allowDowngrade` is false,
  *    so a build behind this one is not an offer to go back (#525 §5).

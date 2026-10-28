@@ -25,8 +25,21 @@ watermarks are in [`operating.md`](operating.md). The words are in
 A **local install** is a repository folder on this machine that the companion
 drives through Docker Compose. You point it at a folder, and an **install** tab
 runs the host verbs in place with their output streaming into the window: `init`,
-`start`, `stop`, `upgrade --check` and `doctor`. Docker is checked, never
-installed.
+`start`, `stop`, `upgrade --check` and `doctor`.
+
+**Setting up this machine.** A deployment runs under Docker Compose, so a
+machine with no Docker, or a Docker that is not running, can start nothing
+local. The companion opens on a setup page when that is so, and the home page
+and the install tab link there while it stays so. The page shows what is wrong
+and, under it, the command the companion would run to fix it: Docker Desktop
+through winget on Windows and Homebrew on macOS, the distro's package manager
+under `pkexec` on Linux, and the platform's own way to start a Docker that is
+installed but stopped. Nothing runs until you press the button, the OS asks for
+whatever permission the step needs, and the output streams onto the page. Once
+the daemon answers, the page says so. The companion downloads no installer of
+its own; where the package manager is missing, the page says so and links to
+Docker's download. **Continue without Docker** is always there, because a
+machine that only watches deployments elsewhere has no need of a daemon.
 
 **Setting up a fresh install.** A folder that is not initialised, or has no
 `.env` yet, opens its install tab on four numbered steps: initialise, give
@@ -202,10 +215,17 @@ The edge rule is one pure function in `phoebe-agent/contracts`.
 ## Getting the companion
 
 Distribution is CI artifacts on the `phoebe-agent@x.y.z` GitHub Release, mac
-arm64, Windows x64 and Linux x64. **Unsigned, this round.** `electron-updater`
-checks once at launch and installs on quit, and the macOS updater is switched off
-until there is a Developer ID to notarise with. Self-building from source stays
-documented and supported.
+arm64, Windows x64 and Linux x64. **Unsigned, this round.** Self-building from
+source stays documented and supported.
+
+The companion looks for a newer build of itself shortly after launch, every four
+hours while it is open, and whenever **Check for updates** is pressed on the
+settings page. What it finds is a line at the foot of the rail and a row under
+**This companion** in Settings. Nothing downloads until you press **Download**;
+once it has, a dialog asks whether to restart now, and **Later** means the new
+build installs when you next quit. The macOS updater is switched off until there
+is a Developer ID to notarise with, and that row says so, with the release page
+to download from by hand.
 
 ## What stays at a shell
 

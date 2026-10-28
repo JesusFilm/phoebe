@@ -7,7 +7,7 @@
 # CLI — is NOT a permitted deviation, and `src/container-image.test.ts` asserts
 # the two files stay in step on all three.
 
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 
 # gh CLI + git + tini for signal handling; keep the layer small.
 RUN apt-get update \
