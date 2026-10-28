@@ -20,6 +20,9 @@
   --muted: #5d6673;
   --line: #dcdfe4;
   --accent: #1f4fd8;
+  /* The teal of the icon's tile (apps/desktop/scripts/build-icon.mjs), for the
+     wordmark beside the mark. The same in both themes, as the mark is. */
+  --brand: #0f766e;
   --ok: #1a7f37;
   --warn: #9a6700;
   --fail: #b91c1c;
@@ -205,7 +208,7 @@ a {
   height: 40px;
   padding: 0 14px;
   border-bottom: 1px solid var(--line);
-  color: inherit;
+  color: var(--brand);
   font-weight: 700;
   text-decoration: none;
 }
