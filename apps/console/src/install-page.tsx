@@ -66,6 +66,7 @@ import {
   secretWriterReading,
   versionReading,
 } from "./local-install.ts";
+import { SETUP_HREF } from "./route.ts";
 import { ChevronRight, TerminalSquare } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { ConfigSpace } from "./config-form.tsx";
@@ -75,6 +76,7 @@ import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab 
 import { HarnessSection } from "./harness-section.tsx";
 import { hostnameOf } from "./reachability.ts";
 import { LocalDevices, RemoteStep } from "./remote-step.tsx";
+import { setupApplies, SetupSteps } from "./setup-steps.tsx";
 import { receiptOfRun, useInstallRun } from "./verb-run.ts";
 
 export function InstallPage({
@@ -134,6 +136,15 @@ export function InstallPage({
 
   // The rule the whole stopped-install decision hangs off: what may be drawn is
   // not what was last received.
+  // Shown while the install is not initialised or has no .env, and then for
+  // the rest of this page's life once shown: the step that wrote the .env must
+  // not take the steps after it away (setup-steps.tsx).
+  const [setupShown, setSetupShown] = useState(false);
+  const setup = setupShown || setupApplies(install, report);
+  useEffect(() => {
+    if (setup) setSetupShown(true);
+  }, [setup]);
+
   const reading = readReport(renderableReport(install, report));
   const config = localConfig(report);
   const tenants = tenantConfigs(report);
@@ -217,6 +228,20 @@ export function InstallPage({
             onForget={onForget}
             onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
             {...(onCli === undefined ? {} : { onCli })}
+            setup={
+              setup ? (
+                <SetupSteps
+                  install={install}
+                  report={report}
+                  run={run}
+                  running={running}
+                  trouble={trouble}
+                  onStart={start}
+                  onVerifyToken={(slug, token) => bridge.github.verifyToken(slug, token)}
+                  onCreateApp={(request) => bridge.github.createApp(install.dir, request)}
+                />
+              ) : null
+            }
             harness={
               <HarnessSection
                 install={install}
@@ -394,6 +419,7 @@ export function InstallTab({
   onCli,
   harness,
   remote,
+  setup,
 }: {
   install: LocalInstall;
   environment: CompanionEnvironment | null;
@@ -409,6 +435,8 @@ export function InstallTab({
   harness?: ReactNode;
   /** The Remote step (remote-step.tsx), after Run: pairing over Tailscale (map #690). */
   remote?: ReactNode;
+  /** The setup steps (setup-steps.tsx), for an install that is not up yet. Built where the bridge is. */
+  setup?: ReactNode;
 }) {
   const offered = offeredVerbs(install);
   // Forget asks first. One click on a quiet button, and an install is gone from
@@ -417,6 +445,7 @@ export function InstallTab({
 
   return (
     <>
+      {setup}
       {install.wsl === undefined ? (
         <section>
           <h2>Docker</h2>
@@ -733,7 +762,7 @@ function Versions({
   );
 }
 
-/** Docker as the companion found it — checked, never installed (#522 §2). */
+/** Docker as the companion found it. The buttons that change that are on the setup page. */
 function DockerCheck({ environment }: { environment: CompanionEnvironment | null }) {
   const reading = dockerReading(environment);
   switch (reading.kind) {
@@ -742,16 +771,15 @@ function DockerCheck({ environment }: { environment: CompanionEnvironment | null
     case "missing":
       return (
         <p className="refusal">
-          <code>docker</code> is not on this machine&apos;s PATH. Phoebe drives Docker Compose and
-          does not install it —{" "}
-          <a href="https://docs.docker.com/get-started/get-docker/">get Docker</a>, then reopen this
-          tab.
+          <code>docker</code> is not on this machine&apos;s PATH, and Phoebe drives Docker Compose.{" "}
+          <a href={SETUP_HREF}>Set up this machine</a> installs it.
         </p>
       );
     case "daemon-down":
       return (
         <p className="refusal">
-          Docker is installed but its daemon did not answer. Start Docker, then reopen this tab.
+          Docker is installed but its daemon did not answer.{" "}
+          <a href={SETUP_HREF}>Set up this machine</a> starts it.
         </p>
       );
     case "ready":

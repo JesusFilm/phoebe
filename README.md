@@ -1,34 +1,65 @@
+<p align="center">
+  <img src="apps/desktop/assets/icon/phoebe.svg" width="112" alt="Phoebe's mark: an olive sprig" />
+</p>
+
 # Phoebe
 
-**Phoebe is an AFK coding agent.** It polls a GitHub repository for ready-to-work
-issues, works each one on its own branch in an isolated git worktree, runs your
-project's gates, and opens a pull request. Between new issues it sweeps open PRs
-for merge conflicts, failing CI, and unresolved review feedback, so work keeps
-moving without a human babysitting every branch.
+**Phoebe is a software factory for GitHub repositories.** You write the
+tickets. Phoebe builds them into pull requests while you are doing something
+else, and keeps those pull requests healthy until they merge.
 
-Phoebe runs as a **single Docker container** that is both orchestrator and
-execution environment. Your host checkout is never touched: the container owns a
-private clone and pushes branches directly to origin. Every repo-specific value
-lives behind one config file, so the same engine drives any repository.
+Label an issue `ready-for-agent` and Phoebe picks it up. It opens a fresh
+branch in a clean checkout, hands the ticket to the coding agent you already
+use, runs your project's checks, and pushes a pull request for you to review.
+Between tickets it sweeps the pull requests it has open: it resolves merge
+conflicts, reads and fixes red CI runs, and answers review comments with a
+pushed fix. None of that needs a person at the keyboard.
 
-Phoebe sits at the end of a planning pipeline, not in place of one. A pipeline
-handles every decision that needs a person; Phoebe handles the automated work
-that follows. So the quality of what comes out depends on the quality of the
-issue that goes in, which is what
-[`docs/preparing-work.md`](docs/preparing-work.md) is about. Start there if you
-are deciding what to hand Phoebe.
+Phoebe does not ship a model of its own. It drives Claude Code, Cursor, or
+Codex as a child process and is the part those tools lack. It decides what is
+next, hands the work over, checks the result, and moves on to the next ticket.
 
-Phoebe is published on npm as [`phoebe-agent`](https://www.npmjs.com/package/phoebe-agent)
-and runs against repositories inside and outside JesusFilm. It also works this
-one: most of the pull requests merged here were opened by Phoebe, from this
-repository's own issue tracker.
+## Who it is for
 
-## Distribution
+- **Developers who use AI coding tools** and have noticed that the chat window
+  is the bottleneck. Phoebe gives the same tools a queue instead of a
+  conversation.
+- **Teams with more well-specified tickets than hands.** Small, clear issues go
+  in at the end of the day and come back as reviewable pull requests.
+- **People who own a repository's roadmap** but would rather not live in a
+  terminal. The desktop companion installs Phoebe, holds the keys, and shows
+  what every install is doing. See [`docs/console.md`](docs/console.md).
 
-The engine is published to npm as **`phoebe-agent`** (unscoped) and consumed as a
-pinned CLI. You never vendor the engine source into your repo, only a small
-config file, your prompt overrides, and the container files `phoebe init`
-scaffolds for you.
+## What goes in decides what comes out
+
+A factory is only as good as its drawings. Phoebe does not decide what to
+build. It builds what the ticket says, and when the ticket leaves a question
+open it picks an answer and keeps going. Unattended work rarely fails with a
+crash. It fails with a confident, finished branch resting on a wrong guess made
+in the first ten minutes.
+
+So Phoebe sits at the end of a planning process rather than in place of one.
+[`docs/preparing-work.md`](docs/preparing-work.md) is about writing tickets
+that come back right. Start there if you are deciding what to hand over.
+
+## Where it runs
+
+Phoebe runs as one Docker container, on your laptop or on a server. The
+container keeps its own private clone of the repository and pushes branches
+straight to GitHub, so the checkout on your machine is never touched. Point one
+container at one repository, or at a folder of them.
+
+It is published on npm as
+[`phoebe-agent`](https://www.npmjs.com/package/phoebe-agent) and runs against
+repositories inside and outside JesusFilm. It also works this one: most of the
+pull requests merged here were opened by Phoebe, from this repository's own
+issue tracker.
+
+## How it ships
+
+The engine is one npm package, **`phoebe-agent`**, used as a pinned CLI. You
+never copy the engine into your repo. What lives there is a small config file,
+your prompt overrides, and the container files `phoebe init` writes for you.
 
 The package carries a second entry point, **`phoebe-agent/contracts`**: the types
 shared by anything that reads a deployment from outside the engine. Nothing

@@ -26,7 +26,7 @@
 # The workload runs as the unprivileged `phoebe` user, not root — see the
 # privilege-drop block below for the two things that constrains.
 
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 
 # gh CLI + git + tini for signal handling; keep the layer small.
 RUN apt-get update \

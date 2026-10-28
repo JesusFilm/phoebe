@@ -6,8 +6,13 @@
 
 import { DEPLOYMENT_SCHEMA, EFFECTIVE_CONFIG_VERSION } from "phoebe-agent/contracts";
 import type {
+  BootstrapNeed,
+  BootstrapPlan,
+  BootstrapTool,
   ChildLiveness,
   CompanionEnvironment,
+  GithubAppCreated,
+  GithubTokenVerdict,
   CompanionUpdate,
   ConfigReport,
   DeploymentReport,
@@ -322,6 +327,23 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
     },
     version: () => Promise.resolve("0.13.0"),
     environment: () => Promise.resolve(answers.environment ?? environment()),
+    environmentChanges: () => () => undefined,
+    bootstrap: {
+      plan: () => Promise.resolve(answers.bootstrapPlan ?? { steps: [], blocked: [] }),
+      run: (step) => {
+        answers.bootstrapRuns?.push(step);
+        return Promise.resolve({
+          tool: step.tool,
+          need: step.need,
+          command: "",
+          startedAt: "2026-10-22T12:00:00.000Z",
+          lines: [],
+        });
+      },
+      current: () => Promise.resolve(null),
+      lines: () => () => undefined,
+      exits: () => () => undefined,
+    },
     installs: {
       list: () => Promise.resolve(answers.installs ?? []),
       pick: () => Promise.resolve(answers.picked ?? null),
@@ -400,8 +422,26 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       ended: () => () => undefined,
     },
+    github: {
+      verifyToken: (slug, token) => {
+        answers.tokenChecks?.push({ slug, token });
+        return answers.tokenVerdict === undefined
+          ? Promise.reject(new Error("no verdict in this test"))
+          : Promise.resolve(answers.tokenVerdict);
+      },
+      createApp: (dir, request) => {
+        answers.appRequests?.push({ dir, ...request });
+        return answers.appCreated === undefined
+          ? Promise.reject(new Error("no App in this test"))
+          : Promise.resolve(answers.appCreated);
+      },
+    },
     updates: {
       state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
+      check: () => {
+        answers.updateCalls?.push("check");
+        return Promise.resolve();
+      },
       download: () => {
         answers.updateCalls?.push("download");
         return Promise.resolve();
@@ -458,6 +498,15 @@ export type BridgeAnswers = {
   update?: CompanionUpdate;
   /** Collects the update buttons the page pressed. */
   updateCalls?: string[];
+  /** What a GitHub token check answers, and which checks were asked for. */
+  tokenVerdict?: GithubTokenVerdict;
+  tokenChecks?: { slug: string; token: string }[];
+  /** What creating a GitHub App answers, and what was asked for. */
+  appCreated?: GithubAppCreated;
+  appRequests?: { dir: string; owner: string; name: string }[];
+  /** What the setup page is offered, and the steps it asked to run. */
+  bootstrapPlan?: BootstrapPlan;
+  bootstrapRuns?: { tool: BootstrapTool; need: BootstrapNeed }[];
 };
 
 /** The directory facts main derives with no container involved (#527 §6). */

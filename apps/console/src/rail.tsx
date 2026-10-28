@@ -50,6 +50,7 @@ import { FOLDER_ATTRIBUTE } from "./context-menu.ts";
 import { hostnameOf } from "./reachability.ts";
 import { hostSections, type HostSection, type RemoteRow } from "./remote-routes.ts";
 import { HOME_HREF, remoteHref, SETTINGS_HREF } from "./route.ts";
+import phoebeMark from "./assets/phoebe-mark.svg";
 
 export function Rail({
   surface,
@@ -367,7 +368,11 @@ function RemoteEntry({
   );
 }
 
-/** The brand, at the top of the rail, and the way home. */
+/**
+ * The brand, at the top of the rail, and the way home: the mark beside the
+ * name, as the wheat ear sits beside WHEAT in youtube-studio's sidebar. The
+ * mark is apps/desktop's, copied under src/assets by its build-icon script.
+ */
 function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void }) {
   return (
     <a
@@ -375,6 +380,7 @@ function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void 
       href={HOME_HREF}
       {...(onHome === undefined ? {} : { onClick: onHome })}
     >
+      <img className="rail-mark" src={phoebeMark} alt="" aria-hidden="true" />
       {surface === "companion" ? "Phoebe" : "Phoebe console"}
     </a>
   );

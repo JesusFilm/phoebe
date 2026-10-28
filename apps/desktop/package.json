@@ -11,15 +11,16 @@
     "lint": "vp lint",
     "typecheck": "vp exec tsc --noEmit",
     "test": "vp test",
-    "package": "vp exec electron-builder --config electron-builder.config.cjs --publish never"
+    "package": "vp exec electron-builder --config electron-builder.config.cjs --publish never",
+    "build-icon": "node scripts/build-icon.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
     "phoebe-agent": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "electron": "44.7.2",
+    "@types/node": "^26.0.0",
+    "electron": "45.1.0",
     "electron-builder": "^26.15.3",
     "typescript": "^7.0.0",
     "vite-plus": "^0.3.0"

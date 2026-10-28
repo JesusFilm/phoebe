@@ -20,6 +20,7 @@ export type Route =
   | { page: "home" }
   | { page: "add" }
   | { page: "settings" }
+  | { page: "setup" }
   | { page: "remote"; deploymentId: string; tab: DeploymentTab | null };
 
 export const HOME_ROUTE: Route = { page: "home" };
@@ -49,6 +50,13 @@ export function remoteHref(deploymentId: string, tab?: DeploymentTab): string {
 }
 
 const TABS: readonly string[] = ["overview", "pipelines", "doctor", "secrets", "config"];
+/**
+ * Setting up this machine (setup-page.tsx): what Docker needs and the buttons
+ * that get it there. Where the companion opens when Docker is not ready.
+ */
+export const SETUP_ROUTE: Route = { page: "setup" };
+
+export const SETUP_HREF = "#/setup";
 
 /** One hash as a route. Everything that is not a page this console has is home. */
 export function parseRoute(hash: string): Route {
@@ -67,5 +75,6 @@ export function parseRoute(hash: string): Route {
       tab: tab === undefined ? null : (tab as DeploymentTab),
     };
   }
+  if (segments[0] === "setup" && segments[1] === undefined) return SETUP_ROUTE;
   return HOME_ROUTE;
 }

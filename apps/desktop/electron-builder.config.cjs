@@ -35,10 +35,25 @@ module.exports = {
   directories: { output: "release" },
 
   // The app is the two built entry points and the manifest that names them.
-  // Production dependencies come along on their own — `electron-updater` is the
-  // only one, and it has to be a real file on disk rather than a bundled copy
-  // (vite.config.ts says why).
-  files: ["dist/**", "package.json"],
+  // Production dependencies come along on their own: `electron-updater`, which
+  // has to be a real file on disk rather than a bundled copy (vite.config.ts
+  // says why), and `phoebe-agent`, which main imports at run time and which is
+  // the workspace root itself. electron-builder copies a dependency's whole
+  // folder and ignores its `files`, so without the exclusions the root's
+  // `apps/` comes along too: both apps' node_modules, an Electron binary, and
+  // the `release/` folder this very build is writing into, recursively. That
+  // was a 225 MB installer carrying a 370 MB copy of the tree. The engine
+  // keeps what the host verbs read: `bootstrap/`, `src/`, `kinds/`,
+  // `prompts/`, `templates/` and the manifest.
+  files: [
+    "dist/**",
+    "package.json",
+    // What main.ts hands to the window and the dock (scripts/build-icon.mjs).
+    "assets/icon/phoebe-256.png",
+    "assets/icon/phoebe.ico",
+    "!node_modules/phoebe-agent/{apps,docs,scripts,console,.changeset,.github,.agents,.claude}/**",
+    "!node_modules/phoebe-agent/*.md",
+  ],
 
   // What main looks for beside the executable rather than inside the asar:
   // the console bundle it loads over the `phoebe://` scheme (main.ts's
@@ -61,7 +76,10 @@ module.exports = {
     url: "https://github.com/JesusFilm/phoebe/releases/latest/download",
   },
 
+  // The icon, in the container each platform wants. All three are rendered
+  // from one SVG by scripts/build-icon.mjs; edit the geometry there, not these.
   mac: {
+    icon: "assets/icon/phoebe.icns",
     target: [
       { target: "dmg", arch: ["arm64"] },
       { target: "zip", arch: ["arm64"] },
@@ -69,9 +87,11 @@ module.exports = {
     category: "public.app-category.developer-tools",
   },
   win: {
+    icon: "assets/icon/phoebe.ico",
     target: [{ target: "nsis", arch: ["x64"] }],
   },
   linux: {
+    icon: "assets/icon/phoebe-512.png",
     target: [{ target: "AppImage", arch: ["x64"] }],
     category: "Development",
     // Named, because the default is derived from the package name and AppImage

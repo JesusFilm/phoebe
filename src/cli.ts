@@ -259,7 +259,7 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   };
 }
 
-const HELP_TEXT = `phoebe — AFK coding agent
+const HELP_TEXT = `phoebe — software factory for GitHub repositories
 
 Usage:
   phoebe init [--solo] [dir]       Scaffold a solo single-tenant deployment

@@ -20,6 +20,9 @@
   --muted: #5d6673;
   --line: #dcdfe4;
   --accent: #1f4fd8;
+  /* The teal of the icon's tile (apps/desktop/scripts/build-icon.mjs), for the
+     wordmark beside the mark. The same in both themes, as the mark is. */
+  --brand: #0f766e;
   --ok: #1a7f37;
   --warn: #9a6700;
   --fail: #b91c1c;
@@ -201,16 +204,24 @@ a {
   display: flex;
   flex: none;
   align-items: center;
+  gap: 8px;
   height: 40px;
   padding: 0 14px;
   border-bottom: 1px solid var(--line);
-  color: inherit;
+  color: var(--brand);
   font-weight: 700;
   text-decoration: none;
 }
 
 .rail-brand:hover {
   color: var(--accent);
+}
+
+/* The mark, sized to the wordmark's cap height so the two read as one word. */
+.rail-mark {
+  height: 1.15em;
+  width: auto;
+  flex: none;
 }
 
 .rail > .rail-group:first-of-type {
@@ -2098,4 +2109,88 @@ details.why > summary::marker {
 
 .remote-step .step-detail {
   margin: 4px 0;
+}
+/* The setup steps: numbered, with the done ones ticked and dimmed. */
+.steps {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.steps .step {
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--line);
+}
+
+.steps .step h3 {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+.steps .step-number {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.steps .step.done .step-number {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.steps .step.done h3 {
+  color: var(--muted);
+}
+
+.token-verdict ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.token-verdict li.granted {
+  color: var(--ok);
+}
+
+.token-verdict li.missing {
+  color: var(--fail);
+}
+
+.token-verdict li.unknown {
+  color: var(--muted);
+}
+
+/* The setup page: the command before the button, the output under it. */
+.setup-step {
+  margin: 10px 0 14px;
+}
+
+.setup-command {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+}
+
+.setup-page .run-lines {
+  margin-top: 10px;
+}
+
+/* A link drawn as a button, for the way out of a page. */
+a.button {
+  display: inline-block;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
 }

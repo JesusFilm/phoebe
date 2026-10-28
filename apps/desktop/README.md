@@ -30,6 +30,16 @@ The app is `private` and carries no version of its own. `vite.config.ts` reads t
 root package's version at build time and defines it into the bundle
 ([#521 §4](https://github.com/JesusFilm/phoebe/issues/521)). It reads no `.env`.
 
+The icon is one SVG and everything rendered from it: `assets/icon/` holds the
+source, the mark alone (`phoebe-mark.svg`, with a black `phoebe-mono.svg` for
+places that tint a mark themselves), the PNG sizes, and the `.ico` and `.icns`
+electron-builder packs. `vp run build-icon` regenerates the lot, plus the
+console's favicons under `apps/console/public/` and its copy of the mark under
+`apps/console/src/assets/` for the head of the rail, by rendering the SVG in
+Electron's own Chromium. The geometry lives in
+[`scripts/build-icon.mjs`](scripts/build-icon.mjs); change it there and rerun,
+never edit a rendered file by hand.
+
 `vp run build` is two passes, one per entry point, and the two take different
 formats. The preload is CommonJS because a sandboxed preload has to be — Electron
 loads an ES-module preload only with the sandbox off — and it is bundled alone,

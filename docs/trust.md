@@ -11,11 +11,11 @@ agent-worked public repo handles untrusted contributors.
 
 ## The problem
 
-Phoebe is an AFK coding agent pointed at a **public** repo. It polls this tracker
-for `ready-for-agent` issues and works them autonomously, and it sweeps open PRs.
-Anyone can open an issue or a PR here. Nothing in the ticket itself tells a
-reviewer, or an agent, whether the author is a maintainer, a known contributor,
-or a drive-by.
+Phoebe is a software factory pointed at a **public** repo. It polls this tracker
+for `ready-for-agent` issues and works them with nobody watching, and it sweeps
+open PRs. Anyone can open an issue or a PR here. Nothing in the ticket itself
+tells a reviewer, or an agent, whether the author is a maintainer, a known
+contributor, or a drive-by.
 
 [`mitchellh/vouch`](https://github.com/mitchellh/vouch) is a flat-file community
 trust system: a list of handles in the repo, and composite GitHub Actions that

@@ -1,7 +1,8 @@
 # AGENTS.md
 
-You are working in **`JesusFilm/phoebe`** — the public engine for Phoebe, an AFK
-coding agent. This file orients any agent that lands here.
+You are working in **`JesusFilm/phoebe`** — the public engine for Phoebe, a
+software factory: labelled tickets in, pull requests out, nobody watching. This
+file orients any agent that lands here.
 
 ## What this repo is
 

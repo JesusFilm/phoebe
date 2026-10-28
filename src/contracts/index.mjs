@@ -80,6 +80,9 @@ export const REMOTE_ROUTES = {
 /** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
 export const DESKTOP_BRIDGE_GLOBAL = "phoebe";
 
+/** How many lines of a setup step main keeps — see bootstrap.ts. */
+export const MAX_BOOTSTRAP_LINES = 500;
+
 /** How many lines of a verb run main keeps — see verb-run.ts (#527 §13). */
 export const MAX_RUN_LINES = 2000;
 

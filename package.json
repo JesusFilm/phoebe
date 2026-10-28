@@ -2,7 +2,7 @@
   "name": "phoebe-agent",
   "version": "0.15.0",
   "private": false,
-  "description": "Phoebe — an AFK coding agent: a configurable engine that works a GitHub issue tracker one ticket at a time, distributed as a pinned CLI.",
+  "description": "Phoebe — a software factory for GitHub repositories: it turns labelled issues into pull requests and keeps them healthy until they merge, driving the coding agent you already use. Distributed as a pinned CLI.",
   "homepage": "https://github.com/JesusFilm/phoebe#readme",
   "bugs": "https://github.com/JesusFilm/phoebe/issues",
   "license": "MIT",
@@ -47,20 +47,21 @@
     "build": "echo \"phoebe-agent ships raw TypeScript — the root builds nothing; apps/* do\"",
     "prepublishOnly": "vp run -r build",
     "phoebe": "bash .phoebe/run.sh",
+    "ui": "node scripts/ui.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.0",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.0.0",
     "typescript": "^7.0.0",
     "vite-plus": "^0.3.0"
   },
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@12.14.0",
+  "packageManager": "pnpm@12.16.1",
   "phoebe": {
     "minBootstrap": "0.7.0"
   }

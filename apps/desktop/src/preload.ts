@@ -11,6 +11,9 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { DESKTOP_BRIDGE_GLOBAL } from "phoebe-agent/contracts";
 import type {
+  BootstrapExit,
+  BootstrapLine,
+  CompanionEnvironment,
   CompanionUpdate,
   DesktopBridge,
   HarnessReportEvent,
@@ -53,6 +56,15 @@ function subscribe<T>(channel: string, onEvent: (payload: T) => void): () => voi
 const bridge: DesktopBridge = {
   version: () => call<string>(BRIDGE_CHANNELS.version),
   environment: () => call(BRIDGE_CHANNELS.environment),
+  environmentChanges: (onChange) =>
+    subscribe<CompanionEnvironment>(BRIDGE_CHANNELS.environmentChanged, onChange),
+  bootstrap: {
+    plan: () => call(BRIDGE_CHANNELS.bootstrapPlan),
+    run: (step) => call(BRIDGE_CHANNELS.bootstrapRun, step),
+    current: () => call(BRIDGE_CHANNELS.bootstrapCurrent),
+    lines: (onLine) => subscribe<BootstrapLine>(BRIDGE_CHANNELS.bootstrapLine, onLine),
+    exits: (onExit) => subscribe<BootstrapExit>(BRIDGE_CHANNELS.bootstrapExit, onExit),
+  },
   installs: {
     list: () => call(BRIDGE_CHANNELS.installsList),
     pick: (inside) => call(BRIDGE_CHANNELS.installsPick, inside),
@@ -90,8 +102,13 @@ const bridge: DesktopBridge = {
     lines: (onLine) => subscribe<LogLine>(BRIDGE_CHANNELS.logsLine, onLine),
     ended: (onEnded) => subscribe<LogsEnded>(BRIDGE_CHANNELS.logsEnded, onEnded),
   },
+  github: {
+    verifyToken: (slug, token) => call(BRIDGE_CHANNELS.githubVerifyToken, slug, token),
+    createApp: (dir, request) => call(BRIDGE_CHANNELS.githubCreateApp, dir, request),
+  },
   updates: {
     state: () => call(BRIDGE_CHANNELS.updateState),
+    check: () => call(BRIDGE_CHANNELS.updateCheck),
     download: () => call(BRIDGE_CHANNELS.updateDownload),
     restart: () => call(BRIDGE_CHANNELS.updateRestart),
     changes: (onUpdate) => subscribe<CompanionUpdate>(BRIDGE_CHANNELS.updateChanged, onUpdate),
