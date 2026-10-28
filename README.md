@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="apps/desktop/assets/icon/phoebe.svg" width="112" alt="Phoebe's mark: an olive sprig" />
+</p>
+
 # Phoebe
 
 **Phoebe is a software factory for GitHub repositories.** You write the

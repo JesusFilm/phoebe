@@ -356,12 +356,26 @@ const runs = createVerbRuns({
   },
 });
 
+// Phoebe's mark (scripts/build-icon.mjs). A packaged build carries it in the
+// executable, the bundle or the AppImage, so this is for the window's own
+// frame and for an unpackaged launch, which would otherwise show Electron's.
+// Windows wants the .ico, which holds the 16 and 32 the title bar and taskbar
+// draw; the others take the PNG.
+const APP_ICON = path.join(
+  import.meta.dirname,
+  "..",
+  "assets",
+  "icon",
+  process.platform === "win32" ? "phoebe.ico" : "phoebe-256.png",
+);
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 880,
     minHeight: 560,
+    icon: APP_ICON,
     // Painted before the bundle lands, so a dark-mode launch does not flash white.
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#14171c" : "#fafafa",
     title: "Phoebe",
@@ -394,6 +408,10 @@ app.on("second-instance", () => {
 
 app.whenReady().then(
   () => {
+    // A packaged macOS app has its icon in the bundle; a dev run has only
+    // Electron's until this.
+    if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(APP_ICON);
+
     protocol.handle(CONSOLE_SCHEME, async (request) => {
       const file = consoleFileFor(request.url, consoleBundleDir());
       if (file === null) return new Response("not found", { status: 404 });
