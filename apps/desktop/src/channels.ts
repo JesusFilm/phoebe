@@ -40,6 +40,7 @@ export const BRIDGE_CHANNELS = {
   logsStop: "phoebe:logs/stop",
   logsLine: "phoebe:logs/line",
   logsEnded: "phoebe:logs/ended",
+  githubVerifyToken: "phoebe:github/verify-token",
   updateState: "phoebe:updates/state",
   updateCheck: "phoebe:updates/check",
   updateDownload: "phoebe:updates/download",

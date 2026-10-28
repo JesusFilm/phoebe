@@ -73,6 +73,7 @@ import { ProjectSettings } from "./project-settings.tsx";
 import { readReport } from "./report.ts";
 import { DEPLOYMENT_TABS, tabHasContent, type ConfigReading, type DeploymentTab } from "./tabs.ts";
 import { HarnessSection } from "./harness-section.tsx";
+import { setupApplies, SetupSteps } from "./setup-steps.tsx";
 import { receiptOfRun, useInstallRun } from "./verb-run.ts";
 
 export function InstallPage({
@@ -120,6 +121,15 @@ export function InstallPage({
 
   // The rule the whole stopped-install decision hangs off: what may be drawn is
   // not what was last received.
+  // Shown while the install is not initialised or has no .env, and then for
+  // the rest of this page's life once shown: the step that wrote the .env must
+  // not take the steps after it away (setup-steps.tsx).
+  const [setupShown, setSetupShown] = useState(false);
+  const setup = setupShown || setupApplies(install, report);
+  useEffect(() => {
+    if (setup) setSetupShown(true);
+  }, [setup]);
+
   const reading = readReport(renderableReport(install, report));
   const config = localConfig(report);
   const tenants = tenantConfigs(report);
@@ -193,6 +203,19 @@ export function InstallPage({
             onForget={onForget}
             onCancel={(runId) => void bridge.runs.cancel(runId).catch(() => {})}
             {...(onCli === undefined ? {} : { onCli })}
+            setup={
+              setup ? (
+                <SetupSteps
+                  install={install}
+                  report={report}
+                  run={run}
+                  running={running}
+                  trouble={trouble}
+                  onStart={start}
+                  onVerifyToken={(slug, token) => bridge.github.verifyToken(slug, token)}
+                />
+              ) : null
+            }
             harness={
               <HarnessSection
                 install={install}
@@ -332,6 +355,7 @@ export function InstallTab({
   onCancel,
   onCli,
   harness,
+  setup,
 }: {
   install: LocalInstall;
   environment: CompanionEnvironment | null;
@@ -345,6 +369,8 @@ export function InstallTab({
   onCli?: () => void;
   /** The AI harness section (harness-section.tsx), which needs the bridge this tab does not hold. */
   harness?: ReactNode;
+  /** The setup steps (setup-steps.tsx), for an install that is not up yet. Built where the bridge is. */
+  setup?: ReactNode;
 }) {
   const offered = offeredVerbs(install);
   // Forget asks first. One click on a quiet button, and an install is gone from
@@ -353,6 +379,7 @@ export function InstallTab({
 
   return (
     <>
+      {setup}
       {install.wsl === undefined ? (
         <section>
           <h2>Docker</h2>

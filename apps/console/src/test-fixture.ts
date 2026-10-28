@@ -11,6 +11,7 @@ import type {
   BootstrapTool,
   ChildLiveness,
   CompanionEnvironment,
+  GithubTokenVerdict,
   CompanionUpdate,
   ConfigReport,
   DeploymentReport,
@@ -370,6 +371,14 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       lines: () => () => undefined,
       ended: () => () => undefined,
     },
+    github: {
+      verifyToken: (slug, token) => {
+        answers.tokenChecks?.push({ slug, token });
+        return answers.tokenVerdict === undefined
+          ? Promise.reject(new Error("no verdict in this test"))
+          : Promise.resolve(answers.tokenVerdict);
+      },
+    },
     updates: {
       state: () => Promise.resolve(answers.update ?? { kind: "checking" }),
       check: () => {
@@ -425,6 +434,9 @@ export type BridgeAnswers = {
   update?: CompanionUpdate;
   /** Collects the update buttons the page pressed. */
   updateCalls?: string[];
+  /** What a GitHub token check answers, and which checks were asked for. */
+  tokenVerdict?: GithubTokenVerdict;
+  tokenChecks?: { slug: string; token: string }[];
   /** What the setup page is offered, and the steps it asked to run. */
   bootstrapPlan?: BootstrapPlan;
   bootstrapRuns?: { tool: BootstrapTool; need: BootstrapNeed }[];

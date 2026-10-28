@@ -41,6 +41,21 @@ its own; where the package manager is missing, the page says so and links to
 Docker's download. **Continue without Docker** is always there, because a
 machine that only watches deployments elsewhere has no need of a daemon.
 
+**Setting up a fresh install.** A folder that is not initialised, or has no
+`.env` yet, opens its install tab on four numbered steps: initialise, give
+Phoebe access to the repository, give it an agent to run, start. The second is
+the one with help in it. **Create a token on GitHub** opens GitHub's
+fine-grained token page with the five grants Phoebe needs already ticked, a
+year's lifetime, and the config's owner selected; the repository is the one
+thing that page cannot be told, so you pick it there. The token you paste back
+is checked against the repository with the five probes
+`scripts/verify-tenant-token.mjs` runs, none of which writes anything, and
+saved as `GH_TOKEN` into the `.env` when every grant answers. A grant that
+did not answer is named, with the save still offered. The third step asks for
+the key of whichever provider the config names, and points at Sign in to Claude
+for a subscription instead of a key. A workspace's tenants are not walked this
+way yet.
+
 A folder that is already a workspace's tenant is not offered `init` over the
 top of its config. It is offered a deployment of its own beside the tenant: the
 scaffold goes into `.phoebe/` under the folder, the tenant's config moves in

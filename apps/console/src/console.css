@@ -1919,6 +1919,61 @@ details.why > summary::marker {
   width: 360px;
 }
 
+/* The setup steps: numbered, with the done ones ticked and dimmed. */
+.steps {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.steps .step {
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--line);
+}
+
+.steps .step h3 {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+.steps .step-number {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.steps .step.done .step-number {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.steps .step.done h3 {
+  color: var(--muted);
+}
+
+.token-verdict ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.token-verdict li.granted {
+  color: var(--ok);
+}
+
+.token-verdict li.missing {
+  color: var(--fail);
+}
+
+.token-verdict li.unknown {
+  color: var(--muted);
+}
+
 /* The setup page: the command before the button, the output under it. */
 .setup-step {
   margin: 10px 0 14px;
