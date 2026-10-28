@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import {
+  appRequestArg,
   APP_PERMISSIONS,
   appManifest,
   createGithubApp,
@@ -232,5 +233,20 @@ describe("the flow", () => {
     });
     expect(page).toContain('href="https://github.com/apps/phoebe-acme/installations/new"');
     expect(page).toContain("phoebe-acme is registered");
+  });
+});
+
+describe("the request from the window", () => {
+  test("passes a login and a name, and refuses an owner that would move the URL", () => {
+    expect(appRequestArg({ owner: "JesusFilm", name: " phoebe-jesusfilm " })).toEqual({
+      owner: "JesusFilm",
+      name: "phoebe-jesusfilm",
+    });
+    expect(appRequestArg({ owner: "some_user", name: "x" }).owner).toBe("some_user");
+    for (const owner of ["..", "-lead", "a/b", "a?b", "", 7, undefined]) {
+      expect(() => appRequestArg({ owner, name: "x" }), String(owner)).toThrow("GitHub user");
+    }
+    expect(() => appRequestArg({ owner: "JesusFilm", name: "  " })).toThrow("needs a name");
+    expect(() => appRequestArg(null)).toThrow("GitHub user");
   });
 });

@@ -38,6 +38,22 @@ export const APP_FLOW_TIMEOUT_MS = 15 * 60 * 1000;
 export const GH_APP_ID_KEY = "GH_APP_ID";
 export const GH_APP_PRIVATE_KEY_KEY = "GH_APP_PRIVATE_KEY";
 
+/**
+ * The request the window sent, refused unless the owner is shaped like a
+ * GitHub login and the name is not blank. The owner goes into the lookup and
+ * the form's action, so a `..` there would aim both somewhere else.
+ */
+export function appRequestArg(request: unknown): GithubAppRequest {
+  const { owner, name } = (request ?? {}) as { owner?: unknown; name?: unknown };
+  if (typeof owner !== "string" || !/^[A-Za-z0-9][\w-]{0,38}$/.test(owner)) {
+    throw new Error("The owner must be a GitHub user or organisation name.");
+  }
+  if (typeof name !== "string" || name.trim() === "") {
+    throw new Error("The App needs a name.");
+  }
+  return { owner, name: name.trim() };
+}
+
 /** The manifest GitHub's form takes. */
 export function appManifest(opts: { name: string; redirectUrl: string }): Record<string, unknown> {
   return {

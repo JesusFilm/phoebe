@@ -80,7 +80,7 @@ import {
 import { deploymentDirOf } from "./deployment-dir.ts";
 import { createBootstrap, makeHas, type BootstrapSpawner } from "./bootstrap.ts";
 import { probeDocker } from "./docker.ts";
-import { createGithubApp } from "./github-app.ts";
+import { appRequestArg, createGithubApp } from "./github-app.ts";
 import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
@@ -494,15 +494,14 @@ app.whenReady().then(
     // the operator is on GitHub, the browser opened on it, the key written
     // into the install's .env on the way back. The install has to be held, so
     // a dir nobody added cannot be written to.
-    ipcMain.handle(
-      BRIDGE_CHANNELS.githubCreateApp,
-      (_event, dir: string, request: { owner: string; name: string }) =>
-        answering(async () => {
-          const install = await heldInstall(dir);
-          return createGithubApp(install.dir, request, {
-            open: (url) => shell.openExternal(url),
-          });
-        }),
+    ipcMain.handle(BRIDGE_CHANNELS.githubCreateApp, (_event, dir: string, request: unknown) =>
+      answering(async () => {
+        const asked = appRequestArg(request);
+        const install = await heldInstall(dir);
+        return createGithubApp(install.dir, asked, {
+          open: (url) => shell.openExternal(url),
+        });
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.updateState, () =>
