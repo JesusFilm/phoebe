@@ -358,8 +358,16 @@ const runs = createVerbRuns({
 
 // Phoebe's mark (scripts/build-icon.mjs). A packaged build carries it in the
 // executable, the bundle or the AppImage, so this is for the window's own
-// frame and for a `vp run dev` launch, which would otherwise show Electron's.
-const APP_ICON = path.join(import.meta.dirname, "..", "assets", "icon", "phoebe-256.png");
+// frame and for an unpackaged launch, which would otherwise show Electron's.
+// Windows wants the .ico, which holds the 16 and 32 the title bar and taskbar
+// draw; the others take the PNG.
+const APP_ICON = path.join(
+  import.meta.dirname,
+  "..",
+  "assets",
+  "icon",
+  process.platform === "win32" ? "phoebe.ico" : "phoebe-256.png",
+);
 
 function createWindow(): void {
   const window = new BrowserWindow({

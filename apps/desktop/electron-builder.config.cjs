@@ -48,8 +48,9 @@ module.exports = {
   files: [
     "dist/**",
     "package.json",
-    // The PNG main.ts hands to the window and the dock (scripts/build-icon.mjs).
+    // What main.ts hands to the window and the dock (scripts/build-icon.mjs).
     "assets/icon/phoebe-256.png",
+    "assets/icon/phoebe.ico",
     "!node_modules/phoebe-agent/{apps,docs,scripts,console,.changeset,.github,.agents,.claude}/**",
     "!node_modules/phoebe-agent/*.md",
   ],
