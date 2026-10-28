@@ -130,6 +130,21 @@ describe("a provider's key name", () => {
     // The providers the file leaves alone get no row.
     expect(field(source, "providerEnv.codex")).toBeUndefined();
   });
+
+  test("a computed providerEnv block is every provider's name as computed, not the default", () => {
+    for (const block of ["keyNames", '{ ...keyNames, claude: "X_KEY" }']) {
+      const source = config(`  repoSlug: "acme/widget",
+  providerEnv: ${block},`);
+      for (const provider of ["claude", "cursor", "codex"]) {
+        expect(field(source, `providerEnv.${provider}`), block).toMatchObject({
+          state: "computed",
+          raw: block,
+        });
+      }
+      // The rest of the form stands.
+      expect(field(source, "repoSlug")).toMatchObject({ state: "set" });
+    }
+  });
 });
 
 describe("a workspace root's settings", () => {

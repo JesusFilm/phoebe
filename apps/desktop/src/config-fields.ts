@@ -44,6 +44,12 @@ type Row = Pick<
    * config's value and not the shipped default when the file states one.
    */
   prefillFrom?: string;
+  /**
+   * Report this row as computed when its block is not a plain object literal,
+   * rather than leaving it out. For a row whose absence would read as "the
+   * default applies", which a computed block does not say.
+   */
+  computedWithBlock?: true;
 };
 
 /**
@@ -135,6 +141,7 @@ const PROVIDER_ENV_ROWS: readonly Row[] = Object.entries(CONFIG_DEFAULTS.provide
     type: "string" as const,
     locked: "Which env var a provider's key is read from is a config-file edit.",
     fallback: key,
+    computedWithBlock: true as const,
   }),
 );
 
@@ -179,7 +186,7 @@ export function configFieldsOf(
   // The refs worth offering are the caller's to know: the tip, and the release
   // this companion is. Any branch, tag or commit can still be typed.
   const engineRefs = offer.engineRefs ?? ["main"];
-  for (const { fallback, prefillFrom, ...declared } of ROWS[role]) {
+  for (const { fallback, prefillFrom, computedWithBlock, ...declared } of ROWS[role]) {
     const withRefs =
       declared.path === "engine.ref" ? { ...declared, suggestions: engineRefs } : declared;
     const row =
@@ -191,6 +198,19 @@ export function configFieldsOf(
       // The file itself does not parse: no form. A block that is computed is
       // only that block's rows gone, and the rest of the form stands.
       if (!row.path.includes(".")) return [];
+      // `providerEnv: base` says nothing about `providerEnv.claude` either way,
+      // so it is the block as written, not a field the file leaves out.
+      const block = computedWithBlock
+        ? editConfigGetFieldAt(source, [row.path.split(".")[0]!])
+        : null;
+      if (block?.ok === true && block.found) {
+        fields.push({
+          ...row,
+          state: "computed",
+          raw: block.raw,
+          ...(fallback === undefined ? {} : { default: fallback }),
+        });
+      }
       continue;
     }
     if (!read.found && row.locked !== undefined) continue;

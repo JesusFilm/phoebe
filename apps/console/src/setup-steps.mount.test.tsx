@@ -219,6 +219,25 @@ describe("checking a token", () => {
   });
 });
 
+describe("checking a second token", () => {
+  test("a check that could not run does not leave the last token's grants up", async () => {
+    let answer = (): Promise<GithubTokenVerdict> => Promise.resolve(verdict(false));
+    const box = await mount(steps({ onVerifyToken: () => answer() }, []));
+    const input = tokenField(box);
+    await type(input, TOKEN);
+    await submit(input);
+    expect(box.querySelector("li.missing")).not.toBeNull();
+
+    answer = () => Promise.reject(new Error("ENOTFOUND api.github.com"));
+    await type(input, `${TOKEN}_2`);
+    await submit(input);
+
+    expect(box.textContent).toContain("The check did not run: ENOTFOUND api.github.com");
+    expect(box.querySelector(".token-verdict")).toBeNull();
+    expect(box.textContent).not.toContain("save it anyway");
+  });
+});
+
 describe("a save that did not land", () => {
   const checked = { onVerifyToken: () => Promise.resolve(verdict(true)) };
 

@@ -261,6 +261,8 @@ function GithubStep({
       return;
     }
     setChecking(true);
+    // The last verdict was about the last token; it must not stand beside this one.
+    setVerdict(null);
     setCheckTrouble(null);
     setSaveTrouble(null);
     onVerifyToken(slug, token.trim()).then(
