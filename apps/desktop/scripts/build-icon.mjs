@@ -34,6 +34,7 @@ import electron from "electron";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.resolve(here, "../assets/icon");
 const consolePublicDir = path.resolve(here, "../../console/public");
+const consoleAssetsDir = path.resolve(here, "../../console/src/assets");
 
 const SIZE = 512;
 const TILE = "#0F766E";
@@ -312,12 +313,17 @@ async function build() {
 
   await mkdir(outDir, { recursive: true });
   await mkdir(consolePublicDir, { recursive: true });
+  await mkdir(consoleAssetsDir, { recursive: true });
 
   const box = await measureMark(buildSvg());
   const svg = buildSvg(centringOffset(box));
   const centred = await measureMark(svg);
   await writeFile(path.join(outDir, "phoebe.svg"), svg);
-  await writeFile(path.join(outDir, "phoebe-mark.svg"), buildMarkSvg(centred, TILE));
+  const mark = buildMarkSvg(centred, TILE);
+  await writeFile(path.join(outDir, "phoebe-mark.svg"), mark);
+  // The console's copy, beside the wordmark at the head of the rail (rail.tsx).
+  // Under src/ so Vite bundles it, since the console cannot import from here.
+  await writeFile(path.join(consoleAssetsDir, "phoebe-mark.svg"), mark);
   await writeFile(path.join(outDir, "phoebe-mono.svg"), buildMarkSvg(centred, "#000"));
 
   const pngs = await renderPngs(svg);

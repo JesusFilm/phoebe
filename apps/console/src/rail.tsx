@@ -47,6 +47,7 @@ import {
 } from "./local-install.ts";
 import { FOLDER_ATTRIBUTE } from "./context-menu.ts";
 import { HOME_HREF, SETTINGS_HREF } from "./route.ts";
+import phoebeMark from "./assets/phoebe-mark.svg";
 
 export function Rail({
   surface,
@@ -169,7 +170,11 @@ export function Rail({
   );
 }
 
-/** The brand, at the top of the rail, and the way home. */
+/**
+ * The brand, at the top of the rail, and the way home: the mark beside the
+ * name, as the wheat ear sits beside WHEAT in youtube-studio's sidebar. The
+ * mark is apps/desktop's, copied under src/assets by its build-icon script.
+ */
 function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void }) {
   return (
     <a
@@ -177,6 +182,7 @@ function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void 
       href={HOME_HREF}
       {...(onHome === undefined ? {} : { onClick: onHome })}
     >
+      <img className="rail-mark" src={phoebeMark} alt="" aria-hidden="true" />
       {surface === "companion" ? "Phoebe" : "Phoebe console"}
     </a>
   );

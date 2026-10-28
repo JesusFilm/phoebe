@@ -34,7 +34,8 @@ The icon is one SVG and everything rendered from it: `assets/icon/` holds the
 source, the mark alone (`phoebe-mark.svg`, with a black `phoebe-mono.svg` for
 places that tint a mark themselves), the PNG sizes, and the `.ico` and `.icns`
 electron-builder packs. `vp run build-icon` regenerates the lot, plus the
-console's favicons under `apps/console/public/`, by rendering the SVG in
+console's favicons under `apps/console/public/` and its copy of the mark under
+`apps/console/src/assets/` for the head of the rail, by rendering the SVG in
 Electron's own Chromium. The geometry lives in
 [`scripts/build-icon.mjs`](scripts/build-icon.mjs); change it there and rerun,
 never edit a rendered file by hand.
