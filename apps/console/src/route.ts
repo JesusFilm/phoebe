@@ -9,7 +9,7 @@
 // wrong URL should be a wrong page.
 
 /** Which page the console is showing. */
-export type Route = { page: "home" } | { page: "add" } | { page: "settings" };
+export type Route = { page: "home" } | { page: "add" } | { page: "settings" } | { page: "setup" };
 
 export const HOME_ROUTE: Route = { page: "home" };
 
@@ -32,6 +32,14 @@ export const SETTINGS_ROUTE: Route = { page: "settings" };
 
 export const SETTINGS_HREF = "#/settings";
 
+/**
+ * Setting up this machine (setup-page.tsx): what Docker needs and the buttons
+ * that get it there. Where the companion opens when Docker is not ready.
+ */
+export const SETUP_ROUTE: Route = { page: "setup" };
+
+export const SETUP_HREF = "#/setup";
+
 /** One hash as a route. Everything that is not a page this console has is home. */
 export function parseRoute(hash: string): Route {
   const segments = hash
@@ -40,5 +48,6 @@ export function parseRoute(hash: string): Route {
     .filter((segment) => segment !== "");
   if (segments[0] === "add" && segments[1] === undefined) return ADD_ROUTE;
   if (segments[0] === "settings" && segments[1] === undefined) return SETTINGS_ROUTE;
+  if (segments[0] === "setup" && segments[1] === undefined) return SETUP_ROUTE;
   return HOME_ROUTE;
 }

@@ -199,3 +199,14 @@ export type {
   GithubTokenKind,
   GithubTokenVerdict,
 } from "./github-token.ts";
+export { MAX_BOOTSTRAP_LINES } from "./bootstrap.ts";
+export type {
+  BootstrapBlocked,
+  BootstrapExit,
+  BootstrapLine,
+  BootstrapNeed,
+  BootstrapPlan,
+  BootstrapRun,
+  BootstrapStep,
+  BootstrapTool,
+} from "./bootstrap.ts";

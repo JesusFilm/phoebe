@@ -18,6 +18,7 @@
 // them.
 
 import { spawn } from "node:child_process";
+import { accessSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -77,6 +78,7 @@ import {
   watchContainerEvents,
 } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
+import { createBootstrap, makeHas, type BootstrapSpawner } from "./bootstrap.ts";
 import { probeDocker } from "./docker.ts";
 import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
@@ -90,7 +92,7 @@ import {
   formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
-import { createCompanionUpdates } from "./updates.ts";
+import { CHECK_EVERY_MS, createCompanionUpdates } from "./updates.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 import {
@@ -401,14 +403,58 @@ app.whenReady().then(
       return { ok: true, value: __COMPANION_VERSION__ };
     });
 
-    ipcMain.handle(BRIDGE_CHANNELS.environment, () =>
-      answering<CompanionEnvironment>(async () => ({
+    async function readEnvironment(): Promise<CompanionEnvironment> {
+      return {
         companionVersion: __COMPANION_VERSION__,
         platform: process.platform,
         docker: await probeDocker(),
         wslDistros: await listWslDistros(),
-      })),
+      };
+    }
+    ipcMain.handle(BRIDGE_CHANNELS.environment, () =>
+      answering<CompanionEnvironment>(readEnvironment),
     );
+
+    // Setting up this machine (bootstrap.ts). The shell is the platform's own:
+    // `cmd.exe` so that `start` and winget resolve as they do at a prompt,
+    // `sh` everywhere else. Nothing here is elevated by the companion; the
+    // command itself is what asks (UAC, Homebrew's prompt, pkexec).
+    const runShell: BootstrapSpawner = (command) =>
+      process.platform === "win32"
+        ? spawn("cmd.exe", ["/d", "/s", "/c", `"${command}"`], {
+            windowsHide: true,
+            windowsVerbatimArguments: true,
+            stdio: ["ignore", "pipe", "pipe"],
+          })
+        : spawn("sh", ["-c", command], { stdio: ["ignore", "pipe", "pipe"] });
+    const has = makeHas(process.platform, process.env["PATH"], (file) => accessSync(file));
+    const bootstrap = createBootstrap({
+      machine: async () => ({
+        platform: process.platform,
+        docker: await probeDocker(),
+        has,
+        env: process.env,
+      }),
+      spawn: runShell,
+      probe: () => probeDocker(),
+      onLine: (line) => broadcast(BRIDGE_CHANNELS.bootstrapLine, line),
+      onExit: (exit) => broadcast(BRIDGE_CHANNELS.bootstrapExit, exit),
+      // Docker coming up changes what every page says, so the whole
+      // environment goes out, not the one field.
+      onDocker: () => {
+        void readEnvironment().then(
+          (environment) => broadcast(BRIDGE_CHANNELS.environmentChanged, environment),
+          () => undefined,
+        );
+      },
+    });
+    ipcMain.handle(BRIDGE_CHANNELS.bootstrapPlan, () => answering(bootstrap.plan));
+    ipcMain.handle(
+      BRIDGE_CHANNELS.bootstrapRun,
+      (_event, step: { tool: "docker"; need: "install" | "start" }) =>
+        answering(() => bootstrap.run(step)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.bootstrapCurrent, () => answering(() => bootstrap.current()));
 
     // The companion's own updates (#525 §3). Built here rather than at import
     // time because the feed it chooses is read from `companion.json`, and the
@@ -428,7 +474,10 @@ app.whenReady().then(
     autoUpdater.on("update-available", (info) => updates.available(info.version));
     autoUpdater.on("update-not-available", () => updates.notAvailable());
     autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
-    autoUpdater.on("update-downloaded", (info) => updates.downloaded(info.version));
+    autoUpdater.on("update-downloaded", (info) => {
+      updates.downloaded(info.version);
+      void offerRestart(info.version);
+    });
     autoUpdater.on("error", (error) => updates.failed(error));
 
     // The token is an argument here for the same reason a secret's value is
@@ -444,6 +493,7 @@ app.whenReady().then(
     ipcMain.handle(BRIDGE_CHANNELS.updateState, () =>
       answering<CompanionUpdate>(() => updates.state()),
     );
+    ipcMain.handle(BRIDGE_CHANNELS.updateCheck, () => answering<void>(updates.check));
     ipcMain.handle(BRIDGE_CHANNELS.updateDownload, () => answering<void>(updates.download));
     ipcMain.handle(BRIDGE_CHANNELS.updateRestart, () => answering<void>(() => updates.restart()));
 
@@ -692,10 +742,35 @@ app.whenReady().then(
     createWindow();
     updateWatch.refresh();
 
-    // One check, and no poll (#525 §3). It is fired after the window exists so
-    // the first thing the operator sees is the window rather than a wait on
-    // github.com, and nothing it finds moves anything on its own.
+    // The launch check, fired after the window exists so the first thing the
+    // operator sees is the window rather than a wait on github.com, and then
+    // the same check every four hours (updates.ts). Nothing either finds moves
+    // anything on its own: a build downloads on a click and installs on quit.
     void updates.check();
+    setInterval(() => void updates.check(), CHECK_EVERY_MS);
+
+    /**
+     * The operator asked for the download, so once it lands they are asked
+     * one more thing: now, or on the next quit. Later is the quiet choice,
+     * and the rail's line keeps the Restart now button for whenever they
+     * are ready.
+     */
+    async function offerRestart(version: string): Promise<void> {
+      const options = {
+        type: "info" as const,
+        message: `Phoebe ${version} is downloaded.`,
+        detail: "Restart now to run it, or keep working and it installs when you quit.",
+        buttons: ["Restart now", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+      };
+      const window = BrowserWindow.getAllWindows()[0];
+      const { response } =
+        window === undefined
+          ? await dialog.showMessageBox(options)
+          : await dialog.showMessageBox(window, options);
+      if (response === 0) updates.restart();
+    }
 
     // macOS keeps the process alive with no windows; clicking the dock icon is
     // the ask for one back.
