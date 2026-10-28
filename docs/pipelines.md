@@ -418,7 +418,7 @@ because it is the shortest way to see which pieces above carry weight.
 the tracker with the thread summarized, a suggested title, and a link back. The
 ordinary `work` pipeline then picks it up as it would any other issue.
 
-**AFK bug triage** is the cheaper one, and it needs no Slack at all. It is a
+**Unattended bug triage** is the cheaper one, and it needs no Slack at all. It is a
 `/triage` state machine over issues already filed on GitHub, moving each through
 reproduce, classify and label. Same shape, one fewer external system.
 

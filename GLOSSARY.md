@@ -1,7 +1,8 @@
 # Phoebe
 
-The public engine for Phoebe, an AFK coding agent: it picks up labelled work in a
-repository, does it in a container, and pushes the result as a pull request.
+The public engine for Phoebe, a software factory for GitHub repositories: it picks up
+labelled work, builds it in a container with nobody watching, and pushes the result as
+a pull request.
 
 This file is the glossary. For how the pieces fit together see
 [`docs/architecture.md`](docs/architecture.md); for the mechanics of each kind of work see
@@ -10,6 +11,18 @@ tenant see [`docs/pipelines.md`](docs/pipelines.md); for the console, the relay 
 companion see [`docs/console.md`](docs/console.md).
 
 ## Language
+
+### Product
+
+**Software factory**:
+What Phoebe is: a system that turns well-specified tickets into pull requests with nobody
+at the keyboard, and keeps those pull requests healthy until they merge.
+_Avoid_: AFK coding agent, AFK agent, bot, autopilot, coding assistant
+
+**Unattended**:
+How Phoebe works: nobody is watching when a unit starts and nobody answers it midway, so
+the agent alone decides every question a ticket leaves open.
+_Avoid_: AFK, away from keyboard, headless
 
 ### Deployment
 
@@ -150,8 +163,8 @@ _Avoid_: mode, variant, flavour
 
 **Front-loading**:
 Creating the issues, maps, and grilling sessions that become `ready-for-agent` or
-research issues. The work a person does before Phoebe can start, because an AFK agent
-has nobody to ask.
+research issues. The work a person does before Phoebe can start, because a factory
+running unattended has nobody to ask.
 _Avoid_: grooming, refinement, backlog prep
 
 ### Work

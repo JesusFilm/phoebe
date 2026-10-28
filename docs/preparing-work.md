@@ -16,7 +16,8 @@ and every later decision builds on that guess. The failure mode is rarely a
 crash. It is a branch full of finished, confident, internally consistent work
 resting on a wrong call made in the first ten minutes, which is expensive to spot
 and worse to unpick. Matt Pocock's [AI Coding Dictionary](https://www.aihero.dev/ai-coding-dictionary/afk)
-makes the same point about AFK sessions generally.
+makes the same point about unattended sessions generally, under the entry he
+calls AFK.
 
 Tuning the prompt or the model will not fix that. The issue is what decides it.
 Ambiguity has to die before the `ready-for-agent` label goes on, because after
@@ -118,7 +119,7 @@ never the parent-map relationship. Point `researchLabel` at whatever your tracke
 calls a research ticket and the kind works the same way.
 
 Research tickets are worth calling out because they are the part of planning that
-is itself AFK-able. Deciding what to build needs you. Reading four sets of
+can itself run unattended. Deciding what to build needs you. Reading four sets of
 primary-source documentation to answer a question the decision depends on does
 not. Phoebe can burn those down in parallel while you keep thinking.
 

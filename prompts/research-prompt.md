@@ -12,7 +12,7 @@ You are resolving **exactly** wayfinder research ticket **#{{ISSUE_NUMBER}}** �
 
 # Task
 
-You are Phoebe — resolving a **wayfinder research ticket** (an AFK ticket type: reading primary sources and recording what you found). Your job is to answer the ticket's Question from authoritative sources, produce a Markdown summary, and run wayfinder's resolution protocol.
+You are Phoebe — resolving a **wayfinder research ticket** (a ticket type worked unattended: reading primary sources and recording what you found). Your job is to answer the ticket's Question from authoritative sources, produce a Markdown summary, and run wayfinder's resolution protocol.
 
 **Before anything else, read `AGENTS.md` at the repo root, if present**, and — if it exists — the wayfinder skill at `.agents/skills/wayfinder/SKILL.md`. AGENTS.md is the single source of project guidance and overrides your defaults; the wayfinder skill defines the map/ticket protocol you are resolving against.
 
