@@ -25,6 +25,22 @@ export type VerifyDeps = {
 };
 
 /**
+ * The slug the window asked about, refused unless it is a plain `owner/repo`.
+ * It goes into each probe's path, so a `?`, a `#` or a `..` would aim the
+ * probe at some other endpoint and the verdict would be about that one.
+ */
+export function repoSlugArg(slug: unknown): string {
+  if (
+    typeof slug !== "string" ||
+    !/^[\w.-]+\/[\w.-]+$/.test(slug) ||
+    slug.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new Error("The repository must be an owner/repo slug.");
+  }
+  return slug;
+}
+
+/**
  * Run the five probes against `slug` with `token` and say what each answered.
  * In parallel, because none depends on another and a person is waiting.
  */

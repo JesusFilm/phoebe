@@ -1,7 +1,7 @@
 // The five probes, read into a verdict the window can draw.
 
 import { describe, expect, test } from "vite-plus/test";
-import { verifyGithubToken } from "./github-token.ts";
+import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
 
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> };
 
@@ -142,5 +142,25 @@ describe("verifyGithubToken", () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.grants.every((grant) => grant.state === "unknown")).toBe(true);
     expect(verdict.grants[0]!.detail).toContain("ENOTFOUND");
+  });
+});
+
+describe("repoSlugArg", () => {
+  test("passes a plain owner/repo and refuses anything that would move the probe", () => {
+    expect(repoSlugArg("JesusFilm/phoebe")).toBe("JesusFilm/phoebe");
+    expect(repoSlugArg("some_org/my.repo-2")).toBe("some_org/my.repo-2");
+    for (const bad of [
+      "owner/repo?x=1",
+      "owner/repo#frag",
+      "owner/..",
+      "../repo",
+      "owner/repo/extra",
+      "owner",
+      "",
+      42,
+      undefined,
+    ]) {
+      expect(() => repoSlugArg(bad), String(bad)).toThrow("owner/repo slug");
+    }
   });
 });

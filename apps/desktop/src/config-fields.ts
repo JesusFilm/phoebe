@@ -122,6 +122,23 @@ const TENANT_ROWS: readonly Row[] = SETTINGS.filter(
 });
 
 /**
+ * Which env var each provider's key is read from, where the file overrides the
+ * default. Not a catalogue setting, so `config set` does not write it; it is
+ * read so the setup steps save a key under the name the agent will look for
+ * (a subscription token repoints `providerEnv.claude`). Locked, so a file that
+ * leaves it alone gets no row.
+ */
+const PROVIDER_ENV_ROWS: readonly Row[] = Object.entries(CONFIG_DEFAULTS.providerEnv).map(
+  ([provider, key]) => ({
+    path: `providerEnv.${provider}`,
+    scope: "tenant" as const,
+    type: "string" as const,
+    locked: "Which env var a provider's key is read from is a config-file edit.",
+    fallback: key,
+  }),
+);
+
+/**
  * What a fresh list on this row starts from: the value the file states at the
  * path the catalogue named, else that path's shipped default. Empty when
  * neither is a string, which leaves the box empty rather than prefilled with a
@@ -141,8 +158,8 @@ function listPrefillOf(source: string, prefillFrom: string): readonly string[] {
 
 const ROWS: Record<ConfigRole, readonly Row[]> = {
   workspace: [...DEPLOYMENT_ROWS, ...FLEET_ROWS],
-  tenant: TENANT_ROWS,
-  solo: [...DEPLOYMENT_ROWS, ...TENANT_ROWS],
+  tenant: [...TENANT_ROWS, ...PROVIDER_ENV_ROWS],
+  solo: [...DEPLOYMENT_ROWS, ...TENANT_ROWS, ...PROVIDER_ENV_ROWS],
 };
 
 /**

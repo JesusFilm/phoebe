@@ -209,6 +209,7 @@ export function InstallPage({
                   report={report}
                   run={run}
                   running={running}
+                  trouble={trouble}
                   onStart={start}
                   onVerifyToken={(slug, token) => bridge.github.verifyToken(slug, token)}
                 />

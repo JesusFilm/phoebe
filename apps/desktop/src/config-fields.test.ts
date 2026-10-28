@@ -113,6 +113,25 @@ describe("a tenant's settings", () => {
   });
 });
 
+describe("a provider's key name", () => {
+  test("a providerEnv override is read, locked, beside the default it replaces", () => {
+    const source = config(
+      '  repoSlug: "acme/widget",\n  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },',
+    );
+
+    for (const role of ["tenant", "solo"] as const) {
+      expect(field(source, "providerEnv.claude", role)).toMatchObject({
+        state: "set",
+        value: "CLAUDE_CODE_OAUTH_TOKEN",
+        default: "ANTHROPIC_API_KEY",
+      });
+      expect(field(source, "providerEnv.claude", role)?.locked).toBeDefined();
+    }
+    // The providers the file leaves alone get no row.
+    expect(field(source, "providerEnv.codex")).toBeUndefined();
+  });
+});
+
 describe("a workspace root's settings", () => {
   test("are the deployment's alone: the engine, reporting and the fleet", () => {
     const fields = configFieldsOf(ROOT, "workspace");

@@ -66,6 +66,22 @@ export const PROVIDER_KEYS: Record<HarnessName, string> = {
   codex: "OPENAI_KEY",
 };
 
+/**
+ * The env var this config reads a provider's key from: its `providerEnv`
+ * override when it states one, else the default. Null when the file computes
+ * it, since a guess would save the key where the agent does not look.
+ */
+export function providerKeyOf(
+  fields: readonly ConfigFieldFacts[] | undefined,
+  provider: HarnessName,
+): string | null {
+  const field = fields?.find((candidate) => candidate.path === `providerEnv.${provider}`);
+  if (field === undefined || field.state === "unset") return PROVIDER_KEYS[provider];
+  return field.state === "set" && typeof field.value === "string" && field.value !== ""
+    ? field.value
+    : null;
+}
+
 /** One line per grant, for the checklist under the field. */
 export function grantReading(grant: GithubGrant): string {
   switch (grant.state) {

@@ -32,7 +32,7 @@ import {
   grantReading,
   isPlaceholderSlug,
   looksLikeToken,
-  PROVIDER_KEYS,
+  providerKeyOf,
   slugOf,
   tokenPageUrl,
 } from "./github-token.ts";
@@ -54,6 +54,7 @@ export function SetupSteps({
   report,
   run,
   running,
+  trouble = null,
   onStart,
   onVerifyToken,
 }: {
@@ -61,6 +62,8 @@ export function SetupSteps({
   report: LocalReportEvent | null;
   run: VerbRun | null;
   running: boolean;
+  /** Why main refused the last run this page asked for, or null. */
+  trouble?: string | null;
   onStart: (request: VerbRunRequest) => void;
   /** The five-grant probe, through main. Absent where there is no bridge. */
   onVerifyToken?: (slug: string, token: string) => Promise<GithubTokenVerdict>;
@@ -71,7 +74,7 @@ export function SetupSteps({
   const placeholder = stated !== null && isPlaceholderSlug(stated);
   const slug = placeholder ? null : stated;
   const provider = providerOf(fields);
-  const providerKey = provider === null ? null : PROVIDER_KEYS[provider];
+  const providerKey = provider === null ? null : providerKeyOf(fields, provider);
 
   // Which keys a `secret set` run saved this session, read off each run's exit.
   const [saved, setSaved] = useState<ReadonlySet<string>>(() => new Set());
@@ -119,7 +122,9 @@ export function SetupSteps({
           slug={slug}
           placeholder={placeholder ? stated : null}
           initialised={initialised}
+          run={run}
           running={running}
+          trouble={trouble}
           saved={saved.has(GH_TOKEN_KEY)}
           onStart={onStart}
           {...(onVerifyToken === undefined ? {} : { onVerifyToken })}
@@ -192,7 +197,9 @@ function GithubStep({
   slug,
   placeholder,
   initialised,
+  run,
   running,
+  trouble,
   saved,
   onStart,
   onVerifyToken,
@@ -202,7 +209,9 @@ function GithubStep({
   /** The scaffold's placeholder slug, when the config still carries it. */
   placeholder: string | null;
   initialised: boolean;
+  run: VerbRun | null;
   running: boolean;
+  trouble: string | null;
   saved: boolean;
   onStart: (request: VerbRunRequest) => void;
   onVerifyToken?: (slug: string, token: string) => Promise<GithubTokenVerdict>;
@@ -210,11 +219,38 @@ function GithubStep({
   const [token, setToken] = useState("");
   const [checking, setChecking] = useState(false);
   const [verdict, setVerdict] = useState<GithubTokenVerdict | null>(null);
-  const [trouble, setTrouble] = useState<string | null>(null);
+  const [checkTrouble, setCheckTrouble] = useState<string | null>(null);
+  // The save this step asked for, as the run that was current when it asked:
+  // the next `secret set` run to exit after it is this one's.
+  const [saving, setSaving] = useState<{ after: string | null } | null>(null);
+  const [saveTrouble, setSaveTrouble] = useState<string | null>(null);
+
+  // A save that was refused or failed takes the verdict with it: the token has
+  // left the field, and a verdict left standing would read as saved.
+  useEffect(() => {
+    if (saving === null) return;
+    if (trouble !== null) {
+      setSaving(null);
+      setVerdict(null);
+      setSaveTrouble(`The save did not start: ${trouble}`);
+      return;
+    }
+    if (run === null || run.runId === saving.after || run.verb !== "secret set") return;
+    if (run.exit === undefined) return;
+    setSaving(null);
+    if (run.exit.code !== 0) {
+      setVerdict(null);
+      setSaveTrouble(
+        `Saving ${GH_TOKEN_KEY} failed (exit ${run.exit.code}). The console's cli tab has what the run said. Paste the token again to retry.`,
+      );
+    }
+  }, [saving, trouble, run]);
 
   function save(): void {
+    setSaveTrouble(null);
+    setSaving({ after: run?.runId ?? null });
     onStart(secretSetRequest({ install, key: GH_TOKEN_KEY, value: token.trim() }));
-    // The field empties; the verdict stays, since it is what says the save was earned.
+    // The field empties; the verdict stays until the run says the save failed.
     setToken("");
   }
 
@@ -225,7 +261,8 @@ function GithubStep({
       return;
     }
     setChecking(true);
-    setTrouble(null);
+    setCheckTrouble(null);
+    setSaveTrouble(null);
     onVerifyToken(slug, token.trim()).then(
       (read) => {
         setChecking(false);
@@ -234,7 +271,7 @@ function GithubStep({
       },
       (error: unknown) => {
         setChecking(false);
-        setTrouble(error instanceof Error ? error.message : String(error));
+        setCheckTrouble(error instanceof Error ? error.message : String(error));
       },
     );
   }
@@ -295,7 +332,10 @@ function GithubStep({
               : "Check and save"}
         </button>
       </form>
-      {trouble === null ? null : <p className="refusal">The check did not run: {trouble}</p>}
+      {checkTrouble === null ? null : (
+        <p className="refusal">The check did not run: {checkTrouble}</p>
+      )}
+      {saveTrouble === null ? null : <p className="refusal">{saveTrouble}</p>}
       {verdict === null ? null : (
         <div className="token-verdict">
           {verdict.kind.note === null ? null : <p className="muted">{verdict.kind.note}</p>}
@@ -366,7 +406,12 @@ function ProviderStep({
 
   return (
     <>
-      {providerKey === null ? (
+      {providerKey === null && name !== null ? (
+        <p className="muted">
+          The config runs {name}, but computes which env var it reads the key from, so it cannot be
+          saved here. Use the form below the steps.
+        </p>
+      ) : providerKey === null ? (
         <p className="muted">
           {initialised
             ? "The config does not say which agent it runs, so there is no key to ask for here. Set defaultProvider on the config tab, or paste the key in the form below the steps."
