@@ -98,7 +98,7 @@ import {
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
 import { findTailscaleCli, parseTailscaleStatus } from "../../../src/tailscale-serve.ts";
-import { CHECK_EVERY_MS, createCompanionUpdates } from "./updates.ts";
+import { CHECK_EVERY_MS, createCompanionUpdates, type UpdaterControls } from "./updates.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 import {
@@ -407,6 +407,27 @@ const APP_ICON = path.join(
   process.platform === "win32" ? "phoebe.ico" : "phoebe-256.png",
 );
 
+/**
+ * What the updates arm is handed in a checkout, where it is "unsupported"
+ * from the first state and drives nothing. Every control refuses, so a path
+ * that reached one would say so rather than touch a feed.
+ */
+const UNPACKAGED_UPDATER: UpdaterControls = {
+  autoDownload: false,
+  autoInstallOnAppQuit: false,
+  allowDowngrade: false,
+  setFeedURL: () => {
+    throw new Error("a checkout updates with git, not with the updater");
+  },
+  checkForUpdates: () =>
+    Promise.reject(new Error("a checkout updates with git, not with the updater")),
+  downloadUpdate: () =>
+    Promise.reject(new Error("a checkout updates with git, not with the updater")),
+  quitAndInstall: () => {
+    throw new Error("a checkout updates with git, not with the updater");
+  },
+};
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
@@ -520,9 +541,16 @@ app.whenReady().then(
     // The companion's own updates (#525 §3). Built here rather than at import
     // time because the feed it chooses is read from `companion.json`, and the
     // directory that file lives in is Electron's to name once the app is ready.
-    const { autoUpdater } = electronUpdater;
+    //
+    // `electron-updater`'s `autoUpdater` is a getter that builds the platform
+    // updater on first touch and refuses an app version that is not semver.
+    // A checkout's is not — apps/desktop/package.json carries no version, so
+    // Electron reports `0.0` — and the throw landed here, before the window
+    // existed, on every `vp run ui`. A checkout updates with git, so an
+    // unpackaged companion never touches the updater at all.
+    const autoUpdater = app.isPackaged ? electronUpdater.autoUpdater : null;
     const updates = createCompanionUpdates({
-      updater: autoUpdater,
+      updater: autoUpdater ?? UNPACKAGED_UPDATER,
       platform: process.platform,
       packaged: app.isPackaged,
       // The newest stable release there is (update-feed.ts).
@@ -532,14 +560,16 @@ app.whenReady().then(
 
     // Main is the only listener the updater has; the window hears about all of
     // this through the state the arm keeps.
-    autoUpdater.on("update-available", (info) => updates.available(info.version));
-    autoUpdater.on("update-not-available", () => updates.notAvailable());
-    autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
-    autoUpdater.on("update-downloaded", (info) => {
-      updates.downloaded(info.version);
-      void offerRestart(info.version);
-    });
-    autoUpdater.on("error", (error) => updates.failed(error));
+    if (autoUpdater !== null) {
+      autoUpdater.on("update-available", (info) => updates.available(info.version));
+      autoUpdater.on("update-not-available", () => updates.notAvailable());
+      autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
+      autoUpdater.on("update-downloaded", (info) => {
+        updates.downloaded(info.version);
+        void offerRestart(info.version);
+      });
+      autoUpdater.on("error", (error) => updates.failed(error));
+    }
 
     // The token is an argument here for the same reason a secret's value is
     // a run argument (contracts/verb-run.ts): it is held for the call, and
