@@ -9,9 +9,11 @@
 //
 // Every command is on the page before it runs, with whether the OS will ask
 // for permission, because the thing being installed is not Phoebe's. The
-// output streams below the button, and the page says "running" the moment the
-// probe does. "Continue without Docker" is always there: a machine that only
-// watches deployments elsewhere has no use for a daemon.
+// button spins from the click until the probe answers, the output streams
+// below it, and the moment Docker is running the page gives way to home
+// (app.tsx) — there is nothing left here to read. "Continue without Docker"
+// is there until then: a machine that only watches deployments elsewhere has
+// no use for a daemon.
 
 import type {
   BootstrapPlan,
@@ -20,6 +22,7 @@ import type {
   BootstrapTool,
   CompanionEnvironment,
 } from "phoebe-agent/contracts";
+import { Spinner } from "~/components/ui/spinner";
 import { dockerReading } from "./local-install.ts";
 import { HOME_HREF } from "./route.ts";
 
@@ -27,6 +30,37 @@ import { HOME_HREF } from "./route.ts";
 function stepLabel(step: { tool: BootstrapTool; need: BootstrapStep["need"] }): string {
   const tool = step.tool === "docker" ? "Docker" : step.tool;
   return `${step.need === "install" ? "Install" : "Start"} ${tool}`;
+}
+
+/** The same button while the step is under way. */
+function pendingLabel(step: { tool: BootstrapTool; need: BootstrapStep["need"] }): string {
+  const tool = step.tool === "docker" ? "Docker" : step.tool;
+  return `${step.need === "install" ? "Installing" : "Starting"} ${tool}…`;
+}
+
+/**
+ * Is this step still being waited on? From the click until the command
+ * exits, and after a clean exit until the probe sees what the step was for:
+ * the daemon after a start, the binary after an install. A step that failed,
+ * or one main gave up waiting on, is not pending; its button comes back for
+ * another go.
+ */
+export function stepPending(
+  step: { tool: BootstrapTool; need: BootstrapStep["need"] },
+  run: BootstrapRun | null,
+  docker: ReturnType<typeof dockerReading>,
+): boolean {
+  if (run === null || run.tool !== step.tool || run.need !== step.need) return false;
+  if (run.exit === undefined) return true;
+  if (run.exit.code !== 0 || run.exit.settled === "timed-out") return false;
+  return step.need === "start" ? docker.kind !== "ready" : docker.kind === "missing";
+}
+
+/** What to say when the command went fine and Docker still did not answer. */
+function timedOutReading(run: BootstrapRun): string {
+  return run.need === "start"
+    ? "Docker was started, but its engine did not answer within two minutes. Check the Docker Desktop window for what it is doing, then start it again from here. The companion keeps looking while this page is open."
+    : "The install finished, but the companion cannot see docker yet. Sign out and back in, or quit and reopen the companion, so it picks up the new PATH.";
 }
 
 export function SetupPage({
@@ -45,7 +79,7 @@ export function SetupPage({
   onRun?: (step: { tool: BootstrapTool; need: BootstrapStep["need"] }) => void;
 }) {
   const docker = dockerReading(environment);
-  const running = run !== null && run.exit === undefined;
+  const busy = run !== null && run.exit === undefined;
 
   return (
     <main className="main setup-page">
@@ -72,28 +106,44 @@ export function SetupPage({
 
         {docker.kind === "ready" || plan === null
           ? null
-          : plan.steps.map((step) => (
-              <div key={`${step.tool}:${step.need}`} className="setup-step">
-                <pre className="setup-command">
-                  <code>{step.command}</code>
-                </pre>
-                <p className="muted">
-                  {step.elevates
-                    ? "The OS asks for permission before this runs. "
-                    : "No permission prompt. "}
-                  {step.note ?? ""}
-                </p>
-                <div className="verbs">
-                  <button
-                    type="button"
-                    disabled={onRun === undefined || running}
-                    onClick={() => onRun?.({ tool: step.tool, need: step.need })}
-                  >
-                    {stepLabel(step)}
-                  </button>
+          : plan.steps.map((step) => {
+              const pending = stepPending(step, run, docker);
+              const note = [
+                step.elevates ? "The OS asks for permission before this runs." : null,
+                step.note,
+              ].filter((part) => part !== null);
+              return (
+                <div key={`${step.tool}:${step.need}`} className="setup-step">
+                  <pre className="setup-command">
+                    <code>{step.command}</code>
+                  </pre>
+                  {note.length === 0 ? null : <p className="muted">{note.join(" ")}</p>}
+                  <div className="verbs">
+                    <button
+                      type="button"
+                      className={pending ? "pending" : undefined}
+                      disabled={onRun === undefined || busy || pending}
+                      aria-busy={pending ? true : undefined}
+                      onClick={() => onRun?.({ tool: step.tool, need: step.need })}
+                    >
+                      {pending ? (
+                        <>
+                          <Spinner
+                            className="button-spinner motion-safe:animate-spin motion-reduce:animate-pulse"
+                            size={12}
+                            strokeWidth={2.25}
+                            aria-hidden="true"
+                          />
+                          {pendingLabel(step)}
+                        </>
+                      ) : (
+                        stepLabel(step)
+                      )}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
         {docker.kind === "ready" || plan === null
           ? null
@@ -117,14 +167,10 @@ export function SetupPage({
                 ))}
               </pre>
             )}
-            {run.exit === undefined ? (
-              <p className="muted">Running {run.command}…</p>
-            ) : run.exit.code === 0 ? (
-              docker.kind === "ready" ? null : (
-                <p className="muted">
-                  Done. Waiting for Docker to answer; the line above changes when it does.
-                </p>
-              )
+            {run.exit === undefined ? null : run.exit.code === 0 ? (
+              run.exit.settled === "timed-out" && docker.kind !== "ready" ? (
+                <p className="refusal">{timedOutReading(run)}</p>
+              ) : null
             ) : (
               <p className="refusal">
                 The command exited with{" "}
@@ -136,11 +182,13 @@ export function SetupPage({
         )}
       </section>
 
-      <div className="verbs">
-        <a className="button" href={HOME_HREF}>
-          {docker.kind === "ready" ? "Done" : "Continue without Docker"}
-        </a>
-      </div>
+      {docker.kind === "ready" ? null : (
+        <div className="verbs">
+          <a className="button" href={HOME_HREF}>
+            Continue without Docker
+          </a>
+        </div>
+      )}
     </main>
   );
 }

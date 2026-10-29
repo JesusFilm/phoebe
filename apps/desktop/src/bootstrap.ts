@@ -10,8 +10,8 @@
 // that reopens mid-install rejoins it. After a step ends the runner asks the
 // Docker probe again, on a timer, until the daemon answers or two minutes
 // pass, and hands every change to main to broadcast: Docker Desktop takes a
-// while to bring its engine up, and the window should say "running" the
-// moment it is, not the next time somebody opens the install tab.
+// while to bring its engine up, and the setup page should give way the moment
+// it is, not the next time somebody opens the install tab.
 //
 // What runs is the platform's package manager or launcher and nothing the
 // companion downloaded itself: winget and Docker Desktop on Windows, Homebrew
@@ -109,12 +109,7 @@ export function planBootstrap(machine: Machine): BootstrapPlan {
       } else {
         const exe = dockerDesktopExe(machine.env);
         if (machine.has(exe)) {
-          offer(
-            "start",
-            `start "" "${exe}"`,
-            false,
-            "Docker Desktop takes a minute to bring its engine up.",
-          );
+          offer("start", `start "" "${exe}"`, false, null);
         } else {
           refuse("start", `Docker Desktop was not found at ${exe}`, DOCKER_DOWNLOAD);
         }
@@ -135,12 +130,7 @@ export function planBootstrap(machine: Machine): BootstrapPlan {
           refuse("install", "Homebrew is not on this machine", DOCKER_DOWNLOAD);
         }
       } else if (machine.has("/Applications/Docker.app")) {
-        offer(
-          "start",
-          "open -a Docker",
-          false,
-          "Docker Desktop takes a minute to bring its engine up.",
-        );
+        offer("start", "open -a Docker", false, null);
       } else {
         refuse("start", "Docker Desktop was not found in /Applications", DOCKER_DOWNLOAD);
       }
@@ -244,7 +234,7 @@ export function createBootstrap(deps: BootstrapDeps): Bootstrap {
    * the binary, since on every platform the daemon needs a start, or a sign-out,
    * after the install.
    */
-  async function settle(need: BootstrapNeed): Promise<void> {
+  async function settle(need: BootstrapNeed): Promise<"answered" | "timed-out"> {
     let last: string | null = null;
     for (let waited = 0; waited <= SETTLE_FOR_MS; waited += SETTLE_EVERY_MS) {
       const docker = await deps.probe().catch(() => null);
@@ -254,17 +244,26 @@ export function createBootstrap(deps: BootstrapDeps): Bootstrap {
           last = key;
           deps.onDocker(docker);
         }
-        if (need === "start" ? docker.daemonRunning : docker.present) return;
+        if (need === "start" ? docker.daemonRunning : docker.present) return "answered";
       }
       await wait(SETTLE_EVERY_MS);
     }
+    return "timed-out";
   }
 
+  /**
+   * The exit goes out twice: once when the command ends, and again with
+   * `settled` when the wait after it does, so a window can stop saying
+   * "starting" when Docker never answers, not only when it does.
+   */
   function finish(run: BootstrapRun, code: number | null): void {
     if (run.exit !== undefined) return;
     run.exit = { tool: run.tool, need: run.need, code };
     deps.onExit(run.exit);
-    void settle(run.need);
+    void settle(run.need).then((settled) => {
+      run.exit = { ...run.exit!, settled };
+      deps.onExit(run.exit);
+    });
   }
 
   return {

@@ -52,8 +52,19 @@ export type BootstrapPlan = {
 
 export type BootstrapLine = { stream: "stdout" | "stderr"; line: string };
 
-/** How a step ended. `code` is null when the shell was killed by a signal. */
-export type BootstrapExit = { tool: BootstrapTool; need: BootstrapNeed; code: number | null };
+/**
+ * How a step ended. `code` is null when the shell was killed by a signal.
+ * `settled` arrives on a second exit event: after the command ends, main keeps
+ * asking Docker for what the step was for (the daemon after a start, the
+ * binary after an install), and says whether it answered or the patience ran
+ * out. Absent while that wait is still going.
+ */
+export type BootstrapExit = {
+  tool: BootstrapTool;
+  need: BootstrapNeed;
+  code: number | null;
+  settled?: "answered" | "timed-out";
+};
 
 /**
  * A step as it runs, or as it last ran. Held in main for the same reason verb

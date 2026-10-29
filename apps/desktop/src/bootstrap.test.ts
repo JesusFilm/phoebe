@@ -10,6 +10,7 @@ import {
   makeHas,
   planBootstrap,
   SETTLE_EVERY_MS,
+  SETTLE_FOR_MS,
   type BootstrapChild,
   type Machine,
 } from "./bootstrap.ts";
@@ -292,7 +293,7 @@ describe("running a step", () => {
   });
 
   test("after a start, asks Docker again until the daemon answers, and reports each change", async () => {
-    const { bootstrap, shell, seen, waits } = runner(
+    const { bootstrap, shell, seen, waits, exits } = runner(
       machine("linux", DOWN, ["pkexec", "systemctl"]),
       [DOWN, DOWN, RUNNING],
     );
@@ -302,6 +303,27 @@ describe("running a step", () => {
 
     expect(seen).toEqual([DOWN, RUNNING]);
     expect(waits).toEqual([SETTLE_EVERY_MS, SETTLE_EVERY_MS]);
+    expect(exits).toEqual([
+      { tool: "docker", need: "start", code: 0 },
+      { tool: "docker", need: "start", code: 0, settled: "answered" },
+    ]);
+    expect(bootstrap.current()?.exit?.settled).toBe("answered");
+  });
+
+  test("a daemon that never answers is a second exit saying so, once the patience runs out", async () => {
+    const { bootstrap, shell, exits, waits } = runner(
+      machine("linux", DOWN, ["pkexec", "systemctl"]),
+      [DOWN],
+    );
+    await bootstrap.run({ tool: "docker", need: "start" });
+    shell.end(0);
+    for (let i = 0; i < 200; i++) await tick();
+
+    expect(waits.length).toBe(SETTLE_FOR_MS / SETTLE_EVERY_MS + 1);
+    expect(exits).toEqual([
+      { tool: "docker", need: "start", code: 0 },
+      { tool: "docker", need: "start", code: 0, settled: "timed-out" },
+    ]);
   });
 
   test("after an install, the binary being there is enough, since the daemon needs a start of its own", async () => {
@@ -334,6 +356,6 @@ describe("running a step", () => {
     const run = await bootstrap.run({ tool: "docker", need: "start" });
     expect(run.exit).toEqual({ tool: "docker", need: "start", code: null });
     expect(lines).toEqual([{ stream: "stderr", line: "spawn open ENOENT" }]);
-    expect(exits).toHaveLength(1);
+    expect(exits[0]).toEqual({ tool: "docker", need: "start", code: null });
   });
 });
