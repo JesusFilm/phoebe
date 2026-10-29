@@ -398,11 +398,14 @@ export function App({
   const [platform, setPlatform] = useState<string | null>(null);
   // The whole answer too, for the settings page's account of this companion.
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
+  // How many readings main has pushed, so a slow poll cannot overwrite a newer one.
+  const readings = useRef(0);
   useEffect(() => {
     if (bridge === null) return;
     let live = true;
     const take = (probed: CompanionEnvironment): void => {
       if (!live) return;
+      readings.current += 1;
       setWslDistros(probed.wslDistros);
       setPlatform(probed.platform);
       setEnvironment(probed);
@@ -445,7 +448,10 @@ export function App({
   useEffect(() => {
     if (bridge === null || route.page !== "setup" || dockerReady) return;
     const timer = setInterval(() => {
-      bridge.environment().then(setEnvironment, () => undefined);
+      const asked = readings.current;
+      bridge.environment().then((probed) => {
+        if (readings.current === asked) setEnvironment(probed);
+      }, noop);
     }, SETUP_REPROBE_MS);
     return () => clearInterval(timer);
   }, [bridge, route.page, dockerReady]);

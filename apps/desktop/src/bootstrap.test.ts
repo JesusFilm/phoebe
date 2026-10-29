@@ -338,6 +338,20 @@ describe("running a step", () => {
     expect(seen).toEqual([MISSING, DOWN]);
   });
 
+  test("a retry hears nothing from the run it replaced", async () => {
+    const { bootstrap, shell, exits } = runner(machine("linux", DOWN, ["pkexec", "systemctl"]), [
+      DOWN,
+    ]);
+    await bootstrap.run({ tool: "docker", need: "start" });
+    shell.end(1);
+    const retry = await bootstrap.run({ tool: "docker", need: "start" });
+    for (let i = 0; i < 200; i++) await tick();
+
+    expect(exits).toEqual([{ tool: "docker", need: "start", code: 1 }]);
+    expect(retry.exit).toBeUndefined();
+    expect(bootstrap.current()).toBe(retry);
+  });
+
   test("a shell that fails to spawn is a run that ended with its message", async () => {
     const lines: BootstrapLine[] = [];
     const exits: BootstrapExit[] = [];

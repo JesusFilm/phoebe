@@ -261,6 +261,9 @@ export function createBootstrap(deps: BootstrapDeps): Bootstrap {
     run.exit = { tool: run.tool, need: run.need, code };
     deps.onExit(run.exit);
     void settle(run.need).then((settled) => {
+      // A failed step can be retried while its wait is still going. The wait
+      // belongs to the run that started it; a newer run's window hears nothing.
+      if (current !== run) return;
       run.exit = { ...run.exit!, settled };
       deps.onExit(run.exit);
     });
