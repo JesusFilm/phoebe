@@ -2005,6 +2005,19 @@ details.why > summary::marker {
   margin-top: 10px;
 }
 
+/* A step's button while the step is under way: the spinner takes the place of
+   a second sentence saying so, and stays until the probe answers. */
+.setup-step button.pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.setup-step .button-spinner {
+  flex: none;
+}
+
 /* A link drawn as a button, for the way out of a page. */
 a.button {
   display: inline-block;

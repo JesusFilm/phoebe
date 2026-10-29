@@ -63,7 +63,7 @@ import {
 } from "./run-activity.ts";
 import { createNotifier, type AlertSubject, type Notifiable } from "./notifications.ts";
 import { Rail } from "./rail.tsx";
-import { ADD_HREF, HOME_ROUTE, parseRoute, SETUP_HREF, type Route } from "./route.ts";
+import { ADD_HREF, HOME_HREF, HOME_ROUTE, parseRoute, SETUP_HREF, type Route } from "./route.ts";
 import { SetupPage } from "./setup-page.tsx";
 import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
@@ -398,11 +398,14 @@ export function App({
   const [platform, setPlatform] = useState<string | null>(null);
   // The whole answer too, for the settings page's account of this companion.
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
+  // How many readings main has pushed, so a slow poll cannot overwrite a newer one.
+  const readings = useRef(0);
   useEffect(() => {
     if (bridge === null) return;
     let live = true;
     const take = (probed: CompanionEnvironment): void => {
       if (!live) return;
+      readings.current += 1;
       setWslDistros(probed.wslDistros);
       setPlatform(probed.platform);
       setEnvironment(probed);
@@ -431,6 +434,27 @@ export function App({
     if (dockerReading(environment).kind === "ready") return;
     if (parseRoute(window.location.hash).page === "home") window.location.hash = SETUP_HREF;
   }, [environment]);
+
+  // And the way back: the moment Docker answers, the setup page has nothing
+  // left to say, so it clears itself rather than wait for a click.
+  const dockerReady = environment !== null && dockerReading(environment).kind === "ready";
+  useEffect(() => {
+    if (route.page === "setup" && dockerReady) window.location.hash = HOME_HREF;
+  }, [route.page, dockerReady]);
+
+  // While the setup page is open and Docker is not, keep asking. Main watches
+  // closely for two minutes after a step and then stops; a Docker Desktop that
+  // takes three should still clear the page, and so should one started by hand.
+  useEffect(() => {
+    if (bridge === null || route.page !== "setup" || dockerReady) return;
+    const timer = setInterval(() => {
+      const asked = readings.current;
+      bridge.environment().then((probed) => {
+        if (readings.current === asked) setEnvironment(probed);
+      }, noop);
+    }, SETUP_REPROBE_MS);
+    return () => clearInterval(timer);
+  }, [bridge, route.page, dockerReady]);
 
   // Which installs have a run in flight, for the rail's spinner
   // (run-activity.ts). Runs the rail starts are known from their id; runs the
@@ -847,6 +871,9 @@ function useNow(everyMs: number): Date {
 }
 
 function noop(): void {}
+
+/** How often the setup page asks after Docker on its own, once main has stopped. */
+const SETUP_REPROBE_MS = 15_000;
 
 /**
  * The setup page's half of the bridge: the plan, read whenever the machine's
