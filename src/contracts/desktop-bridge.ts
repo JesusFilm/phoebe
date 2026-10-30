@@ -11,8 +11,9 @@
 // What is declared here is the companion's two arms. The local arm is the
 // installs on this machine, the environment they need, the verb runs that drive
 // them (#555) and the reads the local read loop feeds the tabs (#556); the
-// remote arm is the relay — a device session (#554) behind which `request` and
-// `events` answer, and which refuses with `signed-out` until there is one.
+// remote arm is the deployments paired over Tailscale (map #690) — one record
+// per deployment behind which `request` answers with the bearer added, and a
+// supervisor per record that feeds the tabs the same report event.
 //
 // Beside the two arms is the one thing the companion does about itself: its
 // updates (#525 §3). It is on this surface rather than inside main alone because
@@ -54,6 +55,18 @@ import type {
   LocalReportEvent,
   RepairOutcome,
 } from "./local-report.ts";
+import type {
+  PairResult,
+  RemoteAlertEvent,
+  RemoteLogLine,
+  RemoteLogsEnded,
+  RemotePassthrough,
+  RemoteRecord,
+  RemoteReportEvent,
+  RemoteResponse,
+  RevokeOutcome,
+  SessionRow,
+} from "./remote-record.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 
 /** What was right-clicked, as much as the menu needs to know. */
@@ -321,5 +334,59 @@ export type DesktopBridge = {
   preferences: {
     get: () => Promise<CompanionPreferences>;
     set: (preferences: CompanionPreferences) => Promise<CompanionPreferences>;
+  };
+  /**
+   * The remote arm (map #690): the deployments this companion is paired with
+   * over Tailscale. Main holds the records and the bearers (the bearer in the
+   * OS keyring through `safeStorage`, never on a record), runs one supervisor
+   * per record, and emits one `remote` event per change the way the local read
+   * loop emits `report`.
+   */
+  remotes: {
+    list: () => Promise<RemoteRecord[]>;
+    /**
+     * Read the descriptor, then spend the code. Keyed on `deploymentId`: a URL
+     * whose descriptor names an id already held replaces that record's bearer
+     * and keeps its label, last report and notified map — "pair again". Never
+     * returns the bearer.
+     */
+    pair: (input: { url: string; code: string; label: string }) => Promise<PairResult>;
+    /** One request to one remote, the bearer added in main. */
+    request: (deploymentId: string, passthrough: RemotePassthrough) => Promise<RemoteResponse>;
+    /** `DELETE /api/session`, then drop the record. The row goes. */
+    signOut: (deploymentId: string) => Promise<void>;
+    /** Drop the record without a request — a blocked row's way out. */
+    forget: (deploymentId: string) => Promise<void>;
+    /** `GET /api/sessions` on one remote, as the Devices panel draws it. */
+    sessions: (deploymentId: string) => Promise<SessionRow[]>;
+    /** `DELETE /api/sessions/:id` on one remote. */
+    revoke: (deploymentId: string, sessionId: string) => Promise<RevokeOutcome>;
+    /**
+     * A remote's container output, followed over `GET /api/logs` with the
+     * bearer added in main: what the local arm's `logs` reads off Docker, read
+     * off the deployment instead, with its secrets redacted before they left
+     * it. One stream per record, started by the first `follow` and joined by
+     * the next; `stop` ends it and keeps nothing. `follow` resolves with the
+     * backlog the deployment sent, so a pane opens full, and rejects when the
+     * deployment could not be reached or refused the stream.
+     */
+    logs: {
+      follow: (deploymentId: string) => Promise<string[]>;
+      stop: (deploymentId: string) => Promise<void>;
+      lines: (onLine: (line: RemoteLogLine) => void) => () => void;
+      ended: (onEnded: (end: RemoteLogsEnded) => void) => () => void;
+    };
+    /** The list again whenever it changed. Returns the unsubscribe. */
+    changes: (onChange: (records: RemoteRecord[]) => void) => () => void;
+    /** Every supervisor emission: the record with its report and reachability. */
+    reports: (onReport: (event: RemoteReportEvent) => void) => () => void;
+    /** Every alert main raised over a remote. Nothing is replayed on subscribe. */
+    alerts: (onAlert: (event: RemoteAlertEvent) => void) => () => void;
+    /**
+     * Is Tailscale up on this machine? A quick `tailscale status`, cached for
+     * 60 s so the rail's banner never spawns it repeatedly. Null when no CLI
+     * was found at all.
+     */
+    tailscale: () => Promise<{ running: boolean; detail: string } | null>;
   };
 };

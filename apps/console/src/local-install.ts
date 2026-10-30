@@ -181,6 +181,14 @@ export function outcomeReading(outcome: VerbOutcome): string {
       return receiptReading(outcome.outcome);
     case "secret set":
       return secretSetReading(outcome.outcome);
+    case "pair":
+      // The code is in the outcome and stays there: the line says it was
+      // minted and what it is good for, never what it is.
+      return `code minted (${outcome.outcome.scopes.join("+")}), spendable until ${outcome.outcome.expiresAt}`;
+    case "sessions":
+      return outcome.outcome.revoked > 0
+        ? `${outcome.outcome.revoked} session${outcome.outcome.revoked === 1 ? "" : "s"} revoked, ${outcome.outcome.sessions.length} left`
+        : `${outcome.outcome.sessions.length} session${outcome.outcome.sessions.length === 1 ? "" : "s"}`;
   }
 }
 
@@ -580,32 +588,52 @@ export function workspaceChildren(
       return { ...base, ...quiet, tone: "idle", text: "not in the fleet" };
     }
 
-    const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
-    const problems = fleetTenantProblems(report, tenant, {
-      errors: lockedOut,
-      warnings: noHarness,
-    });
-
-    const active = cells.some((cell) => cell.state === "working");
-    const enabled = cells.length === 0 ? null : cells.some((cell) => !cell.disabled);
-    const facts = { ...base, active, enabled, problems };
-
-    if (tenant.held) return { ...facts, tone: "attention", text: "held" };
-    if (cells.some((cell) => cell.wedged.wedged)) {
-      return { ...facts, tone: "attention", text: "wedged" };
-    }
-    if (cells.some((cell) => crashLooping.has(cell.id))) {
-      return { ...facts, tone: "attention", text: "crash-looping" };
-    }
-    if (lockedOut.length > 0) return { ...facts, tone: "attention", text: ".env unreadable" };
-    if (active) return { ...facts, tone: "running", text: "working" };
-    if (cells.some((cell) => cell.state === "waiting for slot")) {
-      return { ...facts, tone: "running", text: "waiting for a slot" };
-    }
-    if (cells.length === 0) return { ...facts, tone: "idle", text: "no pipelines" };
-    if (enabled === false) return { ...facts, tone: "stopped", text: "disabled" };
-    return { ...facts, tone: "idle", text: "idle" };
+    return tenantChildRow(
+      report,
+      tenant,
+      base,
+      { errors: lockedOut, warnings: noHarness },
+      crashLooping,
+    );
   });
+}
+
+/**
+ * One tenant's row, read off the fleet: what it is doing and what is wrong
+ * with it. The same row under a local workspace and under a remote one (map
+ * #690), since the report is the same report whichever way it was read. The
+ * host's own findings come in as `host`: a `.env` the container cannot read
+ * is an error the row leads with, a missing CLI a warning it carries.
+ */
+export function tenantChildRow(
+  report: DeploymentReport,
+  tenant: TenantFacts,
+  base: { dir: string; slug: string | null; label: string },
+  host: { errors: readonly RailProblem[]; warnings: readonly RailProblem[] },
+  crashLooping: ReadonlySet<string> = crashLoopingCells(report),
+): RailChild {
+  const cells = report.fleet.cells.filter((cell) => cell.tenant.id === tenant.id);
+  const problems = fleetTenantProblems(report, tenant, host);
+
+  const active = cells.some((cell) => cell.state === "working");
+  const enabled = cells.length === 0 ? null : cells.some((cell) => !cell.disabled);
+  const facts = { ...base, active, enabled, problems };
+
+  if (tenant.held) return { ...facts, tone: "attention", text: "held" };
+  if (cells.some((cell) => cell.wedged.wedged)) {
+    return { ...facts, tone: "attention", text: "wedged" };
+  }
+  if (cells.some((cell) => crashLooping.has(cell.id))) {
+    return { ...facts, tone: "attention", text: "crash-looping" };
+  }
+  if (host.errors.length > 0) return { ...facts, tone: "attention", text: ".env unreadable" };
+  if (active) return { ...facts, tone: "running", text: "working" };
+  if (cells.some((cell) => cell.state === "waiting for slot")) {
+    return { ...facts, tone: "running", text: "waiting for a slot" };
+  }
+  if (cells.length === 0) return { ...facts, tone: "idle", text: "no pipelines" };
+  if (enabled === false) return { ...facts, tone: "stopped", text: "disabled" };
+  return { ...facts, tone: "idle", text: "idle" };
 }
 
 /** Is this fleet path the child's folder? Compared by its last segment, either separator. */

@@ -171,6 +171,14 @@ RUN chmod 0711 "$(command -v node)"
 ARG PHOEBE_INSTALL_COMMAND="{{INSTALL_COMMAND}}"
 LABEL phoebe.install-command="${PHOEBE_INSTALL_COMMAND}"
 
+# The mint drop (docs/remote.md, docs/adr/0002-…): the root-only directory a
+# pairing code's hash passes through on its way to the bootstrapper. `phoebe
+# pair` runs as root and writes here; the bootstrapper (uid 10001) only reads.
+# It has to exist in the image, root-owned, on no volume — a volume or a tmpfs
+# over /run would silently break minting, which is what the doctor `remote`
+# check looks for. Empty at rest.
+RUN mkdir -p /run/phoebe-mint && chown root:root /run/phoebe-mint && chmod 0755 /run/phoebe-mint
+
 # Execution-gate marker: the engine refuses to mutate a clone, launch an agent,
 # or push unless `/.phoebe-container` exists (src/execution-gate.ts). Without it
 # the container refuses every non-dry-run unit. Root-owned and read-only to us

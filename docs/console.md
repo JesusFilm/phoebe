@@ -11,10 +11,10 @@ resolved. The **companion**, a desktop app, is what opens it.
 
 Two pieces, and you can stop after the first:
 
-| Piece           | What it is                                                                 | You need it when                                   |
-| --------------- | -------------------------------------------------------------------------- | -------------------------------------------------- |
-| `phoebe status` | The deployment report, read on the host. No network, no sign-in.           | You have a shell on the machine.                   |
-| The companion   | A desktop app. The console window over the local installs on this machine. | You run Phoebe on your laptop, or you want alerts. |
+| Piece           | What it is                                                                                                            | You need it when                                                      |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `phoebe status` | The deployment report, read on the host. No network, no sign-in.                                                      | You have a shell on the machine.                                      |
+| The companion   | A desktop app. The console window over the local installs on this machine, and the deployments paired over Tailscale. | You run Phoebe on your laptop, or somewhere else, or you want alerts. |
 
 Config fields are in [`configuration.md`](configuration.md). Labels, drafts and
 watermarks are in [`operating.md`](operating.md). The words are in
@@ -87,10 +87,12 @@ The companion adds no listener to the deployment container. Main spawns
 `compose exec`. An install has three states: running, stopped and not
 initialised. Compose answers directly, so there is nothing to infer from silence.
 
-A **rail** runs down the left with every install on it, always, whatever page you
-are on, because "is everything alive" is the question this thing exists to
-answer. A workspace opens out to its children, and each child's gear opens that
-tenant's own config. A child's row says whether it is working, whether it is
+A **rail** runs down the left with every deployment on it, always, whatever page
+you are on, because "is everything alive" is the question this thing exists to
+answer. It lists machines: **This machine** first, with the local installs,
+then one section per remote host with the hostname as its header, holding every
+deployment paired there, then **+ add remote**. A workspace opens out to its
+children, and each child's gear opens that tenant's own config. A child's row says whether it is working, whether it is
 switched on, and how many errors and warnings it has, each named on hover; the
 workspace's own line sums them, so a closed workspace still shows that
 something under it needs a look. One of those errors the companion finds
@@ -155,6 +157,93 @@ provider, model and effort a config runs are set as the config form sets them. A
 page shows the same for the one harness its provider runs. The container is the
 workspace's, so the pin it moves is shared by every tenant.
 
+## Remotes
+
+A deployment somewhere else reaches the companion over Tailscale
+([`remote.md`](remote.md)). A **route** is one way of reaching a deployment:
+the local route is a folder on this machine read over `compose exec`, the
+remote route is a paired record read over the deployment API. One deployment
+can have both, and the companion draws both. The folder sits under This machine
+with its install tab; the paired record sits under its host's section, read as
+any other device would read it, with no install tab. Each row and each page
+carries a chip that opens the other, `↗ this machine` or `↗ <hostname>`.
+
+A remote's row says what the companion itself can tell: connected looks like a
+local row with its counts; reconnecting keeps the counts and adds a spinner;
+dark replaces them with `dark · 3 min`; blocked is a warning-tone row naming
+why (session expired, session revoked, a different deployment answers here,
+newer than this companion) with **pair again**, or **update** for the last.
+Its mark is one circle carrying both: the ring is the connection, green while
+connected, grey while reconnecting, dark when dark and warning-toned when
+blocked, and the core is what the fleet was last seen doing, green running,
+yellow with something wrong, pale while held, empty until a report has been
+read. A green ring round a green core is a local running row's dot.
+From three days before a session's expiry the row says so. Tailscale off on
+this machine is a line above the host sections and a banner on the home page.
+
+**+ add remote** opens one modal with one field, which takes the pairing link
+`phoebe pair` printed or a bare address; a bare address shows a code field.
+Plus a label for this device. It says where the row landed: a new host, an
+existing one, or a second route for a folder already here. A blocked row stays
+until you pair again or **forget** it.
+
+The page's **Session** card is where a paired remote is changed or let go.
+**Pair again** opens the same modal with the address and the label filled in.
+The new code's scopes become this device's, so a code from
+`phoebe pair --operate` is how a read-only device gains operate, and one from
+`phoebe pair` is how it gives operate up. The row keeps its name, its last
+report and what it had already notified, and the old session ends on the
+deployment as the new one lands. **Remove** asks first, as a local install's
+Forget does. It drops the row, and its section when it was the last, and ends
+this device's session on the deployment when it can be reached. The deployment
+itself keeps running. A joined deployment's folder stays under This machine.
+
+A remote's row is drawn as a local row is: the host's mark beside the name,
+the state under it, the shortcuts and the gear at the edge, and on a
+workspace the chevron that opens it out to its tenants. The shortcuts are the
+fleet's **pause** while it runs and **start** while it is held, the two verbs
+the API has; the container's stop and restart stay on the host, and the row
+does not pretend otherwise. A session paired with `read` only sees no
+shortcut at all. What the pairing did not grant is left off the row rather
+than drawn disabled. While the deployment is answering, a spinner stands
+where the shortcuts were, and the row reads the next report for what
+happened. A tenant's row under a workspace opens the console on that tenant's
+lines, as it does under a local workspace.
+
+A remote's row opens its console, as a local row does. It shows the
+deployment's own output over the API, with the same tabs per pipeline, the
+same header saying what is working and what is wrong, and the same eraser.
+The lines come off the deployment rather than off Docker, and the deployment
+redacts its secrets before they leave it ([`remote.md`](remote.md)). There is
+no `cli` tab, since nothing runs on this machine for a remote. The gear at the
+row's edge opens the tabbed page. A deployment running a bootstrapper from
+before the console existed answers the stream with a refusal, and the pane
+says so in place of its lines: `this deployment keeps no output to show;
+update it`.
+
+The remote route's page has the same five tabs as a local install's. Its
+connection card shows reachability, the host, the arm, the protocol, when it
+was last heard from, and the session's scopes and expiry. Above the
+session, **This deployment** says whether the fleet is running and carries
+**Stop** and **Start**. Stop drains every pipeline and holds the fleet with the
+container and the API up, which is what lets Start bring it back from the
+same page. Both need `operate`. The row says `fleet stopped` while it is, and
+the overview's Fleet line says who stopped it and when. Taking the container
+itself down stays `phoebe stop` on the host. Under the
+cards, on remote routes and on local installs that carry a `remote` block, the
+**Devices** panel lists every session the deployment holds: label, device and
+OS, who paired, scopes, last seen, expiry, a revoke per row that needs
+`operate`, sign out on your own row, and a red banner when the deployment says
+its sessions file moved under it. On a read-only session the controls that
+change the deployment are disabled and say so.
+
+The install tab gains a **Remote** step after Run: what to add to
+`phoebe.config.ts` when there is no `remote` block, and with one, **Pair this
+companion** (mints with `--operate` and spends the code itself) and **Link for
+another device** (the link, the code in large type, copy buttons, a QR, and
+when it stops being spendable). The run's lines say "code minted" and never
+the code.
+
 ## What the console shows
 
 The console is one React bundle in `apps/console`, which the companion loads from
@@ -199,13 +288,22 @@ crosses into one of three conditions, and one when it crosses back:
 
 `wedged`, `crash-looping`, `doctor-fail`.
 
+A remote adds `dark`, raised five minutes after the companion last heard from
+it ("unreachable for 5 min"), and `replaced`, when a different deployment
+answers at a paired address. Blocked is never an alert; nobody is paged for a
+session ending. A deployment reachable two ways is evaluated once per route,
+so a wedge counts twice on the badge while both routes can see it. The
+companion remembers when it last heard from each remote and what it already
+notified, so a relaunch dates darkness from real last contact and fires nothing
+twice.
+
 One message per edge. No digest, no daily summary, no list of past alerts and
 nothing to acknowledge. The first read of an install after a launch records what
 it found and says nothing, so reopening the companion onto a fleet that was
 already wedged does not fire everything again.
 
-Notifications are tagged by install and condition, so a clear replaces the raise
-it is about instead of piling up beside it. The dock badge counts installs in a
+Notifications are tagged by route and condition, so a clear replaces the raise
+it is about instead of piling up beside it. The dock badge counts rows in a
 raised condition. There is no tray icon and no login item, on purpose. The badge
 is a number on an icon you went looking for, which is a different thing from
 being interrupted.
@@ -245,11 +343,16 @@ in the env-file. Rotating one is an edit to `.env` and a `compose up -d`, becaus
 `.env` is Compose's create-time input.
 
 **Operator verbs.** Pause a pipeline, release a quarantined unit, abort a running
-unit. None of these exist yet.
+unit. None of these exist yet, locally or over the API.
+
+**Minting a pairing code.** `phoebe pair` runs as root inside the container
+and the companion runs it for you from the install tab on a local install. A
+remote route cannot mint for its own deployment; that is the shell's or the
+machine that holds the folder.
 
 ## Not here yet
 
-Deployments that run somewhere else. The console reads the installs on this
-machine and nothing further away. Unit history and cost, and a mobile app. All
-recorded against
-[the console map](https://github.com/JesusFilm/phoebe/issues/497).
+Unit history and cost, and a mobile companion, which will scan the same QR and
+speak the same API as the desktop one. Recorded against
+[the console map](https://github.com/JesusFilm/phoebe/issues/497) and
+[the remote-access map](https://github.com/JesusFilm/phoebe/issues/690).

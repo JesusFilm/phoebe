@@ -1,27 +1,37 @@
-// The console: a local install's container output, as the page the rail opens.
+// The console: a deployment's container output, as the page the rail opens.
 //
 // Picking an install on the rail lands here, the way picking a project in T3
-// Code lands on its terminal. The header says which install and where it runs,
-// which pipelines have a unit in flight and on what, and how many things are
-// wrong (console-status.ts), with the gear onto its settings, the tabbed page
-// (install-page.tsx). Below, one tab per pipeline that has spoken
-// (logs-channels.ts) and the lines, drawn on the chosen theme (console-themes.ts,
-// log-line.tsx). Beside the container's tabs is `cli`: what the last verb the
-// companion ran on this install printed (verb-run.ts). A start, an upgrade and
-// a doctor are output too, and the console is where output is read. Open, it follows over the bridge and stops the stream when the
-// install changes underneath it. What it shows is logs.ts's view; this file is
-// the subscription and the drawing. The eraser in the header clears the tab
+// Code lands on its terminal. The header says which deployment and where it
+// runs, which pipelines have a unit in flight and on what, and how many things
+// are wrong (console-status.ts), with the gear onto its settings, the tabbed
+// page (install-page.tsx, remote-page.tsx). Below, one tab per pipeline that
+// has spoken (logs-channels.ts) and the lines, drawn on the chosen theme
+// (console-themes.ts, log-line.tsx). Beside a local install's tabs is `cli`:
+// what the last verb the companion ran on it printed (verb-run.ts). A start,
+// an upgrade and a doctor are output too, and the console is where output is
+// read. Open, it follows over the bridge and stops the stream when the
+// deployment changes underneath it. What it shows is logs.ts's view; this file
+// is the subscription and the drawing. The eraser in the header clears the tab
 // that is open the way a terminal clears: by marking what has been read, not by
 // throwing lines away (#677).
+//
+// **One pane, two arms** (map #690). A local install's lines come off Docker
+// through `logs`; a remote's come off the deployment itself through
+// `remotes.logs`, redacted before they left it. The pane does not know which:
+// it is handed a stream to follow and a header to draw, and the two wrappers
+// at the foot of this file build those from an install or a paired record.
+// Only the `cli` tab is one arm's — a verb runs on this machine, against a
+// folder here — so a remote console has no such tab.
 
 import { ArrowDownToLine, CircleAlert, Eraser, Settings, TriangleAlert } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type UIEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from "react";
 import { CANCELLABLE_VERBS } from "phoebe-agent/contracts";
 import type {
   DesktopBridge,
   HostPlatform,
   LocalInstall,
   LocalReportEvent,
+  RemoteRecord,
   VerbRun,
 } from "phoebe-agent/contracts";
 import { Button } from "~/components/ui/button";
@@ -35,7 +45,9 @@ import {
   channelStatus,
   channelTitle,
   consoleStatus,
+  remoteConsoleStatus,
   type ChannelStatus,
+  type ConsoleStatus,
 } from "./console-status.ts";
 import { HostIcon, hostTitle } from "./host-icon.tsx";
 import {
@@ -63,16 +75,44 @@ import {
   CLI_CHANNEL,
   tenantChannel,
 } from "./logs-channels.ts";
+import { remoteHost, remoteMarkClass, remoteRow } from "./remote-routes.ts";
 import { useInstallRun } from "./verb-run.ts";
 
+/**
+ * Where a pane's lines come from. `key` is what the pane re-follows on: a
+ * container that came back is a new stream, and the ended one below is not it.
+ */
+export type ConsoleStream = {
+  key: string;
+  /** Start following, or join; resolves with the lines held so far. */
+  follow: () => Promise<string[]>;
+  lines: (onLine: (line: string) => void) => () => void;
+  ended: (onEnded: (reason: string) => void) => () => void;
+  stop: () => Promise<void>;
+};
+
+/** What the header says about the deployment whose lines these are. */
+export type ConsoleHeader = {
+  name: string;
+  /** The whole of it on hover: the folder, or the address. */
+  title: string;
+  /** Where it runs, for the header's mark; null while unknown. */
+  host: HostPlatform | null;
+  /** The mark's tone and the words beside the name. */
+  reading: { tone: string; text: string };
+  /** The mark's whole class, when it is not the tone alone: a remote's ring and core. */
+  mark?: string;
+};
+
+/** A local install's console: its lines off Docker, and its verb runs on the `cli` tab. */
 export function ConsoleView({
   bridge,
   install,
   host,
   report = null,
-  problems: ofInstall = [],
+  problems = [],
   tenant = null,
-  channel: wanted = null,
+  channel = null,
   theme = SYSTEM_CONSOLE_THEME,
   onSettings,
 }: {
@@ -93,6 +133,132 @@ export function ConsoleView({
   /** The gear: the install's tabbed page. */
   onSettings: () => void;
 }) {
+  // The verb the companion is running on this install, or last ran.
+  const { run } = useInstallRun(bridge, install.dir);
+  const status = consoleStatus(install, report, problems);
+  // Followed again when the install's state moves: a container that came back
+  // is a new stream, and the ended one below is not it.
+  const stream = useMemo<ConsoleStream>(
+    () => ({
+      key: `${install.dir}#${install.state}`,
+      follow: () => bridge.logs.follow(install.dir),
+      lines: (onLine) =>
+        bridge.logs.lines((line) => {
+          if (line.install === install.dir) onLine(line.line);
+        }),
+      ended: (onEnded) =>
+        bridge.logs.ended((end) => {
+          if (end.install === install.dir) onEnded(end.reason);
+        }),
+      stop: () => bridge.logs.stop(install.dir),
+    }),
+    [bridge, install.dir, install.state],
+  );
+  return (
+    <ConsolePane
+      header={{ name: install.name, title: install.dir, host, reading: installReading(install) }}
+      status={status}
+      problems={problems}
+      stream={stream}
+      tenant={tenant}
+      channel={channel}
+      theme={theme}
+      onSettings={onSettings}
+      cli={{
+        run,
+        cancel: (runId) => void bridge.runs.cancel(runId).catch(() => undefined),
+      }}
+    />
+  );
+}
+
+/**
+ * A remote route's console (map #690): the deployment's own output over the
+ * API, with its secrets redacted before it left. Followed again when the
+ * record comes back to connected, as a local one is when its container does.
+ */
+export function RemoteConsoleView({
+  bridge,
+  record,
+  now,
+  tenant = null,
+  theme = SYSTEM_CONSOLE_THEME,
+  onSettings,
+}: {
+  bridge: DesktopBridge;
+  record: RemoteRecord;
+  now: Date;
+  /** A workspace child's slug, when the rail opened this from one: its lines first. */
+  tenant?: string | null;
+  theme?: ConsoleThemeChoice;
+  /** The gear: the remote's tabbed page. */
+  onSettings: () => void;
+}) {
+  const row = remoteRow(record, now);
+  const status = remoteConsoleStatus(row.reading);
+  const host = remoteHost(row.reading);
+  const connected = record.reachability === "connected";
+  const stream = useMemo<ConsoleStream>(
+    () => ({
+      key: `${record.deploymentId}#${connected ? "connected" : "away"}`,
+      follow: () => bridge.remotes.logs.follow(record.deploymentId),
+      lines: (onLine) =>
+        bridge.remotes.logs.lines((line) => {
+          if (line.deploymentId === record.deploymentId) onLine(line.line);
+        }),
+      ended: (onEnded) =>
+        bridge.remotes.logs.ended((end) => {
+          if (end.deploymentId === record.deploymentId) onEnded(end.reason);
+        }),
+      stop: () => bridge.remotes.logs.stop(record.deploymentId),
+    }),
+    [bridge, record.deploymentId, connected],
+  );
+  return (
+    <ConsolePane
+      header={{
+        name: record.name,
+        title: record.url,
+        host,
+        reading: { tone: row.tone, text: row.text },
+        mark: remoteMarkClass(row),
+      }}
+      status={status}
+      stream={stream}
+      tenant={tenant}
+      theme={theme}
+      onSettings={onSettings}
+    />
+  );
+}
+
+/** The pane itself, over whichever stream it was handed. Exported for the tests. */
+export function ConsolePane({
+  header,
+  status,
+  problems: ofInstall = [],
+  stream,
+  tenant = null,
+  channel: wanted = null,
+  theme = SYSTEM_CONSOLE_THEME,
+  onSettings,
+  cli,
+}: {
+  header: ConsoleHeader;
+  /** What the report says is happening now, beside what the lines say happened. */
+  status: ConsoleStatus;
+  /** What is wrong with the deployment itself rather than with a tenant of it. */
+  problems?: readonly RailProblem[];
+  stream: ConsoleStream;
+  /** A workspace child's slug, when the rail opened this from one: its lines first. */
+  tenant?: string | null;
+  /** The tab to open on, when something asked for one: `cli`, to watch a run. */
+  channel?: string | null;
+  theme?: ConsoleThemeChoice;
+  onSettings: () => void;
+  /** The verb runs, where the arm has them: the `cli` tab and its cancel. */
+  cli?: { run: VerbRun | null; cancel: (runId: string) => void };
+}) {
   const [view, setView] = useState<LogsView>(EMPTY_LOGS);
   // The tab: every pipeline that has spoken is one (logs-channels.ts), and the
   // stream stays one stream underneath — a tab only chooses which lines show.
@@ -100,12 +266,11 @@ export function ConsoleView({
   // and is the one open, before its first line.
   const scope = tenant === null ? null : tenantChannel(tenant);
   const [channel, setChannel] = useState(wanted ?? scope ?? ALL_CHANNEL);
-  // The verb the companion is running on this install, or last ran.
-  const { run } = useInstallRun(bridge, install.dir);
+  const run = cli?.run ?? null;
   const channels = channelsIn(view.channels, scope, run !== null || wanted === CLI_CHANNEL);
   const shown = channels.includes(channel) ? channel : ALL_CHANNEL;
-  const cli = shown === CLI_CHANNEL;
-  const lines = cli ? [] : drawnLines(view, shown);
+  const isCli = shown === CLI_CHANNEL;
+  const lines = isCli ? [] : drawnLines(view, shown);
   const cliRunning = run !== null && run.exit === undefined;
 
   // Main holds one run per install and the next replaces it. A restart is two,
@@ -144,14 +309,11 @@ export function ConsoleView({
       if (run?.exit === undefined) setChannel(CLI_CHANNEL);
     }
   }, [run?.runId, run?.exit]);
-  const reading = installReading(install);
-  // What the report says is happening now, beside what the lines say happened.
-  const status = consoleStatus(install, report, ofInstall);
   // The header speaks for what the console is showing: one tenant's, when the
-  // rail opened it from a child, and the whole install's otherwise.
+  // rail opened it from a child, and the whole deployment's otherwise.
   const scoped = channelStatus(status, scope ?? ALL_CHANNEL);
-  // The install's own trouble is every tenant's, so a tenant's header has it too.
-  const header =
+  // The deployment's own trouble is every tenant's, so a tenant's header has it too.
+  const headed =
     scope === null ? scoped : { ...scoped, problems: [...ofInstall, ...scoped.problems] };
   const working =
     scope === null
@@ -164,12 +326,11 @@ export function ConsoleView({
   const palette = resolveConsoleTheme(theme, systemDark);
   const themed = consoleThemeProperties(palette) as CSSProperties;
 
-  // Followed again when the install's state moves: a container that came back
-  // is a new stream, and the ended one below is not it.
+  // Followed afresh whenever the stream's key moves (see ConsoleStream).
   useEffect(() => {
     let live = true;
     setView(EMPTY_LOGS);
-    bridge.logs.follow(install.dir).then(
+    stream.follow().then(
       (held) => {
         if (live) setView(logsSeeded(held));
       },
@@ -179,19 +340,15 @@ export function ConsoleView({
         }
       },
     );
-    const offLines = bridge.logs.lines((line) => {
-      if (line.install === install.dir) setView((current) => appendLogLine(current, line.line));
-    });
-    const offEnded = bridge.logs.ended((end) => {
-      if (end.install === install.dir) setView((current) => logsEnded(current, end.reason));
-    });
+    const offLines = stream.lines((line) => setView((held) => appendLogLine(held, line)));
+    const offEnded = stream.ended((reason) => setView((held) => logsEnded(held, reason)));
     return () => {
       live = false;
       offLines();
       offEnded();
-      void bridge.logs.stop(install.dir).catch(() => undefined);
+      void stream.stop().catch(() => undefined);
     };
-  }, [bridge, install.dir, install.state]);
+  }, [stream]);
 
   // Pinned to the bottom until the operator scrolls up to read something, and
   // pinned again when they scroll back down — or press the button.
@@ -210,13 +367,13 @@ export function ConsoleView({
   // tab, and on the cli tab the runs above the current one and the current
   // run's own lines. A run's `$ phoebe <verb>` heading is not output, the way
   // the ending under the lines is not, so neither is what the button is for.
-  const drawn = cli ? past.length + (current?.lines.length ?? 0) : lines.length;
+  const drawn = isCli ? past.length + (current?.lines.length ?? 0) : lines.length;
   // Read, and done with: what the open tab shows stops being drawn and the pane
   // pins back to the bottom, so the next line arrives under an empty console.
   // The lines themselves stay where they are (logs.ts), and Docker holds the
   // output regardless — a fresh follow re-tails it.
   const clear = (): void => {
-    if (cli) {
+    if (isCli) {
       setPast([]);
       if (run !== null) setRunMark({ runId: run.runId, after: run.lines.at(-1) ?? null });
     } else {
@@ -228,18 +385,22 @@ export function ConsoleView({
   return (
     <main
       className={`main console-view scheme-${palette.scheme}`}
-      aria-label={`Console for ${install.name}`}
+      aria-label={`Console for ${header.name}`}
       data-theme={palette.id}
       style={themed}
     >
       <header className="console-bar">
         <span className="console-name">
-          <span className="platform" title={hostTitle(host)} aria-label={hostTitle(host)}>
-            <HostIcon host={host} />
+          <span
+            className="platform"
+            title={hostTitle(header.host)}
+            aria-label={hostTitle(header.host)}
+          >
+            <HostIcon host={header.host} />
           </span>
-          <span className={`mark ${reading.tone}`} aria-hidden="true" />
-          <h1 title={install.dir}>{install.name}</h1>
-          <span className="console-state">{reading.text}</span>
+          <span className={header.mark ?? `mark ${header.reading.tone}`} aria-hidden="true" />
+          <h1 title={header.title}>{header.name}</h1>
+          <span className="console-state">{header.reading.text}</span>
           {working.length === 0 ? null : (
             <span className="console-activity" aria-label="Working now">
               {working.map((pipeline) => (
@@ -261,15 +422,15 @@ export function ConsoleView({
           )}
         </span>
         <span className="console-controls">
-          {header.problems.length === 0 ? null : (
+          {headed.problems.length === 0 ? null : (
             <button
               type="button"
               className="console-problems-toggle"
               aria-expanded={listing}
-              title={header.problems.map(problemLine).join("\n")}
+              title={headed.problems.map(problemLine).join("\n")}
               onClick={() => setListing((open) => !open)}
             >
-              <ProblemCounts problems={header.problems} />
+              <ProblemCounts problems={headed.problems} />
             </button>
           )}
           <Button
@@ -298,8 +459,8 @@ export function ConsoleView({
             variant="ghost"
             size="icon-xs"
             className="console-settings"
-            title={`Settings for ${install.name}`}
-            aria-label={`Settings for ${install.name}`}
+            title={`Settings for ${header.name}`}
+            aria-label={`Settings for ${header.name}`}
             onClick={onSettings}
           >
             <Settings aria-hidden="true" />
@@ -340,9 +501,9 @@ export function ConsoleView({
           );
         })}
       </nav>
-      {listing && header.problems.length > 0 ? (
+      {listing && headed.problems.length > 0 ? (
         <ul className="console-problem-list" aria-label="What is wrong">
-          {header.problems.map((problem, index) => (
+          {headed.problems.map((problem, index) => (
             <li key={index} className={problem.level}>
               {problem.level === "error" ? (
                 <CircleAlert size={12} aria-hidden="true" />
@@ -355,7 +516,7 @@ export function ConsoleView({
         </ul>
       ) : null}
       <pre className="logs-lines" ref={box} onScroll={onScroll}>
-        {cli ? (
+        {isCli ? (
           current === null ? (
             <span className="console-quiet">Nothing has run on this install yet.</span>
           ) : (
@@ -373,13 +534,17 @@ export function ConsoleView({
               </span>
             ))
           )
-        ) : view.lines.length === 0 && view.ended === null ? (
-          <span className="console-quiet">Waiting for the container to print something…</span>
+        ) : view.lines.length === 0 ? (
+          // An empty pane says why it is empty where the eye is: a stream that
+          // was refused or ended before a line came has only this to show.
+          <span className={view.ended === null ? "console-quiet" : "console-quiet console-refused"}>
+            {view.ended ?? "Waiting for the container to print something…"}
+          </span>
         ) : (
           lines.map((line, index) => <LogLine key={index} line={line} palette={palette.ansi} />)
         )}
       </pre>
-      {cli ? (
+      {isCli ? (
         run === null ? null : (
           <p
             className={`console-ended console-cli${run.exit !== undefined && run.exit.code !== 0 ? " failed" : ""}`}
@@ -393,18 +558,18 @@ export function ConsoleView({
                 ? "finished"
                 : `exited ${run.exit.code}`}
             {run.exit?.outcome === undefined ? null : ` · ${outcomeReading(run.exit.outcome)}`}
-            {cliRunning && CANCELLABLE_VERBS.includes(run.verb) ? (
+            {cliRunning && cli !== undefined && CANCELLABLE_VERBS.includes(run.verb) ? (
               <button
                 type="button"
                 className="console-cancel"
-                onClick={() => void bridge.runs.cancel(run.runId).catch(() => undefined)}
+                onClick={() => cli.cancel(run.runId)}
               >
                 Cancel
               </button>
             ) : null}
           </p>
         )
-      ) : view.ended === null ? null : (
+      ) : view.ended === null || view.lines.length === 0 ? null : (
         <p className="console-ended">{view.ended}</p>
       )}
     </main>

@@ -36,6 +36,11 @@ import type {
   TenantFacts,
   VerbRun,
   VerbRunRequest,
+  PairResult,
+  RemoteAlertEvent,
+  RemoteRecord,
+  RemoteReportEvent,
+  SessionRow,
 } from "phoebe-agent/contracts";
 
 export const NOW = new Date("2026-09-18T12:00:00.000Z");
@@ -215,11 +220,12 @@ export function report(overrides: Partial<DeploymentReport> = {}): DeploymentRep
       slots: { capacity: 2, inUse: 1, waiting: 0, overGranted: 0, floorBudget: 0 },
       updatedAt: ago(12),
     },
-    relay: {
-      configured: true,
-      state: "connected",
-      nextRetryAt: null,
-      lastClose: null,
+    remote: {
+      configured: false,
+      arm: null,
+      url: null,
+      sessions: { active: 0, expired: 0 },
+      tampered: false,
       updatedAt: ago(12),
     },
     fleet: { tenants: [tenant()], cells: [cell()], updatedAt: ago(12) },
@@ -238,6 +244,28 @@ export function stored(
     schema: DEPLOYMENT_SCHEMA,
     receivedAt: ago(12),
     report: body,
+    ...overrides,
+  };
+}
+
+/** One paired record (map #690), connected and reporting, with the fields a test cares about spelled out. */
+export function remote(overrides: Partial<RemoteRecord> = {}): RemoteRecord {
+  return {
+    deploymentId: "dep_YT",
+    url: "https://youtube-studio.tail4f2c.ts.net",
+    name: "youtube-studio",
+    label: "Mike's MacBook",
+    arm: "host",
+    protocol: 1,
+    scopes: ["read", "operate"],
+    expiresAt: new Date(NOW.getTime() + 20 * 86_400_000).toISOString(),
+    sessionId: "ses_me",
+    pairedAt: ago(3600),
+    lastHeardAt: ago(5),
+    lastReport: stored(
+      report({ identity: { name: "youtube-studio", arm: "solo", deploymentId: "dep_YT" } }),
+    ),
+    reachability: "connected",
     ...overrides,
   };
 }
@@ -275,6 +303,34 @@ export function environment(overrides: Partial<CompanionEnvironment> = {}): Comp
  */
 export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
   return {
+    remotes: {
+      list: () => Promise.resolve(answers.remotes ?? []),
+      pair: () =>
+        Promise.resolve(
+          answers.pairResult ?? { outcome: "unreachable", detail: "nothing answered" },
+        ),
+      request: () => Promise.resolve({ status: 404, body: { error: "not-found" } }),
+      signOut: () => Promise.resolve(),
+      forget: () => Promise.resolve(),
+      sessions: () => Promise.resolve(answers.sessions ?? []),
+      revoke: () => Promise.resolve({ outcome: "revoked" }),
+      changes: () => () => undefined,
+      reports: (onReport) => {
+        for (const event of answers.remoteReports ?? []) onReport(event);
+        return () => undefined;
+      },
+      alerts: (onAlert) => {
+        for (const event of answers.remoteAlerts ?? []) onAlert(event);
+        return () => undefined;
+      },
+      tailscale: () => Promise.resolve(answers.tailscale ?? { running: true, detail: "Running" }),
+      logs: {
+        follow: () => Promise.resolve(answers.remoteLogs ?? []),
+        stop: () => Promise.resolve(),
+        lines: () => () => undefined,
+        ended: () => () => undefined,
+      },
+    },
     version: () => Promise.resolve("0.13.0"),
     environment: () => Promise.resolve(answers.environment ?? environment()),
     environmentChanges: () => () => undefined,
@@ -437,6 +493,15 @@ export type BridgeAnswers = {
   reports?: LocalReportEvent[];
   /** What main raised over a local install (#559). */
   alerts?: LocalAlertEvent[];
+  /** The remote arm (map #690): the records, what a pair answers, the devices list, the events. */
+  remotes?: RemoteRecord[];
+  pairResult?: PairResult;
+  sessions?: SessionRow[];
+  remoteReports?: RemoteReportEvent[];
+  remoteAlerts?: RemoteAlertEvent[];
+  /** What `remotes.logs.follow` hands a pane that opens: the deployment's backlog. */
+  remoteLogs?: string[];
+  tailscale?: { running: boolean; detail: string } | null;
   /** Where the companion's own update stands (#525 §3). */
   update?: CompanionUpdate;
   /** Collects the update buttons the page pressed. */

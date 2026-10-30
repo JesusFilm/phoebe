@@ -87,12 +87,20 @@ export function spawnEngine(entry, args, { onSpawnError, onExit } = {}) {
  * config's declared git identity filling the vars it leaves unset (#199) — solo
  * is one trust domain, so this is a copy of the parent env, not the fleet's
  * deny-by-default scrub. Omitted (nothing declared) ⇒ plain inheritance.
+ *
+ * `output`, when given, takes the child's stdout and stderr through a pipe
+ * instead of inherited stdio (see `relayOutput`).
  */
-export function spawnSoloChild(entry, args, { env, onSpawnError, onExit } = {}) {
-  const child = spawn(process.execPath, [entry, ...args], {
-    stdio: ["inherit", "inherit", "inherit", "ipc"],
-    ...(env ? { env } : {}),
-  });
+export function spawnSoloChild(entry, args, { env, onSpawnError, onExit, output } = {}) {
+  // Typed as the plain handle: the stdio slots vary with `output`, and TypeScript
+  // reading this file would otherwise narrow the overloads to nothing.
+  const child = /** @type {import("node:child_process").ChildProcess} */ (
+    spawn(process.execPath, [entry, ...args], {
+      stdio: ["inherit", ...outputStdio(output), "ipc"],
+      ...(env ? { env } : {}),
+    })
+  );
+  relayOutput(child, output);
 
   const forwarders = new Map();
   for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -131,8 +139,10 @@ export function spawnSoloChild(entry, args, { env, onSpawnError, onExit } = {}) 
  *
  *   * An **IPC channel** (4th stdio slot), so the child's `createSlotClient`
  *     (src/slot-client.ts) can request concurrency slots from the supervisor's
- *     broker (bootstrap/broker-ipc.ts). stdout/stderr stay inherited, so a
- *     child's self-tagged `[<deployment>:<slug>:<pipeline>]` lines interleave at the kernel.
+ *     broker (bootstrap/broker-ipc.ts). stdout/stderr are inherited unless
+ *     `output` is given, so a child's self-tagged `[<deployment>:<slug>:<pipeline>]`
+ *     lines interleave at the kernel; with `output` they are piped through the
+ *     supervisor, which writes them on whole (see `relayOutput`).
  *   * An explicit `env` (the #61 per-tenant scrub) and `cwd` (the tenant dir, so
  *     the engine loads that tenant's config + prompts), and **no process-level
  *     signal forwarding** — the supervisor owns draining (SIGTERM via `kill`),
@@ -140,12 +150,15 @@ export function spawnSoloChild(entry, args, { env, onSpawnError, onExit } = {}) 
  *
  * Returns the child so the caller can wire the broker and build a drain handle.
  */
-export function spawnEngineChild(entry, args, { env, cwd, onExit, onSpawnError } = {}) {
-  const child = spawn(process.execPath, [entry, ...args], {
-    stdio: ["inherit", "inherit", "inherit", "ipc"],
-    ...(env ? { env } : {}),
-    ...(cwd ? { cwd } : {}),
-  });
+export function spawnEngineChild(entry, args, { env, cwd, onExit, onSpawnError, output } = {}) {
+  const child = /** @type {import("node:child_process").ChildProcess} */ (
+    spawn(process.execPath, [entry, ...args], {
+      stdio: ["inherit", ...outputStdio(output), "ipc"],
+      ...(env ? { env } : {}),
+      ...(cwd ? { cwd } : {}),
+    })
+  );
+  relayOutput(child, output);
   child.on("error", (error) => {
     if (onSpawnError) {
       onSpawnError(error);
@@ -157,4 +170,28 @@ export function spawnEngineChild(entry, args, { env, cwd, onExit, onSpawnError }
     if (onExit) onExit(code, signal);
   });
   return child;
+}
+
+/**
+ * The stdout and stderr slots for a child: inherited, or a pipe each when an
+ * `output` sink wants the bytes (bootstrap/output-tap.ts).
+ */
+function outputStdio(output) {
+  return output ? ["pipe", "pipe"] : ["inherit", "inherit"];
+}
+
+/**
+ * Hand a piped child's output to its sink: `{ write(stream, chunk), end() }`.
+ * The sink keeps the lines for the deployment API and writes them on to the
+ * real descriptors whole, so Docker still sees everything the child printed
+ * and never half a line from two children at once. `end` fires on `close`,
+ * once both pipes have drained, so a last line without a newline is not lost.
+ * Nothing happens without a sink: the stdio was inherited, and there is
+ * nothing here to relay.
+ */
+function relayOutput(child, output) {
+  if (!output) return;
+  child.stdout?.on("data", (chunk) => output.write("stdout", chunk));
+  child.stderr?.on("data", (chunk) => output.write("stderr", chunk));
+  child.on("close", () => output.end());
 }

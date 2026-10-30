@@ -89,9 +89,6 @@ export {
   type FleetCell,
   type FleetReport,
   type ReconcileState,
-  type RelayClose,
-  type RelayReport,
-  type RelayState,
   type SlotReport,
   type TenantFacts,
 } from "./deployment.ts";
@@ -125,7 +122,21 @@ export type {
   InitScaffoldOutcome,
   InitTenantOutcome,
 } from "./init-report.ts";
-export type { StartOutcome } from "./start-outcome.ts";
+export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
+export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
+export type {
+  BlockedReason,
+  PairResult,
+  Reachability,
+  RemoteAlertEvent,
+  RemoteLogLine,
+  RemoteLogsEnded,
+  RemotePassthrough,
+  RemoteRecord,
+  RemoteReportEvent,
+  RemoteResponse,
+  RevokeOutcome,
+} from "./remote-record.ts";
 export type {
   UpgradeCheckReport,
   UpgradeHalfOutcome,
@@ -142,6 +153,29 @@ export type {
   TenantMigrateEntry,
   TenantVerdict,
 } from "./migrate-report.ts";
+export {
+  API_SOCKET_PATH,
+  DESCRIPTOR_PATH,
+  REMOTE_PROTOCOL,
+  REMOTE_ROUTES,
+  type DoctorRunResponse,
+  type FleetStop,
+  type FleetVerbResponse,
+  type ForbiddenBody,
+  type LogsBacklog,
+  type LogsLineEvent,
+  type PairRequest,
+  type PairResponse,
+  type RemoteDescriptor,
+  type RemoteDeviceType,
+  type RemoteReport,
+  type RemoteScope,
+  type ReportResponse,
+  type SessionRow,
+  type SessionSelf,
+  type SessionsResponse,
+  type UnauthenticatedBody,
+} from "./remote-protocol.ts";
 export { DESKTOP_BRIDGE_GLOBAL } from "./desktop-bridge.ts";
 export type {
   ContextMenuChoice,

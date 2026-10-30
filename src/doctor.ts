@@ -20,6 +20,10 @@
 //   8. config-pen     — is the root config mounted read-write, so `phoebe config set`
 //                       can apply an edit at all (#503)? A deployment that came up
 //                       before that mount existed looks identical until the first edit.
+//   9. remote         — the `remote` block against what is running (map #690): the
+//                       listener, the tailnet, the mint drop, the sessions file,
+//                       and on the host arm the Serve mapping. `unknown` with no
+//                       block; `detail` says which vantage point answered.
 //
 // A tenant's scheduled work kinds may declare env keys of their own (#425);
 // doctor reports a missing one as a tenant finding, ahead of the engine child
@@ -47,6 +51,7 @@
 // manual `phoebe doctor` sets neither variable and behaves as it always has.
 
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
@@ -64,8 +69,17 @@ import {
   githubEngineDir,
   LS_REMOTE_TIMEOUT_MS,
 } from "../bootstrap/github-engine.ts";
-import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import type { RelayReport } from "./contracts/deployment.ts";
+import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
+import { inspectMintDrop, type MintDropFacts } from "../bootstrap/mint-drop.ts";
+import {
+  localApiGet,
+  readLocalApiStatus,
+  serveConfigProxiesTo,
+  type LocalApiStatus,
+} from "../bootstrap/tailscale-localapi.ts";
+import { API_SOCKET_PATH, DESCRIPTOR_PATH } from "./contracts/remote-protocol.ts";
+import type { RemoteReport } from "./contracts/remote-protocol.ts";
+import type { ServeInspection } from "./tailscale-serve.ts";
 import { bootIsMainProcess, isInsideContainer, pidOneCmdline } from "./execution-gate.ts";
 import { featureBranch } from "./feature-branch.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
@@ -86,7 +100,11 @@ import {
   CONFIG_DEFAULTS,
   DEFAULT_PIPELINE_NAME,
   DEFAULT_PROMPT_FILE_BY_KIND,
+  readRemoteField,
+  REMOTE_CONTAINER_PORT,
   resolveConfig,
+  resolveRemote,
+  type ResolvedRemote,
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
 import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store.ts";
@@ -321,6 +339,317 @@ export function configPenCheck(fields: {
   };
 }
 
+/**
+ * Everything the `remote` check reads (map #690), gathered from one vantage
+ * point. In the container: the listener, LocalAPI on the sidecar arm, the mint
+ * drop, and the report's own counts. At a host shell: the overlay files, the
+ * running services and published ports, and the same Serve inspection `start`
+ * runs. Pure data, so the verdict below is unit-tested without a socket.
+ */
+export type RemoteCheckFacts = {
+  /** The block, resolved; undefined when there is none. */
+  remote: ResolvedRemote | undefined;
+  /** Why the block could not be read, when that is why `remote` is undefined. */
+  configError?: string;
+  vantage: "container" | "host";
+  /** Does the listener answer the descriptor where the arm says it listens? */
+  listener?: { answering: boolean; where: string; detail?: string };
+  /** The sidecar arm's daemon, as LocalAPI answers; null when it does not. */
+  localApi?: { status: LocalApiStatus | null; servesSocket: boolean | null };
+  mintDrop?: MintDropFacts;
+  /** The report's `remote` section, when a report exists. */
+  reported?: RemoteReport | null;
+  /** Too many rejected pair attempts in the last minute (#694). */
+  rejections?: { exhausted: boolean; count: number };
+  /** Host: the overlay files the arm needs. */
+  overlays?: { present: string[]; missing: string[] };
+  /** Host: what `compose ps` says is running and published. Null when it could not be asked. */
+  services?: { running: string[]; publishedPorts: string[] } | null;
+  /** Host arm, from the host: the read-only Serve inspection. */
+  serve?: ServeInspection | null;
+};
+
+/**
+ * The `remote` check's verdict (map #690). One id, two vantage points, and
+ * `detail` always says which one answered, since the two see different halves
+ * of the same arm. Pure, for tests.
+ */
+export function remoteCheck(facts: RemoteCheckFacts): DoctorCheck {
+  const id = "remote";
+  const from = facts.vantage === "container" ? "in the container" : "from the host";
+  if (facts.configError !== undefined) {
+    return {
+      id,
+      state: "fail",
+      detail: `the \`remote\` block does not parse, so nothing listens: ${facts.configError}`,
+    };
+  }
+  const remote = facts.remote;
+  if (remote === undefined) {
+    return { id, state: "unknown", detail: "no `remote` block — nothing listens; read locally" };
+  }
+  const arm = remote.arm;
+  const parts: string[] = [`${arm} arm, ${from}`];
+  let state: CheckState = "ok";
+  const worse = (next: CheckState): void => {
+    const rank: Record<CheckState, number> = { ok: 0, unknown: 1, warn: 2, fail: 3 };
+    if (rank[next] > rank[state]) state = next;
+  };
+
+  if (facts.vantage === "container") {
+    const listener = facts.listener;
+    if (listener !== undefined) {
+      if (listener.answering) parts.push(`listener answers on ${listener.where}`);
+      else {
+        worse("fail");
+        parts.push(
+          `nothing answers the descriptor on ${listener.where}` +
+            (listener.detail === undefined ? "" : ` (${listener.detail})`) +
+            ` — the block is boot-time: \`phoebe stop\` then \`phoebe start\` after adding it`,
+        );
+      }
+    }
+    if (arm === "sidecar") {
+      const api = facts.localApi;
+      if (api === undefined || api.status === null) {
+        worse("fail");
+        parts.push(
+          "LocalAPI does not answer on the shared socket — is the tailscale service up " +
+            "(container/compose.tailscale-sidecar.yml), and `phoebe-sockets` mounted on both?",
+        );
+      } else {
+        const { status } = api;
+        if (status.backendState !== "Running") {
+          worse("warn");
+          parts.push(`tailscaled is ${status.backendState} — not on the tailnet yet (TS_AUTHKEY?)`);
+        } else {
+          parts.push(`node ${status.dnsName ?? "(no DNS name)"}`);
+        }
+        if (api.servesSocket === false) {
+          worse("fail");
+          parts.push(
+            `Serve does not proxy to ${API_SOCKET_PATH} — container/tailscale/serve.json is not applied ` +
+              `(mounted as a directory at /config, and does the node have a certificate domain?)`,
+          );
+        } else if (api.servesSocket === null) {
+          worse("unknown");
+          parts.push("Serve's config could not be read");
+        }
+      }
+    }
+    const drop = facts.mintDrop;
+    if (drop !== undefined) {
+      if (!drop.exists || !drop.isDirectory || !drop.ownedByRoot) {
+        worse("fail");
+        parts.push(
+          `${drop.path} ${!drop.exists ? "is missing" : !drop.isDirectory ? "is not a directory" : "is not owned by root"} — ` +
+            `\`phoebe pair\` cannot mint; the Dockerfile creates it in the image, and a volume or ` +
+            `--tmpfs over /run hides it`,
+        );
+      }
+    }
+    if (facts.reported?.tampered === true) {
+      worse("fail");
+      parts.push(
+        "state/sessions.json differs from what the bootstrapper last wrote — a row was added or changed by another hand; read the devices list",
+      );
+    }
+    if (facts.rejections?.exhausted === true) {
+      worse("warn");
+      parts.push(
+        `${facts.rejections.count} pair attempts rejected in the last minute — every attempt answers 429 for 60 s`,
+      );
+    }
+    const url = facts.reported?.url ?? null;
+    if (url !== null) parts.push(url);
+    else if (arm === "host")
+      parts.push("no tailnet URL recorded yet — `phoebe start` on the host records it");
+  } else {
+    const overlays = facts.overlays;
+    if (overlays !== undefined && overlays.missing.length > 0) {
+      worse("fail");
+      parts.push(
+        `missing ${overlays.missing.join(", ")} — run \`phoebe init\` again to scaffold the overlays`,
+      );
+    }
+    const services = facts.services;
+    if (services === null) {
+      worse("unknown");
+      parts.push("could not ask Compose what is running");
+    } else if (services !== undefined) {
+      const hasSidecar = services.running.includes("tailscale");
+      const phoebeUp = services.running.includes("phoebe");
+      const published = services.publishedPorts.some((port) =>
+        port.endsWith(`:${REMOTE_CONTAINER_PORT}`),
+      );
+      if (!phoebeUp) {
+        worse("warn");
+        parts.push("container not running");
+      } else if (arm === "sidecar" && !hasSidecar) {
+        worse("warn");
+        parts.push(
+          "no tailscale service running — started without the sidecar overlay? `phoebe stop` then `phoebe start`",
+        );
+      } else if (arm === "host" && hasSidecar) {
+        worse("warn");
+        parts.push(
+          "a tailscale sidecar is still running from the other arm — `phoebe start` removes it",
+        );
+      } else if (arm === "host" && !published) {
+        worse("warn");
+        parts.push(
+          `port ${REMOTE_CONTAINER_PORT} is not published on loopback — started without the host overlay? \`phoebe stop\` then \`phoebe start\``,
+        );
+      } else if (arm === "sidecar" && published) {
+        worse("warn");
+        parts.push(
+          `port ${REMOTE_CONTAINER_PORT} is published, which the sidecar arm never does — \`phoebe stop\` then \`phoebe start\``,
+        );
+      }
+    }
+    if (arm === "host") {
+      const serve = facts.serve;
+      if (serve === null || serve === undefined) {
+        worse("unknown");
+        parts.push("Serve not inspected");
+      } else if (serve.state === "ready") {
+        parts.push(`${serve.url} serves this deployment`);
+      } else if (serve.state === "unmapped") {
+        worse("warn");
+        parts.push(`${serve.url} is not mapped — \`phoebe start\` maps it`);
+      } else {
+        worse("fail");
+        parts.push(serve.detail);
+      }
+    }
+  }
+  return { id, state, detail: parts.join("; ") };
+}
+
+/** Probe the descriptor where the arm says the listener is. Injectable for tests. */
+export type DescriptorProbe = (
+  where: { socketPath: string } | { host: string; port: number },
+) => Promise<{ answering: boolean; detail?: string }>;
+
+/** GET the descriptor over node:http, on a socket or loopback. */
+export const defaultDescriptorProbe: DescriptorProbe = (where) =>
+  new Promise((resolve) => {
+    const req = httpRequest(
+      {
+        ...("socketPath" in where
+          ? { socketPath: where.socketPath }
+          : { host: where.host, port: where.port }),
+        path: DESCRIPTOR_PATH,
+        method: "GET",
+        headers: { accept: "application/json" },
+      },
+      (res) => {
+        res.resume();
+        resolve(
+          res.statusCode === 200
+            ? { answering: true }
+            : { answering: false, detail: `HTTP ${res.statusCode ?? "?"}` },
+        );
+      },
+    );
+    req.setTimeout(PROBE_TIMEOUT_MS, () => req.destroy(new Error("timed out")));
+    req.on("error", (error: Error) => resolve({ answering: false, detail: error.message }));
+    req.end();
+  });
+
+/** The seams the `remote` gather reaches the world through. */
+export type RemoteGatherDeps = {
+  probe?: DescriptorProbe;
+  mintDrop?: () => MintDropFacts;
+  localApi?: () => Promise<RemoteCheckFacts["localApi"]>;
+  /** Host arm, from the host: the read-only Serve inspection. */
+  inspectServe?: (remote: Extract<ResolvedRemote, { arm: "host" }>) => Promise<ServeInspection>;
+  /** Host: what Compose says is running. */
+  services?: () => Promise<RemoteCheckFacts["services"]>;
+};
+
+/**
+ * The `remote` block as doctor reads it: resolved, or the complaint that
+ * stopped it being read. A malformed block is reported rather than skipped —
+ * boot ignores one, and a doctor that said "no block" would agree with boot
+ * about the behaviour while hiding the typo behind it.
+ */
+function readRemoteBlock(rootConfig: Record<string, unknown> | null): {
+  remote: ResolvedRemote | undefined;
+  error: string | null;
+} {
+  if (rootConfig === null) return { remote: undefined, error: null };
+  try {
+    const field = readRemoteField(rootConfig);
+    return { remote: field === undefined ? undefined : resolveRemote(field), error: null };
+  } catch (error) {
+    return { remote: undefined, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Gather the `remote` facts from wherever doctor is running. */
+export async function gatherRemoteFacts(opts: {
+  rootConfig: Record<string, unknown> | null;
+  configDir: string;
+  dataBase: string;
+  inContainer: boolean;
+  env: NodeJS.ProcessEnv;
+  deps?: RemoteGatherDeps;
+}): Promise<RemoteCheckFacts> {
+  const { remote, error } = readRemoteBlock(opts.rootConfig);
+  const vantage = opts.inContainer ? "container" : "host";
+  const facts: RemoteCheckFacts = {
+    remote,
+    vantage,
+    ...(error !== null ? { configError: error } : {}),
+  };
+  if (remote === undefined) return facts;
+  const deps = opts.deps ?? {};
+  if (opts.inContainer) {
+    const probe = deps.probe ?? defaultDescriptorProbe;
+    const where: Parameters<DescriptorProbe>[0] =
+      remote.arm === "sidecar"
+        ? { socketPath: API_SOCKET_PATH }
+        : { host: "127.0.0.1", port: REMOTE_CONTAINER_PORT };
+    const answered = await probe(where);
+    facts.listener = {
+      answering: answered.answering,
+      where: "socketPath" in where ? where.socketPath : `${where.host}:${where.port}`,
+      ...(answered.detail !== undefined ? { detail: answered.detail } : {}),
+    };
+    if (remote.arm === "sidecar") {
+      facts.localApi = await (deps.localApi ?? defaultLocalApi)();
+    }
+    facts.mintDrop = (deps.mintDrop ?? (() => inspectMintDrop()))();
+    facts.reported = readDeploymentReport(deploymentReportPath(opts.dataBase))?.remote ?? null;
+    const budget = facts.reported?.pairRejections;
+    if (budget !== undefined) {
+      facts.rejections = { exhausted: budget.refusing, count: budget.lastMinute };
+    }
+    return facts;
+  }
+  const needed = [join(opts.configDir, "container", `compose.tailscale-${remote.arm}.yml`)];
+  if (remote.arm === "sidecar")
+    needed.push(join(opts.configDir, "container", "tailscale", "serve.json"));
+  const missing = needed.filter((file) => !existsSync(file));
+  facts.overlays = {
+    present: needed.filter((file) => !missing.includes(file)),
+    missing,
+  };
+  facts.services = deps.services === undefined ? null : await deps.services();
+  if (remote.arm === "host") {
+    facts.serve = deps.inspectServe === undefined ? null : await deps.inspectServe(remote);
+  }
+  return facts;
+}
+
+async function defaultLocalApi(): Promise<RemoteCheckFacts["localApi"]> {
+  const get = localApiGet();
+  const status = await readLocalApiStatus(get);
+  if (status === null) return { status: null, servesSocket: null };
+  return { status, servesSocket: await serveConfigProxiesTo(get, API_SOCKET_PATH) };
+}
+
 /** Same default as boot.ts `engineBaseDir` — where github engine clones live. */
 function engineBaseDir(env: NodeJS.ProcessEnv): string {
   return env["PHOEBE_ENGINE_DIR"] ?? join(tmpdir(), "phoebe-agent");
@@ -338,6 +667,8 @@ export type DoctorDeps = {
    * one; a test passes {@link noDeadline} or a short one of its own.
    */
   deadline?: Deadline;
+  /** The `remote` check's probes (map #690), injectable for tests. */
+  remote?: RemoteGatherDeps;
 };
 
 const PROBE_TIMEOUT_MS = 30_000;
@@ -1649,6 +1980,20 @@ export async function runDoctor(
         }
       },
     }),
+  );
+
+  // 9. The `remote` block against what is running (map #690).
+  checks.push(
+    remoteCheck(
+      await gatherRemoteFacts({
+        rootConfig,
+        configDir: opts.configDir,
+        dataBase,
+        inContainer: isInsideContainer(),
+        env,
+        ...(deps.remote !== undefined ? { deps: deps.remote } : {}),
+      }),
+    ),
   );
 
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;

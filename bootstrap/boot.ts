@@ -119,11 +119,16 @@ import {
 } from "./tenants.ts";
 import { readConfigDir } from "./config-dir.ts";
 import { readHostPlatform } from "./host-platform.ts";
+import { prepareRemote } from "./remote-boot.ts";
+import { createFleetHold, type FleetHold } from "./fleet-hold.ts";
+import { createOutputTap, type OutputTap } from "./output-tap.ts";
+import { createRedactor, type Redactor } from "./redact-output.ts";
+import { deliverSecret } from "./secret-delivery.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
 import type { InventoryTenant } from "../src/secret-inventory.ts";
 import { createSecretInventory, type SecretInventoryRunner } from "./secret-inventory-runner.ts";
-import type { DeploymentArm, DeploymentIdentity, SlotReport } from "../src/contracts/deployment.ts";
+import type { DeploymentArm, SlotReport } from "../src/contracts/deployment.ts";
 import { readGitIdentity, soloIdentityEnv, type GitIdentity } from "./git-identity.ts";
 import {
   superviseFleet,
@@ -986,6 +991,12 @@ function runFleet(opts: {
   /** The config-edit pen (#536): pointed at each new checkout, nudged on a write. */
   editor: ConfigEditor;
   hostKnobs: DeploymentHostKnobs;
+  /** The fleet hold (map #690): stop and start over the API, nudged like an edit. */
+  hold: FleetHold;
+  /** Where every child's output goes on its way to Docker, and what the API serves. */
+  output: OutputTap;
+  /** Learns each child's secrets as its env is built, so the API never shows one. */
+  redactor: Redactor;
 }): Promise<EngineExit> {
   const { broker, deployment, doctor } = opts;
   // Fleet-level credential-lease state (#211/#205): the cache and the warn-once
@@ -1012,6 +1023,11 @@ function runFleet(opts: {
       // whole except for the keys a sibling pipeline declared and this one did not.
       scrubKeys: siblingOnlyEnvKeys(pipeline),
     });
+    // Everything this child could print of its own secrets, learned before it
+    // prints anything: the env it is handed, and the store whole, which is
+    // secrets by definition (map #690, redact-output.ts).
+    opts.redactor.learnEnv(env);
+    opts.redactor.learn(Object.values(tenantSecretStore(tenant)));
     let settle!: (exit: EngineExit) => void;
     const exited = new Promise<EngineExit>((resolve) => {
       settle = resolve;
@@ -1030,6 +1046,9 @@ function runFleet(opts: {
       {
         env,
         cwd: assetsDir,
+        // Piped through the supervisor so a paired device can read it
+        // (output-tap.ts); every line still reaches Docker, whole.
+        output: opts.output.source(),
         onExit: (code: number | null, signal: NodeJS.Signals | null) => {
           deployment.noteExit(pipeline.id, { code, signal });
           settle({ code, signal });
@@ -1084,7 +1103,12 @@ function runFleet(opts: {
   };
 
   return superviseFleet({
-    onNudge: opts.editor.useNudge,
+    // One wake, two pullers: a config edit's write and a fleet stop or start
+    // both want the next poll now rather than at the interval.
+    onNudge: (wake) => {
+      opts.editor.useNudge(wake);
+      opts.hold.useNudge(wake);
+    },
     launch: async () => {
       const engine = await launchTarget(opts.configPath, opts.guard);
       // Validation is the *running* engine's answer (#503), so the validator
@@ -1098,7 +1122,9 @@ function runFleet(opts: {
       });
       return engine;
     },
-    discover: opts.discover,
+    // Held, the fleet discovers nothing, and the pipeline axis drains it as it
+    // would a workspace with every tenant removed (fleet-hold.ts).
+    discover: opts.hold.gate(opts.discover),
     spawn: spawnFleetChild,
     stop: opts.stop,
     intervalMs: opts.intervalMs,
@@ -1740,6 +1766,15 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // relaunches via ~/.gitconfig + the agent-env HOME/GH_TOKEN allowlist.
   setupGitCredentials({});
 
+  // The container's output, kept for a paired device (map #690, output-tap.ts):
+  // this process's own lines from here on, and every child's as it is piped
+  // through. What the API serves is redacted on the way out, and the redactor
+  // starts with the deployment env this process was handed.
+  const output = createOutputTap();
+  output.install();
+  const redactor = createRedactor();
+  redactor.learnEnv(process.env);
+
   const configDir = process.cwd();
   const configPath = resolveConfigPath(undefined, configDir);
   const hostKnobs = await loadHostKnobs(configPath);
@@ -1795,13 +1830,24 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // the name and the credential arm come from.
   const deploymentArm: DeploymentArm = workspace !== null ? "workspace" : "solo";
   const dataBase = resolveDataBase(process.env);
-  // Who this deployment is to a console (#505 §3). Read once: neither the name
-  // nor the kernel changes under a running container.
-  const identity: DeploymentIdentity = {
+  // Stop and start over the API (map #690, fleet-hold.ts): a stop that was in
+  // force when the container last went down is in force now.
+  const hold = createFleetHold({ dataBase, log: (message) => console.log(message) });
+  // Who this deployment is to a console (#505 §3), and the listener that tells
+  // one so (map #690). Prepared before the model is built because it owns the
+  // identity section — the deployment id is minted onto the volume here —
+  // and started after, because it reports into the model.
+  const remote = prepareRemote({
+    rootConfig,
+    dataBase,
     name: deploymentName({ arm: deploymentArm, configDir, soloSlug: soloSlug(rootConfig) }),
     arm: deploymentArm,
     host: readHostPlatform(),
-  };
+    version: LAUNCHER_VERSION,
+    log: (message) => console.log(message),
+    warn: (message) => console.warn(message),
+  });
+  const identity = remote.identity();
   // Every engine child opens its pipeline lines with this name (#686). Set on the
   // supervisor's own env so both arms deliver it the way they deliver the rest:
   // a fleet child copies it off the deployment knobs, a solo child inherits it.
@@ -1812,10 +1858,11 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // editor cannot reach them because it was never given them.
   const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
   const deployment = createDeploymentState({
-    identity: () => identity,
+    identity: remote.identity,
     dataBase,
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
+    fleetStop: () => hold.current(),
     // The root config is the one file a console may edit (#503), so it is the
     // one an edit's fingerprint must be taken over.
     rootConfig: createRootConfigSource(configPath),
@@ -1836,7 +1883,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         `[phoebe] boot: could not write the deployment report — ${describe(error)}. ` +
         `Supervision is unaffected; the report is retried on every change.`,
     ),
+    // The report just moved: every open event stream gets it (map #690). With
+    // no `remote` block, or no stream open, this is a call that does nothing.
+    onReport: () => remote.push(),
   });
+  // A stop or a start is a fact the report carries, so the page that pressed
+  // the button sees it move before the first pipeline has drained.
+  hold.onChange(() => deployment.publish());
   // The secrets inventory (#550): which keys each tenant has and where from,
   // retaken when the tenant set moves and when an edit lands, never on a poll —
   // taking it loads every tenant's work kinds.
@@ -1867,6 +1920,53 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ),
   });
   doctor.start();
+  // The listener (map #690), started once everything a device may ask for
+  // exists: the pen, the doctor runner and the secrets inventory above. The
+  // verbs are the same calls a shell makes, arriving from a request instead of
+  // from argv, so there is one writer and one reconcile path.
+  await remote.start(
+    deployment,
+    {
+      fleetStop: (by) => hold.stop(by),
+      fleetStart: (by) => hold.start(by),
+      configSet: (edit) => editor.apply(edit),
+      doctorRun: (by) => {
+        const ask = doctor.request("request", by);
+        // The report is where what doctor found goes (#507 §7). Nothing here waits
+        // for it: the receipt has already said which run the asker is watching.
+        void ask.result.catch(() => {});
+        return {
+          outcome: ask.outcome,
+          ...(ask.detail !== undefined ? { detail: ask.detail } : {}),
+        };
+      },
+      secretSet: (request) =>
+        deliverSecret(request, {
+          configPath,
+          dataBase,
+          processEnv: process.env,
+          log: (message) => console.log(message),
+          // A set is the moment an operator wants "did it work" answered (#507
+          // §6), and two things answer it: doctor, whose `declared-env` check
+          // reads the same env the child will hold, and the inventory, whose
+          // provenance is what the page they set it from is watching.
+          onWritten: ({ tenant, by }) => {
+            void secrets.refreshLast();
+            void doctor.request("request", by).result.catch(() => {});
+            console.log(
+              `[phoebe] boot: a remote secret landed for ${tenant} — running doctor and ` +
+                `retaking the secrets inventory.`,
+            );
+          },
+        }),
+    },
+    // The console a paired device reads (map #690): the lines this container
+    // holds, each redacted on the way out, and the ones still to come.
+    {
+      lines: () => output.lines().map((line) => redactor.redact(line)),
+      onLine: (listener) => output.onLine((line) => listener(redactor.redact(line))),
+    },
+  );
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -1911,6 +2011,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         editor,
         hostKnobs,
         secrets,
+        hold,
+        output,
+        redactor,
         heldTenants: () => held,
         // The root `workspace` block is re-read every poll from here on: this
         // callback owns both the hot tenant list and the shape-change abort (#139).
@@ -1933,6 +2036,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
       doctor.stop();
+      await remote.stop();
       // A crash-loop report raced against the process ending is a report lost;
       // the flush waits it out, bounded by the reporter's own timeout (#474).
       // In the `finally` so a supervisor that threw still flushes before the
@@ -2019,6 +2123,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // and has to come after everything that could add.
       for (const key of scrubKeys) delete childEnv[key];
     }
+    // What this child could print of its own secrets, learned before it prints
+    // (map #690, redact-output.ts): the env it is handed, and the store whole.
+    redactor.learnEnv(childEnv ?? process.env);
+    redactor.learn(Object.values(store));
     if (soloIdentity !== null && overridden.length > 0) {
       // The declaration lost, which is the rule — but say so. A leftover
       // `GIT_AUTHOR_NAME` on the container env would otherwise make a repo's
@@ -2036,6 +2144,9 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // change: the child then inherits the supervisor's env exactly as it
       // always has.
       ...(childEnv === null ? {} : { env: childEnv }),
+      // Piped through the supervisor so a paired device can read it
+      // (output-tap.ts); every line still reaches Docker, whole.
+      output: output.source(),
       onExit: (code: number | null, signal: NodeJS.Signals | null) => {
         deployment.noteExit(pipeline.id, { code, signal });
         settle({ code, signal });
@@ -2077,14 +2188,18 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   let exit: EngineExit;
   try {
     exit = await superviseFleet({
-      onNudge: editor.useNudge,
+      onNudge: (wake) => {
+        editor.useNudge(wake);
+        hold.useNudge(wake);
+      },
       launch: launchSolo,
       // Solo's tenant axis stays inert: the root *is* the tenant, so every edit
       // to its config is already the engine axis's business (relaunch on a moved
       // engine source, a silent rebase otherwise, #138). A constant fingerprint
       // keeps it that way — the pipelines the engine enumerates at launch are the
-      // pipelines solo runs until something re-materializes the engine.
-      discover: () => [{ tenant: soloTenant, fingerprint: SOLO_TENANT_FINGERPRINT }],
+      // pipelines solo runs until something re-materializes the engine. Held
+      // (map #690), there is no tenant at all, and the one child drains.
+      discover: hold.gate(() => [{ tenant: soloTenant, fingerprint: SOLO_TENANT_FINGERPRINT }]),
       // The one thing that does move solo's pipelines: a secret set in the store
       // has no other delivery, so it relaunches the child that would hold it.
       pipelineFingerprint: (pipeline, enumerated) =>
@@ -2147,6 +2262,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
     doctor.stop();
+    await remote.stop();
     await reporter.flush();
   }
   propagateExit(exit.code, exit.signal);

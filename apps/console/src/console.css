@@ -1002,6 +1002,11 @@ details.why > summary::marker {
   color: var(--console-dim);
 }
 
+/* A stream that was refused, or ended before a line came: the pane's one line. */
+.console-quiet.console-refused {
+  color: var(--fail);
+}
+
 .console-ended {
   margin: 0;
   padding: 4px 12px;
@@ -1930,6 +1935,212 @@ details.why > summary::marker {
   width: 360px;
 }
 
+/* ── the remote arm (map #690) ─────────────────────────────────────────── */
+
+/* A machine on the tailnet: the section header is its hostname, in the mono
+   face, not uppercased — a hostname's case is its own. */
+.rail-group.machine .rail-host {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11.5px;
+}
+
+.rail-tailscale {
+  margin: 8px 14px 0;
+  font-size: 12px;
+}
+
+.rail-add-remote {
+  display: block;
+  padding: 8px 14px;
+  border-top: 1px dotted var(--line, #ddd);
+  font-size: 13px;
+}
+
+.rail-entry.remote .rail-select {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.rail-entry.remote.blocked {
+  background: var(--attention-bg);
+}
+
+.rail-port {
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+/* A remote's mark is one circle with two signals (remote-routes.ts,
+   `remoteMark`): the ring is the connection, the core is what the fleet was
+   last seen doing. The background stops at the border, so the ring's colour
+   and the core's stay apart. */
+.mark.remote {
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+  background: transparent;
+}
+
+.mark.remote.link-connected {
+  border-color: var(--ok);
+}
+
+.mark.remote.link-disconnected {
+  border-color: var(--muted);
+}
+
+.mark.remote.link-dark {
+  border-color: var(--dark);
+}
+
+.mark.remote.link-blocked {
+  border-color: var(--warn);
+}
+
+.mark.remote.fill-running {
+  background: var(--ok);
+}
+
+.mark.remote.fill-attention {
+  background: var(--warn);
+}
+
+.mark.remote.fill-stopped {
+  background: var(--idle);
+}
+
+.rail-summary .rail-spinner,
+.rail-entry.remote .sub .rail-spinner {
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+/* The chip that opens a deployment's other route: a button drawn as a chip,
+   because it sits inside the row's own link. */
+.route-chip {
+  cursor: pointer;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  background: var(--chip);
+  color: var(--accent);
+}
+
+.route-chip:hover {
+  outline: 1px solid currentColor;
+}
+
+/* The one-line banner above a remote page's tabs. */
+.notice.disconnected,
+.notice.dark,
+.notice.blocked {
+  margin: 0 0 12px;
+}
+
+.notice.blocked {
+  background: var(--attention-bg);
+}
+
+.greyed {
+  opacity: 0.55;
+}
+
+.warning.small,
+.muted.small {
+  font-size: 12px;
+}
+
+.devices-table tr.expired td {
+  color: var(--muted);
+}
+
+.devices-count {
+  font-weight: 400;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* The add-remote modal. */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 35%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal-box {
+  background: var(--bg, #fff);
+  border: 1px solid var(--line, #ddd);
+  border-radius: 10px;
+  padding: 18px;
+  width: 560px;
+  max-width: 95vw;
+  box-shadow: 0 10px 40px rgb(0 0 0 / 30%);
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 10px 0 3px;
+}
+
+.field {
+  width: 100%;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line, #bbb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: inherit;
+}
+
+.field.mono {
+  letter-spacing: 0.08em;
+}
+
+/* The minted link on the install tab: the link, the code in large type, the QR. */
+.mint-card {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.mint-card .mint-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.linkbox {
+  font-size: 12.5px;
+  background: var(--chip);
+  border: 1px solid var(--line, #ddd);
+  border-radius: 6px;
+  padding: 6px 8px;
+  word-break: break-all;
+}
+
+.mint-code {
+  font-size: 26px;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+.mint-qr svg {
+  width: 150px;
+  height: 150px;
+  border: 1px solid var(--line, #ddd);
+  background: #fff;
+}
+
+.remote-step .step-detail {
+  margin: 4px 0;
+}
 /* The setup steps: numbered, with the done ones ticked and dimmed. */
 .steps {
   list-style: none;
@@ -2026,4 +2237,46 @@ a.button {
   border-radius: 6px;
   color: inherit;
   text-decoration: none;
+}
+
+/* A remote row lays out as a local one (map #690): the name opens the console,
+   the gear at the edge opens the tabbed page. */
+.rail-entry.remote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+  padding: 0;
+}
+
+.rail-entry.remote .rail-select {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 14px 6px 11px;
+}
+
+.rail-entry.remote .rail-summary {
+  width: 100%;
+}
+
+.rail-entry.remote .rail-chevron {
+  margin-left: 11px;
+  margin-right: -8px;
+}
+
+.rail-entry.remote .rail-children {
+  flex-basis: 100%;
+}
+
+.rail-entry.remote .rail-gear {
+  color: var(--muted);
+}
+
+.rail-entry.remote:hover {
+  background: var(--chip);
+}
+
+.rail-entry.remote.current {
+  background: var(--chip);
 }

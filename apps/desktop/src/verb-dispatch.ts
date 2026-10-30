@@ -35,10 +35,13 @@ import { latestLauncherVersion, registryNpm } from "./harness.ts";
 import { initSoloBesideTenant } from "./solo-beside-tenant.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
 import { runConfigSet } from "../../../src/config-set.ts";
+import { readHostRemote } from "../../../src/deployment-command.ts";
 import { formatResolveFailure, resolveDeploymentCompose } from "../../../src/deployment-compose.ts";
 import { runDoctor } from "../../../src/doctor.ts";
 import { runInit } from "../../../src/init.ts";
 import { runMigrate } from "../../../src/migrate.ts";
+import { runPair } from "../../../src/pair.ts";
+import { runSessions } from "../../../src/sessions.ts";
 import { runStart } from "../../../src/start.ts";
 import { runStop } from "../../../src/stop.ts";
 import { defaultNpm, runUpgrade } from "../../../src/upgrade.ts";
@@ -135,19 +138,53 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
       }
 
       case "start": {
+        // The `remote` block, read off the config the way the CLI reads it
+        // (map #690): its overlay joins the Compose argv, and on the host arm
+        // Serve is reconciled after the container is up.
+        const remote = await hostRemote(root);
         const outcome = await runStart({
           build: request.build ?? false,
-          deps: { cwd: root, runner, io, ...dockerInDistro },
+          deps: { cwd: root, runner, io, ...dockerInDistro, ...remote },
         });
         return { verb: "start", outcome };
       }
 
       case "stop": {
+        const remote = await hostRemote(root);
         const outcome = await runStop({
           now: request.now ?? false,
-          deps: { cwd: root, runner, io, ...dockerInDistro },
+          deps: { cwd: root, runner, io, ...dockerInDistro, ...remote },
         });
         return { verb: "stop", outcome };
+      }
+
+      case "pair": {
+        // The code travels in the outcome and in no line (verb-run.ts): the
+        // verb's own lines say "code minted", and the tab decides whether the
+        // person sees it or the companion spends it.
+        io.stdout(`[phoebe] pair ${install}${request.operate === true ? " --operate" : ""}`);
+        const remote = await hostRemote(root);
+        const outcome = await runPair({
+          operate: request.operate ?? false,
+          deps: { cwd: root, runner, io, inContainer: false, ...dockerInDistro, ...remote },
+        });
+        return { verb: "pair", outcome };
+      }
+
+      case "sessions": {
+        io.stdout(`[phoebe] sessions ${install}`);
+        const remote = await hostRemote(root);
+        const action =
+          request.revoke === undefined
+            ? ({ action: "list" } as const)
+            : "all" in request.revoke
+              ? ({ action: "revoke", all: true } as const)
+              : ({ action: "revoke", id: request.revoke.id } as const);
+        const outcome = await runSessions({
+          action,
+          deps: { cwd: root, runner, io, inContainer: false, ...dockerInDistro, ...remote },
+        });
+        return { verb: "sessions", outcome };
       }
 
       case "upgrade": {
@@ -271,6 +308,18 @@ export function createDispatchVerb(deps: DispatchDeps): Dispatch {
       }
     }
   };
+}
+
+/**
+ * The `remote` block as a dep for the verbs that read it, or nothing. A block
+ * that will not validate throws here, the way the CLI throws, so the run says
+ * what is wrong with it rather than starting without a listener.
+ */
+async function hostRemote(
+  root: string,
+): Promise<{ remote?: Awaited<ReturnType<typeof readHostRemote>> }> {
+  const remote = await readHostRemote(root);
+  return remote === undefined ? {} : { remote };
 }
 
 /**

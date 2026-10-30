@@ -27,6 +27,8 @@ import { runConfigSet } from "./config-set.ts";
 import { runDoctor } from "./doctor.ts";
 import { runInit } from "./init.ts";
 import { runMigrate } from "./migrate.ts";
+import { runPair } from "./pair.ts";
+import { runSessions } from "./sessions.ts";
 import { runStart } from "./start.ts";
 import { runStop } from "./stop.ts";
 import { runUpgrade } from "./upgrade.ts";
@@ -42,6 +44,8 @@ const VERB_MODULES = {
   migrate: "migrate",
   doctor: "doctor",
   "config set": "config-set",
+  pair: "pair",
+  sessions: "sessions",
 } as const;
 
 /**
@@ -81,7 +85,9 @@ const _outcomes: [
   Yields<ReturnType<typeof runMigrate>, "migrate">,
   Yields<ReturnType<typeof runDoctor>, "doctor">,
   Yields<ReturnType<typeof runConfigSet>, "config set">,
-] = [true, true, true, true, true, true, true];
+  Yields<ReturnType<typeof runPair>, "pair">,
+  Yields<ReturnType<typeof runSessions>, "sessions">,
+] = [true, true, true, true, true, true, true, true, true];
 void _outcomes;
 
 const FORBIDDEN = /\bprocess\.(argv|stdout|stderr|exit|exitCode)\b/;
@@ -227,6 +233,8 @@ describe("every host verb is callable in-process", () => {
     { verb: "upgrade", fn: runUpgrade },
     { verb: "migrate", fn: runMigrate },
     { verb: "doctor", fn: runDoctor },
+    { verb: "pair", fn: runPair },
+    { verb: "sessions", fn: runSessions },
   ])("run$verb is exported as a function", ({ fn }) => {
     expect(typeof fn).toBe("function");
   });

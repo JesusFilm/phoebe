@@ -105,7 +105,12 @@ export type VerbRunRequest =
       tenant?: string;
       key: string;
       value: string;
-    };
+    }
+  // The two session verbs (map #690). A pairing code is a run argument's
+  // mirror image: it is in the *outcome* and in no line, the way a secret is in
+  // the request and in no line.
+  | { install: string; verb: "pair"; operate?: boolean }
+  | { install: string; verb: "sessions"; revoke?: { id: string } | { all: true } };
 
 /** One line a running verb wrote. Carries no newline — the tab decides that. */
 export type RunLine = {

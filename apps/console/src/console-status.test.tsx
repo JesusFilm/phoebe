@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { FleetCell, LocalReportEvent } from "phoebe-agent/contracts";
-import { channelStatus, channelTitle, consoleStatus } from "./console-status.ts";
+import {
+  channelStatus,
+  channelTitle,
+  consoleStatus,
+  remoteConsoleStatus,
+} from "./console-status.ts";
+import { readReport } from "./report.ts";
 import { ConsoleView } from "./console-view.tsx";
 import { ALL_CHANNEL, BOOT_CHANNEL } from "./logs-channels.ts";
 import {
@@ -318,5 +324,47 @@ describe("the console's cli tab", () => {
 
   test("with no run and nobody asking, there is no such tab", () => {
     expect(view(null)).not.toMatch(/>cli</);
+  });
+});
+
+describe("a remote route's standing (map #690)", () => {
+  const reading = readReport({
+    schema: report().schema,
+    receivedAt: ago(2),
+    report: report({
+      identity: { name: "ws", arm: "workspace", deploymentId: "dep_WS" },
+      fleet: {
+        tenants: [A, B],
+        cells: [
+          pipeline(A, "work", {
+            unit: { kind: "issue", id: "497" },
+            wedged: { wedged: true, reason: "no-pass", noPassForMs: 1_020_000 },
+          }),
+          pipeline(B, "work"),
+        ],
+        updatedAt: ago(12),
+      },
+    }),
+  });
+  const status = remoteConsoleStatus(reading);
+
+  test("is the same walk over the fleet, with nothing the host could add", () => {
+    expect(status.working).toEqual([
+      { channel: "acme/a:work", label: "a:work", units: ["issue 497"] },
+    ]);
+    expect(channelStatus(status, "acme/a:work")).toMatchObject({
+      active: true,
+      problems: [{ level: "error", text: expect.stringContaining("wedged") }],
+    });
+    expect(channelStatus(status, "acme/b:*")).toEqual({ active: false, units: [], problems: [] });
+  });
+
+  test("a workspace's problems say whose they are; nothing read is nothing wrong", () => {
+    expect(status.problems.map((problem) => problem.text)).toEqual([expect.stringMatching(/^a: /)]);
+    expect(remoteConsoleStatus(readReport(null))).toEqual({
+      working: [],
+      problems: [],
+      channels: new Map(),
+    });
   });
 });

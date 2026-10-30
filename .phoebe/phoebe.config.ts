@@ -65,6 +65,14 @@ export const config = defineConfig({
   // ignores this field in a tenant's, and the engine drops it in resolveConfig.
   engine: { source: "local" },
 
+  // Reachable over the tailnet on the host arm (docs/remote.md): the machine's
+  // own Tailscale serves the container's loopback-published listener, and
+  // `phoebe pair` mints the codes the companion spends. The HTTPS port is not
+  // 443 because this machine already serves something else there, and `phoebe
+  // start` refuses to take a mapping over (#706). Root-only and boot-time, like
+  // `engine`: a workspace ignores it in a tenant's config, the engine drops it.
+  remote: { tailscale: "host", httpsPort: 7463 },
+
   // Run the `claude` provider above on a Pro/Max subscription rather than
   // metered API billing: name the OAuth token's var instead of the shipped
   // `ANTHROPIC_API_KEY` default. `providerEnv` merges key-by-key, so cursor and

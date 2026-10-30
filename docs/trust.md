@@ -199,6 +199,31 @@ would only put the key that opens it on the same volume. What the store adds to 
 above is it. The store is **tenant scope only**. It never holds the GitHub App
 credentials, so the masked deployment env-file's guarantee is what it was.
 
+**The container now listens, on one condition.** With a `remote` block in the
+root config ([`remote.md`](remote.md)) the bootstrapper serves the deployment
+API: on the sidecar arm a Unix socket Serve proxies to, on the host arm a port
+published on the host's loopback and served by the machine's own Tailscale.
+Never `0.0.0.0`, never Funnel. Every route under `/api` takes a bearer token a
+device got by pairing, and nothing reads a cookie. Without the block the
+container listens on nothing, as before.
+
+**The mint gate.** A pairing code is minted only by `phoebe pair` running as
+root, through `/run/phoebe-mint`, a root-owned directory on no volume
+([ADR 0002](adr/0002-pairing-codes-are-minted-root-only-through-a-file-drop.md)).
+That stops a tenant child from being _handed_ an outside credential: a 30-day
+session on another device. It does not stop a child that has already subverted
+the bootstrapper through `/data/engine`; that remains model B's job.
+
+**The sessions file is the same residual by another name.** `state/sessions.json`
+holds the hashes of every paired device's token, at `0600`, owned by uid 10001.
+Hashing keeps a copy of the file from being a set of bearers, but a child
+sharing the uid can _append_ a row whose hash it chose, and no key or HMAC mends
+that here: anything the bootstrapper could check with, a child can read. The
+deployment makes it visible instead. The bootstrapper keeps the last bytes it
+wrote; a file that differs on the next read sets the report's `tampered` flag,
+fails the doctor `remote` check, and banners the devices list. Across a relaunch
+it cannot tell, and says nothing. Every row is on the list the owner looks at.
+
 **So the constraint is a policy, and it is first-class:**
 
 > **Co-locate in one container only repos whose mutual compromise is already

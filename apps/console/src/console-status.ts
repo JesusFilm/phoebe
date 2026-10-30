@@ -20,7 +20,7 @@ import {
   type RailProblem,
 } from "./local-install.ts";
 import { ALL_CHANNEL, channelLabel, tenantChannel } from "./logs-channels.ts";
-import { readReport } from "./report.ts";
+import { readReport, type ReportReading } from "./report.ts";
 
 /** One tab's standing: whether its pipeline is working, on what, and what is wrong with it. */
 export type ChannelStatus = {
@@ -132,6 +132,59 @@ export function consoleStatus(
   // cause under whatever each tenant goes on to report.
   problems.unshift(...ofInstall);
   // Errors ahead of warnings across the whole install, each level in the order found.
+  const errors = problems.filter((problem) => problem.level === "error");
+  const warnings = problems.filter((problem) => problem.level !== "error");
+  return { working, problems: [...errors, ...warnings], channels };
+}
+
+/**
+ * A remote route's standing, off its last report (map #690). The same walk
+ * over the fleet as a local install's, with nothing the host could add: no
+ * `.env` has been read here and no image checked, so what is wrong is what
+ * the deployment itself reports. A workspace's problems say whose they are,
+ * as the local header's do.
+ */
+export function remoteConsoleStatus(reading: ReportReading): ConsoleStatus {
+  const report = reading.kind === "read" ? reading.report : null;
+  const working: WorkingPipeline[] = [];
+  const problems: RailProblem[] = [];
+  const channels = new Map<string, ChannelStatus>();
+  if (report !== null) {
+    const workspace = report.identity?.arm === "workspace";
+    const crashLooping = crashLoopingCells(report);
+    for (const tenant of report.fleet?.tenants ?? []) {
+      if (tenant.slug === null) continue;
+      const units: string[] = [];
+      let active = false;
+      for (const cell of report.fleet.cells) {
+        if (cell.tenant.id !== tenant.id) continue;
+        const channel = `${tenant.slug}:${cell.pipeline}`;
+        const running = (cell.snapshot?.currentUnits ?? []).map(
+          (current) => `${current.unit.kind} ${current.unit.id}`,
+        );
+        const wrong = cellProblems(cell, crashLooping);
+        const cellActive = cell.state === "working";
+        channels.set(channel, {
+          active: cellActive,
+          units: running,
+          problems: [...wrong.errors, ...wrong.warnings],
+        });
+        if (cellActive) {
+          active = true;
+          units.push(...running);
+          working.push({ channel, label: channelLabel(channel), units: running });
+        }
+      }
+      const tenantProblems = fleetTenantProblems(report, tenant);
+      channels.set(tenantChannel(tenant.slug), { active, units, problems: tenantProblems });
+      const whose = channelLabel(tenantChannel(tenant.slug));
+      for (const problem of tenantProblems) {
+        problems.push(
+          workspace ? { level: problem.level, text: `${whose}: ${problem.text}` } : problem,
+        );
+      }
+    }
+  }
   const errors = problems.filter((problem) => problem.level === "error");
   const warnings = problems.filter((problem) => problem.level !== "error");
   return { working, problems: [...errors, ...warnings], channels };

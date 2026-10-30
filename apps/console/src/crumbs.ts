@@ -5,8 +5,9 @@
 // of its views is up — rather than kept anywhere. The rail is the map; this is
 // the "you are here" on it, and it changes when the rail's selection does.
 
-import type { LocalInstall } from "phoebe-agent/contracts";
+import type { LocalInstall, RemoteRecord } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
+import { hostnameOf } from "./reachability.ts";
 import type { Route } from "./route.ts";
 
 export type Crumbs = readonly string[];
@@ -22,8 +23,17 @@ export function routeCrumbs(input: {
   tenant: string | null;
   /** The tenant whose config is open, by what the rail calls it. */
   child?: string | null;
+  /** The remote record whose page is open, when the route is one (map #690). */
+  remote?: RemoteRecord | null;
 }): Crumbs {
   const { route, open, view, tenant, child } = input;
+  if (route.page === "remote") {
+    const remote = input.remote ?? null;
+    const host = remote === null ? route.deploymentId : hostnameOf(remote.url);
+    const name = remote === null ? "not paired" : remote.name;
+    if (route.console === true) return [host, name, "Console"];
+    return route.tab === null ? [host, name] : [host, name, route.tab];
+  }
   if (open !== null) {
     if (view === "tenant") return ["This machine", open.name, child ?? "tenant", "Config"];
     if (view === "settings") return ["This machine", open.name, "Settings"];

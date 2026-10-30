@@ -3,8 +3,8 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts";
-import type { LocalInstall, LocalReportEvent } from "phoebe-agent/contracts";
-import { createCompanionAlerts, reportAlertFacts } from "./alerting.ts";
+import type { LocalInstall, LocalReportEvent, StoredReport } from "phoebe-agent/contracts";
+import { createCompanionAlerts, reportAlertFacts, type RemoteAlertInput } from "./alerting.ts";
 
 const DIR = "/repos/youtube-studio";
 const OTHER = "/repos/acme-site";
@@ -240,5 +240,208 @@ describe("the report, projected onto what the rule reads", () => {
 
   test("doctor has no section in the report yet, so it is unknown and silent", () => {
     expect(reportAlertFacts(read([]))!.doctor).toBe("unknown");
+  });
+});
+
+describe("the remote arm's alerts (map #690)", () => {
+  const T0 = Date.parse("2026-10-16T12:00:00.000Z");
+  const wedgedReport = (): StoredReport => ({
+    schema: DEPLOYMENT_SCHEMA,
+    receivedAt: new Date(T0).toISOString(),
+    report: {
+      schema: DEPLOYMENT_SCHEMA,
+      identity: { name: "acme" },
+      bootstrapper: { children: [] },
+      fleet: {
+        cells: [
+          {
+            id: "t#work",
+            pipeline: "work",
+            source: "enumerated",
+            tenant: { path: "acme", id: "t" },
+            wedged: { wedged: true, reason: "no-pass", noPassForMs: 17 * 60_000 },
+          },
+        ],
+      },
+    },
+  });
+  const input = (overrides: Partial<RemoteAlertInput> = {}): RemoteAlertInput => ({
+    deploymentId: "dep_A",
+    name: "acme",
+    reachability: "connected",
+    lastHeardAt: new Date(T0).toISOString(),
+    maybeReplaced: false,
+    report: wedgedReport(),
+    notified: {},
+    seeded: false,
+    ...overrides,
+  });
+
+  test("the first evaluation seeds and says nothing; the next one speaks", () => {
+    const alerts = createCompanionAlerts({ clock: () => new Date(T0) });
+    const first = alerts.remote(input());
+    expect(first.alerts).toEqual([]);
+    expect(first.seeded).toBe(true);
+    expect(Object.keys(first.notified)).toEqual(["wedged:acme/work"]);
+    expect(alerts.badge()).toBe(1);
+    const cleared = alerts.remote(
+      input({
+        notified: first.notified,
+        seeded: true,
+        report: {
+          ...wedgedReport(),
+          report: {
+            schema: DEPLOYMENT_SCHEMA,
+            fleet: { cells: [] },
+            bootstrapper: { children: [] },
+          },
+        },
+      }),
+    );
+    expect(cleared.alerts.map((alert) => [alert.alert.condition, alert.alert.state])).toEqual([
+      ["wedged", "cleared"],
+    ]);
+    expect(cleared.alerts[0]!.alert.url).toBe("phoebe://console/#/r/dep_A");
+    expect(cleared.alerts[0]!.alert.deployment).toEqual({ name: "acme", keyFingerprint: "dep_A" });
+    expect(alerts.badge()).toBe(0);
+  });
+
+  test("once per row: two routes to one deployment are two badges and two notifications", () => {
+    const alerts = createCompanionAlerts({ clock: () => new Date(T0) });
+    const local = { ...wedgedReport() };
+    const seeded = alerts.remote(input({ report: null }));
+    alerts.remote(input({ ...seeded, report: wedgedReport() }));
+    expect(alerts.badge()).toBe(1);
+    // The same deployment's folder on this machine, read locally.
+    alerts.local({
+      type: "report",
+      install: "/deploy",
+      at: new Date(T0).toISOString(),
+      facts: {
+        dir: "/deploy",
+        name: "acme",
+        addedAt: "",
+        state: "running",
+        containerVersion: null,
+      },
+      directory: {
+        configPath: "",
+        configText: null,
+        configFingerprint: null,
+        envPresent: true,
+        bootstrapperRunning: true,
+      },
+      report: {
+        ...local,
+        report: {
+          ...(local.report as object),
+          fleet: { cells: [] },
+          bootstrapper: { children: [] },
+        },
+      },
+    });
+    const raised = alerts.local({
+      type: "report",
+      install: "/deploy",
+      at: new Date(T0).toISOString(),
+      facts: {
+        dir: "/deploy",
+        name: "acme",
+        addedAt: "",
+        state: "running",
+        containerVersion: null,
+      },
+      directory: {
+        configPath: "",
+        configText: null,
+        configFingerprint: null,
+        envPresent: true,
+        bootstrapperRunning: true,
+      },
+      report: local,
+    });
+    expect(raised).toHaveLength(1);
+    expect(alerts.badge()).toBe(2);
+  });
+
+  test("a relaunch with a persisted map re-fires nothing, dates darkness from real last contact, and can clear", () => {
+    const alerts = createCompanionAlerts({ clock: () => new Date(T0) });
+    const persisted = { dark: { state: "raised" as const, at: "earlier", since: "earlier" } };
+    const stillDark = alerts.remote(
+      input({
+        reachability: "dark",
+        lastHeardAt: new Date(T0 - 10 * 60_000).toISOString(),
+        notified: persisted,
+        seeded: true,
+        report: null,
+      }),
+    );
+    expect(stillDark.alerts).toEqual([]);
+    expect(alerts.badge()).toBe(1);
+    const back = alerts.remote(
+      input({
+        reachability: "connected",
+        notified: stillDark.notified,
+        seeded: true,
+        report: null,
+      }),
+    );
+    expect(back.alerts.map((alert) => [alert.alert.condition, alert.alert.state])).toEqual([
+      ["dark", "cleared"],
+    ]);
+  });
+
+  test("darkness raises only past five minutes, with the coarse wording", () => {
+    const alerts = createCompanionAlerts({ clock: () => new Date(T0) });
+    const seeded = alerts.remote(input({ report: null }));
+    const soon = alerts.remote(
+      input({
+        ...seeded,
+        reachability: "dark",
+        lastHeardAt: new Date(T0 - 2 * 60_000).toISOString(),
+        report: null,
+      }),
+    );
+    expect(soon.alerts).toEqual([]);
+    const late = alerts.remote(
+      input({
+        ...soon,
+        reachability: "dark",
+        lastHeardAt: new Date(T0 - 6 * 60_000).toISOString(),
+        report: null,
+      }),
+    );
+    expect(late.alerts.map((alert) => alert.alert.detail)).toEqual(["unreachable for 6 min"]);
+  });
+
+  test("blocked is never evaluated, never notified, never counted", () => {
+    const alerts = createCompanionAlerts({ clock: () => new Date(T0) });
+    const out = alerts.remote(
+      input({
+        reachability: "blocked",
+        notified: { dark: { state: "raised", at: "", since: "" } },
+        seeded: true,
+      }),
+    );
+    expect(out.alerts).toEqual([]);
+    expect(out.notified).toEqual({ dark: { state: "raised", at: "", since: "" } });
+    expect(alerts.badge()).toBe(0);
+  });
+
+  test("a replaced descriptor raises `replaced`", () => {
+    const alerts = createCompanionAlerts({ clock: () => new Date(T0) });
+    const seeded = alerts.remote(input({ report: null }));
+    const moved = alerts.remote(
+      input({
+        ...seeded,
+        reachability: "dark",
+        lastHeardAt: new Date(T0 - 6 * 60_000).toISOString(),
+        maybeReplaced: true,
+        report: null,
+      }),
+    );
+    expect(moved.alerts.map((alert) => alert.alert.condition).sort()).toEqual(["dark", "replaced"]);
+    alerts.forgetRemote("dep_A");
+    expect(alerts.badge()).toBe(0);
   });
 });

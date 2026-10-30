@@ -484,3 +484,58 @@ describe("runStopCli config threading", () => {
     expect(log.out.join("\n")).toMatch(/Stopped \(--now\)/);
   });
 });
+
+describe("runStop with a `remote` block (map #690)", () => {
+  test("the arm's overlay joins every Compose call, and stop keeps its shape", async () => {
+    const { runner, calls } = scriptedRunner([
+      psJson({ State: "running" }),
+      { code: 0, stdout: "", stderr: "" },
+      psJson({ State: "exited", ExitCode: 0 }),
+    ]);
+    const outcome = await runStop({
+      now: false,
+      deps: {
+        cwd: "/deploy",
+        dockerAvailable: true,
+        exists: deploymentExists(true),
+        runner,
+        remote: { arm: "sidecar" },
+      },
+    });
+    expect(outcome).toEqual({ kind: "stopped" });
+    for (const call of calls) {
+      expect(call.args.slice(0, 7)).toEqual([
+        "compose",
+        "-f",
+        "/deploy/container/compose.yml",
+        "-f",
+        "/deploy/container/compose.tailscale-sidecar.yml",
+        "--env-file",
+        "/deploy/.env",
+      ]);
+    }
+    const stop = calls.find((c) => c.args.includes("stop"))!;
+    expect(stop.args.slice(-3)).toEqual(["stop", "-t", "3600"]);
+  });
+
+  test("no block: the argv is exactly what it always was", async () => {
+    const { runner, calls } = scriptedRunner([
+      psJson({ State: "running" }),
+      { code: 0, stdout: "", stderr: "" },
+      psJson({ State: "exited", ExitCode: 0 }),
+    ]);
+    await runStop({
+      now: false,
+      deps: { cwd: "/deploy", dockerAvailable: true, exists: deploymentExists(false), runner },
+    });
+    expect(calls[0]!.args).toEqual([
+      "compose",
+      "-f",
+      "/deploy/container/compose.yml",
+      "ps",
+      "-a",
+      "--format",
+      "json",
+    ]);
+  });
+});

@@ -1,0 +1,24 @@
+# Tailscale host overlay — scaffolded by `phoebe init`, consumer-owned.
+#
+# The host arm of `remote: { tailscale: "host" }` in phoebe.config.ts
+# (docs/remote.md). The machine's own Tailscale serves the deployment: this
+# overlay publishes the container's listener on the host's loopback and nowhere
+# else, and `phoebe start` points `tailscale serve` at it. Every device on the
+# tailnet reaches https://<this-machine>.<tailnet>.ts.net; nothing off the
+# tailnet, and nothing on the LAN, can reach the port.
+#
+# `phoebe start` and `phoebe stop` add this file to their Compose argv when the
+# config names the arm and export PHOEBE_REMOTE_PORT from `remote.port`. Raw
+# Compose users pass it by hand:
+#
+#   docker compose -f compose.yml -f compose.tailscale-host.yml up -d
+#
+# Inert until the `remote` block appears: nothing here is read otherwise.
+
+services:
+  phoebe:
+    ports:
+      # Loopback only, on every host. The container's port is a constant; the
+      # host side follows `remote.port` (default 7463). Not a `.env` setting —
+      # the config field is its one home.
+      - "127.0.0.1:${PHOEBE_REMOTE_PORT:-7463}:7463"

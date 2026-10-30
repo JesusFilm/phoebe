@@ -18,6 +18,7 @@ import type {
   HostPlatform,
   LocalInstall,
   LocalReportEvent,
+  RemoteRecord,
 } from "phoebe-agent/contracts";
 import type { Surface } from "./companion.ts";
 import {
@@ -46,7 +47,19 @@ import {
   type RailChild,
 } from "./local-install.ts";
 import { FOLDER_ATTRIBUTE } from "./context-menu.ts";
-import { HOME_HREF, SETTINGS_HREF } from "./route.ts";
+import { hostnameOf } from "./reachability.ts";
+import {
+  hostSections,
+  remoteActions,
+  remoteChildren,
+  remoteHost,
+  remoteIsWorkspace,
+  remoteMarkClass,
+  type HostSection,
+  type RemoteAction,
+  type RemoteRow,
+} from "./remote-routes.ts";
+import { HOME_HREF, remoteConsoleHref, SETTINGS_HREF } from "./route.ts";
 import phoebeMark from "./assets/phoebe-mark.svg";
 
 export function Rail({
@@ -70,8 +83,51 @@ export function Rail({
   onHome,
   onDownload,
   onRestart,
+  remotes = [],
+  selectedRemote = null,
+  now = new Date(),
+  tailscale = null,
+  localJoins = {},
+  remoteJoins = {},
+  onRemote,
+  onRemoteSettings,
+  onAddRemote,
+  onPairAgain,
+  onOpenRemoteRoute,
+  busyRemotes,
+  onRemoteAction,
+  onRemoteChild,
+  selectedRemoteChild = null,
 }: {
   surface: Surface;
+  /** The deployments paired over Tailscale (map #690): one section per host. */
+  remotes?: readonly RemoteRecord[];
+  /** The remote whose page is open, by deployment id. */
+  selectedRemote?: string | null;
+  now?: Date;
+  /** This machine's Tailscale: off is a line above the host sections. Null until asked. */
+  tailscale?: { running: boolean; detail: string } | null;
+  /** The paired record behind each local install, by directory: the chip on the local row. */
+  localJoins?: Readonly<Record<string, RemoteRecord>>;
+  /** The folder behind each record, by deployment id: the chip on the remote row. */
+  remoteJoins?: Readonly<Record<string, LocalInstall>>;
+  /** A remote row: its console, as a local row opens its own. */
+  onRemote?: (deploymentId: string) => void;
+  /** The gear on a remote row: its tabbed page. Without it there is no gear. */
+  onRemoteSettings?: (deploymentId: string) => void;
+  onAddRemote?: () => void;
+  /** Pair again, from a blocked row. */
+  onPairAgain?: (record: RemoteRecord) => void;
+  /** The chip on a local row: open the same deployment's remote route. */
+  onOpenRemoteRoute?: (record: RemoteRecord) => void;
+  /** The remotes with a fleet verb in flight, by deployment id: the shortcuts give way to a spinner. */
+  busyRemotes?: ReadonlySet<string>;
+  /** A remote row's shortcuts: the fleet's start and pause over the API (remote-routes.ts). */
+  onRemoteAction?: (record: RemoteRecord, action: RemoteAction) => void;
+  /** A remote workspace's child row: the console on that tenant's lines. */
+  onRemoteChild?: (record: RemoteRecord, child: RailChild) => void;
+  /** The tenant whose lines the open remote console shows, by slug. */
+  selectedRemoteChild?: string | null;
   /** The installs on this machine. Empty in a browser, which has none. */
   installs?: LocalInstall[];
   /** The install whose page is open, by directory. */
@@ -156,10 +212,40 @@ export function Rail({
               {...(onChildSettings !== undefined ? { onChildSettings } : {})}
               selectedChild={install.dir === selected ? selectedChild : null}
               {...(onAction !== undefined ? { onAction } : {})}
+              {...(localJoins[install.dir] === undefined
+                ? {}
+                : {
+                    joined: localJoins[install.dir]!,
+                    ...(onOpenRemoteRoute === undefined ? {} : { onOpenRemoteRoute }),
+                  })}
             />
           ))
         )}
       </section>
+      <MachineSections
+        sections={hostSections(remotes, now)}
+        selected={selectedRemote}
+        selectedChild={selectedRemoteChild}
+        tailscale={tailscale}
+        joins={remoteJoins}
+        busy={busyRemotes ?? NO_BUSY}
+        expanded={expanded}
+        onToggle={(key) =>
+          setExpanded((held) => {
+            const next = new Set(held);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          })
+        }
+        {...(onRemote !== undefined ? { onRemote } : {})}
+        {...(onRemoteSettings !== undefined ? { onRemoteSettings } : {})}
+        {...(onAddRemote !== undefined ? { onAddRemote } : {})}
+        {...(onPairAgain !== undefined ? { onPairAgain } : {})}
+        {...(onSelect !== undefined ? { onSelect } : {})}
+        {...(onRemoteAction !== undefined ? { onRemoteAction } : {})}
+        {...(onRemoteChild !== undefined ? { onRemoteChild } : {})}
+      />
       <UpdateNotice
         update={update}
         {...(onDownload !== undefined ? { onDownload } : {})}
@@ -169,6 +255,316 @@ export function Rail({
     </nav>
   );
 }
+
+/**
+ * The machines on the tailnet (map #690, #699): one section per remote host,
+ * headed by its hostname, holding every deployment paired there; then the one
+ * way to add another. Tailscale off on this machine is a line above them all,
+ * since nothing below it can be reached until it is on.
+ */
+function MachineSections({
+  sections,
+  selected,
+  selectedChild,
+  tailscale,
+  joins,
+  busy,
+  expanded,
+  onToggle,
+  onRemote,
+  onRemoteSettings,
+  onAddRemote,
+  onPairAgain,
+  onSelect,
+  onRemoteAction,
+  onRemoteChild,
+}: {
+  sections: HostSection[];
+  selected: string | null;
+  selectedChild: string | null;
+  tailscale: { running: boolean; detail: string } | null;
+  joins: Readonly<Record<string, LocalInstall>>;
+  busy: ReadonlySet<string>;
+  /** The workspaces opened out to their children, by deployment id. */
+  expanded: ReadonlySet<string>;
+  onToggle: (deploymentId: string) => void;
+  onRemote?: (deploymentId: string) => void;
+  onRemoteSettings?: (deploymentId: string) => void;
+  onAddRemote?: () => void;
+  onPairAgain?: (record: RemoteRecord) => void;
+  onSelect?: (dir: string) => void;
+  onRemoteAction?: (record: RemoteRecord, action: RemoteAction) => void;
+  onRemoteChild?: (record: RemoteRecord, child: RailChild) => void;
+}) {
+  if (sections.length === 0 && onAddRemote === undefined) return null;
+  return (
+    <>
+      {tailscale !== null && !tailscale.running ? (
+        <p className="rail-tailscale warning" role="status">
+          Tailscale is off on this machine; remotes cannot be reached
+        </p>
+      ) : null}
+      {sections.map((section) => (
+        <section key={section.host} className="rail-group machine" aria-label={section.host}>
+          <h2 className="rail-heading">
+            <span
+              className="rail-host mono"
+              title="a machine on your tailnet; every deployment paired there"
+            >
+              {section.host}
+            </span>
+          </h2>
+          {section.rows.map((row) => (
+            <RemoteEntry
+              key={row.record.deploymentId}
+              row={row}
+              current={row.record.deploymentId === selected}
+              selectedChild={row.record.deploymentId === selected ? selectedChild : null}
+              busy={busy.has(row.record.deploymentId)}
+              expanded={expanded.has(row.record.deploymentId)}
+              onToggle={() => onToggle(row.record.deploymentId)}
+              joined={joins[row.record.deploymentId] ?? null}
+              {...(onRemote !== undefined ? { onRemote } : {})}
+              {...(onRemoteSettings !== undefined ? { onRemoteSettings } : {})}
+              {...(onPairAgain !== undefined ? { onPairAgain } : {})}
+              {...(onSelect !== undefined ? { onSelect } : {})}
+              {...(onRemoteAction !== undefined ? { onRemoteAction } : {})}
+              {...(onRemoteChild !== undefined ? { onRemoteChild } : {})}
+            />
+          ))}
+        </section>
+      ))}
+      {onAddRemote === undefined ? null : (
+        <section className="rail-group machine add-remote">
+          <button type="button" className="rail-add rail-add-remote" onClick={onAddRemote}>
+            + add remote
+          </button>
+        </section>
+      )}
+    </>
+  );
+}
+
+/**
+ * One paired record on the rail, drawn as a local row is (map #690): the
+ * host's mark and the name, the state under it, the shortcuts and the gear at
+ * the edge, a workspace's chevron and its children. Connected looks like a
+ * local row with its counts; reconnecting keeps them and adds a spinner; dark
+ * replaces them with how long; blocked is a warning-tone row with the reason
+ * and pair again. The name opens the console and the gear the tabbed page.
+ * The shortcuts are the fleet's pause and start over the API, and only a
+ * session with `operate` has them (remote-routes.ts, `remoteActions`): what
+ * the pairing did not grant is not drawn, rather than drawn disabled.
+ */
+function RemoteEntry({
+  row,
+  current,
+  selectedChild,
+  busy,
+  expanded,
+  onToggle,
+  joined,
+  onRemote,
+  onRemoteSettings,
+  onPairAgain,
+  onSelect,
+  onRemoteAction,
+  onRemoteChild,
+}: {
+  row: RemoteRow;
+  current: boolean;
+  /** The tenant whose lines the open console shows, by slug. */
+  selectedChild: string | null;
+  /** A fleet verb is in flight on this remote: the shortcuts give way to a spinner. */
+  busy: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  /** The folder on this machine behind this record, when there is one. */
+  joined: LocalInstall | null;
+  onRemote?: (deploymentId: string) => void;
+  onRemoteSettings?: (deploymentId: string) => void;
+  onPairAgain?: (record: RemoteRecord) => void;
+  onSelect?: (dir: string) => void;
+  onRemoteAction?: (record: RemoteRecord, action: RemoteAction) => void;
+  onRemoteChild?: (record: RemoteRecord, child: RailChild) => void;
+}) {
+  const { record } = row;
+  const href = remoteConsoleHref(record.deploymentId);
+  const host = remoteHost(row.reading);
+  const platformTitle = hostTitle(host);
+  const workspace = remoteIsWorkspace(row.reading);
+  const children = workspace ? remoteChildren(row.reading) : [];
+  const actions = onRemoteAction === undefined ? [] : remoteActions(row);
+  // The fleet under a workspace, summed, as a local workspace's row sums its
+  // own: while connected, or when something under it is wrong regardless.
+  const summed = workspaceSummary(children);
+  const summary =
+    row.tone === "connected" || (summed !== null && summed.errors + summed.warnings > 0)
+      ? summed
+      : null;
+  return (
+    <div
+      className={`rail-entry remote state-${row.tone}${current ? " current" : ""}${row.tone === "blocked" ? " blocked" : ""}${row.attention ? " attention" : ""}`}
+    >
+      {workspace ? (
+        <button
+          type="button"
+          className="rail-chevron"
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${record.name}` : `Expand ${record.name}`}
+          title={expanded ? "Hide the children" : `${children.length} in this workspace`}
+          onClick={onToggle}
+        >
+          {expanded ? (
+            <ChevronDown size={13} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={13} aria-hidden="true" />
+          )}
+        </button>
+      ) : null}
+      <a
+        className="rail-select"
+        href={href}
+        title={`${record.name} at ${record.url}`}
+        aria-current={current ? "page" : undefined}
+        onClick={(event) => {
+          if (onRemote === undefined) return;
+          event.preventDefault();
+          onRemote(record.deploymentId);
+        }}
+      >
+        <div className="name">
+          <span className={remoteMarkClass(row)} aria-hidden="true" />
+          <span className="platform" title={platformTitle} aria-label={platformTitle}>
+            <HostIcon host={host} />
+          </span>
+          {record.name}
+          {row.port === null ? null : <span className="muted mono rail-port">:{row.port}</span>}
+        </div>
+        <div className="sub">
+          {row.tone === "disconnected" ? (
+            <Spinner
+              className="rail-spinner motion-safe:animate-spin motion-reduce:animate-pulse"
+              size={11}
+              strokeWidth={2.25}
+              aria-label={`Reconnecting to ${record.name}`}
+            />
+          ) : null}
+          {row.text}
+        </div>
+      </a>
+      {busy ? (
+        <span className="rail-actions">
+          <Spinner
+            className="rail-spinner motion-safe:animate-spin motion-reduce:animate-pulse"
+            size={14}
+            strokeWidth={2.25}
+            aria-label={`Working on ${record.name}`}
+          />
+        </span>
+      ) : actions.length === 0 && onRemoteSettings === undefined ? null : (
+        <span className="rail-actions">
+          {actions.map((action) => {
+            const [Icon, label] = ACTION_ICONS[action];
+            return (
+              <Button
+                key={action}
+                variant="ghost"
+                size="icon-xs"
+                className="rail-action"
+                title={`${label} ${record.name}`}
+                aria-label={`${label} ${record.name}`}
+                onClick={() => onRemoteAction?.(record, action)}
+              >
+                <Icon strokeWidth={2.25} aria-hidden="true" />
+              </Button>
+            );
+          })}
+          {onRemoteSettings === undefined ? null : (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="rail-gear"
+              title={`Settings for ${record.name}`}
+              aria-label={`Settings for ${record.name}`}
+              onClick={() => onRemoteSettings(record.deploymentId)}
+            >
+              <Settings aria-hidden="true" />
+            </Button>
+          )}
+        </span>
+      )}
+      {row.blocked === null && row.expiry === null ? null : (
+        <div className="rail-summary warning">
+          {row.blocked === null ? row.expiry : null}
+          {onPairAgain === undefined ? null : (
+            <button
+              type="button"
+              className="rail-add"
+              onClick={() => (row.blocked?.action === "update" ? undefined : onPairAgain(record))}
+            >
+              {row.blocked?.action ?? "pair again"}
+            </button>
+          )}
+        </div>
+      )}
+      {joined === null ? null : (
+        <div className="rail-summary">
+          <button
+            type="button"
+            className="chip route-chip"
+            title="the folder on this machine, read over compose exec"
+            onClick={() => onSelect?.(joined.dir)}
+          >
+            ↗ this machine
+          </button>
+        </div>
+      )}
+      {summary === null ? null : (
+        <div className="rail-summary">
+          {summary.text}
+          <ProblemBadges
+            errors={summary.errors}
+            warnings={summary.warnings}
+            title={`Across the tenants of ${record.name}`}
+          />
+        </div>
+      )}
+      {workspace && expanded ? (
+        <ul className="rail-children" aria-label={`Children of ${record.name}`}>
+          {children.length === 0 ? (
+            <li className="rail-child muted">no tenants in the fleet yet</li>
+          ) : (
+            children.map((child) => (
+              <li
+                key={child.dir}
+                className={`rail-child-row${child.slug !== null && child.slug === selectedChild ? " current" : ""}`}
+              >
+                <button
+                  type="button"
+                  className={`rail-child${child.enabled === false ? " disabled" : ""}`}
+                  // The path on the deployment, and under it everything the badges count.
+                  title={[child.dir, ...child.problems.map(problemLine)].join("\n")}
+                  onClick={() => onRemoteChild?.(record, child)}
+                >
+                  <span
+                    className={`mark ${child.tone}${child.active ? " active" : ""}`}
+                    aria-hidden="true"
+                  />
+                  <span className="label">{child.label}</span>
+                  <ProblemBadges {...problemCounts(child.problems)} />
+                  {child.text === "" ? null : <span className="word">{child.text}</span>}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+const NO_BUSY: ReadonlySet<string> = new Set();
 
 /**
  * The brand, at the top of the rail, and the way home: the mark beside the
@@ -278,9 +674,15 @@ function InstallEntry({
   onChildSettings,
   selectedChild,
   onAction,
+  joined = null,
+  onOpenRemoteRoute,
 }: {
   install: LocalInstall;
   current: boolean;
+  /** The paired record with this install's deployment id, when there is one (map #690). */
+  joined?: RemoteRecord | null;
+  /** The chip: open that record's route. */
+  onOpenRemoteRoute?: (record: RemoteRecord) => void;
   /** A verb run is in flight on this install: the shortcuts give way to a spinner. */
   busy: boolean;
   /** How many updates the last check found on offer. */
@@ -425,6 +827,18 @@ function InstallEntry({
           )}
         </span>
       )}
+      {joined === null ? null : (
+        <div className="rail-summary">
+          <button
+            type="button"
+            className="chip route-chip"
+            title="the same deployment over Tailscale, as any other device sees it"
+            onClick={() => onOpenRemoteRoute?.(joined)}
+          >
+            ↗ {hostnameOf(joined.url)}
+          </button>
+        </div>
+      )}
       {summary === null ? null : (
         // A line of its own under the entry, the width of the rail: beside the
         // name it has the shortcuts for neighbours and is cut to nothing.
@@ -531,7 +945,7 @@ function ProblemBadges({
 }
 
 /** Each shortcut's icon and the verb it is read as. Lucide, as T3 Code draws. */
-const ACTION_ICONS: Record<InstallAction, [typeof Play, string]> = {
+const ACTION_ICONS: Record<InstallAction | RemoteAction, [typeof Play, string]> = {
   start: [Play, "Start"],
   pause: [Pause, "Pause"],
   stop: [Square, "Stop"],

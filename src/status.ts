@@ -5,9 +5,9 @@
 // deployment report (`state/deployment.json`, #532) with every derived answer
 // already in it; this module renders that file and derives nothing. A pipeline's
 // state and its `wedged?` verdict are the report's, the doctor verdict is the
-// report's, the crash-loop record is the report's. So `phoebe status`, the web
-// console and the companion cannot disagree about a deployment, because only one
-// of them ever decides anything (#501).
+// report's, the crash-loop record is the report's. So `phoebe status` and the
+// companion cannot disagree about a deployment, because only one of them ever
+// decides anything (#501).
 //
 // **One verb, either side of the wall.** The data volume is a named Compose
 // volume, so the host has no path into `state/`. Inside the container status
@@ -29,12 +29,11 @@
 import { readFileSync } from "node:fs";
 import type {
   ChildLiveness,
-  DeploymentIdentity,
   DeploymentReport,
   FleetCell,
-  RelayReport,
   TenantFacts,
 } from "./contracts/deployment.ts";
+import type { RemoteReport } from "./contracts/remote-protocol.ts";
 import type { DoctorReport, DoctorSection } from "./contracts/doctor.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentField } from "./config-schema.ts";
@@ -94,7 +93,7 @@ export function parseStatusArgs(
 export const STATUS_HELP_TEXT = `phoebe status — what this deployment is doing, from its own report
 
 Usage:
-  phoebe status              The text view (bootstrapper, relay, fleet, doctor)
+  phoebe status              The text view (bootstrapper, remote, fleet, doctor)
   phoebe status --verbose    ...with doctor's full table inlined
   phoebe status --json       Print state/deployment.json verbatim
   phoebe status --check      Exit 1 when something needs a look
@@ -126,7 +125,7 @@ Use \`phoebe status\`; this alias goes away at the next major.
 /** The one-line notice `phoebe list` prints before its output (#508 §3). */
 export const LIST_DEPRECATION_NOTICE =
   "[phoebe] `phoebe list` is deprecated: `phoebe status` shows this same fleet section " +
-  "plus the bootstrapper, relay and doctor lines. The alias goes away at the next major.";
+  "plus the bootstrapper, remote and doctor lines. The alias goes away at the next major.";
 
 /** The report as it sits on disk: the parsed object and the bytes it came from. */
 export type ReportFile = { raw: string; report: DeploymentReport };
@@ -203,29 +202,22 @@ export function formatBootstrapperLine(
 }
 
 /**
- * The relay line, or null when this deployment has no relay. Facts only — what
- * the relay itself makes of the connection is the relay's to say (#507 §8), and
- * whether the pairing is healthy is doctor's.
+ * The remote line, or null when this deployment has no `remote` block (map
+ * #690). Facts only: the arm, the tailnet URL once the deployment learned it,
+ * how many devices are paired, and the one flag worth a word on this line —
+ * whether the sessions file moved under the bootstrapper. Whether a device can
+ * reach it is the companion's own reading, not the deployment's.
  */
-export function formatRelayLine(
-  relay: RelayReport | undefined,
-  identity: DeploymentIdentity,
-  now: number,
-): string | null {
-  if (relay === undefined || !relay.configured) return null;
-  const parts = [`${relay.state} ${sinceOf(relay.updatedAt, now)}`];
-  if (relay.state === "reconnecting" && relay.nextRetryAt !== null) {
-    const at = Date.parse(relay.nextRetryAt);
-    parts.push(Number.isFinite(at) ? `next retry in ${formatAge(at - now)}` : "next retry unknown");
-  }
-  if (relay.lastClose !== null) {
-    parts.push(`last close ${relay.lastClose.code} ${ageOf(relay.lastClose.at, now)}`);
-  }
-  // The name and the key are the deployment identity the report already
-  // carries (#540), not the relay section: the section says where the link
-  // stands, identity says who is standing there.
-  if (identity.keyFingerprint !== undefined) parts.push(identity.keyFingerprint);
-  return `[phoebe] relay         ${identity.name}  ${parts.join("  ")}`;
+export function formatRemoteLine(remote: RemoteReport | undefined, now: number): string | null {
+  if (remote === undefined || !remote.configured) return null;
+  const parts = [`${remote.arm ?? "?"} arm`];
+  parts.push(remote.url ?? "no tailnet URL yet");
+  const { active, expired } = remote.sessions;
+  const devices = `${active} device${active === 1 ? "" : "s"} paired`;
+  parts.push(expired > 0 ? `${devices} (${expired} expired)` : devices);
+  if (remote.tampered) parts.push("sessions file tampered — see doctor");
+  parts.push(`updated ${ageOf(remote.updatedAt, now)}`);
+  return `[phoebe] remote        ${parts.join("  ")}`;
 }
 
 /** The tenant's own columns, as `phoebe list` has always shown them. */
@@ -401,7 +393,7 @@ export type StatusView = {
 
 /**
  * The whole text view, in the priority order #508 §2 fixes: what the
- * bootstrapper is doing, then the relay, then the fleet, then doctor. Priority
+ * bootstrapper is doing, then the remote line, then the fleet, then doctor. Priority
  * order is the point — an operator reads down until something is wrong and
  * stops.
  */
@@ -417,8 +409,8 @@ export function formatStatusReport(view: StatusView): string {
     return lines.join("\n");
   }
   lines.push(formatBootstrapperLine(report, { now, withReportAge: view.bootAlive }));
-  const relay = formatRelayLine(report.relay, report.identity, now);
-  if (relay !== null) lines.push(relay);
+  const remote = formatRemoteLine(report.remote, now);
+  if (remote !== null) lines.push(remote);
   lines.push(formatFleetSection(report, now));
   lines.push(formatDoctorLine(report.doctor, now));
   if (view.verbose && report.doctor?.report != null && view.doctorTable !== undefined) {

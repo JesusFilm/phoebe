@@ -32,3 +32,49 @@ describe("parseRoute", () => {
     }
   });
 });
+
+describe("a remote route (map #690)", () => {
+  test("is the record's deployment id, with an optional tab", async () => {
+    const { parseRoute, remoteHref } = await import("./route.ts");
+    expect(parseRoute("#/r/dep_YT")).toEqual({ page: "remote", deploymentId: "dep_YT", tab: null });
+    expect(parseRoute("#/r/dep_YT/doctor")).toEqual({
+      page: "remote",
+      deploymentId: "dep_YT",
+      tab: "doctor",
+    });
+    expect(parseRoute("#/r/dep_YT/nope")).toEqual({ page: "home" });
+    expect(parseRoute("#/r/dep_YT/doctor/more")).toEqual({ page: "home" });
+    expect(parseRoute("#/r")).toEqual({ page: "home" });
+    expect(remoteHref("dep_YT")).toBe("#/r/dep_YT");
+    expect(remoteHref("dep_YT", "config")).toBe("#/r/dep_YT/config");
+    expect(parseRoute(remoteHref("a/b", "secrets"))).toEqual({
+      page: "remote",
+      deploymentId: "a/b",
+      tab: "secrets",
+    });
+  });
+
+  test("its console has an address of its own, the view the rail opens", async () => {
+    const { parseRoute, remoteConsoleHref } = await import("./route.ts");
+    expect(remoteConsoleHref("dep_YT")).toBe("#/r/dep_YT/console");
+    expect(parseRoute("#/r/dep_YT/console")).toEqual({
+      page: "remote",
+      deploymentId: "dep_YT",
+      tab: null,
+      console: true,
+    });
+    // A workspace child's lines: the slug is one segment, encoded.
+    expect(remoteConsoleHref("dep_YT", "JesusFilm/phoebe")).toBe(
+      "#/r/dep_YT/console/JesusFilm%2Fphoebe",
+    );
+    expect(parseRoute("#/r/dep_YT/console/JesusFilm%2Fphoebe")).toEqual({
+      page: "remote",
+      deploymentId: "dep_YT",
+      tab: null,
+      console: true,
+      tenant: "JesusFilm/phoebe",
+    });
+    expect(parseRoute("#/r/dep_YT/console/x/y")).toEqual({ page: "home" });
+    expect(parseRoute("#/r/dep_YT/doctor/x")).toEqual({ page: "home" });
+  });
+});

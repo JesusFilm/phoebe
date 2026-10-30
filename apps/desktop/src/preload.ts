@@ -22,6 +22,11 @@ import type {
   LocalReportEvent,
   LogLine,
   LogsEnded,
+  RemoteAlertEvent,
+  RemoteLogLine,
+  RemoteLogsEnded,
+  RemoteRecord,
+  RemoteReportEvent,
   RunExit,
   RunLine,
 } from "phoebe-agent/contracts";
@@ -113,6 +118,27 @@ const bridge: DesktopBridge = {
   preferences: {
     get: () => call(BRIDGE_CHANNELS.preferencesGet),
     set: (preferences) => call(BRIDGE_CHANNELS.preferencesSet, preferences),
+  },
+  remotes: {
+    list: () => call(BRIDGE_CHANNELS.remotesList),
+    pair: (input) => call(BRIDGE_CHANNELS.remotesPair, input),
+    request: (deploymentId, passthrough) =>
+      call(BRIDGE_CHANNELS.remotesRequest, deploymentId, passthrough),
+    signOut: (deploymentId) => call(BRIDGE_CHANNELS.remotesSignOut, deploymentId),
+    forget: (deploymentId) => call(BRIDGE_CHANNELS.remotesForget, deploymentId),
+    sessions: (deploymentId) => call(BRIDGE_CHANNELS.remotesSessions, deploymentId),
+    revoke: (deploymentId, sessionId) =>
+      call(BRIDGE_CHANNELS.remotesRevoke, deploymentId, sessionId),
+    changes: (onChange) => subscribe<RemoteRecord[]>(BRIDGE_CHANNELS.remotesChanged, onChange),
+    reports: (onReport) => subscribe<RemoteReportEvent>(BRIDGE_CHANNELS.remotesReport, onReport),
+    alerts: (onAlert) => subscribe<RemoteAlertEvent>(BRIDGE_CHANNELS.remotesAlert, onAlert),
+    tailscale: () => call(BRIDGE_CHANNELS.remotesTailscale),
+    logs: {
+      follow: (deploymentId) => call(BRIDGE_CHANNELS.remotesLogsFollow, deploymentId),
+      stop: (deploymentId) => call(BRIDGE_CHANNELS.remotesLogsStop, deploymentId),
+      lines: (onLine) => subscribe<RemoteLogLine>(BRIDGE_CHANNELS.remotesLogLine, onLine),
+      ended: (onEnded) => subscribe<RemoteLogsEnded>(BRIDGE_CHANNELS.remotesLogsEnded, onEnded),
+    },
   },
 };
 

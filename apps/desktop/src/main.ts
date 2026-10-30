@@ -29,7 +29,9 @@ import {
   Menu,
   nativeTheme,
   net,
+  powerMonitor,
   protocol,
+  safeStorage,
   shell,
 } from "electron";
 import electronUpdater from "electron-updater";
@@ -42,6 +44,7 @@ import type {
   CompanionUpdate,
   LocalInstall,
   LocalReportEvent,
+  RemotePassthrough,
   VerbRun,
   VerbRunRequest,
   InstallPatch,
@@ -87,13 +90,15 @@ import { tenantFilesOf } from "./tenant-files.ts";
 import { createHarness } from "./harness.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
+import { createRemoteArm, type RemoteArm } from "./remote-arm.ts";
 import { createUpdateWatch } from "./update-watch.ts";
 import {
   defaultCommandRunner,
   formatResolveFailure,
   resolveDeploymentCompose,
 } from "../../../src/deployment-compose.ts";
-import { CHECK_EVERY_MS, createCompanionUpdates } from "./updates.ts";
+import { findTailscaleCli, parseTailscaleStatus } from "../../../src/tailscale-serve.ts";
+import { CHECK_EVERY_MS, createCompanionUpdates, type UpdaterControls } from "./updates.ts";
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 import {
@@ -356,6 +361,39 @@ const runs = createVerbRuns({
   },
 });
 
+/**
+ * The remote arm (map #690): the deployments paired over Tailscale, each with a
+ * supervisor holding its stream, the alert rule run over each as it moves, and
+ * the bearers in the keyring. Built once the app is ready, because `userData`
+ * and `safeStorage` are Electron's to name then; held at module scope for the
+ * same reason the read loop is — a window can come and go, and what a
+ * supervisor knows must not.
+ */
+let remotes: RemoteArm | null = null;
+
+/** The arm, or the refusal every call before the app is ready gets. */
+function remoteArm(): RemoteArm {
+  if (remotes === null) {
+    throw new BridgeRefusal({
+      code: "not-initialised",
+      message: "the companion is still starting",
+    });
+  }
+  return remotes;
+}
+
+/** `tailscale status --json` on this machine, read down to whether it is Running. */
+async function tailscaleStatus(): Promise<{ running: boolean; detail: string } | null> {
+  const cli = findTailscaleCli({ run: defaultCommandRunner, fetchFn: fetch });
+  if (cli === null) return null;
+  const result = await defaultCommandRunner({ file: cli.file, args: ["status", "--json"] }).catch(
+    () => ({ code: 1, stdout: "", stderr: "" }),
+  );
+  if (result.code !== 0) return { running: false, detail: "not answering" };
+  const status = parseTailscaleStatus(result.stdout);
+  if (status === null) return { running: false, detail: "not answering" };
+  return { running: status.backendState === "Running", detail: status.backendState };
+}
 // Phoebe's mark (scripts/build-icon.mjs). A packaged build carries it in the
 // executable, the bundle or the AppImage, so this is for the window's own
 // frame and for an unpackaged launch, which would otherwise show Electron's.
@@ -368,6 +406,27 @@ const APP_ICON = path.join(
   "icon",
   process.platform === "win32" ? "phoebe.ico" : "phoebe-256.png",
 );
+
+/**
+ * What the updates arm is handed in a checkout, where it is "unsupported"
+ * from the first state and drives nothing. Every control refuses, so a path
+ * that reached one would say so rather than touch a feed.
+ */
+const UNPACKAGED_UPDATER: UpdaterControls = {
+  autoDownload: false,
+  autoInstallOnAppQuit: false,
+  allowDowngrade: false,
+  setFeedURL: () => {
+    throw new Error("a checkout updates with git, not with the updater");
+  },
+  checkForUpdates: () =>
+    Promise.reject(new Error("a checkout updates with git, not with the updater")),
+  downloadUpdate: () =>
+    Promise.reject(new Error("a checkout updates with git, not with the updater")),
+  quitAndInstall: () => {
+    throw new Error("a checkout updates with git, not with the updater");
+  },
+};
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -394,6 +453,10 @@ function createWindow(): void {
     void shell.openExternal(url);
     return { action: "deny" };
   });
+
+  // A window coming back to the front is a person looking: every remote that
+  // was waiting on its ladder tries now (#697).
+  window.on("focus", () => remotes?.poke());
 
   void window.loadURL(consoleSource(process.argv));
 }
@@ -478,9 +541,16 @@ app.whenReady().then(
     // The companion's own updates (#525 §3). Built here rather than at import
     // time because the feed it chooses is read from `companion.json`, and the
     // directory that file lives in is Electron's to name once the app is ready.
-    const { autoUpdater } = electronUpdater;
+    //
+    // `electron-updater`'s `autoUpdater` is a getter that builds the platform
+    // updater on first touch and refuses an app version that is not semver.
+    // A checkout's is not — apps/desktop/package.json carries no version, so
+    // Electron reports `0.0` — and the throw landed here, before the window
+    // existed, on every `vp run ui`. A checkout updates with git, so an
+    // unpackaged companion never touches the updater at all.
+    const autoUpdater = app.isPackaged ? electronUpdater.autoUpdater : null;
     const updates = createCompanionUpdates({
-      updater: autoUpdater,
+      updater: autoUpdater ?? UNPACKAGED_UPDATER,
       platform: process.platform,
       packaged: app.isPackaged,
       // The newest stable release there is (update-feed.ts).
@@ -490,14 +560,16 @@ app.whenReady().then(
 
     // Main is the only listener the updater has; the window hears about all of
     // this through the state the arm keeps.
-    autoUpdater.on("update-available", (info) => updates.available(info.version));
-    autoUpdater.on("update-not-available", () => updates.notAvailable());
-    autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
-    autoUpdater.on("update-downloaded", (info) => {
-      updates.downloaded(info.version);
-      void offerRestart(info.version);
-    });
-    autoUpdater.on("error", (error) => updates.failed(error));
+    if (autoUpdater !== null) {
+      autoUpdater.on("update-available", (info) => updates.available(info.version));
+      autoUpdater.on("update-not-available", () => updates.notAvailable());
+      autoUpdater.on("download-progress", (progress) => updates.progress(progress.percent));
+      autoUpdater.on("update-downloaded", (info) => {
+        updates.downloaded(info.version);
+        void offerRestart(info.version);
+      });
+      autoUpdater.on("error", (error) => updates.failed(error));
+    }
 
     // The token is an argument here for the same reason a secret's value is
     // a run argument (contracts/verb-run.ts): it is held for the call, and
@@ -771,6 +843,71 @@ app.whenReady().then(
       }),
     );
 
+    remotes = createRemoteArm({
+      userDataDir: app.getPath("userData"),
+      safeStorage,
+      // Chromium's network stack rather than Node's, so the machine's proxy
+      // settings apply to a tailnet address the way they do to any other.
+      fetchFn: (input, init) =>
+        net.fetch(
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+          init,
+        ),
+      alerts,
+      tailscaleStatus,
+      emit: {
+        changed: (records) => broadcast(BRIDGE_CHANNELS.remotesChanged, records),
+        report: (event) => broadcast(BRIDGE_CHANNELS.remotesReport, event),
+        alert: (event) => {
+          broadcast(BRIDGE_CHANNELS.remotesAlert, event);
+          showBadge();
+        },
+        logLine: (line) => broadcast(BRIDGE_CHANNELS.remotesLogLine, line),
+        logsEnded: (end) => broadcast(BRIDGE_CHANNELS.remotesLogsEnded, end),
+      },
+      log: (line) => console.log(line),
+    });
+    const arm = remotes;
+    ipcMain.handle(BRIDGE_CHANNELS.remotesList, () => answering(() => remoteArm().list()));
+    ipcMain.handle(
+      BRIDGE_CHANNELS.remotesPair,
+      (_event, input: { url: string; code: string; label: string }) =>
+        answering(() => remoteArm().pair(input)),
+    );
+    ipcMain.handle(
+      BRIDGE_CHANNELS.remotesRequest,
+      (_event, deploymentId: string, passthrough: RemotePassthrough) =>
+        answering(() => remoteArm().request(deploymentId, passthrough)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesSignOut, (_event, deploymentId: string) =>
+      answering(() => remoteArm().signOut(deploymentId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesForget, (_event, deploymentId: string) =>
+      answering(() => remoteArm().forget(deploymentId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesSessions, (_event, deploymentId: string) =>
+      answering(() => remoteArm().sessions(deploymentId)),
+    );
+    ipcMain.handle(
+      BRIDGE_CHANNELS.remotesRevoke,
+      (_event, deploymentId: string, sessionId: string) =>
+        answering(() => remoteArm().revoke(deploymentId, sessionId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesTailscale, () =>
+      answering(() => remoteArm().tailscale()),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesLogsFollow, (_event, deploymentId: string) =>
+      answering(() => remoteArm().followLogs(deploymentId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesLogsStop, (_event, deploymentId: string) =>
+      answering<void>(() => remoteArm().stopLogs(deploymentId)),
+    );
+    // The machine waking and the network coming back are the two other moments
+    // a remote on its ladder should try now rather than wait out a rung (#697).
+    powerMonitor.on("resume", () => arm.poke());
+    powerMonitor.on("unlock-screen", () => arm.poke());
+    arm.start();
+
     createWindow();
     updateWatch.refresh();
 
@@ -820,6 +957,7 @@ app.whenReady().then(
 app.on("before-quit", () => {
   reads.stop();
   logs.stopAll();
+  remotes?.stop();
 });
 
 app.on("window-all-closed", () => {

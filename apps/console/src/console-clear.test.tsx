@@ -267,6 +267,30 @@ describe("the clear button", () => {
     expect(box.querySelector(".console-ended")?.textContent).toBe("the container exited (code 0)");
   });
 
+  test("a stream refused before a line came says so in the pane, not under it", async () => {
+    const stream = streams();
+    const box = await mount(
+      <ConsoleView
+        bridge={{
+          ...stream.bridge,
+          logs: {
+            ...stream.bridge.logs,
+            follow: () =>
+              Promise.reject(new Error("this deployment keeps no output to show; update it")),
+          },
+        }}
+        install={INSTALL}
+        host={null}
+        onSettings={() => undefined}
+      />,
+    );
+    expect(box.querySelector(".console-quiet")?.textContent).toBe(
+      "this deployment keeps no output to show; update it",
+    );
+    expect(box.querySelector(".console-refused")).not.toBeNull();
+    expect(box.querySelector(".console-ended")).toBeNull();
+  });
+
   test("on the cli tab drops the past runs and keeps what the run says next", async () => {
     const stream = streams(run("run-1", ["pulling the image", "started"]));
     const box = await mount(
