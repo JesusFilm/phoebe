@@ -19,6 +19,10 @@ Phoebe does not ship a model of its own. It drives Claude Code, Cursor, or
 Codex as a child process and is the part those tools lack. It decides what is
 next, hands the work over, checks the result, and moves on to the next ticket.
 
+<p align="center">
+  <img src="docs/assets/companion-remote.png" width="900" alt="The Phoebe companion open on a deployment paired over Tailscale. The rail on the left lists this machine's installs and the remote host; the console on the right streams the deployment's boot, work and intake logs." />
+</p>
+
 ## Who it is for
 
 - **Developers who use AI coding tools** and have noticed that the chat window
