@@ -29,7 +29,7 @@ import type { ConfigEditValue } from "./config-edit.ts";
 import type { DoctorSection } from "./doctor.ts";
 import type { TenantEffectiveConfig } from "./effective-config.ts";
 import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
-import type { RemoteReport } from "./remote-protocol.ts";
+import type { FleetStop, RemoteReport } from "./remote-protocol.ts";
 import type { SecretsSection } from "./secrets.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
 
@@ -154,6 +154,13 @@ export type BootstrapperReport = {
   /** One entry per supervised pipeline, keyed the same as the fleet's cells. */
   children: ChildLiveness[];
   slots: SlotReport;
+  /**
+   * The fleet is held down by a paired device (map #690): every pipeline
+   * drained, nothing respawned until a start. Null while it runs; absent on a
+   * report from a bootstrapper that predates the verb, which a reader treats
+   * as running. An addition, so it does not move {@link DEPLOYMENT_SCHEMA}.
+   */
+  stopped?: FleetStop | null;
   updatedAt: string;
 };
 

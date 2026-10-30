@@ -23,6 +23,8 @@ import { join } from "node:path";
 import type {
   PairResult,
   RemoteAlertEvent,
+  RemoteLogLine,
+  RemoteLogsEnded,
   RemotePassthrough,
   RemoteRecord,
   RemoteReportEvent,
@@ -36,6 +38,7 @@ import { ALERT_DARK_AFTER_MS } from "../../../src/contracts/alerts.ts";
 import { ESTABLISH_TIMEOUT_MS } from "../../console/src/reachability.ts";
 import type { CompanionAlerts } from "./alerting.ts";
 import { BridgeRefusal } from "./channels.ts";
+import { createRemoteLogs, type RemoteLogs } from "./remote-logs.ts";
 import {
   createRemoteSupervisor,
   type RemoteSupervisor,
@@ -61,11 +64,13 @@ export type RemoteArmDeps = {
   safeStorage: SafeStorageLike;
   fetchFn: typeof fetch;
   alerts: CompanionAlerts;
-  /** The three channels main broadcasts on. */
+  /** The channels main broadcasts on. The two log channels are optional for a test that follows none. */
   emit: {
     changed: (records: RemoteRecord[]) => void;
     report: (event: RemoteReportEvent) => void;
     alert: (event: RemoteAlertEvent) => void;
+    logLine?: (line: RemoteLogLine) => void;
+    logsEnded?: (end: RemoteLogsEnded) => void;
   };
   /** `tailscale status` on this machine, uncached; null when there is no CLI. */
   tailscaleStatus?: () => Promise<TailscaleCheck>;
@@ -90,6 +95,9 @@ export type RemoteArm = {
   sessions: (deploymentId: string) => Promise<SessionRow[]>;
   revoke: (deploymentId: string, sessionId: string) => Promise<RevokeOutcome>;
   tailscale: () => Promise<TailscaleCheck>;
+  /** Follow one remote's output over `GET /api/logs` (remote-logs.ts), the bearer added here. */
+  followLogs: (deploymentId: string) => Promise<string[]>;
+  stopLogs: (deploymentId: string) => void;
   /** Start every record's supervisor. */
   start: () => void;
   /** Network back, machine awake, window focused. */
@@ -133,6 +141,12 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
     createBearerVault({ safeStorage: deps.safeStorage, userDataDir: deps.userDataDir });
   const live = new Map<string, Live>();
   let tailscaleCached: { at: number; answer: TailscaleCheck } | null = null;
+  const logs: RemoteLogs = createRemoteLogs({
+    fetchFn: deps.fetchFn,
+    onLine: (line) => deps.emit.logLine?.(line),
+    onEnded: (end) => deps.emit.logsEnded?.(end),
+    log,
+  });
 
   const readingOf = (deploymentId: string): SupervisorReading =>
     live.get(deploymentId)?.reading ?? { reachability: "dark", descriptor: null };
@@ -236,6 +250,9 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
   };
 
   const retire = (deploymentId: string): void => {
+    // A record going, or being paired again, takes its log stream with it:
+    // the next follow opens on the new bearer.
+    logs.stop(deploymentId);
     const entry = live.get(deploymentId);
     if (entry === undefined) return;
     clearDark(entry);
@@ -386,6 +403,19 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
         };
       }
       const deploymentId = descriptor["deploymentId"];
+      if (existing !== null) {
+        // Pair again replaces this device's session, so the old one must not
+        // outlive it on the deployment: a device that paired again to give up
+        // operate would otherwise still hold it there. Best effort, with the
+        // bearer the vault still holds; the deployment expires it on its own
+        // when this does not land.
+        retire(deploymentId);
+        try {
+          await call(existing, { method: "DELETE", path: REMOTE_ROUTES.session });
+        } catch {
+          // Unreachable now: the new session is what counts from here.
+        }
+      }
       vault.write(deploymentId, body["token"]);
       const record: StoredRemote =
         existing === null
@@ -493,6 +523,15 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
       return { outcome: "failed", detail: `the deployment answered ${answer.status}` };
     },
 
+    followLogs(deploymentId) {
+      const stored = held(deploymentId);
+      return logs.follow(deploymentId, { url: stored.url, bearer: vault.read(deploymentId) });
+    },
+
+    stopLogs(deploymentId) {
+      logs.stop(deploymentId);
+    },
+
     start() {
       for (const stored of store.list()) supervise(stored);
     },
@@ -504,6 +543,7 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
     stop() {
       // Deleting from a Map mid-iteration is defined; the walk carries on.
       for (const deploymentId of live.keys()) retire(deploymentId);
+      logs.stopAll();
     },
   };
 }

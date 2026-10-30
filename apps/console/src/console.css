@@ -1002,6 +1002,11 @@ details.why > summary::marker {
   color: var(--console-dim);
 }
 
+/* A stream that was refused, or ended before a line came: the pane's one line. */
+.console-quiet.console-refused {
+  color: var(--fail);
+}
+
 .console-ended {
   margin: 0;
   padding: 4px 12px;
@@ -2193,4 +2198,46 @@ a.button {
   border-radius: 6px;
   color: inherit;
   text-decoration: none;
+}
+
+/* A remote row lays out as a local one (map #690): the name opens the console,
+   the gear at the edge opens the tabbed page. */
+.rail-entry.remote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+  padding: 0;
+}
+
+.rail-entry.remote .rail-select {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 14px 6px 11px;
+}
+
+.rail-entry.remote .rail-summary {
+  width: 100%;
+}
+
+.rail-entry.remote .rail-chevron {
+  margin-left: 11px;
+  margin-right: -8px;
+}
+
+.rail-entry.remote .rail-children {
+  flex-basis: 100%;
+}
+
+.rail-entry.remote .rail-gear {
+  color: var(--muted);
+}
+
+.rail-entry.remote:hover {
+  background: var(--chip);
+}
+
+.rail-entry.remote.current {
+  background: var(--chip);
 }

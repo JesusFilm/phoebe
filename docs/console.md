@@ -179,14 +179,52 @@ this machine is a line above the host sections and a banner on the home page.
 **+ add remote** opens one modal with one field, which takes the pairing link
 `phoebe pair` printed or a bare address; a bare address shows a code field.
 Plus a label for this device. It says where the row landed: a new host, an
-existing one, or a second route for a folder already here. **Sign out** on a
-remote's connection card removes the row, and its section when it was the last;
-a joined deployment's folder stays under This machine. A blocked row stays until
-you pair again or **forget** it.
+existing one, or a second route for a folder already here. A blocked row stays
+until you pair again or **forget** it.
+
+The page's **Session** card is where a paired remote is changed or let go.
+**Pair again** opens the same modal with the address and the label filled in.
+The new code's scopes become this device's, so a code from
+`phoebe pair --operate` is how a read-only device gains operate, and one from
+`phoebe pair` is how it gives operate up. The row keeps its name, its last
+report and what it had already notified, and the old session ends on the
+deployment as the new one lands. **Remove** asks first, as a local install's
+Forget does. It drops the row, and its section when it was the last, and ends
+this device's session on the deployment when it can be reached. The deployment
+itself keeps running. A joined deployment's folder stays under This machine.
+
+A remote's row is drawn as a local row is: the host's mark beside the name,
+the state under it, the shortcuts and the gear at the edge, and on a
+workspace the chevron that opens it out to its tenants. The shortcuts are the
+fleet's **pause** while it runs and **start** while it is held, the two verbs
+the API has; the container's stop and restart stay on the host, and the row
+does not pretend otherwise. A session paired with `read` only sees no
+shortcut at all. What the pairing did not grant is left off the row rather
+than drawn disabled. While the deployment is answering, a spinner stands
+where the shortcuts were, and the row reads the next report for what
+happened. A tenant's row under a workspace opens the console on that tenant's
+lines, as it does under a local workspace.
+
+A remote's row opens its console, as a local row does. It shows the
+deployment's own output over the API, with the same tabs per pipeline, the
+same header saying what is working and what is wrong, and the same eraser.
+The lines come off the deployment rather than off Docker, and the deployment
+redacts its secrets before they leave it ([`remote.md`](remote.md)). There is
+no `cli` tab, since nothing runs on this machine for a remote. The gear at the
+row's edge opens the tabbed page. A deployment running a bootstrapper from
+before the console existed answers the stream with a refusal, and the pane
+says so in place of its lines: `this deployment keeps no output to show;
+update it`.
 
 The remote route's page has the same five tabs as a local install's. Its
 connection card shows reachability, the host, the arm, the protocol, when it
-was last heard from, the session's scopes and expiry, and sign out. Under the
+was last heard from, and the session's scopes and expiry. Above the
+session, **This deployment** says whether the fleet is running and carries
+**Stop** and **Start**. Stop drains every pipeline and holds the fleet with the
+container and the API up, which is what lets Start bring it back from the
+same page. Both need `operate`. The row says `fleet stopped` while it is, and
+the overview's Fleet line says who stopped it and when. Taking the container
+itself down stays `phoebe stop` on the host. Under the
 cards, on remote routes and on local installs that carry a `remote` block, the
 **Devices** panel lists every session the deployment holds: label, device and
 OS, who paired, scopes, last seen, expiry, a revoke per row that needs

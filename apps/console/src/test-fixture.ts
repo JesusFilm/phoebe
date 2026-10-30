@@ -324,6 +324,12 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
         return () => undefined;
       },
       tailscale: () => Promise.resolve(answers.tailscale ?? { running: true, detail: "Running" }),
+      logs: {
+        follow: () => Promise.resolve(answers.remoteLogs ?? []),
+        stop: () => Promise.resolve(),
+        lines: () => () => undefined,
+        ended: () => () => undefined,
+      },
     },
     version: () => Promise.resolve("0.13.0"),
     environment: () => Promise.resolve(answers.environment ?? environment()),
@@ -493,6 +499,8 @@ export type BridgeAnswers = {
   sessions?: SessionRow[];
   remoteReports?: RemoteReportEvent[];
   remoteAlerts?: RemoteAlertEvent[];
+  /** What `remotes.logs.follow` hands a pane that opens: the deployment's backlog. */
+  remoteLogs?: string[];
   tailscale?: { running: boolean; detail: string } | null;
   /** Where the companion's own update stands (#525 §3). */
   update?: CompanionUpdate;

@@ -29,6 +29,7 @@ async function open(
   answer: PairResult,
   props: {
     prefill?: string;
+    prefillLabel?: string;
     records?: ReturnType<typeof record>[];
     joined?: boolean;
     tailscale?: boolean | null;
@@ -54,6 +55,7 @@ async function open(
         bridge={b}
         defaultLabel="this companion"
         prefill={props.prefill ?? ""}
+        {...(props.prefillLabel === undefined ? {} : { prefillLabel: props.prefillLabel })}
         records={props.records ?? []}
         joinedInstallOf={() => (props.joined ? install({ dir: "/repos/ys" }) : null)}
         tailscaleRunning={props.tailscale === undefined ? true : props.tailscale}
@@ -182,20 +184,25 @@ describe("success says where the row landed", () => {
     expect(container.textContent).toContain("also the folder at /repos/ys on this machine");
   });
 
-  test("pair again opens with the address filled in and says the row kept its things", async () => {
-    await open(
-      { outcome: "paired", record: record() },
+  test("pair again opens with the address and the label filled in and says the row kept its things", async () => {
+    const { asked } = await open(
+      { outcome: "paired", record: record({ scopes: ["read"] }) },
       {
         prefill: "https://youtube-studio.tail4f2c.ts.net",
+        prefillLabel: "Mike's MacBook",
         records: [record({ reachability: "blocked", blocked: "expired" })],
       },
     );
     expect(container.textContent).toContain("Pair again");
+    expect(container.textContent).toContain("phoebe pair --operate");
     expect(input("add-remote-input").value).toBe("https://youtube-studio.tail4f2c.ts.net");
+    expect(input("add-remote-label").value).toBe("Mike's MacBook");
     await type("add-remote-code", "ABCD-EFGH-JK12");
     await pair();
+    expect(asked[0]!.label).toBe("Mike's MacBook");
     expect(container.textContent).toContain(
-      "Paired again. The row under youtube-studio.tail4f2c.ts.net kept its label",
+      "Paired again with read. The row under youtube-studio.tail4f2c.ts.net kept its label",
     );
+    expect(container.textContent).toContain("the old session ended");
   });
 });

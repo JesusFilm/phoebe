@@ -39,7 +39,7 @@ import type { DeploymentState } from "./deployment-state.ts";
 import { watchDrop, type DropWatcher } from "./file-drop.ts";
 import { MINT_DROP_DIR } from "./mint-drop.ts";
 import { createPendingCodes, parsePendingCode, type PendingCodes } from "./pairing-codes.ts";
-import { createRemoteApi, type RemoteApi, type RemoteVerbs } from "./remote-api.ts";
+import { createRemoteApi, type ApiLogs, type RemoteApi, type RemoteVerbs } from "./remote-api.ts";
 import { createSessions, type Sessions } from "./remote-sessions.ts";
 import {
   localApiGet,
@@ -80,7 +80,7 @@ export type PrepareRemoteOptions = {
   warn?: (message: string) => void;
   /** Injected by the tests; production opens a real listener. */
   deps?: {
-    api?: (verbs: RemoteVerbs) => RemoteApi;
+    api?: (verbs: RemoteVerbs, logs: ApiLogs | undefined) => RemoteApi;
     localApi?: LocalApiGet;
     readHostUrl?: () => string | null;
     setInterval?: (fn: () => void, ms: number) => { clear: () => void };
@@ -96,8 +96,12 @@ export type PreparedRemote = {
   identity: () => DeploymentIdentity;
   /** The resolved block, or undefined with none. */
   remote: ResolvedRemote | undefined;
-  /** Open the listener, the drops and the URL learner. A no-op with no block. */
-  start: (deployment: DeploymentState, verbs: RemoteVerbs) => Promise<void>;
+  /**
+   * Open the listener, the drops and the URL learner. A no-op with no block.
+   * `logs` is the container's output for `GET /api/logs`, already redacted;
+   * without it the route answers 404.
+   */
+  start: (deployment: DeploymentState, verbs: RemoteVerbs, logs?: ApiLogs) => Promise<void>;
   /** The report moved: wake every open stream. */
   push: () => void;
   /** Close everything; the deployment is going down. */
@@ -144,7 +148,7 @@ export function prepareRemote(options: PrepareRemoteOptions): PreparedRemote {
     remote,
     api: () => api,
 
-    async start(deployment, verbs) {
+    async start(deployment, verbs, logs) {
       if (remote === undefined) return;
       const store =
         options.deps?.sessions ??
@@ -181,7 +185,7 @@ export function prepareRemote(options: PrepareRemoteOptions): PreparedRemote {
 
       const build =
         options.deps?.api ??
-        ((v: RemoteVerbs) =>
+        ((v: RemoteVerbs, output: ApiLogs | undefined) =>
           createRemoteApi({
             descriptor,
             sessions: store,
@@ -194,11 +198,12 @@ export function prepareRemote(options: PrepareRemoteOptions): PreparedRemote {
               listeners.add(listener);
               return () => listeners.delete(listener);
             },
+            ...(output === undefined ? {} : { logs: output }),
             verbs: v,
             now,
             log,
           }));
-      api = build(verbs);
+      api = build(verbs, logs);
       // Pairs and revokes move the counts; the API tells nobody, so the section
       // is re-published on a short clock rather than on each.
       publish();

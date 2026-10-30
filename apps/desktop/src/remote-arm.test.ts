@@ -212,6 +212,30 @@ describe("pair", () => {
     });
     expect(h.store.list()).toHaveLength(1);
   });
+
+  test("pair again ends the old session with the old bearer, then moves to the new one", async () => {
+    const h = harness();
+    await h.arm.pair({ url: URL_, code: "x", label: "l" });
+    h.calls.length = 0;
+    await h.arm.pair({ url: URL_, code: "y", label: "l" });
+    const signOut = h.calls.find((c) => c.method === "DELETE" && c.path === "/api/session");
+    expect(signOut).toBeDefined();
+    expect(signOut!.headers["authorization"]).toBe("Bearer the-bearer");
+    expect(h.calls.indexOf(signOut!)).toBeGreaterThan(
+      h.calls.findIndex((c) => c.path === "/api/pair"),
+    );
+  });
+
+  test("a failed pair again leaves the old session alone", async () => {
+    const opts: Parameters<typeof harness>[0] = {};
+    const h = harness(opts);
+    await h.arm.pair({ url: URL_, code: "x", label: "l" });
+    h.calls.length = 0;
+    opts.pair = { status: 400, body: { error: "bad-code" } };
+    expect((await h.arm.pair({ url: URL_, code: "bad", label: "l" })).outcome).not.toBe("paired");
+    expect(h.calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(h.store.get("dep_A")).not.toBeNull();
+  });
 });
 
 describe("requests with the bearer", () => {

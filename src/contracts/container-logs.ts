@@ -4,8 +4,10 @@
 // and what it prints goes to Docker, which keeps it. `docker compose logs` is
 // the one place that output can be read back, and the companion drives Docker
 // already, so the pane is `logs --follow` on the phoebe service, streamed line
-// by line over the bridge. Nothing here reaches a relay; a remote deployment's
-// live output is still unspecified on the map (#497).
+// by line over the bridge. A remote deployment's output comes the other way
+// round: the bootstrapper keeps its last lines and serves them off `GET
+// /api/logs` (remote-protocol.ts), and they land in the same pane under the
+// same bound.
 
 /** How many lines main keeps per followed install, and the pane shows. */
 export const MAX_LOG_LINES = 2000;

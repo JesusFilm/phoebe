@@ -11,6 +11,17 @@ const base = {
 };
 
 describe("where the console is, for the pane's top line", () => {
+  test("a remote's console is under its host, after its name", () => {
+    const paired = remote({ name: "youtube-studio" });
+    expect(
+      routeCrumbs({
+        ...base,
+        route: { page: "remote", deploymentId: "dep_YT", tab: null, console: true },
+        remote: paired,
+      }),
+    ).toEqual(["youtube-studio.tail4f2c.ts.net", "youtube-studio", "Console"]);
+  });
+
   test("an open install is under This machine, on its console or its settings", () => {
     const one = install({ name: "Studio" });
     expect(routeCrumbs({ ...base, open: one })).toEqual(["This machine", "Studio", "Console"]);

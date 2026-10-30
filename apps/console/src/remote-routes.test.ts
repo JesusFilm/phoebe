@@ -16,6 +16,11 @@ import {
   raisedRows,
   remoteConnection,
   remoteJoins,
+  fleetStopOf,
+  remoteActions,
+  remoteChildren,
+  remoteHost,
+  remoteIsWorkspace,
   remoteRow,
 } from "./remote-routes.ts";
 import { readReport } from "./report.ts";
@@ -58,6 +63,72 @@ describe("the rows and their words", () => {
     );
     expect(wedged.text).toBe("connected · 1 wedged");
     expect(wedged.attention).toBe(true);
+  });
+
+  test("a fleet held down from a device is the first clause, and no problem", () => {
+    const held = remoteRow(
+      record({
+        lastReport: stored(
+          report({
+            bootstrapper: {
+              ...report().bootstrapper,
+              stopped: { by: "device:Mike's phone", at: ago(60) },
+            },
+          }),
+        ),
+      }),
+      NOW,
+    );
+    expect(held.text).toBe("connected · fleet stopped");
+    expect(held.attention).toBe(false);
+    expect(fleetStopOf(held.reading)).toEqual({ by: "device:Mike's phone", at: ago(60) });
+    expect(fleetStopOf(readReport(null))).toBeNull();
+    expect(fleetStopOf(remoteRow(record(), NOW).reading)).toBeNull();
+  });
+
+  test("the shortcuts: pause while the fleet runs, start while it is held, none without operate or a report", () => {
+    expect(remoteActions(remoteRow(record(), NOW))).toEqual(["pause"]);
+    const held = remoteRow(
+      record({
+        lastReport: stored(
+          report({
+            bootstrapper: { ...report().bootstrapper, stopped: { by: "device:x", at: ago(60) } },
+          }),
+        ),
+      }),
+      NOW,
+    );
+    expect(remoteActions(held)).toEqual(["start"]);
+    expect(remoteActions(remoteRow(record({ scopes: ["read"] }), NOW))).toEqual([]);
+    expect(remoteActions(remoteRow(record({ reachability: "disconnected" }), NOW))).toEqual([]);
+    expect(remoteActions(remoteRow(record({ reachability: "dark" }), NOW))).toEqual([]);
+    expect(remoteActions(remoteRow(record({ lastReport: null }), NOW))).toEqual([]);
+  });
+
+  test("the host off the report, and a workspace's tenants as the rail's children", () => {
+    expect(remoteHost(remoteRow(record({ lastReport: stored(report()) }), NOW).reading)).toBe(
+      "linux",
+    );
+    expect(remoteHost(readReport(null))).toBeNull();
+    const solo = remoteRow(record(), NOW).reading;
+    expect(remoteIsWorkspace(solo)).toBe(false);
+    expect(remoteChildren(solo)).toEqual([]);
+    const workspace = remoteRow(
+      record({
+        lastReport: stored(report({ identity: { name: "ws", arm: "workspace", host: "linux" } })),
+      }),
+      NOW,
+    ).reading;
+    expect(remoteIsWorkspace(workspace)).toBe(true);
+    const rows = remoteChildren(workspace);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      dir: "/etc/phoebe",
+      slug: "JesusFilm/youtube-studio",
+      label: "JesusFilm/youtube-studio",
+      enabled: true,
+    });
+    expect(["running", "idle", "attention", "stopped"]).toContain(rows[0]!.tone);
   });
 
   test("reconnecting keeps the counts; dark replaces them with how long", () => {

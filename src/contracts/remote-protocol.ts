@@ -47,6 +47,17 @@ export const REMOTE_ROUTES = {
   doctorRun: "/api/doctor-run",
   /** POST, operate — set or clear a tenant secret. */
   secrets: "/api/secrets",
+  /**
+   * GET, read — the container's output as server-sent events: a `backlog`
+   * event with the lines the deployment holds, then one `line` per line as it
+   * is printed, a comment every 25 s. Every line has the deployment's secrets
+   * redacted before it leaves.
+   */
+  logs: "/api/logs",
+  /** POST, operate — drain every pipeline and hold the fleet down. */
+  fleetStop: "/api/fleet/stop",
+  /** POST, operate — release the hold and bring the fleet back up. */
+  fleetStart: "/api/fleet/start",
 } as const;
 
 /** What a session may do: `read` sees, `operate` changes files or the store. */
@@ -111,6 +122,30 @@ export type ReportResponse<R = unknown> = { report: R | null; builtAt: string | 
 
 /** `POST /api/doctor-run`'s answer: the runner's own words. */
 export type DoctorRunResponse = { outcome: "started" | "joined" | "refused"; detail?: string };
+
+/**
+ * `POST /api/fleet/stop` and `/api/fleet/start`'s answer. `unchanged` is a
+ * stop on a fleet already held, or a start on one already running: nothing
+ * moved, and the report says which it was.
+ */
+export type FleetVerbResponse = {
+  outcome: "stopped" | "started" | "unchanged" | "refused";
+  detail?: string;
+};
+
+/**
+ * The fleet is held down (map #690): who asked and when. Null on the report's
+ * bootstrapper section while the fleet runs. The container and the API stay
+ * up under a stop — that is what lets a device start it again — so this is
+ * not the container being down, which only `phoebe stop` on the host does.
+ */
+export type FleetStop = { by: string; at: string };
+
+/** The first event on `/api/logs`: what the deployment held when the stream opened. */
+export type LogsBacklog = { lines: string[] };
+
+/** One `line` event on `/api/logs`. */
+export type LogsLineEvent = { line: string };
 
 /** The deployment report's section (replaces the relay's). */
 export type RemoteReport = {

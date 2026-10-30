@@ -23,6 +23,8 @@ import type {
   LogLine,
   LogsEnded,
   RemoteAlertEvent,
+  RemoteLogLine,
+  RemoteLogsEnded,
   RemoteRecord,
   RemoteReportEvent,
   RunExit,
@@ -131,6 +133,12 @@ const bridge: DesktopBridge = {
     reports: (onReport) => subscribe<RemoteReportEvent>(BRIDGE_CHANNELS.remotesReport, onReport),
     alerts: (onAlert) => subscribe<RemoteAlertEvent>(BRIDGE_CHANNELS.remotesAlert, onAlert),
     tailscale: () => call(BRIDGE_CHANNELS.remotesTailscale),
+    logs: {
+      follow: (deploymentId) => call(BRIDGE_CHANNELS.remotesLogsFollow, deploymentId),
+      stop: (deploymentId) => call(BRIDGE_CHANNELS.remotesLogsStop, deploymentId),
+      lines: (onLine) => subscribe<RemoteLogLine>(BRIDGE_CHANNELS.remotesLogLine, onLine),
+      ended: (onEnded) => subscribe<RemoteLogsEnded>(BRIDGE_CHANNELS.remotesLogsEnded, onEnded),
+    },
   },
 };
 

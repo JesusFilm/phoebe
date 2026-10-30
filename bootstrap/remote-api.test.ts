@@ -721,3 +721,178 @@ describe("the sidecar arm's socket", () => {
     expect(JSON.parse(body)).toMatchObject({ arm: "sidecar", deploymentId: "dep_X" });
   });
 });
+
+describe("the console and the fleet over the API (map #690)", () => {
+  /** A deployment's output, as remote-boot hands it over: held lines, and a listener per stream. */
+  function output(lines: string[]) {
+    const listeners = new Set<(line: string) => void>();
+    return {
+      logs: {
+        lines: () => [...lines],
+        onLine: (listener: (line: string) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      print: (line: string) => {
+        lines.push(line);
+        for (const listener of listeners) listener(line);
+      },
+      listeners,
+    };
+  }
+
+  async function openLogs(h: Harness, token: string, extraDeps: Record<string, unknown> = {}) {
+    void extraDeps;
+    const controller = new AbortController();
+    const response = await fetch(`${h.url}/api/logs`, {
+      headers: auth(token),
+      signal: controller.signal,
+    });
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    return {
+      response,
+      read: async () => {
+        const { value } = await reader!.read();
+        return decoder.decode(value);
+      },
+      stop: () => controller.abort(),
+    };
+  }
+
+  test("GET /api/logs opens with the backlog, then a line per line, and counts as a stream", async () => {
+    const base = mkdtempSync(join(tmpdir(), "phoebe-api-"));
+    dirs.push(base);
+    const out = output([
+      "[phoebe] boot: engine source local",
+      "[acme:a/b:work] cycle: 1 candidate",
+    ]);
+    const sessions = createSessions(base);
+    const pending = createPendingCodes();
+    const clock = { now: T0 };
+    const api = createRemoteApi({
+      descriptor: () => ({
+        deploymentId: "dep_X",
+        name: "acme",
+        protocol: 1,
+        version: "0",
+        arm: "host",
+      }),
+      sessions,
+      pending,
+      report: () => ({ report: null, builtAt: null }),
+      onReport: () => () => {},
+      logs: out.logs,
+      now: () => clock.now,
+      keepAliveMs: 30,
+      maxStreams: 1,
+    });
+    apis.push(api);
+    const { where } = await api.listen({ arm: "host", port: 0 });
+    const h = {
+      url: `http://127.0.0.1:${where.split(":")[1]}`,
+      clock,
+      pending,
+      sessions,
+      api,
+    } as Harness;
+    const token = await paired(h);
+    const stream = await openLogs(h, token);
+    expect(stream.response.headers.get("content-type")).toContain("text/event-stream");
+    let seen = "";
+    while (!seen.includes("event: backlog")) seen += await stream.read();
+    expect(seen).toContain(
+      `data: ${JSON.stringify({ lines: ["[phoebe] boot: engine source local", "[acme:a/b:work] cycle: 1 candidate"] })}`,
+    );
+    out.print("[acme:a/b:work] cycle: done");
+    while (!seen.includes("cycle: done")) seen += await stream.read();
+    expect(seen).toContain(
+      `event: line\ndata: ${JSON.stringify({ line: "[acme:a/b:work] cycle: done" })}`,
+    );
+    while (!seen.includes(": keepalive")) seen += await stream.read();
+    expect(api.streams()).toBe(1);
+    // The cap is shared with the report stream, and so is the revoke.
+    expect((await fetch(`${h.url}/api/events`, { headers: auth(token) })).status).toBe(503);
+    api.closeStreams(sessions.list(new Date(T0))[0]!.id);
+    await expect(stream.read()).resolves.toBe("");
+    expect(out.listeners.size).toBe(0);
+    stream.stop();
+  });
+
+  test("GET /api/logs is read scope, and 404 on a deployment that keeps no output", async () => {
+    const h = await harness();
+    expect((await fetch(`${h.url}/api/logs`)).status).toBe(401);
+    const token = await paired(h, ["read"]);
+    const response = await fetch(`${h.url}/api/logs`, { headers: auth(token) });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "no-logs" });
+  });
+
+  test("fleet stop and start need operate, stamp `by` from the session, and answer the hold's own words", async () => {
+    const asked: string[] = [];
+    let held = false;
+    const h = await harness({
+      verbs: {
+        fleetStop: (by) => {
+          asked.push(`stop by ${by}`);
+          if (held) return { outcome: "unchanged", detail: "already stopped" };
+          held = true;
+          return { outcome: "stopped" };
+        },
+        fleetStart: (by) => {
+          asked.push(`start by ${by}`);
+          held = false;
+          return { outcome: "started" };
+        },
+      },
+    });
+    const reader = await paired(h, ["read"], "reader");
+    expect(
+      (await fetch(`${h.url}/api/fleet/stop`, { method: "POST", headers: auth(reader) })).status,
+    ).toBe(403);
+    const operator = await paired(h, ["read", "operate"], "operator");
+    const stop = await fetch(`${h.url}/api/fleet/stop`, {
+      method: "POST",
+      headers: auth(operator),
+    });
+    expect(await stop.json()).toEqual({ outcome: "stopped" });
+    const again = await fetch(`${h.url}/api/fleet/stop`, {
+      method: "POST",
+      headers: auth(operator),
+    });
+    expect(await again.json()).toEqual({ outcome: "unchanged", detail: "already stopped" });
+    const start = await fetch(`${h.url}/api/fleet/start`, {
+      method: "POST",
+      headers: auth(operator),
+    });
+    expect(await start.json()).toEqual({ outcome: "started" });
+    expect(asked).toEqual([
+      "stop by device:operator",
+      "stop by device:operator",
+      "start by device:operator",
+    ]);
+    // A body that carries `by` is refused; GET is not the verb.
+    const forged = await fetch(`${h.url}/api/fleet/stop`, {
+      method: "POST",
+      headers: { ...auth(operator), "content-type": "application/json" },
+      body: JSON.stringify({ by: "someone else" }),
+    });
+    expect(forged.status).toBe(400);
+    expect((await fetch(`${h.url}/api/fleet/start`, { headers: auth(operator) })).status).toBe(405);
+    expect(h.logged.join("\n")).toContain("device:operator asked for fleet stop — stopped");
+  });
+
+  test("a deployment with no hold refuses the verb in its own words", async () => {
+    const h = await harness();
+    const operator = await paired(h, ["read", "operate"]);
+    const response = await fetch(`${h.url}/api/fleet/stop`, {
+      method: "POST",
+      headers: auth(operator),
+    });
+    expect(await response.json()).toEqual({
+      outcome: "refused",
+      detail: "this deployment takes no fleet stop over the API",
+    });
+  });
+});

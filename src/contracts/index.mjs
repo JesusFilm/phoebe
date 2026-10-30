@@ -75,6 +75,9 @@ export const REMOTE_ROUTES = {
   configSet: "/api/config-set",
   doctorRun: "/api/doctor-run",
   secrets: "/api/secrets",
+  logs: "/api/logs",
+  fleetStop: "/api/fleet/stop",
+  fleetStart: "/api/fleet/start",
 };
 
 /** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */

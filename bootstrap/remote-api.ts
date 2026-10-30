@@ -24,12 +24,14 @@
 // fragment never reaches a server and there is nothing to run on it. Everything
 // else not under `/api` is 404.
 //
-// **The stream is the only push.** `GET /api/events` opens with the latest
+// **The streams are the only push.** `GET /api/events` opens with the latest
 // report, then one per change, with a comment every 25 s so a reader can tell a
 // quiet deployment from a dead socket. No `alert` event: the companion holds
 // the clocks. No replay: a client that missed something reads `/api/report`.
-// Sixteen streams at most; a revoked session's streams close at the moment of
-// revoke.
+// `GET /api/logs` is the same shape for the container's output: the lines the
+// bootstrapper holds, then one per line printed, every one redacted before it
+// leaves (redact-output.ts). Sixteen streams at most across both; a revoked
+// session's streams close at the moment of revoke.
 //
 // **The operate bodies are each verb's own input.** No `by`, no envelope, no
 // fingerprint of the deployment: the URL names the deployment, and `by` is
@@ -44,6 +46,9 @@ import {
   API_SOCKET_PATH,
   REMOTE_ROUTES,
   type DoctorRunResponse,
+  type FleetVerbResponse,
+  type LogsBacklog,
+  type LogsLineEvent,
   type PairResponse,
   type RemoteDescriptor,
   type RemoteDeviceType,
@@ -91,6 +96,20 @@ export type RemoteVerbs = {
     value: string | null;
     by: string;
   }) => Promise<SecretResponse>;
+  /** Drain every pipeline and hold the fleet down because `by` asked (fleet-hold.ts). */
+  fleetStop?: (by: string) => FleetVerbResponse;
+  /** Release the hold and bring the fleet back. */
+  fleetStart?: (by: string) => FleetVerbResponse;
+};
+
+/**
+ * The container's output, as `GET /api/logs` serves it: what is held now, and
+ * each line as it lands. Redacted before it gets here (redact-output.ts); this
+ * file sends what it is given.
+ */
+export type ApiLogs = {
+  lines: () => string[];
+  onLine: (listener: (line: string) => void) => () => void;
 };
 
 export type RemoteApiDeps = {
@@ -101,6 +120,8 @@ export type RemoteApiDeps = {
   report: () => { report: DeploymentReport | null; builtAt: string | null };
   /** Called with a function to run on every report write; returns the unsubscribe. */
   onReport: (listener: () => void) => () => void;
+  /** The output to serve. Without it `/api/logs` answers 404: this deployment keeps none. */
+  logs?: ApiLogs;
   verbs?: RemoteVerbs;
   now?: () => number;
   log?: (line: string) => void;
@@ -275,6 +296,81 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
     streams.set(response, { sessionId: caller.row.id, close });
     request.on("close", close);
     response.on("close", close);
+  }
+
+  /**
+   * The output stream: the backlog first, so a pane opens full, then a line
+   * per line. Counted with the report streams, and closed with them on a
+   * revoke, because to the cap and to the session they are the same thing: an
+   * open socket this bearer holds.
+   */
+  function logsStream(
+    request: IncomingMessage,
+    response: ServerResponse,
+    caller: Caller,
+    logs: ApiLogs,
+  ): void {
+    if (streams.size >= maxStreams) {
+      json(response, 503, { error: "too-many-streams", max: maxStreams });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    response.write(": connected\n\n");
+    const backlog: LogsBacklog = { lines: logs.lines() };
+    response.write(`event: backlog\ndata: ${JSON.stringify(backlog)}\n\n`);
+    const unsubscribe = logs.onLine((line) => {
+      const event: LogsLineEvent = { line };
+      response.write(`event: line\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+    const beat = setInterval(() => response.write(": keepalive\n\n"), keepAliveMs);
+    beat.unref?.();
+    let closed = false;
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      clearInterval(beat);
+      unsubscribe();
+      streams.delete(response);
+      response.end();
+    };
+    streams.set(response, { sessionId: caller.row.id, close });
+    request.on("close", close);
+    response.on("close", close);
+  }
+
+  /** Stop or start the fleet. The body is empty; `by` is the session's. */
+  async function fleetVerb(
+    request: IncomingMessage,
+    response: ServerResponse,
+    caller: Caller,
+    verb: "stop" | "start",
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    if (body === "too-large") return json(response, 413, { error: "body-too-large" });
+    if (typeof body === "object" && body !== null && "by" in (body as object)) {
+      return json(response, 400, { error: "bad-request" });
+    }
+    const run = verb === "stop" ? deps.verbs?.fleetStop : deps.verbs?.fleetStart;
+    let answer: FleetVerbResponse;
+    if (run === undefined) {
+      answer = {
+        outcome: "refused",
+        detail: `this deployment takes no fleet ${verb} over the API`,
+      };
+    } else {
+      try {
+        answer = run(caller.by);
+      } catch (error) {
+        answer = { outcome: "refused", detail: messageOf(error) };
+      }
+    }
+    log(`[phoebe] remote: ${caller.by} asked for fleet ${verb} — ${answer.outcome}.`);
+    json(response, 200, answer);
   }
 
   async function configSet(
@@ -472,6 +568,24 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
       const caller = gate(request, response, "operate");
       if (caller === null) return;
       return secrets(request, response, caller);
+    }
+    if (path === REMOTE_ROUTES.logs) {
+      if (method !== "GET") return json(response, 405, { error: "method-not-allowed" });
+      const caller = gate(request, response, "read");
+      if (caller === null) return;
+      if (deps.logs === undefined) return json(response, 404, { error: "no-logs" });
+      return logsStream(request, response, caller, deps.logs);
+    }
+    if (path === REMOTE_ROUTES.fleetStop || path === REMOTE_ROUTES.fleetStart) {
+      if (method !== "POST") return json(response, 405, { error: "method-not-allowed" });
+      const caller = gate(request, response, "operate");
+      if (caller === null) return;
+      return fleetVerb(
+        request,
+        response,
+        caller,
+        path === REMOTE_ROUTES.fleetStop ? "stop" : "start",
+      );
     }
     return json(response, 404, { error: "not-found" });
   }

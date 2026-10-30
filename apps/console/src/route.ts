@@ -21,7 +21,20 @@ export type Route =
   | { page: "add" }
   | { page: "settings" }
   | { page: "setup" }
-  | { page: "remote"; deploymentId: string; tab: DeploymentTab | null };
+  /**
+   * `console` is the remote's console (console-view.tsx), `#/r/<id>/console`:
+   * the view the rail opens, as it opens a local install's; the tabbed page
+   * is behind the gear, as a local install's is. `tenant` is a workspace
+   * child's slug, `#/r/<id>/console/<slug>`: the console on that tenant's
+   * lines, as a local workspace child's row opens it.
+   */
+  | {
+      page: "remote";
+      deploymentId: string;
+      tab: DeploymentTab | null;
+      console?: true;
+      tenant?: string;
+    };
 
 export const HOME_ROUTE: Route = { page: "home" };
 
@@ -49,7 +62,15 @@ export function remoteHref(deploymentId: string, tab?: DeploymentTab): string {
   return `#/r/${encodeURIComponent(deploymentId)}${tab === undefined ? "" : `/${tab}`}`;
 }
 
+/** The hash for one remote's console, or for the console on one of its tenants. */
+export function remoteConsoleHref(deploymentId: string, tenant?: string): string {
+  return `#/r/${encodeURIComponent(deploymentId)}/console${
+    tenant === undefined ? "" : `/${encodeURIComponent(tenant)}`
+  }`;
+}
+
 const TABS: readonly string[] = ["overview", "pipelines", "doctor", "secrets", "config"];
+const CONSOLE = "console";
 /**
  * Setting up this machine (setup-page.tsx): what Docker needs and the buttons
  * that get it there. Where the companion opens when Docker is not ready.
@@ -66,12 +87,24 @@ export function parseRoute(hash: string): Route {
     .filter((segment) => segment !== "");
   if (segments[0] === "add" && segments[1] === undefined) return ADD_ROUTE;
   if (segments[0] === "settings" && segments[1] === undefined) return SETTINGS_ROUTE;
-  if (segments[0] === "r" && segments[1] !== undefined && segments[3] === undefined) {
+  if (segments[0] === "r" && segments[1] !== undefined) {
     const tab = segments[2];
+    const deploymentId = decodeURIComponent(segments[1]);
+    if (tab === CONSOLE && segments[4] === undefined) {
+      const tenant = segments[3];
+      return {
+        page: "remote",
+        deploymentId,
+        tab: null,
+        console: true,
+        ...(tenant === undefined ? {} : { tenant: decodeURIComponent(tenant) }),
+      };
+    }
+    if (segments[3] !== undefined) return HOME_ROUTE;
     if (tab !== undefined && !TABS.includes(tab)) return HOME_ROUTE;
     return {
       page: "remote",
-      deploymentId: decodeURIComponent(segments[1]),
+      deploymentId,
       tab: tab === undefined ? null : (tab as DeploymentTab),
     };
   }

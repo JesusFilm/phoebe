@@ -18,12 +18,15 @@
 
 import type {
   DeploymentReport,
+  FleetStop,
+  HostPlatform,
   LocalInstall,
   LocalReportEvent,
   PairResult,
   RemoteRecord,
 } from "phoebe-agent/contracts";
 import { age } from "./facts.ts";
+import { crashLoopingCells, tenantChildRow, type RailChild } from "./local-install.ts";
 import { blockedLine, coarseDuration, expiryNotice, hostnameOf, portOf } from "./reachability.ts";
 import { cellsOf, childrenOf, readReport, type ReportReading } from "./report.ts";
 import type { ConnectionCard } from "./tabs.ts";
@@ -106,7 +109,12 @@ export function remoteRow(record: RemoteRecord, now: Date): RemoteRow {
     text = `dark · ${record.lastHeardAt === null ? "never heard" : coarseDuration(Math.max(0, now.getTime() - Date.parse(record.lastHeardAt)))}`;
   } else {
     const clauses = problemClauses(problems);
-    text = [state === "disconnected" ? "reconnecting" : "connected", ...clauses].join(" · ");
+    // A fleet held down from a device is not a problem, and it is the first
+    // thing to know about a row that is connected and doing nothing.
+    const stopped = fleetStopOf(reading) === null ? [] : ["fleet stopped"];
+    text = [state === "disconnected" ? "reconnecting" : "connected", ...stopped, ...clauses].join(
+      " · ",
+    );
   }
   return {
     record,
@@ -261,6 +269,74 @@ export const NEEDS_OPERATE = "needs operate: this device paired with read only";
 export const TAMPERED_BANNER =
   "sessions.json changed under the bootstrapper. A process sharing the data volume rewrote it. Every row below is shown; revoke anything you did not pair. Doctor's remote check fails until a pair or a revoke rewrites the file.";
 
+/** The fleet stop a reading carries (map #690), or null while it runs or when the report predates it. */
+export function fleetStopOf(reading: ReportReading): FleetStop | null {
+  if (reading.kind !== "read") return null;
+  const stopped = reading.report.bootstrapper?.stopped;
+  return typeof stopped === "object" && stopped !== null && typeof stopped.by === "string"
+    ? stopped
+    : null;
+}
+
+/** The shortcuts a remote row offers (rail.tsx): the fleet's start and pause, over the API. */
+export type RemoteAction = "start" | "pause";
+
+/**
+ * Which shortcuts a remote row offers. A local row offers start on a stopped
+ * install and pause, stop and restart on a running one (local-install.ts,
+ * `installActions`). Over the API the fleet is what a device can move: pause
+ * drains it and start brings it back, both with the container and the API
+ * up. The two the API has no verb for are not pretended to. Only with
+ * `operate`, and only while connected with a report to read, so a read-only
+ * session sees no shortcut at all rather than one that refuses.
+ */
+export function remoteActions(row: RemoteRow): RemoteAction[] {
+  if (!canOperate(row.record) || row.tone !== "connected" || row.reading.kind !== "read") {
+    return [];
+  }
+  return fleetStopOf(row.reading) === null ? ["pause"] : ["start"];
+}
+
+/** Where the deployment runs, as its report says it: the row's and the console's mark. */
+export function remoteHost(reading: ReportReading): HostPlatform | null {
+  return reading.kind === "read" ? (reading.report.identity?.host ?? null) : null;
+}
+
+/** A workspace deployment, by its report's own word. False until there is a report. */
+export function remoteIsWorkspace(reading: ReportReading): boolean {
+  return reading.kind === "read" && reading.report.identity?.arm === "workspace";
+}
+
+/**
+ * A remote workspace's children, as the rail lists them under the row (map
+ * #690): one per tenant the fleet reports, read the way a local workspace's
+ * are. There is no folder on this machine behind them, so `dir` is the
+ * tenant's path on the deployment, and a click opens the console on that
+ * tenant's lines.
+ */
+export function remoteChildren(reading: ReportReading): RailChild[] {
+  if (!remoteIsWorkspace(reading) || reading.kind !== "read") return [];
+  const report = reading.report;
+  const tenants = Array.isArray(report.fleet?.tenants) ? report.fleet.tenants : [];
+  const crashLooping = crashLoopingCells(report);
+  return tenants.map((tenant) =>
+    tenantChildRow(
+      report,
+      tenant,
+      { dir: tenant.path, slug: tenant.slug, label: tenant.slug ?? lastSegment(tenant.path) },
+      { errors: [], warnings: [] },
+      crashLooping,
+    ),
+  );
+}
+
+/** The last segment of a path, either separator. */
+function lastSegment(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut === -1 ? trimmed : trimmed.slice(cut + 1);
+}
+
 /** The report's remote section, read loosely off a reading. */
 export function remoteSectionOf(reading: ReportReading): DeploymentReport["remote"] | null {
   if (reading.kind !== "read") return null;
@@ -328,7 +404,7 @@ export function addSuccessLine(input: {
   const lines: string[] = [];
   if (input.repaired) {
     lines.push(
-      `Paired again. The row under ${host} kept its label, its last report and what it had already notified.`,
+      `Paired again with ${input.record.scopes.join("+")}. The row under ${host} kept its label, its last report and what it had already notified; the old session ended.`,
     );
   } else if (input.sectionHad > 0) {
     lines.push(

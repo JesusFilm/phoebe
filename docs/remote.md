@@ -264,6 +264,13 @@ deployment keeps its SHA-256 in `state/sessions.json` on the data volume, and
 the companion keeps the token in the OS keyring. From three days before expiry
 the row says so; after it, the row is blocked until you pair again.
 
+A device changes its scopes by pairing again with a new code: **Pair again**
+on the companion's session card, with a code minted for the scopes wanted. The
+companion ends its old session on the deployment as the new one lands, so a
+device that paired again to give up `operate` does not keep it in the devices
+list. When the deployment cannot be reached for that, the old session expires
+on its own.
+
 ### The devices list
 
 Every session shows in the **Devices** panel on the deployment's overview, on
@@ -277,12 +284,13 @@ and can still be revoked.
 
 | Who            | How                                                                     |
 | -------------- | ----------------------------------------------------------------------- |
-| The device     | **Sign out** in the companion. The row goes.                            |
+| The device     | **Remove** on the companion's session card. The row goes.               |
 | Another device | **Revoke** on the devices list, with `operate`.                         |
 | A shell        | `phoebe sessions` lists; `phoebe sessions revoke <id>` or `--all` ends. |
 
 A revoked device gets a 401 on its next request and its stream closes at that
-moment. Revoking yourself through the list is refused; sign out is for that.
+moment. Revoking yourself through the list is refused; sign out on your own
+row, or Remove, is for that.
 
 `phoebe sessions` runs as the container's unprivileged user, never root. A
 revoke from a shell is carried out by the bootstrapper, through a request file
@@ -308,19 +316,22 @@ other model-A limits.
 Everything is JSON. The descriptor is open; everything under `/api` takes
 `Authorization: Bearer <token>`.
 
-| Route                                | Scope     | Answers                                                                                |
-| ------------------------------------ | --------- | -------------------------------------------------------------------------------------- |
-| `GET /.well-known/phoebe/deployment` | open      | `{ deploymentId, name, protocol, version, arm }`                                       |
-| `POST /api/pair`                     | open      | `{ token, expiresAt, scopes, deploymentId }`, or `400 { error: "code-rejected" }`      |
-| `GET /api/report`                    | `read`    | `{ report, builtAt }`; `report` is null before the first write                         |
-| `GET /api/events`                    | `read`    | Server-sent events: the latest report on connect, one per change, a comment every 25 s |
-| `GET /api/session`                   | `read`    | This session: `{ id, label, scopes, issuedAt, expiresAt }`                             |
-| `DELETE /api/session`                | `read`    | Sign out, idempotent, 204                                                              |
-| `GET /api/sessions`                  | `operate` | `{ sessions, self }`                                                                   |
-| `DELETE /api/sessions/:id`           | `operate` | 204; `409 { error: "revoke-self" }` for your own                                       |
-| `POST /api/config-set`               | `operate` | `{ receipt }` for `{ id?, path, value, fingerprint }`; a refusal is still 200          |
-| `POST /api/doctor-run`               | `operate` | `{ outcome: "started" \| "joined" \| "refused", detail? }`                             |
-| `POST /api/secrets`                  | `operate` | `{ outcome, tenant, key, editId?, detail }` for `{ tenant, key, value \| null }`       |
+| Route                                | Scope     | Answers                                                                                                                    |
+| ------------------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `GET /.well-known/phoebe/deployment` | open      | `{ deploymentId, name, protocol, version, arm }`                                                                           |
+| `POST /api/pair`                     | open      | `{ token, expiresAt, scopes, deploymentId }`, or `400 { error: "code-rejected" }`                                          |
+| `GET /api/report`                    | `read`    | `{ report, builtAt }`; `report` is null before the first write                                                             |
+| `GET /api/events`                    | `read`    | Server-sent events: the latest report on connect, one per change, a comment every 25 s                                     |
+| `GET /api/session`                   | `read`    | This session: `{ id, label, scopes, issuedAt, expiresAt }`                                                                 |
+| `DELETE /api/session`                | `read`    | Sign out, idempotent, 204                                                                                                  |
+| `GET /api/sessions`                  | `operate` | `{ sessions, self }`                                                                                                       |
+| `DELETE /api/sessions/:id`           | `operate` | 204; `409 { error: "revoke-self" }` for your own                                                                           |
+| `POST /api/config-set`               | `operate` | `{ receipt }` for `{ id?, path, value, fingerprint }`; a refusal is still 200                                              |
+| `POST /api/doctor-run`               | `operate` | `{ outcome: "started" \| "joined" \| "refused", detail? }`                                                                 |
+| `POST /api/secrets`                  | `operate` | `{ outcome, tenant, key, editId?, detail }` for `{ tenant, key, value \| null }`                                           |
+| `GET /api/logs`                      | `read`    | Server-sent events: a `backlog` event `{ lines }`, then one `line` event `{ line }` per line printed, a comment every 25 s |
+| `POST /api/fleet/stop`               | `operate` | `{ outcome: "stopped" \| "unchanged" \| "refused", detail? }`                                                              |
+| `POST /api/fleet/start`              | `operate` | `{ outcome: "started" \| "unchanged" \| "refused", detail? }`                                                              |
 
 The pair body is `{ code, client: { label, deviceType: "desktop" | "mobile", os } }`.
 A missing, malformed, unknown, revoked or expired bearer is
@@ -334,6 +345,37 @@ Serve supplied one and `device:<label>` otherwise.
 
 `protocol` is the integer that moves only for a change an older client would
 misread. A client that finds a newer one than it knows stops and says so.
+
+### The console, and what never leaves
+
+The container keeps no logs of its own; Docker holds what it prints. A paired
+device has no Docker to ask, so the bootstrapper keeps its last 2000 lines in
+memory, its own and every pipeline's, and serves them off `/api/logs`. To see
+its children's lines at all it pipes their output through itself, and it
+writes each line on to Docker whole, so two pipelines printing at once cannot
+tear each other's lines.
+
+The bootstrapper redacts every line before it leaves. It learns the values it
+has held under any key that names a secret, in the deployment env it started
+with and in each tenant's `.env` and secret store as it assembles a child's
+env, and replaces them wherever they turn up in a line. It also replaces the
+token shapes it knows on sight: GitHub's prefixes, `sk-`, `tskey-`, Slack's,
+AWS access key ids, JWTs, a `Bearer` or `Authorization` value, and a
+`SOMETHING_TOKEN=value` printed outright. It leaves a git SHA alone. What the
+companion shows for a local install off Docker is not redacted; whoever can
+run `docker compose logs` on that machine can read it anyway.
+
+### Stop and start
+
+`phoebe stop` on the host takes the container down, and the listener with it,
+so a device that could do that could never start it again. A device can do
+what the bootstrapper itself can. `POST /api/fleet/stop` drains every pipeline
+and holds the fleet down, and `/api/fleet/start` brings it back. The container
+stays up, the API answers, the report keeps moving, and the agents stop
+working. The hold is `state/fleet-stop.json` on the data volume, so a container
+that restarts under a stop comes back stopped. The report's
+`bootstrapper.stopped` says who asked and when, and is null while the fleet
+runs.
 
 ## Reachability, as the companion reads it
 
@@ -392,6 +434,7 @@ print the `docker exec` line to run instead.
 ## Not here
 
 Funnel, and anything else that would expose the deployment off the tailnet. A
-console served by the deployment. A mobile companion, which is the next
-effort; it will scan the same QR and speak the same API. Operator verbs over
-the API beyond the three above. Alerting with no client running.
+console served by the deployment as a web page; the companion is the console.
+A mobile companion, which is the next effort; it will scan the same QR and
+speak the same API. Taking the container itself down or bringing it up over
+the API, which only the host can do. Alerting with no client running.

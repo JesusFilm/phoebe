@@ -10,6 +10,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { RemoteRecord, SessionRow, VerbRun } from "phoebe-agent/contracts";
+import { RemoteConsoleView } from "./console-view.tsx";
 import { DevicesPanel } from "./devices-panel.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { Rail } from "./rail.tsx";
@@ -95,8 +96,22 @@ describe("the machines on the rail", () => {
     expect(markup).toMatch(/class="rail-entry remote state-blocked[^"]*blocked/);
   });
 
-  test("the open remote is marked, and rows link to their route", () => {
-    expect(markup).toMatch(/href="#\/r\/b"[^>]*aria-current="page"/);
+  test("the open remote is marked, and rows link to their console", () => {
+    expect(markup).toMatch(/href="#\/r\/b\/console"[^>]*aria-current="page"/);
+  });
+
+  test("a row carries a gear onto its page when the rail has one, as a local row does", () => {
+    const gears = renderToStaticMarkup(
+      <Rail
+        surface="companion"
+        remotes={[remotes[0]!]}
+        now={NOW}
+        onRemote={noop}
+        onRemoteSettings={noop}
+      />,
+    );
+    expect(gears).toMatch(/class="[^"]*rail-gear[^"]*"[^>]*aria-label="Settings for zeta"/);
+    expect(markup).not.toContain("Settings for zeta");
   });
 
   test("the expiry notice from three days out, and update instead of pair again for protocol", () => {
@@ -135,6 +150,79 @@ describe("the machines on the rail", () => {
     expect(off).toContain("Tailscale is off on this machine; remotes cannot be reached");
     expect(off.indexOf("Tailscale is off")).toBeLessThan(off.indexOf("beast.tail4f2c.ts.net"));
     expect(markup).not.toContain("Tailscale is off");
+  });
+
+  test("a row with operate carries the fleet's pause or start before the gear; read-only carries neither", () => {
+    const stopped = record({
+      deploymentId: "s",
+      name: "held-one",
+      url: "https://held.tail4f2c.ts.net",
+      lastReport: stored(
+        report({
+          bootstrapper: { ...report().bootstrapper, stopped: { by: "device:x", at: ago(60) } },
+        }),
+      ),
+    });
+    const readOnly = record({
+      deploymentId: "r",
+      name: "read-one",
+      url: "https://read.tail4f2c.ts.net",
+      scopes: ["read"],
+    });
+    const rail = renderToStaticMarkup(
+      <Rail
+        surface="companion"
+        remotes={[remotes[0]!, remotes[1]!, stopped, readOnly]}
+        now={NOW}
+        onRemote={noop}
+        onRemoteSettings={noop}
+        onRemoteAction={noop}
+        busyRemotes={new Set(["b"])}
+      />,
+    );
+    expect(rail).toMatch(/aria-label="Pause zeta"/);
+    expect(rail).not.toMatch(/aria-label="Stop zeta"|aria-label="Restart zeta"/);
+    expect(rail).toMatch(/aria-label="Start held-one"/);
+    expect(rail).not.toMatch(/aria-label="(Pause|Start) read-one"/);
+    expect(rail).toMatch(/aria-label="Settings for read-one"/);
+    // A fleet verb in flight: the spinner stands where the shortcuts were.
+    expect(rail).toMatch(/aria-label="Working on alpha"/);
+    expect(rail).not.toMatch(/aria-label="(Pause|Start) alpha"/);
+    // The host's mark beside the name, as a local row carries its own.
+    expect(rail).toMatch(/rail-entry remote[\s\S]*?data-host="linux"/);
+    // Without the shortcut callback there is nothing to press, as a browser has none.
+    expect(markup).not.toMatch(/aria-label="Pause zeta"/);
+  });
+
+  test("a workspace remote opens out to its tenants, each a row onto that tenant's console", () => {
+    const workspace = record({
+      deploymentId: "w",
+      name: "ws",
+      url: "https://ws.tail4f2c.ts.net",
+      lastReport: stored(report({ identity: { name: "ws", arm: "workspace", host: "linux" } })),
+    });
+    const closed = renderToStaticMarkup(
+      <Rail surface="companion" remotes={[workspace]} now={NOW} onRemote={noop} />,
+    );
+    expect(closed).toMatch(/aria-label="Expand ws"/);
+    expect(closed).not.toContain("Children of ws");
+    const open = renderToStaticMarkup(
+      <Rail
+        surface="companion"
+        remotes={[workspace]}
+        now={NOW}
+        defaultExpanded={new Set(["w"])}
+        selectedRemote="w"
+        selectedRemoteChild="JesusFilm/youtube-studio"
+        onRemote={noop}
+        onRemoteChild={noop}
+      />,
+    );
+    expect(open).toMatch(/aria-label="Collapse ws"/);
+    expect(open).toContain('aria-label="Children of ws"');
+    expect(open).toMatch(/rail-child-row current[\s\S]*?JesusFilm\/youtube-studio/);
+    // A solo remote has no chevron: there is nothing under it.
+    expect(markup).not.toMatch(/aria-label="Expand zeta"/);
   });
 
   test("a joined deployment shows twice, each row with a chip to the other", () => {
@@ -184,14 +272,75 @@ describe("a remote route's page", () => {
     expect(markup).not.toMatch(/>install</);
   });
 
+  test("the overview carries the fleet's Stop and Start, reading the report for which is offered", () => {
+    const running = page();
+    expect(running).toContain("The fleet is running.");
+    expect(running).toMatch(/<button type="button" disabled=""[^>]*>Start<\/button>/);
+    expect(running).toMatch(/<button type="button"(?! disabled)[^>]*>Stop<\/button>/);
+    expect(running).toContain("the container and this API stay up");
+    const stopped = page({
+      lastReport: stored(
+        report({
+          identity: { name: "youtube-studio", arm: "solo", deploymentId: "dep_YT" },
+          bootstrapper: {
+            ...report().bootstrapper,
+            stopped: { by: "device:Mike's phone", at: ago(120) },
+          },
+        }),
+      ),
+    });
+    expect(stopped).toContain("The fleet is stopped — by device:Mike&#x27;s phone, 2 min ago.");
+    expect(stopped).toMatch(/<button type="button"(?! disabled)[^>]*>Start<\/button>/);
+    expect(stopped).toMatch(/<button type="button" disabled=""[^>]*>Stop<\/button>/);
+    // The overview's own line says so too, on both arms.
+    expect(stopped).toContain("stopped by device:Mike&#x27;s phone 2 min ago");
+  });
+
+  test("a read session's Stop is disabled with the reason; a frozen report offers neither", () => {
+    const read = page({ scopes: ["read"] });
+    expect(read).toMatch(
+      /<button type="button" disabled="" title="needs operate: this device paired with read only">Stop<\/button>/,
+    );
+    const dark = page({ reachability: "dark", lastHeardAt: ago(600) });
+    expect(dark).toMatch(/<button type="button" disabled=""[^>]*>Stop<\/button>/);
+  });
+
+  test("the title carries the console button when the page is given one", () => {
+    expect(page()).not.toContain("Open the console");
+    const withConsole = renderToStaticMarkup(
+      <RemotePage
+        record={record()}
+        bridge={b}
+        tab="overview"
+        now={NOW}
+        joined={null}
+        onTab={noop}
+        onPairAgain={noop}
+        onSignOut={noop}
+        onForget={noop}
+        onOpenLocal={noop}
+        onConsole={noop}
+      />,
+    );
+    expect(withConsole).toMatch(/class="[^"]*console-open[^"]*"[^>]*aria-label="Open the console"/);
+  });
+
   test("the connection card says Remote, the address, the arm, the protocol and the session", () => {
     const markup = page();
     expect(markup).toContain("<strong>Remote</strong>");
     expect(markup).toContain("youtube-studio.tail4f2c.ts.net");
     expect(markup).toContain("host arm · protocol 1");
     expect(markup).toContain("session read+operate");
-    expect(markup).toMatch(/>sign out</);
     expect(markup).toContain("Devices");
+  });
+
+  test("the session card carries Pair again and Remove, and says what a new code changes", () => {
+    const markup = page();
+    expect(markup).toMatch(/session-card[\s\S]*?>Pair again</);
+    expect(markup).toMatch(/session-card[\s\S]*?>Remove</);
+    expect(markup).toContain("paired as Mike");
+    expect(markup).toContain("phoebe pair --operate");
+    expect(markup).not.toMatch(/>sign out</);
   });
 
   test("a joined deployment's page carries the chip to the local route", () => {
@@ -474,5 +623,62 @@ describe("the mint card, and the code appearing nowhere else", () => {
     );
     expect(run.lines.every((line) => !line.line.includes("ABCD"))).toBe(true);
     expect(page).not.toContain("ABCD-EFGH-JK12");
+  });
+});
+
+describe("a remote route's console (map #690)", () => {
+  const view = renderToStaticMarkup(
+    <RemoteConsoleView bridge={bridge()} record={record()} now={NOW} onSettings={noop} />,
+  );
+
+  test("names the deployment with its address and reachability, and carries the gear onto its page", () => {
+    expect(view).toContain('aria-label="Console for youtube-studio"');
+    expect(view).toMatch(
+      /<h1 title="https:\/\/youtube-studio\.tail4f2c\.ts\.net">youtube-studio<\/h1>/,
+    );
+    expect(view).toMatch(/class="mark connected"/);
+    expect(view).toContain('<span class="console-state">connected</span>');
+    expect(view).toContain('aria-label="Settings for youtube-studio"');
+  });
+
+  test("opens on all, with no cli tab: nothing runs on this machine for a remote", () => {
+    expect(view).toMatch(/class="console-channel current" aria-pressed="true"[^>]*>all</);
+    expect(view).not.toMatch(/>cli</);
+    expect(view).toContain("Waiting for the container to print something");
+  });
+
+  test("opened from a workspace child, the child's own tab is the one open", () => {
+    const scoped = renderToStaticMarkup(
+      <RemoteConsoleView
+        bridge={bridge()}
+        record={record()}
+        now={NOW}
+        tenant="JesusFilm/youtube-studio"
+        onSettings={noop}
+      />,
+    );
+    expect(scoped).toMatch(
+      /class="console-channel current[^"]*" aria-pressed="true"[^>]*>(<span[^>]*><\/span>)?youtube-studio</,
+    );
+    expect(scoped).toContain("Every line from JesusFilm/youtube-studio");
+  });
+
+  test("a stopped fleet is in the header's words", () => {
+    const stopped = renderToStaticMarkup(
+      <RemoteConsoleView
+        bridge={bridge()}
+        record={record({
+          lastReport: stored(
+            report({
+              identity: { name: "youtube-studio", arm: "solo", deploymentId: "dep_YT" },
+              bootstrapper: { ...report().bootstrapper, stopped: { by: "x", at: ago(5) } },
+            }),
+          ),
+        })}
+        now={NOW}
+        onSettings={noop}
+      />,
+    );
+    expect(stopped).toContain('<span class="console-state">connected · fleet stopped</span>');
   });
 });

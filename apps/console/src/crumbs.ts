@@ -31,6 +31,7 @@ export function routeCrumbs(input: {
     const remote = input.remote ?? null;
     const host = remote === null ? route.deploymentId : hostnameOf(remote.url);
     const name = remote === null ? "not paired" : remote.name;
+    if (route.console === true) return [host, name, "Console"];
     return route.tab === null ? [host, name] : [host, name, route.tab];
   }
   if (open !== null) {

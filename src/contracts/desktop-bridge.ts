@@ -58,6 +58,8 @@ import type {
 import type {
   PairResult,
   RemoteAlertEvent,
+  RemoteLogLine,
+  RemoteLogsEnded,
   RemotePassthrough,
   RemoteRecord,
   RemoteReportEvent,
@@ -359,6 +361,21 @@ export type DesktopBridge = {
     sessions: (deploymentId: string) => Promise<SessionRow[]>;
     /** `DELETE /api/sessions/:id` on one remote. */
     revoke: (deploymentId: string, sessionId: string) => Promise<RevokeOutcome>;
+    /**
+     * A remote's container output, followed over `GET /api/logs` with the
+     * bearer added in main: what the local arm's `logs` reads off Docker, read
+     * off the deployment instead, with its secrets redacted before they left
+     * it. One stream per record, started by the first `follow` and joined by
+     * the next; `stop` ends it and keeps nothing. `follow` resolves with the
+     * backlog the deployment sent, so a pane opens full, and rejects when the
+     * deployment could not be reached or refused the stream.
+     */
+    logs: {
+      follow: (deploymentId: string) => Promise<string[]>;
+      stop: (deploymentId: string) => Promise<void>;
+      lines: (onLine: (line: RemoteLogLine) => void) => () => void;
+      ended: (onEnded: (end: RemoteLogsEnded) => void) => () => void;
+    };
     /** The list again whenever it changed. Returns the unsubscribe. */
     changes: (onChange: (records: RemoteRecord[]) => void) => () => void;
     /** Every supervisor emission: the record with its report and reachability. */

@@ -60,6 +60,10 @@ export const BRIDGE_CHANNELS = {
   remotesReport: "phoebe:remotes/report",
   remotesAlert: "phoebe:remotes/alert",
   remotesTailscale: "phoebe:remotes/tailscale",
+  remotesLogsFollow: "phoebe:remotes/logs/follow",
+  remotesLogsStop: "phoebe:remotes/logs/stop",
+  remotesLogLine: "phoebe:remotes/logs/line",
+  remotesLogsEnded: "phoebe:remotes/logs/ended",
 } as const;
 
 /**

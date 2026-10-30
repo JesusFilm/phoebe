@@ -862,6 +862,8 @@ app.whenReady().then(
           broadcast(BRIDGE_CHANNELS.remotesAlert, event);
           showBadge();
         },
+        logLine: (line) => broadcast(BRIDGE_CHANNELS.remotesLogLine, line),
+        logsEnded: (end) => broadcast(BRIDGE_CHANNELS.remotesLogsEnded, end),
       },
       log: (line) => console.log(line),
     });
@@ -893,6 +895,12 @@ app.whenReady().then(
     );
     ipcMain.handle(BRIDGE_CHANNELS.remotesTailscale, () =>
       answering(() => remoteArm().tailscale()),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesLogsFollow, (_event, deploymentId: string) =>
+      answering(() => remoteArm().followLogs(deploymentId)),
+    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesLogsStop, (_event, deploymentId: string) =>
+      answering<void>(() => remoteArm().stopLogs(deploymentId)),
     );
     // The machine waking and the network coming back are the two other moments
     // a remote on its ladder should try now rather than wait out a rung (#697).

@@ -173,7 +173,14 @@ function OverviewTab({
               value={`${slots.inUse}/${slots.capacity} in use, ${slots.waiting} waiting`}
             />
           )}
-          <Pair label="Fleet" value={`${tenants.length} tenant(s), ${cells.length} pipeline(s)`} />
+          <Pair
+            label="Fleet"
+            value={`${tenants.length} tenant(s), ${cells.length} pipeline(s)${
+              bootstrapper?.stopped == null
+                ? ""
+                : ` · stopped by ${bootstrapper.stopped.by} ${age(bootstrapper.stopped.at, now)} ago`
+            }`}
+          />
           <Pair label="Report" value={`read ${age(reading.receivedAt, now)} ago`} />
         </dl>
       </section>

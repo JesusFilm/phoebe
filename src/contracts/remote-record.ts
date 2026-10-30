@@ -100,6 +100,16 @@ export type PairResult =
       detail: string;
     };
 
+/**
+ * One line a remote's container printed, as main forwards it off `GET
+ * /api/logs` (map #690). The deployment redacted its secrets before the line
+ * left it; the companion keeps it only as long as a pane follows.
+ */
+export type RemoteLogLine = { deploymentId: string; line: string };
+
+/** A remote's log stream stopped on its own: the socket dropped, or the deployment refused it. */
+export type RemoteLogsEnded = { deploymentId: string; reason: string };
+
 /** What `remotes.revoke` came to. */
 export type RevokeOutcome =
   | { outcome: "revoked" }

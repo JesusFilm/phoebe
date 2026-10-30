@@ -30,7 +30,7 @@ import {
   SYSTEM_CONSOLE_THEME,
   type ConsoleThemeChoice,
 } from "./console-themes.ts";
-import { ConsoleView, useSystemDark } from "./console-view.tsx";
+import { ConsoleView, RemoteConsoleView, useSystemDark } from "./console-view.tsx";
 import { ChevronRight } from "lucide-react";
 import { routeCrumbs, type Crumbs } from "./crumbs.ts";
 import { SettingsPage } from "./settings-page.tsx";
@@ -66,12 +66,20 @@ import { createNotifier, type AlertSubject, type Notifiable } from "./notificati
 import { AddRemote } from "./add-remote.tsx";
 import { Rail } from "./rail.tsx";
 import { RemotePage } from "./remote-page.tsx";
-import { defaultDeviceLabel, hostSections, localJoins, remoteJoins } from "./remote-routes.ts";
+import { createRemoteClient } from "./remote-client.ts";
+import {
+  defaultDeviceLabel,
+  hostSections,
+  localJoins,
+  remoteJoins,
+  type RemoteAction,
+} from "./remote-routes.ts";
 import {
   ADD_HREF,
   HOME_HREF,
   HOME_ROUTE,
   parseRoute,
+  remoteConsoleHref,
   remoteHref,
   SETUP_HREF,
   type Route,
@@ -407,10 +415,13 @@ export function App({
     };
   }, [bridge]);
 
-  // The add-remote modal: open from the rail or the home page, or from a
-  // blocked row with its address filled in (pair again).
-  const [adding, setAdding] = useState<{ prefill: string } | null>(null);
-  const pairAgain = useCallback((record: RemoteRecord) => setAdding({ prefill: record.url }), []);
+  // The add-remote modal: open from the rail or the home page, or from a row
+  // or its page with the address and the label filled in (pair again).
+  const [adding, setAdding] = useState<{ prefill: string; label?: string } | null>(null);
+  const pairAgain = useCallback(
+    (record: RemoteRecord) => setAdding({ prefill: record.url, label: record.label }),
+    [],
+  );
 
   /** A pair landed: the record joins the list, or replaces the one it re-paired. */
   const paired = useCallback((record: RemoteRecord) => {
@@ -422,6 +433,32 @@ export function App({
         : [...held, record],
     );
   }, []);
+
+  // The rail's shortcuts on a remote row (map #690): the fleet's pause and
+  // start over the API. The press is the ask and the next report the answer,
+  // so the row is busy only until the deployment has answered the request;
+  // what it did arrives on the stream. A refusal is the page's to explain.
+  const [busyRemotes, setBusyRemotes] = useState<ReadonlySet<string>>(() => new Set());
+  const runRemoteAction = useCallback(
+    async (record: RemoteRecord, action: RemoteAction): Promise<void> => {
+      if (bridge === null) return;
+      const id = record.deploymentId;
+      setBusyRemotes((held) => new Set(held).add(id));
+      try {
+        const client = createRemoteClient(bridge, id);
+        await (action === "pause" ? client.fleetStop() : client.fleetStart());
+      } catch {
+        // The row reads the next report; the page's own Stop and Start say why.
+      } finally {
+        setBusyRemotes((held) => {
+          const next = new Set(held);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [bridge],
+  );
 
   /** Sign out removes the row; forget drops a blocked one without a request. */
   const dropRemote = useCallback(
@@ -728,9 +765,14 @@ export function App({
               },
               onDownload: () => void bridge.updates.download().catch(noop),
               onRestart: () => void bridge.updates.restart().catch(noop),
-              // The machines on the tailnet (map #690): a row opens its remote
-              // route, the one add below the sections opens the modal.
+              // The machines on the tailnet (map #690): a row opens its
+              // console, as a local row does, its gear the tabbed page, and
+              // the one add below the sections opens the modal.
               onRemote: (deploymentId: string) => {
+                setOpenInstall(null);
+                window.location.hash = remoteConsoleHref(deploymentId);
+              },
+              onRemoteSettings: (deploymentId: string) => {
                 setOpenInstall(null);
                 window.location.hash = remoteHref(deploymentId);
               },
@@ -740,6 +782,23 @@ export function App({
                 setOpenInstall(null);
                 window.location.hash = remoteHref(record.deploymentId);
               },
+              // A remote row's shortcuts open its console, as a local row's
+              // do, so the drain or the start has somewhere to be watched.
+              busyRemotes,
+              onRemoteAction: (record: RemoteRecord, action: RemoteAction) => {
+                setOpenInstall(null);
+                window.location.hash = remoteConsoleHref(record.deploymentId);
+                void runRemoteAction(record, action);
+              },
+              onRemoteChild: (record: RemoteRecord, child: RailChild) => {
+                setOpenInstall(null);
+                window.location.hash = remoteConsoleHref(
+                  record.deploymentId,
+                  child.slug ?? undefined,
+                );
+              },
+              selectedRemoteChild:
+                route.page === "remote" && route.console === true ? (route.tenant ?? null) : null,
             })}
       />
       <section className="pane">
@@ -839,6 +898,18 @@ export function App({
                 pairing link, or an address and a code.
               </p>
             </main>
+          ) : route.console === true ? (
+            <RemoteConsoleView
+              key={openRemote.deploymentId}
+              bridge={bridge}
+              record={openRemote}
+              now={now}
+              theme={consoleTheme}
+              tenant={route.tenant ?? null}
+              onSettings={() => {
+                window.location.hash = remoteHref(openRemote.deploymentId);
+              }}
+            />
           ) : (
             <RemotePage
               key={openRemote.deploymentId}
@@ -849,6 +920,9 @@ export function App({
               joined={joinsByRemote[openRemote.deploymentId] ?? null}
               onTab={(tab) => {
                 window.location.hash = remoteHref(openRemote.deploymentId, tab);
+              }}
+              onConsole={() => {
+                window.location.hash = remoteConsoleHref(openRemote.deploymentId);
               }}
               onPairAgain={pairAgain}
               onSignOut={(record) => dropRemote(record, "signOut")}
@@ -909,6 +983,7 @@ export function App({
           bridge={bridge}
           defaultLabel={deviceLabel}
           prefill={adding.prefill}
+          {...(adding.label === undefined ? {} : { prefillLabel: adding.label })}
           records={remotes}
           joinedInstallOf={(deploymentId) =>
             remoteJoins(installs, reports, [{ deploymentId } as RemoteRecord])[deploymentId] ?? null

@@ -59,7 +59,7 @@ import type {
   TenantFacts,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
-import type { RemoteReport } from "../src/contracts/remote-protocol.ts";
+import type { FleetStop, RemoteReport } from "../src/contracts/remote-protocol.ts";
 import {
   EFFECTIVE_CONFIG_VERSION,
   type TenantEffectiveConfig,
@@ -132,6 +132,12 @@ export type DeploymentStateDeps = {
   crashLoop: () => CrashLoopRecord;
   /** The slot broker's numbers, read at publish time. */
   slots: () => SlotReport;
+  /**
+   * Whether a paired device has the fleet held down (map #690), read at
+   * publish time from the hold. Absent for a bootstrapper with no hold — the
+   * field then is too, which a reader takes as running.
+   */
+  fleetStop?: () => FleetStop | null;
   /**
    * The root config an edit checks itself against (#503), read at publish time.
    * Cheap on a steady deployment: the hash is re-taken only when the file's stat
@@ -526,6 +532,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           reconcile: withLastEdit(reconcile, deps.lastEditId?.() ?? null),
           children: livenessOf(at),
           slots: deps.slots(),
+          ...(deps.fleetStop === undefined ? {} : { stopped: deps.fleetStop() }),
         },
         remote,
         fleet: buildFleet(at),

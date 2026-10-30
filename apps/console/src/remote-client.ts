@@ -15,6 +15,7 @@ import type {
   DesktopBridge,
   DoctorRunResponse,
   EditReceipt,
+  FleetVerbResponse,
   RemoteResponse,
   SessionRow,
 } from "phoebe-agent/contracts";
@@ -65,6 +66,10 @@ export type RemoteClient = {
   }) => Promise<RemoteSecretReceipt>;
   /** Every session the deployment holds, and which is this one. */
   sessions: () => Promise<{ sessions: SessionRow[]; self: string }>;
+  /** Drain every pipeline and hold the fleet down. The container and the API stay up. */
+  fleetStop: () => Promise<FleetVerbResponse>;
+  /** Release the hold. */
+  fleetStart: () => Promise<FleetVerbResponse>;
 };
 
 export function createRemoteClient(bridge: DesktopBridge, deploymentId: string): RemoteClient {
@@ -103,6 +108,14 @@ export function createRemoteClient(bridge: DesktopBridge, deploymentId: string):
     async sessions() {
       const response = await send("GET", REMOTE_ROUTES.sessions);
       return response.body as { sessions: SessionRow[]; self: string };
+    },
+    async fleetStop() {
+      const response = await send("POST", REMOTE_ROUTES.fleetStop, {});
+      return response.body as FleetVerbResponse;
+    },
+    async fleetStart() {
+      const response = await send("POST", REMOTE_ROUTES.fleetStart, {});
+      return response.body as FleetVerbResponse;
     },
   };
 }

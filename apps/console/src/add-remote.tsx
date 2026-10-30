@@ -1,8 +1,9 @@
 // **Add a remote**: one modal, one field (map #690, #699). The field takes a
 // pairing link or a bare address; a link carries the code, an address alone
 // shows a code field. Plus the label this device will have in the deployment's
-// devices list. Pair again from a blocked row is the same modal with the
-// address filled in.
+// devices list. Pair again, from a blocked row or the page's session card, is
+// the same modal with the address and the label filled in; the new code's
+// scopes become the device's, which is how it gains or gives up `operate`.
 //
 // The companion reaches the deployment through this machine's Tailscale;
 // nothing sits in between. Main reads the descriptor and spends the code
@@ -30,6 +31,7 @@ export function AddRemote({
   bridge,
   defaultLabel,
   prefill = "",
+  prefillLabel,
   records,
   joinedInstallOf,
   tailscaleRunning,
@@ -42,6 +44,8 @@ export function AddRemote({
   defaultLabel: string;
   /** The address, for pair again. */
   prefill?: string;
+  /** The label the record already carries, for pair again. */
+  prefillLabel?: string;
   /** The records held before this pair, for saying where the row landed. */
   records: readonly RemoteRecord[];
   /** The folder on this machine with a given deployment id, when there is one. */
@@ -56,11 +60,11 @@ export function AddRemote({
 }) {
   const [input, setInput] = useState(prefill);
   const [code, setCode] = useState("");
-  const [label, setLabel] = useState(defaultLabel);
+  const [label, setLabel] = useState(prefillLabel ?? defaultLabel);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<AddRemoteDone | null>(null);
-  useEffect(() => setLabel(defaultLabel), [defaultLabel]);
+  useEffect(() => setLabel(prefillLabel ?? defaultLabel), [defaultLabel, prefillLabel]);
 
   const parsed = parseAddInput(input);
   const linkCode = parsed.code !== "";
@@ -204,11 +208,20 @@ export function AddRemote({
                 Cancel
               </button>
             </p>
-            <p className="muted small">
-              The companion reaches the deployment through this machine&apos;s Tailscale; nothing
-              sits in between. A new host becomes a new section on the rail; a known host gains a
-              row. The session lasts 30 days, then you pair again.
-            </p>
+            {repair ? (
+              <p className="muted small">
+                The new code&apos;s scopes become this device&apos;s: one from{" "}
+                <code>phoebe pair --operate</code> grants operate, one from <code>phoebe pair</code>{" "}
+                read only. The row keeps its name and what it last heard, and the old session ends
+                on the deployment.
+              </p>
+            ) : (
+              <p className="muted small">
+                The companion reaches the deployment through this machine&apos;s Tailscale; nothing
+                sits in between. A new host becomes a new section on the rail; a known host gains a
+                row. The session lasts 30 days, then you pair again.
+              </p>
+            )}
           </form>
         )}
       </div>
