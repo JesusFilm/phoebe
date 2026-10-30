@@ -278,6 +278,38 @@ export function fleetStopOf(reading: ReportReading): FleetStop | null {
     : null;
 }
 
+/**
+ * A remote's mark is one circle carrying two signals (map #690): the ring is
+ * the connection, as the companion itself can tell it, and the core is what
+ * the deployment was last seen doing, as a local row's whole mark says it.
+ * So a green ring round a green core is a local running row's dot; a grey
+ * ring round it is a deployment that was running when it was last heard,
+ * and a warning ring with a hollow core is a blocked row whose fleet was
+ * held. The core is empty until a report has been read.
+ */
+export type RemoteMark = {
+  link: RemoteRow["tone"];
+  fill: "running" | "stopped" | "attention" | "unknown";
+};
+
+export function remoteMark(row: RemoteRow): RemoteMark {
+  const fill: RemoteMark["fill"] =
+    row.reading.kind !== "read"
+      ? "unknown"
+      : hasProblems(row.problems)
+        ? "attention"
+        : fleetStopOf(row.reading) !== null
+          ? "stopped"
+          : "running";
+  return { link: row.tone, fill };
+}
+
+/** The mark's classes, for `console.css` to draw the ring and the core. */
+export function remoteMarkClass(row: RemoteRow): string {
+  const mark = remoteMark(row);
+  return `mark remote link-${mark.link} fill-${mark.fill}`;
+}
+
 /** The shortcuts a remote row offers (rail.tsx): the fleet's start and pause, over the API. */
 export type RemoteAction = "start" | "pause";
 

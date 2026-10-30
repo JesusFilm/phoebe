@@ -173,6 +173,11 @@ local row with its counts; reconnecting keeps the counts and adds a spinner;
 dark replaces them with `dark · 3 min`; blocked is a warning-tone row naming
 why (session expired, session revoked, a different deployment answers here,
 newer than this companion) with **pair again**, or **update** for the last.
+Its mark is one circle carrying both: the ring is the connection, green while
+connected, grey while reconnecting, dark when dark and warning-toned when
+blocked, and the core is what the fleet was last seen doing, green running,
+yellow with something wrong, pale while held, empty until a report has been
+read. A green ring round a green core is a local running row's dot.
 From three days before a session's expiry the row says so. Tailscale off on
 this machine is a line above the host sections and a banner on the home page.
 

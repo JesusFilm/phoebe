@@ -21,6 +21,8 @@ import {
   remoteChildren,
   remoteHost,
   remoteIsWorkspace,
+  remoteMark,
+  remoteMarkClass,
   remoteRow,
 } from "./remote-routes.ts";
 import { readReport } from "./report.ts";
@@ -103,6 +105,50 @@ describe("the rows and their words", () => {
     expect(remoteActions(remoteRow(record({ reachability: "disconnected" }), NOW))).toEqual([]);
     expect(remoteActions(remoteRow(record({ reachability: "dark" }), NOW))).toEqual([]);
     expect(remoteActions(remoteRow(record({ lastReport: null }), NOW))).toEqual([]);
+  });
+
+  test("the mark: the connection on the ring, what the fleet was last doing in the core", () => {
+    expect(remoteMark(remoteRow(record(), NOW))).toEqual({ link: "connected", fill: "running" });
+    expect(remoteMarkClass(remoteRow(record(), NOW))).toBe(
+      "mark remote link-connected fill-running",
+    );
+    const held = remoteRow(
+      record({
+        reachability: "disconnected",
+        lastReport: stored(
+          report({
+            bootstrapper: { ...report().bootstrapper, stopped: { by: "device:x", at: ago(60) } },
+          }),
+        ),
+      }),
+      NOW,
+    );
+    expect(remoteMark(held)).toEqual({ link: "disconnected", fill: "stopped" });
+    const wedged = remoteRow(
+      record({
+        reachability: "dark",
+        lastReport: stored(
+          report({
+            fleet: {
+              ...report().fleet,
+              cells: [
+                cell({ wedged: { wedged: true, reason: "no-pass", noPassForMs: 1_020_000 } }),
+              ],
+            },
+          }),
+        ),
+      }),
+      NOW,
+    );
+    expect(remoteMark(wedged)).toEqual({ link: "dark", fill: "attention" });
+    expect(
+      remoteMark(
+        remoteRow(record({ reachability: "blocked", blocked: "expired", lastReport: null }), NOW),
+      ),
+    ).toEqual({
+      link: "blocked",
+      fill: "unknown",
+    });
   });
 
   test("the host off the report, and a workspace's tenants as the rail's children", () => {

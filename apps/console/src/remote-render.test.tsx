@@ -152,6 +152,14 @@ describe("the machines on the rail", () => {
     expect(markup).not.toContain("Tailscale is off");
   });
 
+  test("the mark is a ring for the connection round a core for the fleet", () => {
+    expect(markup).toMatch(/class="mark remote link-connected fill-running"[^>]*>[\s\S]*?zeta/);
+    expect(markup).toMatch(/class="mark remote link-disconnected fill-running"[^>]*>[\s\S]*?alpha/);
+    expect(markup).toMatch(/class="mark remote link-blocked fill-running"[^>]*>[\s\S]*?ops-box/);
+    expect(markup).toMatch(/class="mark remote link-dark fill-running"[^>]*>[\s\S]*?phoebe-demo/);
+    expect(markup).not.toMatch(/class="mark (connected|disconnected|dark|blocked)"/);
+  });
+
   test("a row with operate carries the fleet's pause or start before the gear; read-only carries neither", () => {
     const stopped = record({
       deploymentId: "s",
@@ -636,7 +644,7 @@ describe("a remote route's console (map #690)", () => {
     expect(view).toMatch(
       /<h1 title="https:\/\/youtube-studio\.tail4f2c\.ts\.net">youtube-studio<\/h1>/,
     );
-    expect(view).toMatch(/class="mark connected"/);
+    expect(view).toMatch(/class="mark remote link-connected fill-running"/);
     expect(view).toContain('<span class="console-state">connected</span>');
     expect(view).toContain('aria-label="Settings for youtube-studio"');
   });

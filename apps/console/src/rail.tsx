@@ -54,6 +54,7 @@ import {
   remoteChildren,
   remoteHost,
   remoteIsWorkspace,
+  remoteMarkClass,
   type HostSection,
   type RemoteAction,
   type RemoteRow,
@@ -433,7 +434,7 @@ function RemoteEntry({
         }}
       >
         <div className="name">
-          <span className={`mark ${row.tone}`} aria-hidden="true" />
+          <span className={remoteMarkClass(row)} aria-hidden="true" />
           <span className="platform" title={platformTitle} aria-label={platformTitle}>
             <HostIcon host={host} />
           </span>

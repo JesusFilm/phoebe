@@ -75,7 +75,7 @@ import {
   CLI_CHANNEL,
   tenantChannel,
 } from "./logs-channels.ts";
-import { remoteHost, remoteRow } from "./remote-routes.ts";
+import { remoteHost, remoteMarkClass, remoteRow } from "./remote-routes.ts";
 import { useInstallRun } from "./verb-run.ts";
 
 /**
@@ -100,6 +100,8 @@ export type ConsoleHeader = {
   host: HostPlatform | null;
   /** The mark's tone and the words beside the name. */
   reading: { tone: string; text: string };
+  /** The mark's whole class, when it is not the tone alone: a remote's ring and core. */
+  mark?: string;
 };
 
 /** A local install's console: its lines off Docker, and its verb runs on the `cli` tab. */
@@ -219,6 +221,7 @@ export function RemoteConsoleView({
         title: record.url,
         host,
         reading: { tone: row.tone, text: row.text },
+        mark: remoteMarkClass(row),
       }}
       status={status}
       stream={stream}
@@ -395,7 +398,7 @@ export function ConsolePane({
           >
             <HostIcon host={header.host} />
           </span>
-          <span className={`mark ${header.reading.tone}`} aria-hidden="true" />
+          <span className={header.mark ?? `mark ${header.reading.tone}`} aria-hidden="true" />
           <h1 title={header.title}>{header.name}</h1>
           <span className="console-state">{header.reading.text}</span>
           {working.length === 0 ? null : (

@@ -1972,16 +1972,42 @@ details.why > summary::marker {
   font-weight: 400;
 }
 
-.mark.connected {
-  background: var(--ok, #1a7f37);
+/* A remote's mark is one circle with two signals (remote-routes.ts,
+   `remoteMark`): the ring is the connection, the core is what the fleet was
+   last seen doing. The background stops at the border, so the ring's colour
+   and the core's stay apart. */
+.mark.remote {
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+  background: transparent;
 }
 
-.mark.disconnected {
-  background: var(--muted);
+.mark.remote.link-connected {
+  border-color: var(--ok);
 }
 
-.mark.blocked {
+.mark.remote.link-disconnected {
+  border-color: var(--muted);
+}
+
+.mark.remote.link-dark {
+  border-color: var(--dark);
+}
+
+.mark.remote.link-blocked {
+  border-color: var(--warn);
+}
+
+.mark.remote.fill-running {
+  background: var(--ok);
+}
+
+.mark.remote.fill-attention {
   background: var(--warn);
+}
+
+.mark.remote.fill-stopped {
+  background: var(--idle);
 }
 
 .rail-summary .rail-spinner,
