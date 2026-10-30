@@ -1,6 +1,6 @@
 {
   "name": "phoebe-agent",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "private": false,
   "description": "Phoebe — a software factory for GitHub repositories: it turns labelled issues into pull requests and keeps them healthy until they merge, driving the coding agent you already use. Distributed as a pinned CLI.",
   "homepage": "https://github.com/JesusFilm/phoebe#readme",
