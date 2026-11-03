@@ -244,7 +244,16 @@ export function createRemoteSupervisor(deps: SupervisorDeps): RemoteSupervisor {
       return;
     }
 
-    const bearer = await deps.bearer();
+    let bearer: string | null;
+    try {
+      bearer = await deps.bearer();
+    } catch {
+      if (controller !== mine) return;
+      clear(establish);
+      controller = null;
+      failed({ kind: "request-failed" });
+      return;
+    }
     let response: Response;
     try {
       response = await deps.fetchFn(`${deps.url}${REMOTE_ROUTES.events}`, {

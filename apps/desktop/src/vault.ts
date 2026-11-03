@@ -21,7 +21,7 @@
 // Electron to run: the whole of it is testable with a keyring that works, one
 // that does not, and one that has rotated under an existing file.
 
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -93,18 +93,20 @@ export async function createBearerVault(options: {
     return next;
   };
 
-  async function readAll(): Promise<Bearers> {
+  /**
+   * The bearers on disk, or null when the file is there and will not open. The
+   * file is left alone in that case: the keyring may only be busy, and deleting
+   * the file would take every other remote's bearer with it.
+   */
+  async function readAll(): Promise<Bearers | null> {
     if (!persists) return held;
+    if (!existsSync(path)) return {};
     let decrypted: Decrypted;
     try {
       decrypted = await options.safeStorage.decryptStringAsync(readFileSync(path));
-    } catch {
-      // A missing file is the ordinary first launch. A file this machine can
-      // no longer decrypt is a keyring that rotated under it, and the honest
-      // reading of both is the same: there are no bearers here. Clearing it
-      // keeps the next launch from trying again on bytes that will never open.
-      rmSync(path, { force: true });
-      return {};
+    } catch (error) {
+      warn(`[phoebe] could not open the saved pairings: ${messageOf(error)}`);
+      return null;
     }
     let bearers: Bearers;
     try {
@@ -138,7 +140,7 @@ export async function createBearerVault(options: {
 
     read: (deploymentId) =>
       inTurn(async () => {
-        const bearer = (await readAll())[deploymentId];
+        const bearer = held[deploymentId] ?? (await readAll())?.[deploymentId];
         return typeof bearer === "string" && bearer !== "" ? bearer : null;
       }),
 
@@ -148,7 +150,14 @@ export async function createBearerVault(options: {
           held[deploymentId] = bearer;
           return;
         }
-        await writeAll({ ...(await readAll()), [deploymentId]: bearer });
+        const saved = await readAll();
+        if (saved === null) {
+          // The file holds pairings this process cannot read; writing over it
+          // would lose them. This one lasts the session.
+          held[deploymentId] = bearer;
+          return;
+        }
+        await writeAll({ ...saved, [deploymentId]: bearer });
       }),
 
     clear: (deploymentId) =>
@@ -157,8 +166,9 @@ export async function createBearerVault(options: {
           delete held[deploymentId];
           return;
         }
+        delete held[deploymentId];
         const bearers = await readAll();
-        if (!(deploymentId in bearers)) return;
+        if (bearers === null || !(deploymentId in bearers)) return;
         delete bearers[deploymentId];
         if (Object.keys(bearers).length === 0) rmSync(path, { force: true });
         else await writeAll(bearers);

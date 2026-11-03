@@ -65,7 +65,11 @@ function deployment(opts: { descriptor?: () => Answer; events?: () => Answer }) 
 }
 
 function harness(
-  opts: Parameters<typeof deployment>[0] & { lastHeardAt?: string | null; random?: number } = {},
+  opts: Parameters<typeof deployment>[0] & {
+    lastHeardAt?: string | null;
+    random?: number;
+    bearer?: () => Promise<string | null>;
+  } = {},
 ) {
   const dep = deployment(opts);
   const clock = { now: T0 };
@@ -76,7 +80,7 @@ function harness(
   const supervisor = createRemoteSupervisor({
     url: URL_,
     stored: { deploymentId: "dep_A", protocol: 1 },
-    bearer: async () => "bearer-a",
+    bearer: opts.bearer ?? (async () => "bearer-a"),
     lastHeardAt: opts.lastHeardAt ?? null,
     fetchFn: dep.fetchFn,
     now: () => clock.now,
@@ -271,6 +275,24 @@ describe("blocked", () => {
     await h.settle();
     expect(last(h).reachability).toBe("disconnected");
     expect(h.pending()).toContain(3_000);
+    h.supervisor.stop();
+  });
+});
+
+describe("a bearer that cannot be read", () => {
+  test("is a failed connection that the ladder retries, not a stall", async () => {
+    let attempts = 0;
+    const h = harness({
+      bearer: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("keyring busy");
+        return "bearer-a";
+      },
+    });
+    h.supervisor.start();
+    await h.settle();
+    expect(last(h).reachability).not.toBe("connected");
+    expect(h.pending().length).toBeGreaterThan(0);
     h.supervisor.stop();
   });
 });
