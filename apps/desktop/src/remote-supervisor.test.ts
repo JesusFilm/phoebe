@@ -76,7 +76,7 @@ function harness(
   const supervisor = createRemoteSupervisor({
     url: URL_,
     stored: { deploymentId: "dep_A", protocol: 1 },
-    bearer: () => "bearer-a",
+    bearer: async () => "bearer-a",
     lastHeardAt: opts.lastHeardAt ?? null,
     fetchFn: dep.fetchFn,
     now: () => clock.now,

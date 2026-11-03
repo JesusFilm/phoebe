@@ -9,9 +9,9 @@
 // Electron's `safeStorage` is the keyring: Keychain on macOS, DPAPI on Windows,
 // and libsecret behind a session keyring on Linux. The last one is the one that
 // is often missing — a headless box, a minimal desktop, a container — and there
-// `isEncryptionAvailable()` is false. The companion then keeps the bearers in
-// memory for the session, says so, and the operator pairs again at the next
-// launch.
+// `isAsyncEncryptionAvailable()` resolves false. The companion then keeps the
+// bearers in memory for the session, says so, and the operator pairs again at
+// the next launch.
 //
 // One file for every remote, keyed by deployment id, because the record a
 // bearer belongs to is keyed the same way (remotes.ts) and a vault per remote
@@ -24,11 +24,20 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** As much of Electron's `safeStorage` as this file touches. */
+/**
+ * What the keyring hands back from a decrypt: the plaintext, and whether it
+ * wants it encrypted again under a newer key.
+ */
+export type Decrypted = { shouldReEncrypt: boolean; result: string };
+
+/**
+ * As much of Electron's `safeStorage` as this file touches. The async half
+ * only: Electron deprecated the sync one and says it will go.
+ */
 export type SafeStorageLike = {
-  isEncryptionAvailable: () => boolean;
-  encryptString: (plainText: string) => Buffer;
-  decryptString: (encrypted: Buffer) => string;
+  isAsyncEncryptionAvailable: () => Promise<boolean>;
+  encryptStringAsync: (plainText: string) => Promise<Buffer>;
+  decryptStringAsync: (encrypted: Buffer) => Promise<Decrypted>;
 };
 
 export type BearerVault = {
@@ -39,11 +48,11 @@ export type BearerVault = {
    */
   persists: boolean;
   /** The bearer for one deployment, or null when there is none this machine can read. */
-  read: (deploymentId: string) => string | null;
+  read: (deploymentId: string) => Promise<string | null>;
   /** Keep a bearer across relaunches. Held in memory only when there is no keyring. */
-  write: (deploymentId: string, bearer: string) => void;
+  write: (deploymentId: string, bearer: string) => Promise<void>;
   /** Forget one bearer. Idempotent. */
-  clear: (deploymentId: string) => void;
+  clear: (deploymentId: string) => Promise<void>;
 };
 
 /** The file in `userData` that holds the ciphertext. Never JSON, never readable. */
@@ -56,23 +65,39 @@ export const NO_KEYRING_REASON: string =
 
 type Bearers = Record<string, string>;
 
-export function createBearerVault(options: {
+/**
+ * Resolves once the keyring has said whether it is there, so `persists` is a
+ * plain answer on the vault rather than one its readers have to wait for.
+ */
+export async function createBearerVault(options: {
   safeStorage: SafeStorageLike;
   /** Electron's `userData` directory. */
   userDataDir: string;
   warn?: (message: string) => void;
-}): BearerVault {
+}): Promise<BearerVault> {
   const path = join(options.userDataDir, VAULT_FILENAME);
   const warn = options.warn ?? ((message: string) => console.warn(message));
-  const persists = options.safeStorage.isEncryptionAvailable();
+  // A keyring that cannot say whether it is there is not one to write to.
+  const persists = await options.safeStorage.isAsyncEncryptionAvailable().catch(() => false);
   /** The bearers this process holds when it cannot write them down. */
   const held: Bearers = {};
+  /**
+   * Each operation reads the whole file and writes it back, so two pairings
+   * landing together would each write a file without the other's bearer. One
+   * at a time, in the order they were asked for.
+   */
+  let queue: Promise<unknown> = Promise.resolve();
+  const inTurn = <T>(operation: () => Promise<T>): Promise<T> => {
+    const next = queue.then(operation);
+    queue = next.catch(() => undefined);
+    return next;
+  };
 
-  function readAll(): Bearers {
+  async function readAll(): Promise<Bearers> {
     if (!persists) return held;
-    let plain: string;
+    let decrypted: Decrypted;
     try {
-      plain = options.safeStorage.decryptString(readFileSync(path));
+      decrypted = await options.safeStorage.decryptStringAsync(readFileSync(path));
     } catch {
       // A missing file is the ordinary first launch. A file this machine can
       // no longer decrypt is a keyring that rotated under it, and the honest
@@ -81,18 +106,23 @@ export function createBearerVault(options: {
       rmSync(path, { force: true });
       return {};
     }
+    let bearers: Bearers;
     try {
-      const parsed = JSON.parse(plain) as unknown;
-      return isBearers(parsed) ? parsed : {};
+      const parsed = JSON.parse(decrypted.result) as unknown;
+      bearers = isBearers(parsed) ? parsed : {};
     } catch {
       return {};
     }
+    // Opened with a key the keyring has since moved on from. Written back under
+    // the current one, the file survives the old key going away.
+    if (decrypted.shouldReEncrypt) await writeAll(bearers);
+    return bearers;
   }
 
-  function writeAll(bearers: Bearers): void {
+  async function writeAll(bearers: Bearers): Promise<void> {
     if (!persists) return;
     try {
-      writeFileSync(path, options.safeStorage.encryptString(JSON.stringify(bearers)), {
+      writeFileSync(path, await options.safeStorage.encryptStringAsync(JSON.stringify(bearers)), {
         mode: 0o600,
       });
     } catch (error) {
@@ -106,30 +136,33 @@ export function createBearerVault(options: {
   return {
     persists,
 
-    read(deploymentId) {
-      const bearer = readAll()[deploymentId];
-      return typeof bearer === "string" && bearer !== "" ? bearer : null;
-    },
+    read: (deploymentId) =>
+      inTurn(async () => {
+        const bearer = (await readAll())[deploymentId];
+        return typeof bearer === "string" && bearer !== "" ? bearer : null;
+      }),
 
-    write(deploymentId, bearer) {
-      if (!persists) {
-        held[deploymentId] = bearer;
-        return;
-      }
-      writeAll({ ...readAll(), [deploymentId]: bearer });
-    },
+    write: (deploymentId, bearer) =>
+      inTurn(async () => {
+        if (!persists) {
+          held[deploymentId] = bearer;
+          return;
+        }
+        await writeAll({ ...(await readAll()), [deploymentId]: bearer });
+      }),
 
-    clear(deploymentId) {
-      if (!persists) {
-        delete held[deploymentId];
-        return;
-      }
-      const bearers = readAll();
-      if (!(deploymentId in bearers)) return;
-      delete bearers[deploymentId];
-      if (Object.keys(bearers).length === 0) rmSync(path, { force: true });
-      else writeAll(bearers);
-    },
+    clear: (deploymentId) =>
+      inTurn(async () => {
+        if (!persists) {
+          delete held[deploymentId];
+          return;
+        }
+        const bearers = await readAll();
+        if (!(deploymentId in bearers)) return;
+        delete bearers[deploymentId];
+        if (Object.keys(bearers).length === 0) rmSync(path, { force: true });
+        else await writeAll(bearers);
+      }),
   };
 }
 

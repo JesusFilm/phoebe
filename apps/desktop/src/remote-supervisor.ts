@@ -53,7 +53,7 @@ export type SupervisorDeps = {
   /** The record's id and the newest protocol this companion knows. */
   stored: { deploymentId: string; protocol?: number };
   /** The bearer, read at the moment of every open so a re-pair lands without a restart. */
-  bearer: () => string | null;
+  bearer: () => Promise<string | null>;
   /** The last thing heard, as persisted; the supervisor dates darkness from it. */
   lastHeardAt: string | null;
   fetchFn: typeof fetch;
@@ -244,7 +244,7 @@ export function createRemoteSupervisor(deps: SupervisorDeps): RemoteSupervisor {
       return;
     }
 
-    const bearer = deps.bearer();
+    const bearer = await deps.bearer();
     let response: Response;
     try {
       response = await deps.fetchFn(`${deps.url}${REMOTE_ROUTES.events}`, {

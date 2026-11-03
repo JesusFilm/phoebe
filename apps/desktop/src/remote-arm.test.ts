@@ -19,9 +19,12 @@ afterEach(() => {
 });
 
 const KEYRING: SafeStorageLike = {
-  isEncryptionAvailable: () => true,
-  encryptString: (plain) => Buffer.from(plain, "utf8"),
-  decryptString: (cipher) => cipher.toString("utf8"),
+  isAsyncEncryptionAvailable: async () => true,
+  encryptStringAsync: async (plain) => Buffer.from(plain, "utf8"),
+  decryptStringAsync: async (cipher) => ({
+    shouldReEncrypt: false,
+    result: cipher.toString("utf8"),
+  }),
 };
 
 const URL_ = "https://phoebe.tail1.ts.net";
@@ -35,15 +38,17 @@ const DESCRIPTOR = {
 
 type Call = { path: string; method: string; headers: Record<string, string>; body: unknown };
 
-function harness(
+async function harness(
   opts: {
     descriptor?: { status: number; body?: unknown } | Error;
     pair?: { status: number; body?: unknown };
     answers?: Record<string, { status: number; body?: unknown }>;
     tailscale?: { running: boolean; detail: string } | null;
+    /** A relaunch: the `userData` an earlier arm wrote to. */
+    userDataDir?: string;
   } = {},
 ) {
-  const userDataDir = mkdtempSync(join(tmpdir(), "phoebe-arm-"));
+  const userDataDir = opts.userDataDir ?? mkdtempSync(join(tmpdir(), "phoebe-arm-"));
   dirs.push(userDataDir);
   const calls: Call[] = [];
   const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -85,7 +90,7 @@ function harness(
   const changed: RemoteRecord[][] = [];
   const reports: RemoteReportEvent[] = [];
   const alertsOut: RemoteAlertEvent[] = [];
-  const arm = createRemoteArm({
+  const arm = await createRemoteArm({
     userDataDir,
     safeStorage: KEYRING,
     fetchFn,
@@ -108,7 +113,7 @@ function harness(
 
 describe("pair", () => {
   test("reads the descriptor, spends the code, stores the record, and never answers the bearer", async () => {
-    const h = harness();
+    const h = await harness();
     const result = await h.arm.pair({
       url: `${URL_}/pair`,
       code: "ABCD-EFGH-JK12",
@@ -138,64 +143,34 @@ describe("pair", () => {
   });
 
   test("the four failures, each its own word", async () => {
+    const outcomeOf = async (
+      opts: Parameters<typeof harness>[0],
+      url: string = URL_,
+    ): Promise<string> =>
+      (await (await harness(opts)).arm.pair({ url, code: "x", label: "l" })).outcome;
+
+    expect(await outcomeOf({ descriptor: new Error("ECONNREFUSED") })).toBe("unreachable");
     expect(
-      (
-        await harness({ descriptor: new Error("ECONNREFUSED") }).arm.pair({
-          url: URL_,
-          code: "x",
-          label: "l",
-        })
-      ).outcome,
-    ).toBe("unreachable");
-    expect(
-      (
-        await harness({
-          descriptor: new Error("ECONNREFUSED"),
-          tailscale: { running: false, detail: "Stopped" },
-        }).arm.pair({ url: URL_, code: "x", label: "l" })
-      ).outcome,
+      await outcomeOf({
+        descriptor: new Error("ECONNREFUSED"),
+        tailscale: { running: false, detail: "Stopped" },
+      }),
     ).toBe("tailscale-off");
-    expect(
-      (
-        await harness({ descriptor: { status: 200, body: { hello: "world" } } }).arm.pair({
-          url: URL_,
-          code: "x",
-          label: "l",
-        })
-      ).outcome,
-    ).toBe("not-phoebe");
-    expect(
-      (
-        await harness({ descriptor: { status: 404 } }).arm.pair({
-          url: URL_,
-          code: "x",
-          label: "l",
-        })
-      ).outcome,
-    ).toBe("not-phoebe");
-    expect(
-      (
-        await harness({
-          descriptor: { status: 200, body: { ...DESCRIPTOR, protocol: 2 } },
-        }).arm.pair({ url: URL_, code: "x", label: "l" })
-      ).outcome,
-    ).toBe("protocol");
-    expect(
-      (
-        await harness({ pair: { status: 400, body: { error: "code-rejected" } } }).arm.pair({
-          url: URL_,
-          code: "x",
-          label: "l",
-        })
-      ).outcome,
-    ).toBe("code-rejected");
-    expect((await harness().arm.pair({ url: "not a url", code: "x", label: "l" })).outcome).toBe(
-      "unreachable",
+    expect(await outcomeOf({ descriptor: { status: 200, body: { hello: "world" } } })).toBe(
+      "not-phoebe",
     );
+    expect(await outcomeOf({ descriptor: { status: 404 } })).toBe("not-phoebe");
+    expect(
+      await outcomeOf({ descriptor: { status: 200, body: { ...DESCRIPTOR, protocol: 2 } } }),
+    ).toBe("protocol");
+    expect(await outcomeOf({ pair: { status: 400, body: { error: "code-rejected" } } })).toBe(
+      "code-rejected",
+    );
+    expect(await outcomeOf({}, "not a url")).toBe("unreachable");
   });
 
   test("pair again keeps the label, the last report and the notified map, and moves the bearer", async () => {
-    const h = harness();
+    const h = await harness();
     await h.arm.pair({ url: URL_, code: "x", label: "first label" });
     h.store.patch("dep_A", {
       lastReport: { schema: 1, receivedAt: "then", report: { schema: 1 } },
@@ -214,7 +189,7 @@ describe("pair", () => {
   });
 
   test("pair again ends the old session with the old bearer, then moves to the new one", async () => {
-    const h = harness();
+    const h = await harness();
     await h.arm.pair({ url: URL_, code: "x", label: "l" });
     h.calls.length = 0;
     await h.arm.pair({ url: URL_, code: "y", label: "l" });
@@ -228,7 +203,7 @@ describe("pair", () => {
 
   test("a failed pair again leaves the old session alone", async () => {
     const opts: Parameters<typeof harness>[0] = {};
-    const h = harness(opts);
+    const h = await harness(opts);
     await h.arm.pair({ url: URL_, code: "x", label: "l" });
     h.calls.length = 0;
     opts.pair = { status: 400, body: { error: "bad-code" } };
@@ -240,7 +215,7 @@ describe("pair", () => {
 
 describe("requests with the bearer", () => {
   test("request adds the bearer in main; the window never sees it", async () => {
-    const h = harness({
+    const h = await harness({
       answers: { "POST /api/doctor-run": { status: 200, body: { outcome: "started" } } },
     });
     await h.arm.pair({ url: URL_, code: "x", label: "l" });
@@ -254,6 +229,17 @@ describe("requests with the bearer", () => {
     await expect(h.arm.request("dep_nope", { method: "GET", path: "/api/report" })).rejects.toThrow(
       /not a remote/,
     );
+  });
+
+  test("a relaunch reads the bearer the pairing wrote down", async () => {
+    const first = await harness();
+    await first.arm.pair({ url: URL_, code: "x", label: "l" });
+    first.arm.stop();
+
+    const relaunched = await harness({ userDataDir: first.userDataDir });
+    await relaunched.arm.request("dep_A", { method: "GET", path: "/api/report" });
+
+    expect(relaunched.calls.at(-1)?.headers["authorization"]).toBe("Bearer the-bearer");
   });
 
   test("sessions and revoke map the deployment's answers", async () => {
@@ -270,7 +256,7 @@ describe("requests with the bearer", () => {
         lastSeenAt: "",
       },
     ];
-    const h = harness({
+    const h = await harness({
       answers: {
         "GET /api/sessions": { status: 200, body: { sessions: rows, self: "sess_1" } },
         "DELETE /api/sessions/sess_1": { status: 409, body: { error: "revoke-self" } },
@@ -283,7 +269,7 @@ describe("requests with the bearer", () => {
     expect(await h.arm.revoke("dep_A", "sess_1")).toEqual({ outcome: "revoke-self" });
     expect(await h.arm.revoke("dep_A", "sess_2")).toEqual({ outcome: "revoked" });
     expect(await h.arm.revoke("dep_A", "nope")).toEqual({ outcome: "not-found" });
-    const readOnly = harness({
+    const readOnly = await harness({
       answers: { "GET /api/sessions": { status: 403 }, "DELETE /api/sessions/s": { status: 403 } },
     });
     await readOnly.arm.pair({ url: URL_, code: "x", label: "l" });
@@ -294,7 +280,7 @@ describe("requests with the bearer", () => {
 
 describe("sign out and forget", () => {
   test("sign out deletes the session, then drops the record and the bearer", async () => {
-    const h = harness();
+    const h = await harness();
     await h.arm.pair({ url: URL_, code: "x", label: "l" });
     await h.arm.signOut("dep_A");
     expect(h.calls.at(-1)).toMatchObject({
@@ -310,12 +296,23 @@ describe("sign out and forget", () => {
   });
 
   test("forget drops the record without a request", async () => {
-    const h = harness();
+    const h = await harness();
     await h.arm.pair({ url: URL_, code: "x", label: "l" });
     const before = h.calls.length;
     await h.arm.forget("dep_A");
     expect(h.calls.length).toBe(before);
     expect(h.store.list()).toEqual([]);
+  });
+
+  test("a forget while the logs are reading the bearer opens no stream", async () => {
+    const h = await harness();
+    await h.arm.pair({ url: URL_, code: "x", label: "l" });
+
+    const following = h.arm.followLogs("dep_A");
+    await h.arm.forget("dep_A");
+
+    await expect(following).rejects.toThrow(/signed out of/);
+    expect(h.calls.some((call) => call.path.startsWith("/api/logs"))).toBe(false);
   });
 });
 
@@ -332,7 +329,7 @@ describe("helpers", () => {
     const userDataDir = mkdtempSync(join(tmpdir(), "phoebe-arm-"));
     dirs.push(userDataDir);
     let now = 0;
-    const arm = createRemoteArm({
+    const arm = await createRemoteArm({
       userDataDir,
       safeStorage: KEYRING,
       fetchFn: fetch,

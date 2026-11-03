@@ -124,7 +124,11 @@ export function originOf(url: string): string | null {
   return parsed.origin;
 }
 
-export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
+/**
+ * Resolves once the vault knows whether this machine has a keyring, so the arm
+ * serves nothing before it can read a bearer.
+ */
+export async function createRemoteArm(deps: RemoteArmDeps): Promise<RemoteArm> {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
   const setTimer =
@@ -138,7 +142,7 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
   const store = deps.store ?? createRemoteStore({ path: join(deps.userDataDir, REMOTES_FILE) });
   const vault =
     deps.vault ??
-    createBearerVault({ safeStorage: deps.safeStorage, userDataDir: deps.userDataDir });
+    (await createBearerVault({ safeStorage: deps.safeStorage, userDataDir: deps.userDataDir }));
   const live = new Map<string, Live>();
   let tailscaleCached: { at: number; answer: TailscaleCheck } | null = null;
   const logs: RemoteLogs = createRemoteLogs({
@@ -266,7 +270,7 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
     passthrough: RemotePassthrough,
     timeoutMs = ESTABLISH_TIMEOUT_MS,
   ): Promise<RemoteResponse> => {
-    const bearer = vault.read(stored.deploymentId) ?? "";
+    const bearer = (await vault.read(stored.deploymentId)) ?? "";
     let response: Response;
     try {
       response = await deps.fetchFn(`${stored.url}${passthrough.path}`, {
@@ -416,7 +420,7 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
           // Unreachable now: the new session is what counts from here.
         }
       }
-      vault.write(deploymentId, body["token"]);
+      await vault.write(deploymentId, body["token"]);
       const record: StoredRemote =
         existing === null
           ? freshRemote({
@@ -476,7 +480,7 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
         // A deployment that cannot be reached is signed out of on this side
         // regardless; its row goes, and the session expires on its own.
       }
-      vault.clear(deploymentId);
+      await vault.clear(deploymentId);
       store.remove(deploymentId);
       deps.alerts.forgetRemote(deploymentId);
       emitChanged();
@@ -484,7 +488,7 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
 
     async forget(deploymentId) {
       retire(deploymentId);
-      vault.clear(deploymentId);
+      await vault.clear(deploymentId);
       store.remove(deploymentId);
       deps.alerts.forgetRemote(deploymentId);
       emitChanged();
@@ -523,9 +527,19 @@ export function createRemoteArm(deps: RemoteArmDeps): RemoteArm {
       return { outcome: "failed", detail: `the deployment answered ${answer.status}` };
     },
 
-    followLogs(deploymentId) {
+    async followLogs(deploymentId) {
       const stored = held(deploymentId);
-      return logs.follow(deploymentId, { url: stored.url, bearer: vault.read(deploymentId) });
+      const bearer = await vault.read(deploymentId);
+      // A sign-out or forget that began while the keyring answered has retired
+      // this record's supervisor and stopped its logs already; a stream opened
+      // now would outlive the record it belongs to.
+      if (!live.has(deploymentId)) {
+        throw new BridgeRefusal({
+          code: "refused",
+          message: `${deploymentId} was signed out of while its logs were opening`,
+        });
+      }
+      return logs.follow(deploymentId, { url: stored.url, bearer });
     },
 
     stopLogs(deploymentId) {
