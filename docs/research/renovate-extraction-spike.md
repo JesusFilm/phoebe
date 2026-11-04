@@ -34,6 +34,15 @@ claim about flags and output.
 - The parsed candidate list is identical across the three runs.
 - No GitHub credential was present in the environment.
 - The output channel used is documented by Renovate, not inferred from a log line's shape.
+- An exit of 0 with an empty or partial report is not a pass. The spike names the report field
+  that shows a lookup completed for a dependency that is already up to date (an empty `updates`
+  array alone does not, since the smoke run's 403 case produced the same shape), and at least one
+  dependency per covered ecosystem (npm, crates.io, PyPI) shows it.
+- `repositories.local.problems` carries no lookup error for a covered ecosystem. The two
+  "Unknown error fetching default owner preset" entries are the one expected exception; any other
+  entry is named with its cause and judged before the source ships enabled.
+- GitHub Actions dependencies skipped with `github-token-required` are expected in a
+  credential-free run and do not count against the gate.
 
 If any line fails, the source ships behind `sources: ["renovate"]` with the default off, and a
 native Docker row moves into v1.

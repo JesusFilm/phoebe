@@ -18,19 +18,29 @@ files or refreshes issues. `dependencies` is the implementer, an
 issue-producer keyed by the `phoebe:dependencies` label with its own prompt
 file. All three sit on one contract: a candidate is a manager, a package, a
 current and a target version, an update type, a publish date, a dependency
-type, an owning workspace package, and a list of advisories. Policy, grouping
-and filing never learn which source produced a candidate.
+type, an owning workspace package, a list of advisories, and the two inputs
+`by-relation` grouping reads, the package's declared peer dependencies and its
+source repository URL. The native rows read those two from the installed
+package's manifest; a candidate from any other source gets them from the
+deps.dev version record. Policy, grouping and filing never learn which source
+produced a candidate.
 
-Three sources feed that contract and are unioned, deduped on manager, package
-and target. The native source is a table of ecosystem rows; a row only lists
-direct dependencies with their current version using stock tooling, and
+Three sources feed that contract and are unioned. Two candidates are the same
+occurrence, and merge, only when manager, package, current version, target,
+dependency type and owning workspace package all match; the same package
+wanted by two workspace packages stays two candidates, so `by-workspace` can
+tell them apart. The native source is a table of ecosystem rows; a row only
+lists direct dependencies with their current version using stock tooling, and
 deps.dev answers what is newer and when it shipped while OSV answers what is
 vulnerable, with the manager's own audit unioned in where it has one. An agent
 fallback, on by default, covers manifests no row understands by writing
 candidates to a JSON file that the engine validates. Renovate runs pinned in
 the container image, on the local platform, in dry-run, and Phoebe parses its
-output. It never touches GitHub. A source that fails is a log line, and the
-others' results stand.
+output. Phoebe hands it no GitHub credential and leaves its token warning at
+the default, which is what keeps it off GitHub: with a token, or with the
+warning turned off, Renovate does call `api.github.com`. The cost is that
+Renovate covers no GitHub Actions; the native Actions row does. A source that
+fails is a log line, and the others' results stand.
 
 ## Considered options
 
@@ -70,9 +80,11 @@ others' results stand.
   unless `majors: "follow-strategy"`. A bundle never spans two ecosystems.
   Open dependency PRs are capped at 5. Nothing auto-merges.
 - State lives in GitHub. An HTML marker in each issue carries the bundle key
-  and a fingerprint of the package-version set. Same fingerprint, leave the
-  issue; new fingerprint, update the body and comment; closed without a merged
-  PR, veto that fingerprint until a newer version appears. A bump the
+  and a fingerprint of the package, version and advisory-id set. Same
+  fingerprint, leave the issue; new fingerprint, update the body and comment;
+  closed without a merged PR, veto that fingerprint for as long as it stays the
+  same, so a newer version or a new advisory on the same version both lift the
+  veto. A bump the
   implementer had to drop is re-filed on its own and stops after two failures
   per package-version. Window state is in memory, so a boot re-runs detection
   and files nothing new.
