@@ -367,19 +367,26 @@ const runs = createVerbRuns({
  * the bearers in the keyring. Built once the app is ready, because `userData`
  * and `safeStorage` are Electron's to name then; held at module scope for the
  * same reason the read loop is — a window can come and go, and what a
- * supervisor knows must not.
+ * supervisor knows must not. `remotes` is the finished arm, set once the
+ * keyring has said whether it is there; `arming` is the wait for it.
  */
 let remotes: RemoteArm | null = null;
+let arming: Promise<RemoteArm> | null = null;
 
-/** The arm, or the refusal every call before the app is ready gets. */
-function remoteArm(): RemoteArm {
-  if (remotes === null) {
-    throw new BridgeRefusal({
-      code: "not-initialised",
-      message: "the companion is still starting",
-    });
-  }
-  return remotes;
+/**
+ * Answer one bridge call with the arm. A call that lands while the keyring is
+ * still answering waits for it; one before the app is ready is refused.
+ */
+function withArm<T>(use: (arm: RemoteArm) => T | Promise<T>): Promise<BridgeResult<T>> {
+  return answering(async () => {
+    if (arming === null) {
+      throw new BridgeRefusal({
+        code: "not-initialised",
+        message: "the companion is still starting",
+      });
+    }
+    return use(await arming);
+  });
 }
 
 /** `tailscale status --json` on this machine, read down to whether it is Running. */
@@ -843,7 +850,7 @@ app.whenReady().then(
       }),
     );
 
-    remotes = createRemoteArm({
+    arming = createRemoteArm({
       userDataDir: app.getPath("userData"),
       safeStorage,
       // Chromium's network stack rather than Node's, so the machine's proxy
@@ -867,46 +874,49 @@ app.whenReady().then(
       },
       log: (line) => console.log(line),
     });
-    const arm = remotes;
-    ipcMain.handle(BRIDGE_CHANNELS.remotesList, () => answering(() => remoteArm().list()));
+    ipcMain.handle(BRIDGE_CHANNELS.remotesList, () => withArm((arm) => arm.list()));
     ipcMain.handle(
       BRIDGE_CHANNELS.remotesPair,
       (_event, input: { url: string; code: string; label: string }) =>
-        answering(() => remoteArm().pair(input)),
+        withArm((arm) => arm.pair(input)),
     );
     ipcMain.handle(
       BRIDGE_CHANNELS.remotesRequest,
       (_event, deploymentId: string, passthrough: RemotePassthrough) =>
-        answering(() => remoteArm().request(deploymentId, passthrough)),
+        withArm((arm) => arm.request(deploymentId, passthrough)),
     );
     ipcMain.handle(BRIDGE_CHANNELS.remotesSignOut, (_event, deploymentId: string) =>
-      answering(() => remoteArm().signOut(deploymentId)),
+      withArm((arm) => arm.signOut(deploymentId)),
     );
     ipcMain.handle(BRIDGE_CHANNELS.remotesForget, (_event, deploymentId: string) =>
-      answering(() => remoteArm().forget(deploymentId)),
+      withArm((arm) => arm.forget(deploymentId)),
     );
     ipcMain.handle(BRIDGE_CHANNELS.remotesSessions, (_event, deploymentId: string) =>
-      answering(() => remoteArm().sessions(deploymentId)),
+      withArm((arm) => arm.sessions(deploymentId)),
     );
     ipcMain.handle(
       BRIDGE_CHANNELS.remotesRevoke,
       (_event, deploymentId: string, sessionId: string) =>
-        answering(() => remoteArm().revoke(deploymentId, sessionId)),
+        withArm((arm) => arm.revoke(deploymentId, sessionId)),
     );
-    ipcMain.handle(BRIDGE_CHANNELS.remotesTailscale, () =>
-      answering(() => remoteArm().tailscale()),
-    );
+    ipcMain.handle(BRIDGE_CHANNELS.remotesTailscale, () => withArm((arm) => arm.tailscale()));
     ipcMain.handle(BRIDGE_CHANNELS.remotesLogsFollow, (_event, deploymentId: string) =>
-      answering(() => remoteArm().followLogs(deploymentId)),
+      withArm((arm) => arm.followLogs(deploymentId)),
     );
     ipcMain.handle(BRIDGE_CHANNELS.remotesLogsStop, (_event, deploymentId: string) =>
-      answering<void>(() => remoteArm().stopLogs(deploymentId)),
+      withArm<void>((arm) => arm.stopLogs(deploymentId)),
     );
     // The machine waking and the network coming back are the two other moments
     // a remote on its ladder should try now rather than wait out a rung (#697).
-    powerMonitor.on("resume", () => arm.poke());
-    powerMonitor.on("unlock-screen", () => arm.poke());
-    arm.start();
+    powerMonitor.on("resume", () => remotes?.poke());
+    powerMonitor.on("unlock-screen", () => remotes?.poke());
+    void arming.then(
+      (arm) => {
+        remotes = arm;
+        arm.start();
+      },
+      (error: unknown) => console.error("[phoebe] the remote arm could not start:", error),
+    );
 
     createWindow();
     updateWatch.refresh();
@@ -957,7 +967,12 @@ app.whenReady().then(
 app.on("before-quit", () => {
   reads.stop();
   logs.stopAll();
-  remotes?.stop();
+  // Through the promise rather than `remotes`: an arm still waiting on the
+  // keyring would otherwise start its supervisors after this stop.
+  void arming?.then(
+    (arm) => arm.stop(),
+    () => undefined,
+  );
 });
 
 app.on("window-all-closed", () => {

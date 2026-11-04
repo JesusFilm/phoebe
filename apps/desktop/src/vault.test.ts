@@ -15,28 +15,36 @@ import { createBearerVault, VAULT_FILENAME, type SafeStorageLike } from "./vault
 /**
  * A keyring that works. The stand-in only has to be reversible and opaque —
  * base64 behind a per-keyring marker — because what these tests hold is that the
- * plaintext is not on disk and that another keyring's bytes do not open.
+ * plaintext is not on disk and that another keyring's bytes do not open. A
+ * keyring that has `retired` a marker still opens its bytes, and says they
+ * want encrypting again, the way Electron does after a key rotation it can
+ * still read through.
  */
-function keyring(marker = "k"): SafeStorageLike {
+function keyring(marker = "k", retired: string[] = []): SafeStorageLike {
+  const encrypt = (plain: string): Buffer =>
+    Buffer.from(`${marker}:${Buffer.from(plain, "utf8").toString("base64")}`, "utf8");
   return {
-    isEncryptionAvailable: () => true,
-    encryptString: (plain) =>
-      Buffer.from(`${marker}:${Buffer.from(plain, "utf8").toString("base64")}`, "utf8"),
-    decryptString: (cipher) => {
+    isAsyncEncryptionAvailable: async () => true,
+    encryptStringAsync: async (plain) => encrypt(plain),
+    decryptStringAsync: async (cipher) => {
       const text = cipher.toString("utf8");
-      if (!text.startsWith(`${marker}:`)) throw new Error("not this keyring's ciphertext");
-      return Buffer.from(text.slice(marker.length + 1), "base64").toString("utf8");
+      const opener = [marker, ...retired].find((m) => text.startsWith(`${m}:`));
+      if (opener === undefined) throw new Error("not this keyring's ciphertext");
+      return {
+        shouldReEncrypt: opener !== marker,
+        result: Buffer.from(text.slice(opener.length + 1), "base64").toString("utf8"),
+      };
     },
   };
 }
 
 /** Linux with no session keyring: the case that decides the whole policy. */
 const NO_KEYRING: SafeStorageLike = {
-  isEncryptionAvailable: () => false,
-  encryptString: () => {
+  isAsyncEncryptionAvailable: async () => false,
+  encryptStringAsync: async () => {
     throw new Error("no keyring");
   },
-  decryptString: () => {
+  decryptStringAsync: async () => {
     throw new Error("no keyring");
   },
 };
@@ -56,56 +64,120 @@ describe("the bearer vault", () => {
     return join(userDataDir, VAULT_FILENAME);
   }
 
-  test("keeps bearers across relaunches, keyed by deployment, and never in the clear", () => {
-    const vault = createBearerVault({ safeStorage: keyring(), userDataDir });
+  test("keeps bearers across relaunches, keyed by deployment, and never in the clear", async () => {
+    const vault = await createBearerVault({ safeStorage: keyring(), userDataDir });
 
-    vault.write("dep_A", "bearer-a");
-    vault.write("dep_B", "bearer-b");
+    await vault.write("dep_A", "bearer-a");
+    await vault.write("dep_B", "bearer-b");
 
+    expect(vault.persists).toBe(true);
     expect(readFileSync(file(), "utf8")).not.toContain("bearer-a");
-    const again = createBearerVault({ safeStorage: keyring(), userDataDir });
-    expect(again.read("dep_A")).toBe("bearer-a");
-    expect(again.read("dep_B")).toBe("bearer-b");
-    expect(again.read("dep_C")).toBeNull();
+    const again = await createBearerVault({ safeStorage: keyring(), userDataDir });
+    expect(await again.read("dep_A")).toBe("bearer-a");
+    expect(await again.read("dep_B")).toBe("bearer-b");
+    expect(await again.read("dep_C")).toBeNull();
   });
 
-  test("with no keyring it writes nothing, holds the bearer for the session, and says so", () => {
-    const vault = createBearerVault({ safeStorage: NO_KEYRING, userDataDir });
+  test("two writes asked for together both land", async () => {
+    const vault = await createBearerVault({ safeStorage: keyring(), userDataDir });
 
-    vault.write("dep_A", "bearer-a");
+    await Promise.all([vault.write("dep_A", "bearer-a"), vault.write("dep_B", "bearer-b")]);
+
+    const again = await createBearerVault({ safeStorage: keyring(), userDataDir });
+    expect(await again.read("dep_A")).toBe("bearer-a");
+    expect(await again.read("dep_B")).toBe("bearer-b");
+  });
+
+  test("with no keyring it writes nothing, holds the bearer for the session, and says so", async () => {
+    const vault = await createBearerVault({ safeStorage: NO_KEYRING, userDataDir });
+
+    await vault.write("dep_A", "bearer-a");
 
     expect(vault.persists).toBe(false);
     expect(existsSync(file())).toBe(false);
-    expect(vault.read("dep_A")).toBe("bearer-a");
-    expect(createBearerVault({ safeStorage: NO_KEYRING, userDataDir }).read("dep_A")).toBeNull();
+    expect(await vault.read("dep_A")).toBe("bearer-a");
+    const relaunched = await createBearerVault({ safeStorage: NO_KEYRING, userDataDir });
+    expect(await relaunched.read("dep_A")).toBeNull();
   });
 
-  test("a keyring that rotated under the file is no bearer, and the file goes", () => {
-    createBearerVault({ safeStorage: keyring("old"), userDataDir }).write("dep_A", "bearer-a");
+  test("a keyring that cannot say whether it is there is no keyring", async () => {
+    const vault = await createBearerVault({
+      safeStorage: {
+        ...keyring(),
+        isAsyncEncryptionAvailable: () => Promise.reject(new Error("no D-Bus")),
+      },
+      userDataDir,
+    });
 
-    const after = createBearerVault({ safeStorage: keyring("new"), userDataDir });
+    await vault.write("dep_A", "bearer-a");
 
-    expect(after.read("dep_A")).toBeNull();
+    expect(vault.persists).toBe(false);
     expect(existsSync(file())).toBe(false);
   });
 
-  test("a file that decrypts to something that is not a vault holds nothing", () => {
-    writeFileSync(file(), keyring().encryptString(JSON.stringify(["x"])));
+  test("a keyring that cannot open the file is no bearer, and the file stays", async () => {
+    await (
+      await createBearerVault({ safeStorage: keyring("old"), userDataDir })
+    ).write("dep_A", "bearer-a");
 
-    expect(createBearerVault({ safeStorage: keyring(), userDataDir }).read("dep_A")).toBeNull();
+    const after = await createBearerVault({
+      safeStorage: keyring("new"),
+      userDataDir,
+      warn: () => undefined,
+    });
+
+    expect(await after.read("dep_A")).toBeNull();
+    expect(existsSync(file())).toBe(true);
   });
 
-  test("clearing forgets one bearer, keeps the others, and removes the file with the last", () => {
-    const vault = createBearerVault({ safeStorage: keyring(), userDataDir });
-    vault.write("dep_A", "bearer-a");
-    vault.write("dep_B", "bearer-b");
+  test("a pairing made while the file will not open lasts the session and leaves the file alone", async () => {
+    await (
+      await createBearerVault({ safeStorage: keyring("old"), userDataDir })
+    ).write("dep_A", "bearer-a");
+    const before = readFileSync(file(), "utf8");
+    const after = await createBearerVault({
+      safeStorage: keyring("new"),
+      userDataDir,
+      warn: () => undefined,
+    });
 
-    vault.clear("dep_A");
-    vault.clear("dep_A");
-    expect(vault.read("dep_A")).toBeNull();
-    expect(vault.read("dep_B")).toBe("bearer-b");
+    await after.write("dep_B", "bearer-b");
 
-    vault.clear("dep_B");
+    expect(await after.read("dep_B")).toBe("bearer-b");
+    expect(readFileSync(file(), "utf8")).toBe(before);
+  });
+
+  test("a file the keyring opens but wants encrypting again is written back under the new key", async () => {
+    await (
+      await createBearerVault({ safeStorage: keyring("old"), userDataDir })
+    ).write("dep_A", "bearer-a");
+
+    const rotated = await createBearerVault({ safeStorage: keyring("new", ["old"]), userDataDir });
+    expect(await rotated.read("dep_A")).toBe("bearer-a");
+
+    expect(readFileSync(file(), "utf8").startsWith("new:")).toBe(true);
+    const later = await createBearerVault({ safeStorage: keyring("new"), userDataDir });
+    expect(await later.read("dep_A")).toBe("bearer-a");
+  });
+
+  test("a file that decrypts to something that is not a vault holds nothing", async () => {
+    writeFileSync(file(), await keyring().encryptStringAsync(JSON.stringify(["x"])));
+
+    const vault = await createBearerVault({ safeStorage: keyring(), userDataDir });
+    expect(await vault.read("dep_A")).toBeNull();
+  });
+
+  test("clearing forgets one bearer, keeps the others, and removes the file with the last", async () => {
+    const vault = await createBearerVault({ safeStorage: keyring(), userDataDir });
+    await vault.write("dep_A", "bearer-a");
+    await vault.write("dep_B", "bearer-b");
+
+    await vault.clear("dep_A");
+    await vault.clear("dep_A");
+    expect(await vault.read("dep_A")).toBeNull();
+    expect(await vault.read("dep_B")).toBe("bearer-b");
+
+    await vault.clear("dep_B");
     expect(existsSync(file())).toBe(false);
   });
 });
