@@ -502,6 +502,7 @@ export default {
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
   workspace: "worktree",        // or "scratch" / "readonly" — modes below
+  unitKey: "issue",             // or "pr" / "none" (the default) — which sweeps cover it
   requiredEnv: ["SLACK_BOT_TOKEN"],  // env keys this kind's code reads
   agentEnv: ["SLACK_BOT_TOKEN"],     // the subset its agent children may see
   model: "…", effort: "…",      // optional agent defaults (see tuning below)
@@ -550,6 +551,20 @@ string that changes when the unit does. It is the exit from the in-memory
 quarantine below; a unit that never sets it keeps its timeout count for the
 process's life. Nothing else reads it, and no built-in sets it. It exists for
 units the engine cannot see ([`pipelines.md`](pipelines.md#units-the-engine-cannot-see)).
+
+The optional `unitKey` field says what your units are on the tracker, and the
+tracker sweeps read it to decide whether they cover your kind. Declare `"issue"`
+when a unit is a queue-labelled issue your run claims with `processingLabel`, as
+`issues` and `research` do. A pipeline scheduling your kind then re-arms a
+claimed issue left with no PR, lifts `phoebe:quarantined` from an issue whose
+content moved on, and keeps the stacked and feature-integration PRs its runs
+open up to date. Declare `"pr"` when a unit is one of Phoebe's open PRs, as the
+three janitors do, and the PR half of the quarantine sweep covers it. Leave it
+out or write `"none"` and no sweep touches your kind's objects. The stranded
+sweep has one blind spot. It tells issue kinds apart only by the research label,
+so a ticket without that label belongs to every issue-keyed kind except
+`research`. Keep `issues` and your own issue kind in one pipeline. Split across
+two, each pipeline would re-arm the tickets the other has claimed.
 
 ### The `ctx` surface
 

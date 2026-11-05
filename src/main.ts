@@ -546,7 +546,7 @@ export function createEngine(options: EngineOptions): Engine {
   // ownership: a sweep repairs an object only when the kind that object belongs
   // to is one this pipeline schedules, which is what gives two processes exactly-once
   // coverage with nothing to elect and nothing to fail over.
-  const scope: SweepScope = sweepScope(workOrder, config.researchLabel);
+  const scope: SweepScope = sweepScope(workOrder, registry, config.researchLabel);
 
   // Whether any scheduled kind puts a workspace on the clone (#418). A pipeline of
   // `scratch` kinds owns no worktrees, so it has no leases to break at boot and

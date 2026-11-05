@@ -51,6 +51,21 @@ describe("buildRegistry", () => {
     expect(issues.promptFile).toBe("prompts/my-issues.md");
   });
 
+  // #753: what the sweeps read instead of the built-in names.
+  test("the built-ins declare what their units are", () => {
+    const registry = buildRegistry(testConfig());
+    const unitKeys = Object.fromEntries(
+      [...registry].map(([name, { definition }]) => [name, definition.unitKey]),
+    );
+    expect(unitKeys).toEqual({
+      conflicts: "pr",
+      checks: "pr",
+      reviews: "pr",
+      issues: "issue",
+      research: "issue",
+    });
+  });
+
   test("a custom kind registers beside the built-ins, carrying its options", () => {
     const options = { channel: "C123" };
     const registry = buildRegistry(testConfig(), [
@@ -113,11 +128,17 @@ describe("validateWorkKindDefinition", () => {
     expect(() => validateWorkKindDefinition(definition, "at")).not.toThrow();
   });
 
+  test.each(["issue", "pr", "none"])("accepts the %s unit key", (unitKey) => {
+    const definition = { ...customDefinition("ok"), unitKey };
+    expect(() => validateWorkKindDefinition(definition, "at")).not.toThrow();
+  });
+
   test.each([
     ["name", { name: "" }, /`name` must be a non-empty string/],
     ["oneShotEligible", { oneShotEligible: "yes" }, /`oneShotEligible` must be a boolean/],
     ["promptFile", { promptFile: "  " }, /`promptFile` must be a non-empty path/],
     ["workspace", { workspace: "none" }, /`workspace` must be one of: worktree, scratch, readonly/],
+    ["unitKey", { unitKey: "issues" }, /`unitKey` must be one of: issue, pr, none/],
     ["model", { model: 3 }, /`model` must be a string/],
     ["report", { report: null }, /`report` must be an object/],
     ["fetch", { fetch: undefined }, /`fetch` must be a function/],

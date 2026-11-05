@@ -104,6 +104,7 @@ export function conflictsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     oneShotEligible: false,
     promptFile: config.promptFiles.conflict,
     workspace: "worktree",
+    unitKey: "pr",
     report: {
       noun,
       describe: (unit) =>

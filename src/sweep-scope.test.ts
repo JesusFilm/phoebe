@@ -1,9 +1,47 @@
 // Sweep scoping (#418): which tracker objects a pipeline's sweeps may touch.
 
 import { describe, expect, test } from "vite-plus/test";
-import { sweepScope } from "./sweep-scope.ts";
+import { resolveConfig } from "./config-schema.ts";
+import { sweepScope as sweepScopeOver } from "./sweep-scope.ts";
+import type { AnyWorkKindDefinition, WorkUnitKey } from "./work-kinds/definition.ts";
+import { buildRegistry } from "./work-kinds/registry.ts";
 
 const RESEARCH = "research";
+
+/** A minimal custom kind, declaring `unitKey` only when given one. */
+function customKind(name: string, unitKey?: WorkUnitKey): AnyWorkKindDefinition {
+  return {
+    name,
+    oneShotEligible: true,
+    promptFile: "prompts/custom.md",
+    workspace: "worktree",
+    ...(unitKey === undefined ? {} : { unitKey }),
+    report: { noun: "thing(s)", describe: (unit: { ref: string }) => unit.ref },
+    fetch: () => Promise.resolve([]),
+    select: () => ({ unit: null, skipped: [], total: 0 }),
+    run: () => Promise.resolve(),
+  };
+}
+
+/** The five built-ins beside custom kinds of each unit key. */
+const registry = buildRegistry(
+  resolveConfig({
+    repoSlug: "acme/widget",
+    repoUrl: "https://github.com/acme/widget.git",
+    installCommand: "npm ci",
+    checkCommand: "npm run check",
+    testCommand: "npm test",
+  }),
+  [
+    customKind("nudge"),
+    customKind("digest", "none"),
+    customKind("dependencies", "issue"),
+    customKind("pr-labeller", "pr"),
+  ].map((definition) => ({ name: definition.name, definition, options: undefined })),
+);
+
+const sweepScope = (kinds: readonly string[], researchLabel: string) =>
+  sweepScopeOver(kinds, registry, researchLabel);
 
 describe("sweepScope", () => {
   test("a pipeline of issue producers sweeps issues and no PRs", () => {
@@ -66,5 +104,41 @@ describe("sweepScope", () => {
     const scope = sweepScope(["research"], "wayfinder");
     expect(scope.ownsIssue(["wayfinder"])).toBe(true);
     expect(scope.ownsIssue(["research"])).toBe(false);
+  });
+
+  // #753: the sweeps follow a kind's declared `unitKey`, not its name.
+  describe("a custom kind sweeps what its unitKey says", () => {
+    test("an issue-keyed custom kind gets the stranded and quarantine sweeps", () => {
+      const scope = sweepScope(["dependencies"], RESEARCH);
+      expect(scope.issues).toBe(true);
+      expect(scope.prs).toBe(false);
+      expect(scope.ownsIssue(["ready-for-agent"])).toBe(true);
+      expect(scope.ownsIssue([RESEARCH])).toBe(false);
+    });
+
+    test("a PR-keyed custom kind gets the PR half of the quarantine sweep", () => {
+      const scope = sweepScope(["pr-labeller"], RESEARCH);
+      expect(scope.issues).toBe(false);
+      expect(scope.prs).toBe(true);
+    });
+
+    test("a kind declaring `none` gets no sweep", () => {
+      const scope = sweepScope(["digest"], RESEARCH);
+      expect(scope.issues).toBe(false);
+      expect(scope.prs).toBe(false);
+      expect(scope.ownsIssue(["ready-for-agent"])).toBe(false);
+    });
+
+    test("a kind omitting `unitKey` is `none`", () => {
+      const scope = sweepScope(["nudge"], RESEARCH);
+      expect(scope.issues).toBe(false);
+      expect(scope.prs).toBe(false);
+    });
+
+    test("an issue-keyed custom kind beside `research` owns both shapes of ticket", () => {
+      const scope = sweepScope(["dependencies", "research"], RESEARCH);
+      expect(scope.ownsIssue([])).toBe(true);
+      expect(scope.ownsIssue([RESEARCH])).toBe(true);
+    });
   });
 });

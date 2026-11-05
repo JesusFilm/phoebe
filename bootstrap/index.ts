@@ -48,5 +48,6 @@ export type {
   WorkspaceHandle,
   WorkspaceMode,
   WorkUnitGitHubTarget,
+  WorkUnitKey,
   WorkUnitShape,
 } from "../src/work-kinds/definition.ts";

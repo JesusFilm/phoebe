@@ -33,8 +33,7 @@ import {
 } from "./feature-branch.ts";
 import type { MergedMemberPr } from "./feature-closes.ts";
 import { classifyGhError, describeGhError, isTransientGhError } from "./gh-error.ts";
-import { resolvePrScopeForKind, widestPrScope } from "./pr-scope.ts";
-import { PR_UNIT_KINDS } from "./sweep-scope.ts";
+import { PR_SCOPED_KINDS, resolvePrScopeForKind, widestPrScope } from "./pr-scope.ts";
 import {
   isCompletedBlockerIssue,
   isPrInScope,
@@ -769,7 +768,7 @@ export function createGitHubClient({
       prScope: widestPrScope(
         [
           config.prScope,
-          ...PR_UNIT_KINDS.map((kind) =>
+          ...PR_SCOPED_KINDS.map((kind) =>
             resolvePrScopeForKind({
               kind,
               env,

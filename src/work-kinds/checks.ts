@@ -57,6 +57,7 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
     oneShotEligible: false,
     promptFile: config.promptFiles.checks,
     workspace: "worktree",
+    unitKey: "pr",
     report: {
       noun,
       describe: (unit) => `checks fix for PR #${unit.pr.prNumber} (${unit.pr.headRefName})`,

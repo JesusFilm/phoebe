@@ -137,6 +137,7 @@ export function issueProducerKind(opts: {
     oneShotEligible: opts.oneShotEligible ?? true,
     promptFile,
     workspace: "worktree",
+    unitKey: "issue",
     report: {
       noun,
       describe: (unit) =>

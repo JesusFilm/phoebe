@@ -11,23 +11,24 @@
 // pipelines that between them schedule every kind still cover every object
 // exactly once, with no coordination and nothing to fail over.
 //
-// The mapping below is the whole of it. Each sweep names the kinds whose
-// objects it repairs; where a listing already carries enough to name the
-// owning kind of one object (the stranded sweep's labels), the filter is
-// applied per object, and where it does not the sweep runs only if it owns at
-// least one of the kinds involved. A pipeline that schedules none of them —
-// one running only custom kinds, say — runs an empty sweep.
+// A kind says what its units are through its definition's `unitKey` (#753), so
+// a custom or catalog kind gets the same sweeps as the built-in it resembles.
+// Each sweep names the unit key whose objects it repairs; where a listing
+// already carries enough to name the owning kind of one object (the stranded
+// sweep's labels), the filter is applied per object, and where it does not the
+// sweep runs only if the pipeline schedules at least one kind of that key. A
+// pipeline whose kinds are all `none` runs an empty sweep.
+
+import type { WorkUnitKey } from "./work-kinds/definition.ts";
+import type { WorkKindRegistry } from "./work-kinds/registry.ts";
+import { registeredKind } from "./work-kinds/walk.ts";
 
 /**
- * The kinds whose units are queue-labelled issues. What the stranded-unit
- * sweep re-arms and the issue half of the quarantine sweep clears; also the
- * producers whose runs create the native stacks and feature integration PRs
- * the other two sweeps maintain.
+ * The one issue-keyed kind the tracker can tell apart: its tickets carry the
+ * tenant's research label. Every other issue-keyed kind shares the unlabelled
+ * remainder, because no definition field says which label its tickets wear.
  */
-export const ISSUE_UNIT_KINDS = ["issues", "research"] as const;
-
-/** The kinds whose units are Phoebe's own open PRs — the PR half of the quarantine sweep. */
-export const PR_UNIT_KINDS = ["conflicts", "checks", "reviews"] as const;
+const RESEARCH_KIND = "research";
 
 /**
  * What this pipeline's scheduled kinds let it sweep. Built once per engine
@@ -41,26 +42,33 @@ export type SweepScope = {
   readonly prs: boolean;
   /**
    * The owning kind of one queue-labelled issue: `research` when it carries the
-   * research label, else `issues`. The two producers are told apart by nothing
-   * else — same processing label, same PR shape — and the label is already on
-   * every pipeline the stranded sweep lists, so the partition costs no extra call.
+   * research label, else any other issue-keyed kind. The producers are told
+   * apart by nothing else — same processing label, same PR shape — and the
+   * label is already on every issue the stranded sweep lists, so the partition
+   * costs no extra call.
    */
   ownsIssue(labels: readonly string[]): boolean;
 };
 
 /**
- * Build the scope for a pipeline scheduling `kinds`. `researchLabel` is the
- * tenant's, because that is what distinguishes a `research` unit from an
- * `issues` one on the tracker.
+ * Build the scope for a pipeline scheduling `kinds`, each read from `registry`.
+ * `researchLabel` is the tenant's, because that is what distinguishes a
+ * `research` unit from any other issue-keyed one on the tracker.
  */
-export function sweepScope(kinds: readonly string[], researchLabel: string): SweepScope {
-  const scheduled = new Set(kinds);
-  const [plainProducer, researchProducer] = ISSUE_UNIT_KINDS;
-  const schedulesIssues = scheduled.has(plainProducer);
-  const schedulesResearch = scheduled.has(researchProducer);
+export function sweepScope(
+  kinds: readonly string[],
+  registry: WorkKindRegistry,
+  researchLabel: string,
+): SweepScope {
+  const unitKeyOf = (kind: string): WorkUnitKey =>
+    registeredKind(registry, kind).definition.unitKey ?? "none";
+  const issueKinds = kinds.filter((kind) => unitKeyOf(kind) === "issue");
+  const schedulesResearch = issueKinds.includes(RESEARCH_KIND);
+  const schedulesUnlabelled = issueKinds.some((kind) => kind !== RESEARCH_KIND);
   return {
-    issues: schedulesIssues || schedulesResearch,
-    prs: PR_UNIT_KINDS.some((kind) => scheduled.has(kind)),
-    ownsIssue: (labels) => (labels.includes(researchLabel) ? schedulesResearch : schedulesIssues),
+    issues: issueKinds.length > 0,
+    prs: kinds.some((kind) => unitKeyOf(kind) === "pr"),
+    ownsIssue: (labels) =>
+      labels.includes(researchLabel) ? schedulesResearch : schedulesUnlabelled,
   };
 }

@@ -61,9 +61,9 @@ import {
 } from "./config-schema.ts";
 import { applyEnvOverlay } from "./load-config.ts";
 import { pipelineOwnedKinds } from "./pipeline.ts";
+import { PR_SCOPED_KINDS } from "./pr-scope.ts";
 import { ENGINE_CREDENTIAL_KEYS } from "./shell-env.ts";
 import { envNames, kindEnvNames, SETTINGS, settingAt, type Setting } from "./settings-catalogue.ts";
-import { PR_UNIT_KINDS } from "./sweep-scope.ts";
 
 /**
  * The env as three layers, so a value can say where it was set. The engine child
@@ -674,7 +674,7 @@ function kindFields(opts: {
   // Only the three PR janitors read `prScope` (#655), so only they get the
   // leaf: an `issues` block that set it would be configuring nothing, and a
   // row saying what it inherited would imply otherwise.
-  if ((PR_UNIT_KINDS as readonly string[]).includes(kind)) {
+  if ((PR_SCOPED_KINDS as readonly string[]).includes(kind)) {
     fields["prScope"] = leafFrom(
       [
         ...kindEnv(PR_SCOPE_SETTING),
