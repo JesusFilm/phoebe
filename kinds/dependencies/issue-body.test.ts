@@ -1,0 +1,122 @@
+// The issue body: every candidate with its versions, publish date and the
+// reason it was selected, then changelog and advisory links, then the marker.
+// The same bundle renders the same bytes whatever order it arrives in.
+
+import { describe, expect, test } from "vite-plus/test";
+import type { Candidate } from "./candidate.ts";
+import { bundleKey, fingerprint, parseMarker } from "./fingerprint.ts";
+import type { Bundle } from "./grouping.ts";
+import { renderIssueBody } from "./issue-body.ts";
+
+function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
+  return {
+    manager: "npm",
+    package: pkg,
+    current: "18.2.0",
+    target: "18.3.1",
+    updateType: "minor",
+    publishedAt: "2026-10-01T08:30:00Z",
+    depType: "prod",
+    workspace: "package.json",
+    advisories: [],
+    peers: [],
+    repositoryUrl: "git+https://github.com/facebook/react.git",
+    ...overrides,
+  };
+}
+
+const bundle: Bundle = {
+  manager: "npm",
+  group: "relation:react",
+  candidates: [
+    candidate("react-dom", {
+      peers: ["react"],
+      advisories: [
+        { id: "GHSA-2222-bbbb-cccc", severity: "high", fixedIn: "18.3.1" },
+        { id: "CVE-2026-0001", severity: "low", fixedIn: null },
+      ],
+    }),
+    candidate("react"),
+    candidate("scheduler", {
+      current: "0.23.0",
+      target: "0.23.2",
+      updateType: "lockfile",
+      workspace: "apps/web/package.json",
+      repositoryUrl: "https://gitlab.com/example/scheduler",
+    }),
+    candidate("left-pad", { updateType: "digest", repositoryUrl: undefined }),
+  ],
+};
+
+describe("renderIssueBody", () => {
+  test("lists packages, versions, dates, reasons, changelogs and advisories, then the marker", () => {
+    const { publishedAt: _, ...undated } = bundle.candidates[3]!;
+    const body = renderIssueBody({
+      ...bundle,
+      candidates: [...bundle.candidates.slice(0, 3), undated],
+    });
+    expect(body).toBe(
+      [
+        "Dependency updates for `npm`, bundle `relation:react`.",
+        "",
+        "| Package | Workspace | Type | From | To | Update | Published | Selected because |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| `left-pad` | `package.json` | prod | 18.2.0 | 18.3.1 | digest | publish date unknown | digest update; it names no new version, so it skips the maturity wait |",
+        "| `react` | `package.json` | prod | 18.2.0 | 18.3.1 | minor | 2026-10-01 | minor update past the 7-day maturity wait |",
+        "| `react-dom` | `package.json` | prod | 18.2.0 | 18.3.1 | minor | 2026-10-01 | fixes GHSA-2222-bbbb-cccc, so it skips the maturity wait |",
+        "| `scheduler` | `apps/web/package.json` | prod | 0.23.0 | 0.23.2 | lockfile | 2026-10-01 | lockfile (patch) update past the 3-day maturity wait |",
+        "",
+        "## Changelogs",
+        "",
+        "- `left-pad`: no source repository known",
+        "- `react`: https://github.com/facebook/react/releases",
+        "- `react-dom`: https://github.com/facebook/react/releases",
+        "- `scheduler`: https://gitlab.com/example/scheduler",
+        "",
+        "## Advisories",
+        "",
+        "- [CVE-2026-0001](https://osv.dev/vulnerability/CVE-2026-0001): low, in `react-dom`, no fix released",
+        "- [GHSA-2222-bbbb-cccc](https://osv.dev/vulnerability/GHSA-2222-bbbb-cccc): high, in `react-dom`, fixed in 18.3.1",
+        "",
+        "<!-- phoebe-dependencies bundle=npm%3Arelation%3Areact fingerprint=" +
+          fingerprint(bundle) +
+          " -->",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("the marker carries the bundle key and fingerprint", () => {
+    expect(parseMarker(renderIssueBody(bundle))).toEqual({
+      key: bundleKey(bundle),
+      fingerprint: fingerprint(bundle),
+    });
+  });
+
+  test("the same bundle in any order renders the same body", () => {
+    const reversed = { ...bundle, candidates: [...bundle.candidates].reverse() };
+    expect(renderIssueBody(reversed)).toBe(renderIssueBody(bundle));
+  });
+
+  test("a bundle with no advisories has no advisories section", () => {
+    expect(renderIssueBody({ ...bundle, candidates: [candidate("react")] })).not.toContain(
+      "## Advisories",
+    );
+  });
+
+  test("the policy passed in is the wait each reason names", () => {
+    const body = renderIssueBody(
+      { ...bundle, candidates: [candidate("react")] },
+      { patch: 1, minor: 2, major: 3 },
+    );
+    expect(body).toContain("minor update past the 2-day maturity wait");
+  });
+
+  test("a pipe in a version cannot break the table", () => {
+    const body = renderIssueBody({
+      ...bundle,
+      candidates: [candidate("react", { current: "^17 || ^18" })],
+    });
+    expect(body).toContain("| ^17 \\|\\| ^18 |");
+  });
+});
