@@ -502,6 +502,8 @@ export default {
   oneShotEligible: false,       // may a unit run under --run-once?
   promptFile: "prompts/my-kind-prompt.md",
   workspace: "worktree",        // or "scratch" / "readonly" — modes below
+  unitKey: "issue",             // or "pr" / "none" (the default) — which sweeps cover it
+  unitLabel: "my-queue",        // with unitKey "issue" only: the queue label its tickets wear
   requiredEnv: ["SLACK_BOT_TOKEN"],  // env keys this kind's code reads
   agentEnv: ["SLACK_BOT_TOKEN"],     // the subset its agent children may see
   model: "…", effort: "…",      // optional agent defaults (see tuning below)
@@ -550,6 +552,29 @@ string that changes when the unit does. It is the exit from the in-memory
 quarantine below; a unit that never sets it keeps its timeout count for the
 process's life. Nothing else reads it, and no built-in sets it. It exists for
 units the engine cannot see ([`pipelines.md`](pipelines.md#units-the-engine-cannot-see)).
+
+The optional `unitKey` field says what your units are on the tracker, and the
+tracker sweeps read it to decide whether they cover your kind. Declare `"issue"`
+when a unit is a queue-labelled issue your run claims with `processingLabel`, as
+`issues` and `research` do, and name that queue label in `unitLabel`. A pipeline
+scheduling your kind then re-arms a claimed issue left with no PR, lifts
+`phoebe:quarantined` from an issue whose content moved on, and keeps the stacked
+and feature-integration PRs its runs open up to date. Declare `"pr"` when a unit
+is one of Phoebe's open PRs, as the three janitors do, and the PR half of the
+quarantine sweep covers it. Leave it out or write `"none"` and no sweep touches
+your kind's objects.
+
+Every issue kind claims with the same `processingLabel`, so the stranded sweep
+tells a claimed ticket's kind by the queue label it still wears. A kind owns a
+ticket only when the ticket wears that kind's `unitLabel`. `readyLabel` is the
+weakest claim: a ticket wearing it beside another kind's label belongs to the
+other kind. The sweep leaves a ticket that two kinds could claim, or that wears
+no queue label the pipeline knows, claimed for a person, and a re-arm only
+removes `processingLabel`, never adds a label. That makes it safe to run your
+issue kind in a pipeline of its own, with one rule: never put `readyLabel` on
+your kind's tickets. A pipeline only knows its own custom kinds, so a pipeline
+running `issues` would read such a ticket as its own, and `issues` would select
+it too.
 
 ### The `ctx` surface
 

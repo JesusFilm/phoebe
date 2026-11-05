@@ -248,6 +248,23 @@ export type WorkspaceHandle =
 export type WorkspaceMode = WorkspaceHandle["mode"];
 
 /**
+ * What a kind's units are on the tracker (#753), which decides the sweeps a
+ * pipeline scheduling the kind runs (src/sweep-scope.ts):
+ *
+ * - `issue` — queue-labelled issues, claimed with the processing label. The
+ *   stranded-unit sweep re-arms them, the issue half of the quarantine sweep
+ *   clears them, and the stale-stack and feature-close sweeps maintain the PRs
+ *   their runs open. `issues` and `research` declare it. A kind declaring it
+ *   must also declare `unitLabel`, the queue label its tickets wear, because
+ *   every issue kind claims with the same processing label and that queue
+ *   label is the only thing that tells their claimed tickets apart.
+ * - `pr` — Phoebe's own open PRs: the PR half of the quarantine sweep. The
+ *   three janitors declare it.
+ * - `none` — nothing a sweep repairs, and the default for a kind that omits it.
+ */
+export type WorkUnitKey = "issue" | "pr" | "none";
+
+/**
  * What one agent-over-a-PR-branch pass produced, handed to
  * {@link AgentHelpers.prWorkflow}'s `onResult`. `push()` publishes the
  * worktree's commits to the PR branch — the one write the workflow shape owns.
@@ -393,6 +410,16 @@ export type WorkKindDefinition<G = unknown, U extends WorkUnitShape = WorkUnitSh
   promptFile: string;
   /** Which workspace the engine prepares for `run` (see {@link WorkspaceHandle}). */
   workspace: WorkspaceMode;
+  /** What this kind's units are on the tracker (see {@link WorkUnitKey}). Omitted ⇒ `"none"`. */
+  unitKey?: WorkUnitKey;
+  /**
+   * The queue label this kind's tickets wear, required with `unitKey: "issue"`
+   * and refused without it. The stranded-unit sweep reads it twice: to decide
+   * which kind owns a claimed ticket, and as the label a re-armed ticket gets
+   * back. `issues` declares the tenant's `readyLabel`, `research` its
+   * `researchLabel`.
+   */
+  unitLabel?: string;
   /**
    * The env keys this kind's own code reads out of `ctx.env` (#410). Declaring
    * them is what earns them: the supervisor takes every key a *sibling* pipeline

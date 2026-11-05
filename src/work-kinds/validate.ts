@@ -5,7 +5,7 @@
 // custom kinds (`kinds.<name>`), the built-in's name otherwise.
 
 import { validateDeclaredEnv } from "./declared-env.ts";
-import type { AnyWorkKindDefinition, WorkspaceMode } from "./definition.ts";
+import type { AnyWorkKindDefinition, WorkspaceMode, WorkUnitKey } from "./definition.ts";
 
 // Typed against the union so the runtime check and the compile-time mode can
 // only drift in one direction: a value here that is not a mode fails to build.
@@ -14,6 +14,8 @@ const WORKSPACE_VALUES = [
   "scratch",
   "readonly",
 ] as const satisfies readonly WorkspaceMode[];
+
+const UNIT_KEY_VALUES = ["issue", "pr", "none"] as const satisfies readonly WorkUnitKey[];
 
 function fail(at: string, problem: string): never {
   throw new Error(`${at}: ${problem}`);
@@ -50,6 +52,28 @@ export function validateWorkKindDefinition(
       `the definition's \`workspace\` must be one of: ${WORKSPACE_VALUES.join(", ")} ` +
         `(got ${JSON.stringify(def["workspace"])}).`,
     );
+  }
+  if (
+    def["unitKey"] !== undefined &&
+    !(UNIT_KEY_VALUES as readonly string[]).includes(def["unitKey"] as string)
+  ) {
+    fail(
+      at,
+      `the definition's \`unitKey\` must be one of: ${UNIT_KEY_VALUES.join(", ")} when present ` +
+        `(got ${JSON.stringify(def["unitKey"])}).`,
+    );
+  }
+  if (def["unitKey"] === "issue") {
+    if (typeof def["unitLabel"] !== "string" || def["unitLabel"].trim() === "") {
+      fail(
+        at,
+        "the definition's `unitLabel` must be a non-empty string when `unitKey` is " +
+          '"issue": it names the queue label that tells this kind\'s claimed tickets ' +
+          "apart from every other issue kind's.",
+      );
+    }
+  } else if (def["unitLabel"] !== undefined) {
+    fail(at, 'the definition\'s `unitLabel` is only read when `unitKey` is "issue".');
   }
   for (const knob of ["model", "effort"] as const) {
     if (def[knob] !== undefined && typeof def[knob] !== "string") {

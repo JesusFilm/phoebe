@@ -13,6 +13,7 @@ export function researchKind(config: PhoebeConfig): AnyWorkKindDefinition {
     noun: `${config.researchLabel} ticket(s)`,
     unitNoun: "research ticket",
     verb: "Researching",
+    unitLabel: config.researchLabel,
     listIssues: (ctx) => ctx.github.listResearchIssues(),
   });
 }

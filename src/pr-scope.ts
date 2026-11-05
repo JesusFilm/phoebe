@@ -27,6 +27,13 @@ import { kindEnvNames, readEnv, settingAt } from "./settings-catalogue.ts";
 const PR_SCOPE_SETTING = settingAt("prScope");
 
 /**
+ * The kinds that read `prScope`: the three janitors, whose shared
+ * scan (src/work-kinds/pr-stack.ts) is where the field is applied. A custom kind
+ * keyed by PRs reads no scope, since it lists its own PRs however it likes.
+ */
+export const PR_SCOPED_KINDS = ["conflicts", "checks", "reviews"] as const;
+
+/**
  * The values `PHOEBE_PR_SCOPE` and `PHOEBE_<KIND>_PR_SCOPE` take, read off the
  * catalogue rather than restated: the entry's `values` *is* what env accepts,
  * and the list form is the file's alternative to it.

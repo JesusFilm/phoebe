@@ -70,6 +70,7 @@ export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
     oneShotEligible: false,
     promptFile: config.promptFiles.reviews,
     workspace: "worktree",
+    unitKey: "pr",
     report: {
       noun,
       describe: (unit) => `review feedback for PR #${unit.pr.prNumber} (${unit.pr.headRefName})`,
