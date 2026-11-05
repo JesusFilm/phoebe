@@ -1778,9 +1778,9 @@ describe("the stranded-unit sweep", () => {
     });
   }
 
-  /** A claimed issue carrying processingLabel (and optionally readyLabel). */
+  /** A claimed `issues` ticket: processingLabel beside the queue label it was selected by. */
   function claimed(number: number, extraLabels: string[] = []): Issue {
-    return anIssue(number, { labels: ["processing", ...extraLabels] });
+    return anIssue(number, { labels: ["processing", "ready-for-agent", ...extraLabels] });
   }
 
   /**
@@ -1819,7 +1819,6 @@ describe("the stranded-unit sweep", () => {
 
     expect(writes).toEqual([
       "remove-label issue #7 processing",
-      "add-label issue #7 ready-for-agent",
       `comment issue #7 ${buildUnitTimeoutMarker(1)}`,
     ]);
     expect(result.lines).toContain(
@@ -1920,15 +1919,32 @@ describe("the stranded-unit sweep", () => {
     expect(writes).not.toContain("quarantine-label issue #7");
   });
 
-  test("readyLabel already present: not added again", async () => {
+  // #753: nothing in the engine removes a queue label, so a claimed ticket
+  // without one was claimed, or stripped, by a person. Re-arming it would
+  // mean guessing a queue, and putting `readyLabel` back would overrule them.
+  test("a claimed ticket wearing no queue label is left for a person", async () => {
+    const { writes, overrides } = writeRecorder();
+    const result = await sweepCycle({
+      ...overrides,
+      listLabeledIssues: () => [anIssue(7, { labels: ["processing"] })],
+      blockerPrState: () => {
+        throw new Error("the sweep must not ask about a ticket it does not own");
+      },
+    });
+
+    expect(writes).toEqual([]);
+    expect(result.lines.find((line) => line.includes("Re-armed issue #7"))).toBeUndefined();
+  });
+
+  test("a re-arm adds no label, so no ticket lands on another kind's queue", async () => {
     const { writes, overrides } = writeRecorder();
     await sweepCycle({
       ...overrides,
-      listLabeledIssues: () => [claimed(7, ["ready-for-agent"])],
+      listLabeledIssues: () => [claimed(7)],
       blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
     });
 
-    expect(writes).not.toContain("add-label issue #7 ready-for-agent");
+    expect(writes.filter((write) => write.startsWith("add-label"))).toEqual([]);
     expect(writes).toContain("remove-label issue #7 processing");
   });
 
@@ -1988,7 +2004,6 @@ describe("the stranded-unit sweep", () => {
     });
 
     expect(writes).toContain("remove-label issue #7 processing");
-    expect(writes).toContain("add-label issue #7 ready-for-agent");
     expect(result.lines).toContain(
       "[fleet:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
     );
@@ -2719,7 +2734,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
         listNativelyStackedPrs: () => [],
         listFeatureIntegrationPrs: () => [],
         listLabeledIssues: () => [
-          anIssue(7, { labels: ["processing"] }),
+          anIssue(7, { labels: ["processing", "ready-for-agent"] }),
           anIssue(8, { labels: ["processing", "wayfinder:research"] }),
         ],
         blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
@@ -2750,7 +2765,7 @@ describe("sweeps scoped to the pipeline's kinds", () => {
         listNativelyStackedPrs: () => [],
         listFeatureIntegrationPrs: () => [],
         listLabeledIssues: () => [
-          anIssue(7, { labels: ["processing"] }),
+          anIssue(7, { labels: ["processing", "ready-for-agent"] }),
           anIssue(8, { labels: ["processing", "wayfinder:research"] }),
         ],
         blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
@@ -2764,6 +2779,74 @@ describe("sweeps scoped to the pipeline's kinds", () => {
     });
 
     expect(rearmed).toEqual([8]);
+  });
+
+  // #753's review: a `dependencies` pipeline beside the main one. Each pipeline
+  // sees only its own custom kinds, so the main pipeline does not know the
+  // dependency label; it must still leave a dependency ticket alone, and the
+  // dependency pipeline must leave a mid-run `issues` ticket alone.
+  describe("a custom issue kind in a pipeline of its own", () => {
+    const DEPENDENCIES = "phoebe:dependencies";
+    const dependenciesKind: LoadedCustomKind = {
+      ...idleKind("dependencies"),
+      definition: {
+        ...idleKind("dependencies").definition,
+        workspace: "worktree",
+        unitKey: "issue",
+        unitLabel: DEPENDENCIES,
+      } as AnyWorkKindDefinition,
+    };
+    const tickets = [
+      anIssue(7, { labels: ["processing", "ready-for-agent"] }),
+      anIssue(8, { labels: ["processing", "wayfinder:research"] }),
+      anIssue(9, { labels: ["processing", DEPENDENCIES] }),
+    ];
+    function sweepGithub(rearmed: number[], added: string[]): GitHubStubOverrides {
+      return {
+        listReadyIssues: () => [],
+        listResearchIssues: () => [],
+        listLabeledIssues: (label) => (label === "processing" ? tickets : []),
+        resolveLogin: () => PHOEBE_LOGIN,
+        newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+        listQuarantinedIssues: () => [],
+        listNativelyStackedPrs: () => [],
+        listFeatureIntegrationPrs: () => [],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+        issueTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "body:aa" }),
+        removeIssueLabel: (issueNumber) => {
+          rearmed.push(issueNumber);
+        },
+        addIssueLabel: (issueNumber, label) => {
+          added.push(`${issueNumber} ${label}`);
+        },
+        postUnitComment: () => {},
+      };
+    }
+
+    test("the main pipeline re-arms its own tickets and not the dependency one", async () => {
+      const rearmed: number[] = [];
+      const added: string[] = [];
+      await sweepCycle({
+        config: { workOrder: ["issues", "research"] },
+        github: sweepGithub(rearmed, added),
+      });
+
+      expect(rearmed).toEqual([7, 8]);
+      expect(added).toEqual([]);
+    });
+
+    test("the dependency pipeline re-arms the dependency ticket and nothing else", async () => {
+      const rearmed: number[] = [];
+      const added: string[] = [];
+      await sweepCycle({
+        config: { workOrder: ["dependencies"] },
+        customKinds: [dependenciesKind],
+        github: sweepGithub(rearmed, added),
+      });
+
+      expect(rearmed).toEqual([9]);
+      expect(added).toEqual([]);
+    });
   });
 });
 
@@ -3513,7 +3596,9 @@ describe("rolling top-up inside one pipeline", () => {
         // Claimed only once its unit is running: the first pass sweeps before
         // it admits anything, and an issue nobody holds is fair game.
         listLabeledIssues: () =>
-          gated.started.length > 0 ? [anIssue(88, { labels: ["processing"] })] : [],
+          gated.started.length > 0
+            ? [anIssue(88, { labels: ["processing", "ready-for-agent"] })]
+            : [],
         blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
         removeIssueLabel: (issueNumber) => rearmed.push(issueNumber),
       },

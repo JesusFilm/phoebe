@@ -13,6 +13,7 @@ export function issuesKind(config: PhoebeConfig): AnyWorkKindDefinition {
     noun: `${config.readyLabel} issue(s)`,
     unitNoun: "issue",
     verb: "Working",
+    unitLabel: config.readyLabel,
     listIssues: (ctx) => ctx.github.listReadyIssues(),
   });
 }

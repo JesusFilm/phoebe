@@ -546,7 +546,7 @@ export function createEngine(options: EngineOptions): Engine {
   // ownership: a sweep repairs an object only when the kind that object belongs
   // to is one this pipeline schedules, which is what gives two processes exactly-once
   // coverage with nothing to elect and nothing to fail over.
-  const scope: SweepScope = sweepScope(workOrder, registry, config.researchLabel);
+  const scope: SweepScope = sweepScope(workOrder, registry, config.readyLabel);
 
   // Whether any scheduled kind puts a workspace on the clone (#418). A pipeline of
   // `scratch` kinds owns no worktrees, so it has no leases to break at boot and
@@ -1082,10 +1082,11 @@ export function createEngine(options: EngineOptions): Engine {
    * Quarantined issues are swept unconditionally — `selectIssue` still filters
    * them, so a re-armed quarantined issue is not picked. By the time
    * `sweepQuarantine` lifts the quarantine label the issue already carries
-   * `readyLabel`, so `sweepQuarantine` needs no change.
+   * its kind's queue label, so `sweepQuarantine` needs no change.
    *
    * Landed members are the one exception: they are finished, not stranded, and
-   * the sweep leaves them untouched (#485).
+   * the sweep leaves them untouched (#485). An issue no scheduled kind owns by
+   * its queue label is left too, claim and all (src/sweep-scope.ts, #753).
    */
   function sweepStrandedUnits(): void {
     if (!scope.issues) return;
@@ -1102,10 +1103,11 @@ export function createEngine(options: EngineOptions): Engine {
     for (const issue of claimed) {
       // The one sweep whose double-run does damage: re-arming an issue a sibling
       // pipeline is mid-run on hands the same ticket to two agents. So this
-      // filter is per issue rather than per pipeline — the research label is already
-      // on every pipeline listed, and it is the only thing that tells the two issue
-      // producers' units apart (#418).
-      if (!scope.ownsIssue(issue.labels)) continue;
+      // filter is per issue rather than per pipeline — each issue kind's queue
+      // label is already on every issue listed, and it is the only thing that
+      // tells the producers' units apart (#418, #753).
+      const owner = scope.issueOwner(issue.labels);
+      if (owner === null) continue;
       // And never re-arm an issue this very pipeline is running (#422). An
       // `issues` unit between its claim and its first push is precisely an issue
       // wearing the processing label with no PR yet — the shape this sweep was
@@ -1133,10 +1135,10 @@ export function createEngine(options: EngineOptions): Engine {
       }
       if (hasPr) continue;
       try {
+        // Dropping the claim is the whole re-arm: the ticket still wears its
+        // owner's queue label, which is how it was found to be the owner's. No
+        // label is added, so a ticket never lands on another kind's queue.
         github.removeIssueLabel(issue.number, config.processingLabel);
-        if (!issue.labels.includes(config.readyLabel)) {
-          github.addIssueLabel(issue.number, config.readyLabel);
-        }
         const target: UnitTarget = { objectType: "issue", id: issue.number };
         const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
         const k = resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);

@@ -129,15 +129,18 @@ export function issueProducerKind(opts: {
   unitNoun: string;
   verb: string;
   oneShotEligible?: boolean;
+  /** The queue label `listIssues` reads, which the stranded sweep restores on re-arm. */
+  unitLabel: string;
   listIssues: (ctx: WorkKindCtx) => Issue[];
 }): WorkKindDefinition<IssueProducerGathered, IssueProducerUnit> {
-  const { name, promptFile, noun, unitNoun, verb, listIssues } = opts;
+  const { name, promptFile, noun, unitNoun, verb, unitLabel, listIssues } = opts;
   return defineWorkKind<IssueProducerGathered, IssueProducerUnit>({
     name,
     oneShotEligible: opts.oneShotEligible ?? true,
     promptFile,
     workspace: "worktree",
     unitKey: "issue",
+    unitLabel,
     report: {
       noun,
       describe: (unit) =>

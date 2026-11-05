@@ -63,6 +63,18 @@ export function validateWorkKindDefinition(
         `(got ${JSON.stringify(def["unitKey"])}).`,
     );
   }
+  if (def["unitKey"] === "issue") {
+    if (typeof def["unitLabel"] !== "string" || def["unitLabel"].trim() === "") {
+      fail(
+        at,
+        "the definition's `unitLabel` must be a non-empty string when `unitKey` is " +
+          '"issue": it names the queue label that tells this kind\'s claimed tickets ' +
+          "apart from every other issue kind's.",
+      );
+    }
+  } else if (def["unitLabel"] !== undefined) {
+    fail(at, 'the definition\'s `unitLabel` is only read when `unitKey` is "issue".');
+  }
   for (const knob of ["model", "effort"] as const) {
     if (def[knob] !== undefined && typeof def[knob] !== "string") {
       fail(at, `the definition's \`${knob}\` must be a string when present.`);

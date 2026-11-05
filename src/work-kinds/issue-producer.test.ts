@@ -106,6 +106,7 @@ function buildRun(
     noun: "issue(s)",
     unitNoun: "issue",
     verb: "Working",
+    unitLabel: "ready-for-agent",
     listIssues,
   });
   return (unit, ctx) => kind.run(unit, ctx);
@@ -315,6 +316,7 @@ function buildKind(issues: Issue[]) {
     noun: "issue(s)",
     unitNoun: "issue",
     verb: "Working",
+    unitLabel: "ready-for-agent",
     listIssues: () => issues,
   });
 }

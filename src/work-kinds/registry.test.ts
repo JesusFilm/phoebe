@@ -66,6 +66,13 @@ describe("buildRegistry", () => {
     });
   });
 
+  test("the issue producers declare the queue label they list", () => {
+    const config = testConfig();
+    const registry = buildRegistry(config);
+    expect(registry.get("issues")?.definition.unitLabel).toBe(config.readyLabel);
+    expect(registry.get("research")?.definition.unitLabel).toBe(config.researchLabel);
+  });
+
   test("a custom kind registers beside the built-ins, carrying its options", () => {
     const options = { channel: "C123" };
     const registry = buildRegistry(testConfig(), [
@@ -128,9 +135,36 @@ describe("validateWorkKindDefinition", () => {
     expect(() => validateWorkKindDefinition(definition, "at")).not.toThrow();
   });
 
-  test.each(["issue", "pr", "none"])("accepts the %s unit key", (unitKey) => {
+  test.each(["pr", "none"])("accepts the %s unit key", (unitKey) => {
     const definition = { ...customDefinition("ok"), unitKey };
     expect(() => validateWorkKindDefinition(definition, "at")).not.toThrow();
+  });
+
+  test("accepts the issue unit key with its queue label", () => {
+    const definition = { ...customDefinition("ok"), unitKey: "issue", unitLabel: "phoebe:deps" };
+    expect(() => validateWorkKindDefinition(definition, "at")).not.toThrow();
+  });
+
+  test.each([
+    ["missing", {}],
+    ["blank", { unitLabel: "  " }],
+    ["not a string", { unitLabel: 3 }],
+  ])("refuses the issue unit key with its queue label %s", (_, extra) => {
+    const definition = { ...customDefinition("ok"), unitKey: "issue", ...extra };
+    expect(() => validateWorkKindDefinition(definition, "at")).toThrow(
+      /`unitLabel` must be a non-empty string when `unitKey` is "issue"/,
+    );
+  });
+
+  test.each([["pr"], [undefined]])("refuses a queue label beside unit key %s", (unitKey) => {
+    const definition = {
+      ...customDefinition("ok"),
+      ...(unitKey === undefined ? {} : { unitKey }),
+      unitLabel: "phoebe:deps",
+    };
+    expect(() => validateWorkKindDefinition(definition, "at")).toThrow(
+      /`unitLabel` is only read when `unitKey` is "issue"/,
+    );
   });
 
   test.each([
