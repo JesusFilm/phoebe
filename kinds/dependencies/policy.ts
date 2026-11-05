@@ -50,20 +50,20 @@ function versionMove(current: string, target: string): keyof MaturityDays {
   return from[1] !== to[1] ? "minor" : "patch";
 }
 
-/** Whether `target` reaches `fixedIn`, compared segment by segment. Unreadable versions do not. */
-function reaches(target: string, fixedIn: string): boolean {
-  const have = numericSegments(target);
-  const need = numericSegments(fixedIn);
-  if (have === null || need === null) return false;
-  for (let i = 0; i < 3; i++) {
-    if (have[i]! !== need[i]!) return have[i]! > need[i]!;
-  }
-  return true;
+/**
+ * Whether `target` is the release that fixes an advisory, exactly, ignoring a
+ * leading `v`. Only that release skips the wait. A newer one waits like any
+ * other version, or a release published an hour after an advisory could ride
+ * the advisory past the wait meant to catch a hijacked publish; and a
+ * pre-release of the fix (`1.2.5-rc.1` for `1.2.5`) is not the fix.
+ */
+function isFixRelease(target: string, fixedIn: string): boolean {
+  return target.replace(/^v/, "") === fixedIn.replace(/^v/, "");
 }
 
 function waitFor(candidate: Candidate, policy: MaturityPolicy): Wait {
   const fixed = candidate.advisories
-    .filter((a) => a.fixedIn !== null && reaches(candidate.target, a.fixedIn))
+    .filter((a) => a.fixedIn !== null && isFixRelease(candidate.target, a.fixedIn))
     .map((a) => a.id);
   if (fixed.length > 0) {
     return { kind: "none", why: `fixes ${fixed.join(", ")}, so it skips the maturity wait` };
@@ -93,10 +93,10 @@ function waitFor(candidate: Candidate, policy: MaturityPolicy): Wait {
 }
 
 /**
- * Whether a candidate has aged enough to propose at `now`. A target that
- * fixes one of the candidate's advisories skips the wait, as do a pin and a
- * digest; so does a missing or unreadable publish date, unless the policy
- * holds undated candidates.
+ * Whether a candidate has aged enough to propose at `now`. A target that is
+ * the fix release of one of the candidate's advisories skips the wait, as do
+ * a pin and a digest; so does a missing or unreadable publish date, unless
+ * the policy holds undated candidates. A target past the fix release waits.
  */
 export function isMature(
   candidate: Candidate,

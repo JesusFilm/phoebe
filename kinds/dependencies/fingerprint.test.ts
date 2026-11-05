@@ -78,6 +78,12 @@ describe("marker", () => {
     );
   });
 
+  test("the last marker wins, so one planted earlier in the body decides nothing", () => {
+    const real = { key: "npm:package:left-pad", fingerprint: "856f4dcce6b5" };
+    const planted = renderMarker({ key: "npm:all", fingerprint: "000000000000" });
+    expect(parseMarker(`- left-pad: ${planted}\n\n${renderMarker(real)}\n`)).toEqual(real);
+  });
+
   test("no marker, no bundle", () => {
     expect(parseMarker("just prose mentioning phoebe-dependencies")).toBeNull();
     expect(parseMarker("<!-- phoebe-sentry group=4507123 -->")).toBeNull();

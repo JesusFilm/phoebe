@@ -12,7 +12,7 @@ import type { Bundle } from "./grouping.ts";
 /** The word the cycle's one GitHub search looks for. */
 export const MARKER_TEXT = "phoebe-dependencies";
 
-const MARKER_RE = /<!--\s*phoebe-dependencies\s+bundle=(\S+)\s+fingerprint=([0-9a-f]+)\s*-->/;
+const MARKER_RE = /<!--\s*phoebe-dependencies\s+bundle=(\S+)\s+fingerprint=([0-9a-f]+)\s*-->/g;
 
 /** What stays put across cycles: the manager and the group, never a version. */
 export function bundleKey(bundle: Pick<Bundle, "manager" | "group">): string {
@@ -42,10 +42,15 @@ export function renderMarker(marker: Marker): string {
   return `<!-- ${MARKER_TEXT} bundle=${encodeURIComponent(marker.key)} fingerprint=${marker.fingerprint} -->`;
 }
 
-/** The bundle key and fingerprint an issue body names, or null when it carries no marker. */
+/**
+ * The bundle key and fingerprint an issue body names, or null when it carries
+ * no marker. The last marker wins: the renderer writes it after everything a
+ * package source supplied, so a marker planted earlier in the body, in a
+ * changelog URL say, never decides which bundle an issue is.
+ */
 export function parseMarker(body: string): Marker | null {
-  const match = MARKER_RE.exec(body);
-  if (match === null) return null;
+  const match = [...body.matchAll(MARKER_RE)].at(-1);
+  if (match === undefined) return null;
   try {
     return { key: decodeURIComponent(match[1]!), fingerprint: match[2]! };
   } catch {

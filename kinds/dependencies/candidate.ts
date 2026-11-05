@@ -112,13 +112,19 @@ export function compareCandidates(a: Candidate, b: Candidate): number {
   );
 }
 
+// The host and path accept URL characters only, so the URL this returns can
+// go into an issue body as it is. A repository field comes from a package's
+// own manifest, which its publisher controls, and anything else in it (a
+// space, `<`, a backtick) is either broken or an attempt to write markup.
 const REPOSITORY_RE =
-  /^(?:git\+)?(?:(?:https?|ssh|git):\/\/(?:[^@/]+@)?|git@)([^/:]+)[/:](.+?)(?:\.git)?\/*$/;
+  /^(?:git\+)?(?:(?:https?|ssh|git):\/\/(?:[^@/\s]+@)?|git@)([A-Za-z0-9.-]+)[/:]([A-Za-z0-9._~/-]+?)(?:\.git)?\/*(?:#\S*)?$/;
 
 /**
  * A manifest's repository URL as a browsable `https://` URL —
  * `git+https://github.com/x/y.git` and `git@github.com:x/y.git` both become
- * `https://github.com/x/y` — or null when it is not a URL this can read.
+ * `https://github.com/x/y` — or null when it is not a URL this can read,
+ * including one carrying anything but URL characters. A `#readme` fragment is
+ * dropped.
  */
 export function repositoryWebUrl(url: string): string | null {
   const match = REPOSITORY_RE.exec(url.trim());

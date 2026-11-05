@@ -65,10 +65,34 @@ describe("isMature", () => {
     expect(isMature(candidate({ updateType: "digest", publishedAt: today }), NOW)).toBe(true);
   });
 
-  test("a target that fixes an advisory skips the wait, whatever its severity", () => {
+  test("the fix release of an advisory skips the wait, whatever its severity", () => {
     const today = candidate({ updateType: "major", publishedAt: "2026-11-05T11:00:00Z" });
     expect(isMature({ ...today, advisories: [advisory({ severity: "low" })] }, NOW)).toBe(true);
-    expect(isMature({ ...today, advisories: [advisory({ fixedIn: "4.17.19" })] }, NOW)).toBe(true);
+    expect(isMature({ ...today, advisories: [advisory({ fixedIn: "v4.17.21" })] }, NOW)).toBe(true);
+  });
+
+  // Review on #771: the wait is what catches a hijacked publish, so an
+  // advisory must not carry a release newer than its fix past it.
+  test("a release newer than the fix waits like any other", () => {
+    const fresh = candidate({
+      current: "1.2.4",
+      target: "1.2.9",
+      publishedAt: "2026-11-05T11:00:00Z",
+      advisories: [advisory({ severity: "critical", fixedIn: "1.2.5" })],
+    });
+    expect(isMature(fresh, NOW)).toBe(false);
+    expect(isMature({ ...fresh, publishedAt: "2026-11-01T12:00:00Z" }, NOW)).toBe(true);
+    expect(selectionReason(fresh)).toBe("patch update past the 3-day maturity wait");
+  });
+
+  test("a pre-release of the fix is not the fix", () => {
+    const rc = candidate({
+      current: "1.2.4",
+      target: "1.2.5-rc.1",
+      publishedAt: "2026-11-05T11:00:00Z",
+      advisories: [advisory({ fixedIn: "1.2.5" })],
+    });
+    expect(isMature(rc, NOW)).toBe(false);
   });
 
   test("an advisory the target does not fix leaves the wait in place", () => {
