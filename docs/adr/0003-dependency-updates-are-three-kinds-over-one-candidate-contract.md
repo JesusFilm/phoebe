@@ -41,8 +41,13 @@ disables the `github-tags`, `github-releases`, `github-release-attachments`,
 `github-digest` and `github-runners` datasources, which is what keeps it off
 GitHub. The token warning alone does not: it skips tags and releases, but a
 reusable-workflow ref still goes to `github-digest`, which posts to
-`api.github.com`. The cost is that Renovate covers no GitHub Actions; the
-native Actions row does. A source that fails is a log line, and the others'
+`api.github.com`. The global config is a default, not a lock: a repository's
+own `packageRules` merge over it and can re-enable these datasources, and
+`github>` presets in a consumer's config still fetch from GitHub without a
+token. The cost is that Renovate performs no lookup for a dependency that
+uses these datasources, whichever manager found it. The native Actions row
+covers GitHub Actions; other dependencies depend on another source, such as
+the agent fallback. A source that fails is a log line, and the others'
 results stand.
 
 ## Considered options

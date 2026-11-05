@@ -490,15 +490,15 @@ SHAs for OSV, through GitHub's unauthenticated REST API at 60 requests an hour.
 
 ### The gate, and which outcome applies
 
-| Acceptance line                                | Build A                             | Build B                            | Build C                           |
-| ---------------------------------------------- | ----------------------------------- | ---------------------------------- | --------------------------------- |
-| Three runs finish within 20 minutes and exit 0 | fails, exit 1 on Node 26            | passes, 64 to 67 s, exit 0         | passes, 62 to 63 s, exit 0        |
-| Identical candidate list across runs           | passes                              | passes                             | passes, and matches build B       |
-| No GitHub credential in the environment        | passes                              | passes                             | passes                            |
-| Documented output channel                      | passes, `--report-type=file`        | passes                             | passes                            |
-| Proof field shown per covered ecosystem        | `registryUrl`, npm and PyPI on core | same, crates.io on a scratch crate | same as build B                   |
-| No `problems` entry beyond the expected ones   | fails, the `github-digest` 403      | passes                             | passes, plus the remapped warning |
-| `github-token-required` skips do not count     | 196 skipped                         | 196 skipped                        | 196 skipped                       |
+| Acceptance line                                | Build A                             | Build B                            | Build C                                 |
+| ---------------------------------------------- | ----------------------------------- | ---------------------------------- | --------------------------------------- |
+| Three runs finish within 20 minutes and exit 0 | fails, exit 1 on Node 26            | passes, 64 to 67 s, exit 0         | passes, 62 to 63 s, exit 0              |
+| Identical candidate list across runs           | passes                              | passes                             | passes, and matches build B             |
+| No GitHub credential in the environment        | passes                              | passes                             | passes                                  |
+| Documented output channel                      | passes, `--report-type=file`        | passes                             | passes                                  |
+| Proof field shown per covered ecosystem        | `registryUrl`, npm and PyPI on core | same, crates.io on a scratch crate | npm and PyPI on core; crates.io not run |
+| No `problems` entry beyond the expected ones   | fails, the `github-digest` 403      | passes                             | passes, plus the remapped warning       |
+| `github-token-required` skips do not count     | 196 skipped                         | 196 skipped                        | 196 skipped                             |
 
 Build A, the image as the ticket describes it, fails two lines. Builds B and C pass all of them.
 Both failures have causes the install controls, so I read the result as the Renovate source
@@ -517,11 +517,17 @@ glibc 2.36 or the image moves off bookworm. What #760 needs either way:
 - `re2` is present. On Node 26 that means building it from source, since a skipped or failed
   install script drops it silently.
 - The source passes a global config that disables `github-tags`, `github-releases`,
-  `github-release-attachments`, `github-digest` and `github-runners`. That config, not the token
-  warning, is what keeps Renovate off GitHub.
-- The source expects about 3 GiB of memory on a repo the size of core. Under a container limit
-  below 4 GiB it should raise Node's heap with `--max-old-space-size`, or the run dies with no
-  report.
+  `github-release-attachments`, `github-digest` and `github-runners` lookups. That config, not the
+  token warning, is what keeps those lookups off GitHub. It is a default, not a lock: a
+  repository's own `packageRules` merge over it and can re-enable a datasource, and it does not
+  cover `github>` presets in a consumer's config, which still call GitHub and share the
+  unauthenticated rate limit. The rule has no `matchManagers` filter, so it applies to these
+  datasources from every manager. Renovate performs no lookup for those dependencies, and any
+  coverage comes from another source such as the agent fallback.
+- The source expects about 3 GiB of memory on a repo the size of core. Use a container limit of
+  at least 4 GiB, the smallest limit the runs passed under. The 2 GiB run exited 134 with no
+  report, and no limit between 2 and 4 GiB was tested. Raising `--max-old-space-size` does not
+  cover a limit below the measured container peak.
 - The parser treats a dependency as looked up only when it has `registryUrl` and no `warnings`.
 
 Docker stays on Renovate in v1, and no native Docker row is needed. Renovate covers Docker Hub, GHCR
