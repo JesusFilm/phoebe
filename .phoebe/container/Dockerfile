@@ -48,9 +48,14 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
 # means corepack fetches the pinned pnpm silently. (The version is still pinned
 # via package.json's `packageManager`, so this suppresses the confirmation, not
 # the pin — corepack won't fetch anything the repo hasn't already named.)
+#
+# node:26 no longer ships corepack (Node dropped it from the distribution in
+# 25), so install it from npm first; `corepack enable` on the bare image is
+# "command not found" and the build dies here.
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack enable \
+RUN npm install -g corepack@0.34.0 \
+ && corepack enable \
  && mkdir -p /opt/corepack \
  && chown phoebe:phoebe /opt/corepack
 
