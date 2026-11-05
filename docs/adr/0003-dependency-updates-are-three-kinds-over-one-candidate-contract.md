@@ -36,11 +36,14 @@ vulnerable, with the manager's own audit unioned in where it has one. An agent
 fallback, on by default, covers manifests no row understands by writing
 candidates to a JSON file that the engine validates. Renovate runs pinned in
 the container image, on the local platform, in dry-run, and Phoebe parses its
-output. Phoebe hands it no GitHub credential and leaves its token warning at
-the default, which is what keeps it off GitHub: with a token, or with the
-warning turned off, Renovate does call `api.github.com`. The cost is that
-Renovate covers no GitHub Actions; the native Actions row does. A source that
-fails is a log line, and the others' results stand.
+output. Phoebe hands it no GitHub credential and a global config that
+disables the `github-tags`, `github-releases`, `github-release-attachments`,
+`github-digest` and `github-runners` datasources, which is what keeps it off
+GitHub. The token warning alone does not: it skips tags and releases, but a
+reusable-workflow ref still goes to `github-digest`, which posts to
+`api.github.com`. The cost is that Renovate covers no GitHub Actions; the
+native Actions row does. A source that fails is a log line, and the others'
+results stand.
 
 ## Considered options
 
@@ -90,13 +93,20 @@ fails is a log line, and the others' results stand.
   and files nothing new.
 - Applying the routing label is a standing config decision, as it is for the
   Sentry kind's `applyReadyLabel`. `preparing-work.md` gains that sentence.
-- The container image grows by a pinned Renovate, and the templates `init`
-  scaffolds change with it.
-- deps.dev and OSV rate limits are unmeasured at an hourly window on a large
-  monorepo. The Renovate spike's acceptance test is in
-  `docs/research/renovate-extraction-spike.md`; if it fails, the Renovate
-  source ships disabled by default and Docker becomes the first native row
-  added after v1.
+- The container image grows by a pinned Renovate, about 460 MB, and the
+  templates `init` scaffolds change with it. Renovate's `engines` field does
+  not accept the image's Node 26, so its global config remaps the version
+  check to a warning, and `re2` is compiled in a builder stage because its
+  Node 26 prebuilt needs a newer glibc than bookworm has. Renovate on its own
+  Node 24 also passed and is the fallback. A run on `JesusFilm/core` takes
+  about a minute and 3 GiB of memory.
+- The Renovate spike (`docs/research/renovate-extraction-spike.md`) passed
+  with that install, so the Renovate source ships enabled and Docker rides it
+  in v1. Renovate reports no release date for most Docker tags, so the
+  candidate contract needs a rule for a candidate without one.
+- deps.dev and OSV publish no rate limits and returned no 429s on a full pass
+  over `JesusFilm/core`: 332 deps.dev requests and one OSV batch for direct
+  dependencies, five batches for the whole lockfile.
 - Hosted Renovate and `renovate.json` stay on this repo for now. Phoebe does
   not run here continuously, and a bot that only runs sometimes is not yet a
   replacement.
