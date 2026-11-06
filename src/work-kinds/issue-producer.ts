@@ -132,6 +132,8 @@ export function issueProducerKind(opts: {
   /** The queue label `listIssues` reads, which the stranded sweep restores on re-arm. */
   unitLabel: string;
   listIssues: (ctx: WorkKindCtx) => Issue[];
+  /** What ends the body of a PR the engine opens for `issue`, or null for nothing. */
+  prBodyTrailer?: (issue: Issue) => string | null;
 }): WorkKindDefinition<IssueProducerGathered, IssueProducerUnit> {
   const { name, promptFile, noun, unitNoun, verb, unitLabel, listIssues } = opts;
   return defineWorkKind<IssueProducerGathered, IssueProducerUnit>({
@@ -197,11 +199,13 @@ export function issueProducerKind(opts: {
           resolution.featureIssueTitle ?? `Feature #${resolution.featureIssueNumber}`,
         );
       }
+      const trailer = opts.prBodyTrailer?.(issue) ?? null;
       await ctx.agent.issueWorkflow({
         issueNumber: issue.number,
         issueTitle: issue.title,
         worktreeBase: resolution.worktreeBase,
         stacked: resolution.stacked,
+        ...(trailer !== null ? { prBodyTrailer: trailer } : {}),
         ...(resolution.blockerIssueNumber !== undefined
           ? { blockerIssueNumber: resolution.blockerIssueNumber }
           : {}),

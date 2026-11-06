@@ -991,6 +991,8 @@ export function buildInitialPrBody(opts: {
   issueNumber: number;
   commitCount: number;
   stacked?: StackedOn;
+  /** Appended last, after the commit count: a kind's own marker, say. */
+  trailer?: string;
 }): string {
   const parts = [`Closes #${opts.issueNumber}`, "", "Automated PR from Phoebe.", ""];
   // A neutral note only: whether the do-not-merge warning applies is decided
@@ -1003,6 +1005,7 @@ export function buildInitialPrBody(opts: {
     );
   }
   parts.push(`Commits: ${opts.commitCount}`);
+  if (opts.trailer !== undefined) parts.push("", opts.trailer);
   return parts.join("\n");
 }
 

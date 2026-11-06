@@ -326,7 +326,8 @@ export type AgentHelpers = {
    * and — only when the agent left commits — credit the issue author, push,
    * and open (or follow up on) a PR, stacking it natively when blocked.
    * When `featureIssueNumber` is set the PR targets the feature branch instead
-   * of the default branch.
+   * of the default branch. `prBodyTrailer` ends the body of a PR the engine
+   * opens, after everything else it writes.
    */
   issueWorkflow(opts: {
     issueNumber: number;
@@ -334,6 +335,7 @@ export type AgentHelpers = {
     worktreeBase: string;
     stacked: boolean;
     promptFile?: string;
+    prBodyTrailer?: string;
     blockerIssueNumber?: number;
     blockerPrNumber?: PrNumber;
     featureIssueNumber?: number;
