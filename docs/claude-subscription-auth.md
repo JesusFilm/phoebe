@@ -131,7 +131,7 @@ it:
   (`10001`). At mode `0600` the container user then can't read it. You must
   either copy the file into a location the image chowns to `phoebe`, or seed it
   into a named volume with the right ownership. A bare `-v
-~/.claude:/home/phoebe/.claude` is not enough.
+  ~/.claude:/home/phoebe/.claude` is not enough.
 - **Short-lived token + refresh.** The access token in that file expires in
   hours; the CLI refreshes it in place using the refresh token. In a container
   that refresh only survives if `/home/phoebe/.claude` is writable **and
