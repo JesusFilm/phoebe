@@ -1,0 +1,506 @@
+{
+  "problems": [
+    {
+      "name": "renovate",
+      "level": 40,
+      "logContext": "7a3c29d0-7b77-48b7-9450-c3db49e57aeb",
+      "err": {
+        "code": "MODULE_NOT_FOUND",
+        "requireStack": ["/tmp/renovate-rec/lib/node_modules/renovate/dist/expose.js"],
+        "message": "Cannot find module 're2'\nRequire stack:\n- /tmp/renovate-rec/lib/node_modules/renovate/dist/expose.js",
+        "stack": "Error: Cannot find module 're2'\nRequire stack:\n- /tmp/renovate-rec/lib/node_modules/renovate/dist/expose.js\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1603:15)\n    at wrapResolveFilename (node:internal/modules/cjs/loader:1145:27)\n    at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1169:10)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1196:12)\n    at Module._load (node:internal/modules/cjs/loader:1370:5)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)\n    at Module.require (node:internal/modules/cjs/loader:1713:12)\n    at require (node:internal/modules/helpers:318:16)\n    at re2 (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/expose.ts:12:10)\n    at file:///tmp/renovate-rec/lib/node_modules/renovate/lib/util/regex.ts:23:17"
+      },
+      "msg": "RE2 not usable, falling back to RegExp"
+    },
+    {
+      "name": "renovate",
+      "level": 40,
+      "logContext": "7a3c29d0-7b77-48b7-9450-c3db49e57aeb",
+      "versions": {
+        "node": "26.13.0",
+        "acorn": "8.19.0",
+        "ada": "4.0.0",
+        "amaro": "1.1.11",
+        "ares": "1.34.9",
+        "brotli": "1.2.0",
+        "cldr": "48.0",
+        "icu": "78.3",
+        "libffi": "3.8.0",
+        "lief": "1.0.0",
+        "llhttp": "9.4.3",
+        "merve": "1.2.2",
+        "modules": "147",
+        "napi": "10",
+        "nbytes": "0.1.4",
+        "ncrypto": "0.0.1",
+        "nghttp2": "1.70.0",
+        "nghttp3": "",
+        "ngtcp2": "",
+        "openssl": "3.5.9",
+        "simdjson": "5.0.3",
+        "simdutf": "7.7.0",
+        "sqlite": "3.54.0",
+        "tz": "2026e",
+        "undici": "8.12.2",
+        "unicode": "17.0",
+        "uv": "1.52.1",
+        "uvwasi": "0.0.23",
+        "v8": "14.6.202.34-node.40",
+        "zlib": "1.3.2.1-motley-456ae73",
+        "zstd": "1.5.7"
+      },
+      "range": "^24.11.0",
+      "oldLevel": "error",
+      "msg": "Unsupported node environment detected. Please update your node version."
+    }
+  ],
+  "repositories": {
+    "local": {
+      "problems": [
+        {
+          "name": "renovate",
+          "level": 40,
+          "logContext": "7a3c29d0-7b77-48b7-9450-c3db49e57aeb",
+          "err": {
+            "message": "The platform you're using (local) does not support local presets.",
+            "stack": "Error: The platform you're using (local) does not support local presets.\n    at getPreset (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/config/presets/local/index.ts:54:11)\n    at searchDefaultOnboardingPreset (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/config.ts:88:9)\n    at getOnboardingConfig (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/config.ts:22:23)\n    at checkOnboardingBranch (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/index.ts:105:30)\n    at getRepoConfig (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/init/config.ts:13:12)\n    at initRepo (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/init/index.ts:58:12)\n    at instrument.attributes (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/index.ts:87:18)\n    at renovateRepository (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/index.ts:62:39)\n    at instrument.attributes (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/global/index.ts:241:13)\n    at start (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/global/index.ts:222:7)\n    at file:///tmp/renovate-rec/lib/node_modules/renovate/lib/renovate.ts:29:22"
+          },
+          "msg": "Unknown error fetching default owner preset"
+        },
+        {
+          "name": "renovate",
+          "level": 40,
+          "logContext": "7a3c29d0-7b77-48b7-9450-c3db49e57aeb",
+          "err": {
+            "message": "The platform you're using (local) does not support local presets.",
+            "stack": "Error: The platform you're using (local) does not support local presets.\n    at getPreset (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/config/presets/local/index.ts:54:11)\n    at searchDefaultOnboardingPreset (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/config.ts:88:9)\n    at getOnboardingConfig (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/config.ts:22:23)\n    at getOnboardingConfigContents (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/config.ts:114:28)\n    at createOnboardingBranch (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/create.ts:15:20)\n    at checkOnboardingBranch (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/onboarding/branch/index.ts:120:20)\n    at getRepoConfig (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/init/config.ts:13:12)\n    at initRepo (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/init/index.ts:58:12)\n    at instrument.attributes (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/index.ts:87:18)\n    at renovateRepository (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/repository/index.ts:62:39)\n    at instrument.attributes (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/global/index.ts:241:13)\n    at start (file:///tmp/renovate-rec/lib/node_modules/renovate/lib/workers/global/index.ts:222:7)\n    at file:///tmp/renovate-rec/lib/node_modules/renovate/lib/renovate.ts:29:22"
+          },
+          "msg": "Unknown error fetching default owner preset"
+        },
+        {
+          "name": "renovate",
+          "level": 40,
+          "logContext": "7a3c29d0-7b77-48b7-9450-c3db49e57aeb",
+          "githubDeps": ["actions/checkout"],
+          "msg": "GitHub token is required for some dependencies"
+        }
+      ],
+      "branches": [],
+      "packageFiles": {
+        "cargo": [
+          {
+            "deps": [
+              {
+                "currentValue": "1.0.150",
+                "managerData": { "nestedVersion": false },
+                "datasource": "crate",
+                "depName": "serde",
+                "depType": "dependencies",
+                "lockedVersion": "1.0.150",
+                "packageName": "serde",
+                "updates": [
+                  {
+                    "bucket": "non-major",
+                    "newVersion": "1.0.229",
+                    "newValue": "1.0.150",
+                    "releaseTimestamp": "2026-07-18T23:05:13.000Z",
+                    "newVersionAgeInDays": 110,
+                    "newMajor": 1,
+                    "newMinor": 0,
+                    "newPatch": 229,
+                    "updateType": "patch",
+                    "isBreaking": false,
+                    "isLockfileUpdate": true,
+                    "libYears": 3.599847317351598,
+                    "branchName": "renovate/serde-1.x-lockfile"
+                  }
+                ],
+                "versioning": "cargo",
+                "warnings": [],
+                "sourceUrl": "https://github.com/serde-rs/serde",
+                "registryUrl": "sparse+https://index.crates.io",
+                "homepage": "https://serde.rs",
+                "dependencyUrl": "https://crates.io/crates/serde",
+                "mostRecentTimestamp": "2026-07-18T23:05:13.000Z",
+                "currentVersion": "1.0.150",
+                "currentVersionTimestamp": "2022-12-12T00:25:28.000Z",
+                "currentVersionAgeInDays": 1425,
+                "isSingleVersion": true,
+                "fixedVersion": "1.0.150"
+              }
+            ],
+            "packageFileVersion": "0.1.0",
+            "lockFiles": ["crates/core/Cargo.lock"],
+            "packageFile": "crates/core/Cargo.toml"
+          }
+        ],
+        "dockerfile": [
+          {
+            "deps": [
+              {
+                "depName": "node",
+                "packageName": "node",
+                "currentValue": "22.11.0-bookworm-slim",
+                "replaceString": "node:22.11.0-bookworm-slim",
+                "autoReplaceStringTemplate": "{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}",
+                "datasource": "docker",
+                "depType": "final",
+                "updates": [
+                  {
+                    "bucket": "non-major",
+                    "newVersion": "22.23.4",
+                    "newValue": "22.23.4-bookworm-slim",
+                    "newMajor": 22,
+                    "newMinor": 23,
+                    "newPatch": 4,
+                    "updateType": "minor",
+                    "isBreaking": false,
+                    "branchName": "renovate/node-22.x"
+                  },
+                  {
+                    "bucket": "major",
+                    "newVersion": "26.13.0",
+                    "newValue": "26.13.0-bookworm-slim",
+                    "newMajor": 26,
+                    "newMinor": 13,
+                    "newPatch": 0,
+                    "updateType": "major",
+                    "isBreaking": true,
+                    "branchName": "renovate/node-26.x"
+                  }
+                ],
+                "versioning": "docker",
+                "warnings": [],
+                "sourceUrl": "https://github.com/nodejs/node",
+                "registryUrl": "https://index.docker.io",
+                "homepage": "https://hub.docker.com/_/node",
+                "lookupName": "library/node",
+                "currentVersion": "22.11.0",
+                "isSingleVersion": true,
+                "fixedVersion": "22.11.0-bookworm-slim"
+              }
+            ],
+            "packageFile": "Dockerfile"
+          }
+        ],
+        "github-actions": [
+          {
+            "deps": [
+              {
+                "depName": "actions/checkout",
+                "commitMessageTopic": "{{{depName}}} action",
+                "versioning": "github-actions",
+                "depType": "action",
+                "replaceString": "actions/checkout@v4.1.0",
+                "autoReplaceStringTemplate": "{{depName}}@{{#if newDigest}}{{newDigest}}{{#if newValue}} # {{newValue}}{{/if}}{{/if}}{{#unless newDigest}}{{newValue}}{{/unless}}",
+                "currentValue": "v4.1.0",
+                "datasource": "github-tags",
+                "packageName": "actions/checkout",
+                "skipReason": "github-token-required",
+                "updates": []
+              },
+              {
+                "depName": "JesusFilm/core",
+                "commitMessageTopic": "{{{depName}}} action",
+                "versioning": "exact",
+                "depType": "workflow",
+                "replaceString": "JesusFilm/core/.github/workflows/reusable.yml@main",
+                "autoReplaceStringTemplate": "{{depName}}/.github/workflows/reusable.yml@{{#if newDigest}}{{newDigest}}{{#if newValue}} # {{newValue}}{{/if}}{{/if}}{{#unless newDigest}}{{newValue}}{{/unless}}",
+                "currentValue": "main",
+                "datasource": "github-digest",
+                "packageName": "JesusFilm/core",
+                "updates": [],
+                "skipReason": "disabled"
+              },
+              {
+                "depName": "ubuntu",
+                "currentValue": "24.04",
+                "replaceString": "ubuntu-24.04",
+                "depType": "github-runner",
+                "datasource": "github-runners",
+                "autoReplaceStringTemplate": "{{depName}}-{{newValue}}",
+                "packageName": "ubuntu",
+                "updates": [],
+                "skipReason": "disabled"
+              }
+            ],
+            "packageFile": ".github/workflows/ci.yml"
+          }
+        ],
+        "npm": [
+          {
+            "deps": [
+              {
+                "depType": "dependencies",
+                "depName": "react",
+                "currentValue": "18.2.0",
+                "datasource": "npm",
+                "prettyDepType": "dependency",
+                "packageName": "react",
+                "updates": [
+                  {
+                    "bucket": "non-major",
+                    "newVersion": "18.3.1",
+                    "newValue": "18.3.1",
+                    "hasAttestation": false,
+                    "downloadUrl": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+                    "newDigest": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+                    "releaseTimestamp": "2024-04-26T16:42:26.496Z",
+                    "newVersionAgeInDays": 923,
+                    "newMajor": 18,
+                    "newMinor": 3,
+                    "newPatch": 1,
+                    "updateType": "minor",
+                    "isBreaking": false,
+                    "libYears": 1.8657707235061223,
+                    "branchName": "renovate/react-18.x"
+                  },
+                  {
+                    "bucket": "major",
+                    "newVersion": "19.3.1",
+                    "newValue": "19.3.1",
+                    "hasAttestation": true,
+                    "downloadUrl": "https://registry.npmjs.org/react/-/react-19.3.1.tgz",
+                    "newDigest": "sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==",
+                    "releaseTimestamp": "2026-10-14T16:47:15.290Z",
+                    "newVersionAgeInDays": 22,
+                    "newMajor": 19,
+                    "newMinor": 3,
+                    "newPatch": 1,
+                    "updateType": "major",
+                    "isBreaking": true,
+                    "libYears": 4.333905280346271,
+                    "branchName": "renovate/react-19.x"
+                  }
+                ],
+                "versioning": "npm",
+                "warnings": [],
+                "sourceUrl": "https://github.com/react/react",
+                "registryUrl": "https://registry.npmjs.org",
+                "sourceDirectory": "packages/react",
+                "homepage": "https://react.dev/",
+                "currentVersion": "18.2.0",
+                "currentVersionTimestamp": "2022-06-14T19:46:38.369Z",
+                "currentVersionAgeInDays": 1605,
+                "isSingleVersion": true,
+                "fixedVersion": "18.2.0"
+              },
+              {
+                "depType": "dependencies",
+                "depName": "lodash",
+                "currentValue": "^4.17.15",
+                "datasource": "npm",
+                "prettyDepType": "dependency",
+                "packageName": "lodash",
+                "updates": [],
+                "versioning": "npm",
+                "warnings": [],
+                "sourceUrl": "https://github.com/lodash/lodash",
+                "registryUrl": "https://registry.npmjs.org",
+                "homepage": "https://lodash.com/",
+                "mostRecentTimestamp": "2026-04-01T21:01:20.458Z",
+                "currentVersion": "4.18.1",
+                "currentVersionTimestamp": "2026-04-01T21:01:20.458Z",
+                "currentVersionAgeInDays": 218
+              },
+              {
+                "depType": "devDependencies",
+                "depName": "typescript",
+                "currentValue": "5.4.5",
+                "datasource": "npm",
+                "prettyDepType": "devDependency",
+                "packageName": "typescript",
+                "updates": [
+                  {
+                    "bucket": "non-major",
+                    "newVersion": "5.9.3",
+                    "newValue": "5.9.3",
+                    "hasAttestation": false,
+                    "downloadUrl": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+                    "newDigest": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+                    "releaseTimestamp": "2025-09-30T21:19:38.784Z",
+                    "newVersionAgeInDays": 401,
+                    "newMajor": 5,
+                    "newMinor": 9,
+                    "newPatch": 3,
+                    "updateType": "minor",
+                    "isBreaking": false,
+                    "libYears": 1.4747608877790461,
+                    "branchName": "renovate/typescript-5.x"
+                  },
+                  {
+                    "bucket": "major",
+                    "newVersion": "7.0.2",
+                    "newValue": "7.0.2",
+                    "hasAttestation": false,
+                    "downloadUrl": "https://registry.npmjs.org/typescript/-/typescript-7.0.2.tgz",
+                    "newDigest": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==",
+                    "releaseTimestamp": "2026-07-08T15:55:18.431Z",
+                    "newVersionAgeInDays": 120,
+                    "newMajor": 7,
+                    "newMinor": 0,
+                    "newPatch": 2,
+                    "updateType": "major",
+                    "isBreaking": true,
+                    "libYears": 2.2440068177321155,
+                    "branchName": "renovate/typescript-7.x"
+                  }
+                ],
+                "versioning": "npm",
+                "warnings": [],
+                "sourceUrl": "https://github.com/microsoft/TypeScript",
+                "registryUrl": "https://registry.npmjs.org",
+                "homepage": "https://www.typescriptlang.org/",
+                "mostRecentTimestamp": "2026-11-05T08:20:45.253Z",
+                "currentVersion": "5.4.5",
+                "currentVersionTimestamp": "2024-04-10T14:25:19.427Z",
+                "currentVersionAgeInDays": 939,
+                "isSingleVersion": true,
+                "fixedVersion": "5.4.5"
+              },
+              {
+                "depType": "optionalDependencies",
+                "depName": "fsevents",
+                "currentValue": "2.3.2",
+                "datasource": "npm",
+                "prettyDepType": "optionalDependency",
+                "packageName": "fsevents",
+                "updates": [
+                  {
+                    "bucket": "non-major",
+                    "newVersion": "2.3.3",
+                    "newValue": "2.3.3",
+                    "hasAttestation": false,
+                    "downloadUrl": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+                    "newDigest": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+                    "releaseTimestamp": "2023-08-21T16:24:22.854Z",
+                    "newVersionAgeInDays": 1172,
+                    "newMajor": 2,
+                    "newMinor": 3,
+                    "newPatch": 3,
+                    "updateType": "patch",
+                    "isBreaking": false,
+                    "libYears": 2.5399121299150176,
+                    "branchName": "renovate/fsevents-2.x"
+                  }
+                ],
+                "versioning": "npm",
+                "warnings": [],
+                "sourceUrl": "https://github.com/fsevents/fsevents",
+                "registryUrl": "https://registry.npmjs.org",
+                "mostRecentTimestamp": "2023-08-21T16:24:22.854Z",
+                "currentVersion": "2.3.2",
+                "currentVersionTimestamp": "2021-02-05T14:46:33.925Z",
+                "currentVersionAgeInDays": 2099,
+                "isSingleVersion": true,
+                "fixedVersion": "2.3.2"
+              },
+              {
+                "depType": "peerDependencies",
+                "depName": "react-dom",
+                "currentValue": "^18.2.0",
+                "datasource": "npm",
+                "prettyDepType": "peerDependency",
+                "packageName": "react-dom",
+                "updates": [
+                  {
+                    "bucket": "major",
+                    "newVersion": "19.3.1",
+                    "newValue": "^18.2.0 || ^19.0.0",
+                    "hasAttestation": true,
+                    "downloadUrl": "https://registry.npmjs.org/react-dom/-/react-dom-19.3.1.tgz",
+                    "newDigest": "sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==",
+                    "releaseTimestamp": "2026-10-14T16:49:10.081Z",
+                    "newVersionAgeInDays": 22,
+                    "newMajor": 19,
+                    "newMinor": 3,
+                    "newPatch": 1,
+                    "updateType": "major",
+                    "isBreaking": true,
+                    "isRange": true,
+                    "libYears": 2.468505205162354,
+                    "branchName": "renovate/react-dom-19.x"
+                  }
+                ],
+                "versioning": "npm",
+                "warnings": [],
+                "sourceUrl": "https://github.com/react/react",
+                "registryUrl": "https://registry.npmjs.org",
+                "sourceDirectory": "packages/react-dom",
+                "homepage": "https://react.dev/",
+                "currentVersion": "18.3.1",
+                "currentVersionTimestamp": "2024-04-26T16:42:49.931Z",
+                "currentVersionAgeInDays": 923,
+                "isSingleVersion": false
+              }
+            ],
+            "extractedConstraints": {},
+            "packageFileVersion": "1.0.0",
+            "managerData": {
+              "packageJsonName": "scratch",
+              "hasPackageManager": false,
+              "yarnZeroInstall": false,
+              "npmrcFileName": null
+            },
+            "skipInstalls": true,
+            "packageFile": "package.json"
+          }
+        ],
+        "pip_requirements": [
+          {
+            "deps": [
+              {
+                "depName": "requests",
+                "packageName": "requests",
+                "currentValue": "==2.31.0",
+                "datasource": "pypi",
+                "currentVersion": "2.31.0",
+                "updates": [
+                  {
+                    "bucket": "non-major",
+                    "newVersion": "2.34.2",
+                    "newValue": "==2.34.2",
+                    "releaseTimestamp": "2026-05-14T19:25:26.000Z",
+                    "newVersionAgeInDays": 175,
+                    "newMajor": 2,
+                    "newMinor": 34,
+                    "newPatch": 2,
+                    "updateType": "minor",
+                    "isBreaking": false,
+                    "isRange": true,
+                    "libYears": 2.9785630390664637,
+                    "branchName": "renovate/requests-2.x"
+                  }
+                ],
+                "versioning": "pep440",
+                "warnings": [],
+                "sourceUrl": "https://github.com/psf/requests",
+                "registryUrl": "https://pypi.org/pypi",
+                "changelogUrl": "https://github.com/psf/requests/blob/master/HISTORY.md",
+                "mostRecentTimestamp": "2026-05-14T19:25:26.000Z",
+                "currentVersionTimestamp": "2023-05-22T15:12:42.000Z",
+                "currentVersionAgeInDays": 1263,
+                "isSingleVersion": true,
+                "fixedVersion": "2.31.0"
+              }
+            ],
+            "packageFile": "requirements.txt"
+          }
+        ]
+      },
+      "libYearsWithStatus": {
+        "libYears": {
+          "managers": {
+            "cargo": 3.599847317351598,
+            "dockerfile": 0,
+            "github-actions": 0,
+            "npm": 11.586329433155758,
+            "pip_requirements": 2.9785630390664637
+          },
+          "total": 18.164739789573822
+        },
+        "dependencyStatus": { "outdated": 7, "total": 11 }
+      }
+    }
+  }
+}

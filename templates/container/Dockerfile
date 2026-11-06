@@ -16,6 +16,8 @@
 #   * Node.js 24 + git + GitHub CLI (`gh`) — the runtime the engine drives.
 #   * A globally installed `{{CLI_BIN}}` (the bootstrapper).
 #   * Your agent provider's CLI.
+#   * A pinned `renovate`, which the dependency kinds run in dry-run as one of
+#     their sources. It is built in the stage below.
 #
 # What lives on named volumes (see compose.yml):
 #   * /data/repos   — All tenant data, nested per repo as
@@ -25,6 +27,28 @@
 #
 # The workload runs as the unprivileged `phoebe` user, not root — see the
 # privilege-drop block below for the two things that constrains.
+
+# Renovate, for the dependency kinds' Renovate source (docs/adr/0003-…). It
+# runs on the local platform in dry-run and only reads the checkout; the engine
+# hands it no GitHub credential and parses the report it writes. About 460 MB.
+#
+# Built in its own stage because of `re2`, the regex engine Renovate wants. Its
+# Node 26 prebuilt links against a newer glibc than bookworm ships, so it has
+# to compile from source, which needs the compilers and Python this full image
+# has and the slim one below does not. npm drops a failed `re2` silently, so
+# the `test -f` turns that into a failed build. Renovate's `engines` field
+# does not list Node 26 yet, so it logs an error about the version and would
+# exit 1; the engine's Renovate config remaps that one message to a warning.
+#
+# Keep this at the version the engine ships with, and bump it together with the
+# engine ref. The engine's report parser is tested against a report recorded
+# from exactly this version, because Renovate marks both the report and the
+# local platform experimental. Bumping it in this repo means recording that
+# report again (kinds/dependencies/sources/renovate.test.ts says how).
+FROM node:26-bookworm AS renovate-build
+ARG RENOVATE_VERSION=44.210.0
+RUN npm install -g --allow-scripts=re2 "renovate@${RENOVATE_VERSION}" \
+ && test -f /usr/local/lib/node_modules/renovate/node_modules/re2/build/Release/re2.node
 
 FROM node:26-bookworm-slim
 
@@ -80,6 +104,11 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
 # `node_modules/` path segment.
 ARG PHOEBE_AGENT_VERSION=0.7.1
 RUN npm install -g {{CLI_BIN}}@${PHOEBE_AGENT_VERSION}
+
+# Renovate from the build stage above, run by the image's own node. Like the
+# bootstrapper it is root-owned under /usr/local, which `phoebe` only reads.
+COPY --from=renovate-build /usr/local/lib/node_modules/renovate /usr/local/lib/node_modules/renovate
+RUN ln -s ../lib/node_modules/renovate/dist/renovate.js /usr/local/bin/renovate
 
 # Provider agent CLI. The engine spawns the selected provider's CLI as a child
 # (`agent` for cursor, `claude`, or `codex`), so the one matching your
