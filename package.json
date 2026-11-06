@@ -61,7 +61,7 @@
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@12.16.1",
+  "packageManager": "pnpm@12.18.0",
   "phoebe": {
     "minBootstrap": "0.7.0"
   }
