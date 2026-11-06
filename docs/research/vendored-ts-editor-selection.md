@@ -95,7 +95,7 @@ v1.4.13 (2024-01-03).
 - **Runtime dependencies:** acorn has 0; acorn-typescript lists acorn as a peerDep (no
   hidden deps). After bundling: 0 external imports.
 - **Measured size:** combined esbuild bundle (`--bundle --format=esm --minify
---platform=node --target=node24`): **227 KB** (measured on actual packages)
+  --platform=node --target=node24`): **227 KB** (measured on actual packages)
 - **TypeScript support:** acorn-typescript supports `satisfies` (changelog, v1.4.13,
   2024-01-03); `import type`, generic type annotations, Pick<>, union types all parse
   correctly. **Last release: 2024-01-03** — no updates in the 2.5 years since.

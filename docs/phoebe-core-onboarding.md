@@ -285,7 +285,7 @@ in **persistent mode**; `--run-once` handles at most one `issues` unit
 ## 8. Day-to-day and upgrades
 
 - **Drive it from GitHub.** Add `ready-for-agent` to queue an issue; `Blocked by
-#N` in a body to sequence dependents; `ready-for-human` (or mark a non-Phoebe PR
+  #N` in a body to sequence dependents; `ready-for-human` (or mark a non-Phoebe PR
   draft) to take a PR back. Full operator manual: [`operating.md`](operating.md).
 - **Upgrade** by editing `engine.ref` in `phoebe.config.ts`. The running container
   drains the engine and relaunches on the new ref within a reconcile interval,

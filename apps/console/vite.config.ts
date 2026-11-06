@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from "vite-plus";
+import { defineConfig, type PluginOption } from "vite-plus";
 
 export default defineConfig({
   // The bundle is loaded from a custom scheme in the companion (#522 §4), so
@@ -10,7 +10,9 @@ export default defineConfig({
   // Tailwind 4 through its Vite plugin, which is how Coss UI's components are
   // styled (components.json). The `~` alias is the one the shadcn CLI writes
   // into every component it adds, so the pieces land importing each other.
-  plugins: [tailwindcss()],
+  // The plugin is typed against the standalone `vite` package and Vite+ ships
+  // its own copy of those types, which TypeScript will not reconcile.
+  plugins: [tailwindcss() as unknown as PluginOption],
   resolve: {
     alias: { "~": fileURLToPath(new URL("./src", import.meta.url)) },
     // One React. Base UI reaches `react` through pnpm's symlinked package path

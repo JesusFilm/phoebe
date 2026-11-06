@@ -500,10 +500,10 @@ Desktop's default is to run its own server. The sequence in `DesktopApp.ts` `boo
    lines 37 to 40, 78 to 105). Development requires an explicit `T3CODE_PORT`.
 4. Spawn the primary backend through `DesktopBackendPool`. The start config is
    `executablePath: process.execPath` (Electron itself), `args: [backendEntryPath,
-"--bootstrap-fd", "3"]`, `env: { ELECTRON_RUN_AS_NODE: "1" }`, with the bootstrap payload
+   "--bootstrap-fd", "3"]`, `env: { ELECTRON_RUN_AS_NODE: "1" }`, with the bootstrap payload
    `{mode: "desktop", noBrowser: true, port, t3Home, host, desktopBootstrapToken,
-tailscaleServeEnabled, tailscaleServePort, desktopTelemetryFd: 4,
-desktopTelemetryControlFd: 5, resourceMonitorPath}` delivered over fd 3
+   tailscaleServeEnabled, tailscaleServePort, desktopTelemetryFd: 4,
+   desktopTelemetryControlFd: 5, resourceMonitorPath}` delivered over fd 3
    ([DesktopBackendConfiguration.ts](https://github.com/pingdotgg/t3code/blob/112a7088da63ea4fa48fee63dc8f29557c545ed7/apps/desktop/src/backend/DesktopBackendConfiguration.ts)
    lines 507 to 543;
    [contracts/desktopBootstrap.ts](https://github.com/pingdotgg/t3code/blob/112a7088da63ea4fa48fee63dc8f29557c545ed7/packages/contracts/src/desktopBootstrap.ts)).
