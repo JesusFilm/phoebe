@@ -187,6 +187,43 @@ a {
   color: var(--accent);
 }
 
+/* ── the companion's titlebar ─────────────────────────────────────────── */
+
+/* The companion's window has no titlebar of its own (#788,
+   apps/desktop/src/window-chrome.ts): the rail's brand row and the pane's route
+   line are it, and they drag the window. The preload puts the platform on
+   <html> before the first paint. A browser has no preload and no window to
+   drag, so none of this applies there. */
+:root[data-platform] .rail-brand,
+:root[data-platform] .pane-route {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+/* A drag region takes no clicks, so whatever in it is clicked is cut out. */
+:root[data-platform] .rail-brand a,
+:root[data-platform] .rail-brand button,
+:root[data-platform] .pane-route a,
+:root[data-platform] .pane-route button,
+:root[data-platform] .pane-route input {
+  -webkit-app-region: no-drag;
+}
+
+/* macOS draws its traffic lights over the start of the brand row. */
+:root[data-platform="darwin"] .rail-brand {
+  padding-left: 80px;
+}
+
+/* Windows and Linux draw minimise, maximise and close over the end of the route
+   line. The overlay's own variables say where its buttons begin; where the
+   renderer has none, a fixed width clears Windows' three. */
+:root[data-platform="win32"] .pane-route,
+:root[data-platform="linux"] .pane-route {
+  padding-right: calc(
+    20px + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 140px))
+  );
+}
+
 /* ── the rail ──────────────────────────────────────────────────────────── */
 
 .rail {
@@ -199,21 +236,28 @@ a {
   padding: 0 0 0;
 }
 
-/* The brand, at the top of the rail where the window's title would be. */
+/* The brand, at the top of the rail where the window's title would be. In the
+   companion it is the title: the row is half the window's titlebar
+   (`[data-platform]` below). */
 .rail-brand {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
   height: 40px;
   padding: 0 14px;
   border-bottom: 1px solid var(--line);
+}
+
+.rail-home {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--brand);
   font-weight: 700;
   text-decoration: none;
 }
 
-.rail-brand:hover {
+.rail-home:hover {
   color: var(--accent);
 }
 

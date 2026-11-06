@@ -143,3 +143,27 @@ const bridge: DesktopBridge = {
 };
 
 contextBridge.exposeInMainWorld(DESKTOP_BRIDGE_GLOBAL, bridge);
+
+// The platform, on the document, for the console's stylesheet to make room for
+// the window buttons and mark its drag region (window-chrome.ts). Here rather
+// than over `environment()`, which answers after the first paint, so the
+// layout would jump. The page may not have its <html> yet when this runs; it
+// does once parsing ends, which is still before the bundle's module script.
+//
+// The two pieces of the DOM this touches, declared here: this package builds
+// for Node and Electron and has no DOM library, and the one file that runs in
+// a page should not give every other file one.
+declare const document: {
+  readonly documentElement: { dataset: Record<string, string | undefined> } | null;
+  addEventListener(type: "readystatechange", listener: () => void, options: { once: true }): void;
+};
+function markPlatform(): void {
+  if (document.documentElement !== null) {
+    document.documentElement.dataset["platform"] = process.platform;
+  }
+}
+if (document.documentElement === null) {
+  document.addEventListener("readystatechange", markPlatform, { once: true });
+} else {
+  markPlatform();
+}

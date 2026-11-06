@@ -570,17 +570,23 @@ const NO_BUSY: ReadonlySet<string> = new Set();
  * The brand, at the top of the rail, and the way home: the mark beside the
  * name, as the wheat ear sits beside WHEAT in youtube-studio's sidebar. The
  * mark is apps/desktop's, copied under src/assets by its build-icon script.
+ *
+ * The row and the link are two elements because in the companion the row is
+ * the window's titlebar (#788): the row drags the window, and a drag region
+ * takes no clicks, so the link inside it is cut out of it.
  */
 function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void }) {
   return (
-    <a
-      className="rail-brand"
-      href={HOME_HREF}
-      {...(onHome === undefined ? {} : { onClick: onHome })}
-    >
-      <img className="rail-mark" src={phoebeMark} alt="" aria-hidden="true" />
-      {surface === "companion" ? "Phoebe" : "Phoebe console"}
-    </a>
+    <header className="rail-brand">
+      <a
+        className="rail-home"
+        href={HOME_HREF}
+        {...(onHome === undefined ? {} : { onClick: onHome })}
+      >
+        <img className="rail-mark" src={phoebeMark} alt="" aria-hidden="true" />
+        {surface === "companion" ? "Phoebe" : "Phoebe console"}
+      </a>
+    </header>
   );
 }
 
