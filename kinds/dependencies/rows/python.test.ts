@@ -10,8 +10,15 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
-import { pinnedVersion, parseRequirement, poetryDeclared, TOML_SCRIPT } from "./python-family.ts";
+import {
+  addPipAuditReport,
+  pinnedVersion,
+  parseRequirement,
+  poetryDeclared,
+  TOML_SCRIPT,
+} from "./python-family.ts";
 import { pipRow, poetryRow, readRequirements, uvRow } from "./python.ts";
+import { FindingSet } from "./common.ts";
 import type { Manifest, Row, RowDeps, RunTool } from "./row.ts";
 
 type Recorded = {
@@ -343,5 +350,18 @@ describe("reading requirements", () => {
       { name: "split", depType: "prod" },
       { name: "black", depType: "dev" },
     ]);
+  });
+});
+
+describe("pip-audit report", () => {
+  test("a package pip-audit skipped is named with its reason, not read as clean", () => {
+    const set = new FindingSet();
+    const skipped: string[] = [];
+    const report = {
+      dependencies: [{ name: "private-pkg", version: "1.0", skip_reason: "not on PyPI" }],
+    };
+    expect(addPipAuditReport(set, report, skipped)).toBe(true);
+    expect(set.findings).toEqual([]);
+    expect(skipped).toEqual(["private-pkg: not on PyPI"]);
   });
 });

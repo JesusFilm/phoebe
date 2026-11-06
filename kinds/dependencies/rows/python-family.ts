@@ -263,13 +263,22 @@ export function underRoot(manifest: Manifest): {
  * rates no severity, so a finding is unrated until OSV, which wins an id both
  * report, says otherwise.
  */
-export function addPipAuditReport(set: FindingSet, report: unknown): boolean {
+export function addPipAuditReport(
+  set: FindingSet,
+  report: unknown,
+  skipped: string[] = [],
+): boolean {
   const dependencies = isRecord(report) ? report["dependencies"] : undefined;
   if (!Array.isArray(dependencies)) return false;
   for (const dependency of dependencies) {
     if (!isRecord(dependency)) continue;
     const name = str(dependency, "name");
     const version = str(dependency, "version");
+    const skipReason = str(dependency, "skip_reason");
+    if (skipReason !== undefined && !Array.isArray(dependency["vulns"])) {
+      skipped.push(`${name ?? "unnamed"}: ${skipReason}`);
+      continue;
+    }
     const vulns = Array.isArray(dependency["vulns"]) ? dependency["vulns"] : [];
     for (const vuln of vulns) {
       const id = isRecord(vuln) ? str(vuln, "id") : undefined;
@@ -331,11 +340,17 @@ export function pipAuditor(
     const audited = parseJson(output, "pip-audit");
     if (!audited.ok) return audited;
     const set = new FindingSet();
-    if (!addPipAuditReport(set, audited.value)) {
+    const skipped: string[] = [];
+    if (!addPipAuditReport(set, audited.value, skipped)) {
       return { ok: false, problem: "pip-audit printed no dependencies" };
     }
     if (set.dropped > 0) {
       deps.log(`${rowName} row: dropped ${set.dropped} pip-audit record(s) with no id or version.`);
+    }
+    if (skipped.length > 0) {
+      deps.log(
+        `${rowName} row: pip-audit skipped ${skipped.length} package(s): ${skipped.join("; ")}.`,
+      );
     }
     return { ok: true, value: set.findings };
   };

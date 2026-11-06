@@ -27,7 +27,7 @@ export function toPosix(path: string): string {
 /** A path under the checkout as the contract writes it: relative, with `/`. */
 export function checkoutPath(checkout: string, absolute: string): string | null {
   const rel = toPosix(relative(checkout, absolute));
-  return rel.startsWith("..") ? null : rel;
+  return rel === ".." || rel.startsWith("../") ? null : rel;
 }
 
 /** `dir/file`, or `file` for the checkout's own root. */
