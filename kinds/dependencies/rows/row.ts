@@ -15,7 +15,7 @@ import type { OsvEcosystem } from "../registry/osv.ts";
 export type Manifest = {
   /** The checkout's absolute path; every other path here is relative to it. */
   checkout: string;
-  /** The project's root manifest, `package.json` or `tools/web/package.json`. */
+  /** The project's root manifest: `package.json`, `tools/web/Cargo.toml`, `requirements.txt`. */
   path: string;
   /**
    * Every manifest `list` reports dependencies for, root first: the workspace
@@ -29,7 +29,7 @@ export type Manifest = {
 export type ListedDependency = {
   /** The registry name, which for an alias is the package it points at. */
   package: string;
-  /** The resolved version the lockfile holds. */
+  /** The resolved version the lockfile holds, or a requirements file's pin. */
   current: string;
   depType: DepType;
   /** The declaring manifest's path, relative to the checkout. */
@@ -46,7 +46,7 @@ export type AuditFinding = {
 export type RowResult<T> = { ok: true; value: T } | { ok: false; problem: string };
 
 export type Row = {
-  /** The row's name in log lines: `pnpm`, `npm`, `yarn`. */
+  /** The row's name in log lines: `pnpm`, `cargo`, `uv`, `pip`. */
   name: string;
   /**
    * The candidate's `manager`. Renovate's word for the ecosystem, so a native

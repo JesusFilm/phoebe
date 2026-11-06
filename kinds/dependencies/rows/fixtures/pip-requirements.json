@@ -1,0 +1,25 @@
+{
+  "files": {
+    "requirements.txt": "# Production pins.\n--index-url https://pypi.org/simple\nFlask==2.2.0\nPyYAML==6.0  # yaml\nurllib3==1.26.5 \\\n    --hash=sha256:753a0374df26658f99d826cfe40394a686d05985786d946fbe4165b5148f5a7c\nrequests[socks]>=2.28\n-e ./vendored/lib\ngit+https://github.com/psf/black@main#egg=black\n-r requirements-dev.txt\n",
+    "requirements-dev.txt": "pytest==7.4.0\ncoverage ; python_version >= \"3.8\"\n"
+  },
+  "runs": [
+    {
+      "cwd": ".",
+      "command": "pip-audit",
+      "args": [
+        "--disable-pip",
+        "--no-deps",
+        "--progress-spinner",
+        "off",
+        "--format",
+        "json",
+        "-r",
+        "<requirements>"
+      ],
+      "code": 1,
+      "stdout": "{\"dependencies\":[{\"name\":\"flask\",\"version\":\"2.2.0\",\"vulns\":[{\"id\":\"PYSEC-2023-62\",\"fix_versions\":[\"2.2.5\",\"2.3.2\"],\"aliases\":[\"GHSA-m2qf-hxjv-5gpq\",\"CVE-2023-30861\"],\"description\":\"\"},{\"id\":\"PYSEC-2023-62\",\"fix_versions\":[\"2.2.5\",\"2.3.2\"],\"aliases\":[\"GHSA-m2qf-hxjv-5gpq\",\"CVE-2023-30861\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-2151\",\"fix_versions\":[\"3.1.3\"],\"aliases\":[\"GHSA-68rp-wp8r-4726\",\"CVE-2026-27205\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-2151\",\"fix_versions\":[\"3.1.3\"],\"aliases\":[\"GHSA-68rp-wp8r-4726\",\"CVE-2026-27205\"],\"description\":\"\"}]},{\"name\":\"pytest\",\"version\":\"7.4.0\",\"vulns\":[{\"id\":\"PYSEC-2026-1845\",\"fix_versions\":[\"9.0.3\"],\"aliases\":[\"GHSA-6w46-j5rx-g56g\",\"CVE-2025-71176\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1845\",\"fix_versions\":[\"9.0.3\"],\"aliases\":[\"GHSA-6w46-j5rx-g56g\",\"CVE-2025-71176\"],\"description\":\"\"}]},{\"name\":\"pyyaml\",\"version\":\"6.0\",\"vulns\":[]},{\"name\":\"urllib3\",\"version\":\"1.26.5\",\"vulns\":[{\"id\":\"PYSEC-2026-1995\",\"fix_versions\":[\"1.26.19\",\"2.2.2\"],\"aliases\":[\"CVE-2024-37891\",\"GHSA-34jh-p97f-mpxf\"],\"description\":\"\"},{\"id\":\"PYSEC-2023-192\",\"fix_versions\":[\"1.26.17\",\"2.0.6\"],\"aliases\":[\"GHSA-v845-jxx5-vc9f\",\"CVE-2023-43804\"],\"description\":\"\"},{\"id\":\"PYSEC-2023-192\",\"fix_versions\":[\"1.26.17\",\"2.0.6\"],\"aliases\":[\"GHSA-v845-jxx5-vc9f\",\"CVE-2023-43804\"],\"description\":\"\"},{\"id\":\"PYSEC-2023-212\",\"fix_versions\":[\"1.26.18\",\"2.0.7\"],\"aliases\":[\"CVE-2023-45803\",\"GHSA-g4mx-q9vg-27p4\"],\"description\":\"\"},{\"id\":\"PYSEC-2023-212\",\"fix_versions\":[\"1.26.18\",\"2.0.7\"],\"aliases\":[\"CVE-2023-45803\",\"GHSA-g4mx-q9vg-27p4\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1999\",\"fix_versions\":[\"2.5.0\"],\"aliases\":[\"GHSA-pq67-6m6q-mj2v\",\"CVE-2025-50181\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1998\",\"fix_versions\":[\"2.6.0\"],\"aliases\":[\"GHSA-gm62-xv2j-4w53\",\"CVE-2025-66418\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1994\",\"fix_versions\":[\"2.6.0\"],\"aliases\":[\"GHSA-2xpw-w6gg-jr37\",\"CVE-2025-66471\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1996\",\"fix_versions\":[\"2.6.3\"],\"aliases\":[\"GHSA-38jv-5279-wg99\",\"CVE-2026-21441\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-141\",\"fix_versions\":[\"2.7.0\"],\"aliases\":[\"CVE-2026-44431\",\"GHSA-qccp-gfcp-xxvc\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-141\",\"fix_versions\":[\"2.7.0\"],\"aliases\":[\"CVE-2026-44431\",\"GHSA-qccp-gfcp-xxvc\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1999\",\"fix_versions\":[\"2.5.0\"],\"aliases\":[\"GHSA-pq67-6m6q-mj2v\",\"CVE-2025-50181\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1998\",\"fix_versions\":[\"2.6.0\"],\"aliases\":[\"GHSA-gm62-xv2j-4w53\",\"CVE-2025-66418\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1995\",\"fix_versions\":[\"1.26.19\",\"2.2.2\"],\"aliases\":[\"CVE-2024-37891\",\"GHSA-34jh-p97f-mpxf\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1994\",\"fix_versions\":[\"2.6.0\"],\"aliases\":[\"GHSA-2xpw-w6gg-jr37\",\"CVE-2025-66471\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-1996\",\"fix_versions\":[\"2.6.3\"],\"aliases\":[\"GHSA-38jv-5279-wg99\",\"CVE-2026-21441\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-4177\",\"fix_versions\":[\"2.8.0\"],\"aliases\":[\"GHSA-vxq7-64xx-v4gw\",\"CVE-2026-97689\"],\"description\":\"\"},{\"id\":\"PYSEC-2026-4175\",\"fix_versions\":[\"2.8.0\"],\"aliases\":[\"CVE-2026-97687\",\"GHSA-8988-9cw3-xx77\"],\"description\":\"\"}]}],\"fixes\":[]}\n",
+      "requirements": "flask==2.2.0\npytest==7.4.0\npyyaml==6.0\nurllib3==1.26.5\n"
+    }
+  ]
+}
