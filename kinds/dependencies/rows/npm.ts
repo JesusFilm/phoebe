@@ -87,15 +87,17 @@ export function npmRow(deps: RowDeps): Row {
       );
       if (!listed.ok) return listed;
       const error = reportedError(listed.value);
-      if (error !== null) return { ok: false, problem: error };
-      const top = child(listed.value, "dependencies") ?? {};
+      const top = child(listed.value, "dependencies");
+      if (top === undefined && error !== null) return { ok: false, problem: error };
+      if (error !== null)
+        deps.log(`npm row: npm ls reported tree problems (${error}); listing what resolved.`);
       return listDeclared(
         manifest,
         (workspace, name) => {
           const owner = workspace.root
-            ? top
+            ? (top ?? {})
             : workspace.name !== undefined
-              ? child(top[workspace.name], "dependencies")
+              ? child((top ?? {})[workspace.name], "dependencies")
               : undefined;
           const version = owner === undefined ? undefined : child(owner, name)?.["version"];
           return typeof version === "string" ? version : undefined;

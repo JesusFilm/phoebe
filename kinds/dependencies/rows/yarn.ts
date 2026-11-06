@@ -239,6 +239,12 @@ export function yarnRow(deps: RowDeps): Row {
       const audited = parseJsonLines(output);
       if (!audited.ok) return audited;
       for (const record of audited.value) addYarnAuditRecord(set, record);
+      if (output.ok && output.code !== 0 && set.findings.length === 0 && set.dropped === 0) {
+        return {
+          ok: false,
+          problem: `yarn npm audit exited ${output.code}: ${output.stdout.trim().split("\n")[0]?.slice(0, 200)}`,
+        };
+      }
       return auditResult(set, deps.log, "yarn");
     },
   };

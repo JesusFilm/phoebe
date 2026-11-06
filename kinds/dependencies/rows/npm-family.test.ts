@@ -381,6 +381,7 @@ describe("declarations and ranges", () => {
     expect(registryPackage("left-pad", "npm:pad-left@2.1.0")).toBe("pad-left");
     expect(registryPackage("x", "npm:@scope/real@^1")).toBe("@scope/real");
     expect(registryPackage("lodash", "npm:^4.17.0")).toBe("lodash");
+    expect(registryPackage("alias", "npm:real-package")).toBe("real-package");
     expect(registryPackage("react", "catalog:")).toBe("react");
     expect(registryPackage("phoebe-agent", "workspace:*")).toBeNull();
     expect(registryPackage("a", "file:../a")).toBeNull();

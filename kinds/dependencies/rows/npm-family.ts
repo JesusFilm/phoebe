@@ -141,7 +141,11 @@ export function registryPackage(name: string, spec: string): string | null {
   if (value.startsWith("npm:")) {
     const target = value.slice("npm:".length);
     const at = target.indexOf("@", target.startsWith("@") ? 1 : 0);
-    return at > 0 ? target.slice(0, at) : name;
+    return at > 0
+      ? target.slice(0, at)
+      : /^[\w@]/.test(target) && !/^\d/.test(target)
+        ? target
+        : name;
   }
   if (value.startsWith("catalog:")) return name;
   return value.includes(":") || value.includes("/") ? null : name;
@@ -156,6 +160,13 @@ function readDeclared(checkout: string, manifestPath: string): Declared | null {
     if (!isRecord(declared)) continue;
     for (const [name, spec] of Object.entries(declared)) {
       if (typeof spec !== "string") continue;
+      if (
+        depType !== "optional" &&
+        isRecord(manifest["optionalDependencies"]) &&
+        name in manifest["optionalDependencies"] &&
+        depType !== "peer"
+      )
+        continue;
       const pkg = registryPackage(name, spec);
       if (pkg !== null) dependencies.push({ name, package: pkg, depType });
     }
