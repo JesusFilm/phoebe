@@ -51,10 +51,12 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
 #
 # node:26 no longer ships corepack (Node dropped it from the distribution in
 # 25), so install it from npm first; `corepack enable` on the bare image is
-# "command not found" and the build dies here.
+# "command not found" and the build dies here. The floor is 0.34.5: older
+# releases expect pnpm's entry at bin/pnpm.cjs, pnpm 12 ships bin/pnpm.mjs,
+# and the shim dies with MODULE_NOT_FOUND on the first `pnpm install`.
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN npm install -g corepack@0.34.0 \
+RUN npm install -g corepack@0.36.0 \
  && corepack enable \
  && mkdir -p /opt/corepack \
  && chown phoebe:phoebe /opt/corepack
