@@ -1534,6 +1534,7 @@ export function createEngine(options: EngineOptions): Engine {
     worktreeBase: string;
     stacked: boolean;
     promptFile: string;
+    prBodyTrailer?: string;
     blockerIssueNumber?: number;
     blockerPrNumber?: PrNumber;
     featureIssueNumber?: number;
@@ -1593,6 +1594,7 @@ export function createEngine(options: EngineOptions): Engine {
             issueNumber,
             commitCount: newCommitCount,
             ...(stackedOn ? { stacked: stackedOn } : {}),
+            ...(opts.prBodyTrailer !== undefined ? { trailer: opts.prBodyTrailer } : {}),
           });
           github.createPr({
             head: agentBranch,
@@ -1670,6 +1672,7 @@ export function createEngine(options: EngineOptions): Engine {
           worktreeBase: opts.worktreeBase,
           stacked: opts.stacked,
           promptFile: opts.promptFile ?? defaultPromptFile,
+          ...(opts.prBodyTrailer !== undefined ? { prBodyTrailer: opts.prBodyTrailer } : {}),
           ...(opts.blockerIssueNumber !== undefined
             ? { blockerIssueNumber: opts.blockerIssueNumber }
             : {}),

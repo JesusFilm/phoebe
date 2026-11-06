@@ -16,9 +16,11 @@ A kind is one registered **definition** — name, prompt, eligibility, reporting
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
 that start new work (`issues`, and `research` for wayfinder research tickets).
-One more ships as a **catalog kind**, registered only when a tenant declares it:
+Two more ship as **catalog kinds**, registered only when a tenant declares them:
 [`sentry`](#sentry-triage-production-errors-opt-in), which turns production
-errors into agent-ready issues. A tenant may register more directly under
+errors into agent-ready issues, and
+[`dependencies`](#dependencies-finish-a-dependency-upgrade-opt-in), which works
+the dependency tickets a detector files. A tenant may register more directly under
 [`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
@@ -326,7 +328,7 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
 
 ## `sentry`, triage production errors (opt-in)
 
-The one **catalog kind**: it ships in the engine checkout but registers only
+A **catalog kind**: it ships in the engine checkout but registers only
 when a tenant declares it, so no deployment carries it by accident and no boot
 demands a Sentry token nobody set. It polls one Sentry project for unresolved
 error groups, triages each new one against the repository with a read-only
@@ -440,6 +442,65 @@ and the kind posts one comment on #N if it is open. An absent draft throws (a
 failed run in the contract's own terms; nothing is filed because there is
 nothing to say); a present but unparseable one files not-ready with the raw text
 under **Agent output (unparsed)**.
+
+## `dependencies`, finish a dependency upgrade (opt-in)
+
+The implementer half of the dependency feature
+([ADR 0003](adr/0003-dependency-updates-are-three-kinds-over-one-candidate-contract.md)).
+A detector files one issue per bundle under `phoebe:dependencies`. Each issue
+holds a table of bumps, the changelog links, any advisories and a hidden
+`<!-- phoebe-dependencies bundle=… fingerprint=… -->` marker. This kind picks
+those issues up one at a time and finishes the upgrade. Opening a PR is the easy
+part. The work is reading the changelog when the tests go red and fixing the
+code the bump broke.
+
+It is the `research` shape, one call to the issue-producer helper with its own
+label and prompt, declared the way `sentry` is:
+
+```ts
+pipelines: {
+  deps: {
+    kinds: {
+      dependencies: {
+        path: "phoebe-agent/kinds/dependencies-work",
+        // label: "phoebe:dependencies",
+      },
+    },
+  },
+},
+```
+
+| Option  | Default                 | Meaning                                                                 |
+| ------- | ----------------------- | ----------------------------------------------------------------------- |
+| `label` | `"phoebe:dependencies"` | The label the detectors file under, and the only label this kind lists. |
+
+An unknown option fails registration. The tuning knobs and
+`PHOEBE_DEPENDENCIES_*` apply as for any kind. The prompt is
+`prompts/dependencies-prompt.md` in the engine checkout; to edit it, copy it
+out and re-point `promptFile`.
+
+**One unit is one issue**, `unitKey: "issue"` with `unitLabel` set to the
+option, so the stranded sweep re-arms a dead claim with this label. Selection,
+blockers, the processing-label claim and the worktree branch are the `issues`
+kind's. The kind never adds the tenant's `readyLabel`, on claim, failure or
+re-file. A pipeline running `issues` would treat a ticket wearing it as its
+own, and keeping it off is what makes a `deps` pipeline safe beside `work`.
+
+**The prompt** tells the agent to apply exactly the bumps the table lists,
+run install, check and test, and read the linked changelog to fix what fails.
+A package that still cannot pass is reverted and recorded under a `## Dropped`
+heading in the PR body, and the agent carries on with the rest. It follows the
+repo's own instructions for the changeset gate, refactors nothing the bump does
+not need, and opens the PR with a title naming the bundle. Each dropped entry is
+one line, ``- `<package>@<version>`: <reason>``, followed by the
+failing output in a `<details>` block. `parseDropped` in
+`kinds/dependencies-work/dropped.ts` reads that list back so the detector can
+re-file each drop on its own.
+
+The PR body carries the issue's marker on its last line. The agent copies it
+into a PR it opens. When the engine opens the PR instead, the kind passes the
+marker as the body's trailer. Either way the detector can match a PR to the
+bundle it came from.
 
 ## Watermarks
 

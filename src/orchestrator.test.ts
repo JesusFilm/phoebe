@@ -1572,6 +1572,11 @@ describe("buildInitialPrBody", () => {
     const body = buildInitialPrBody({ issueNumber: 103, commitCount: 2 });
     expect(body).not.toContain("Stacked");
   });
+
+  test("ends with the trailer when one is given", () => {
+    const body = buildInitialPrBody({ issueNumber: 103, commitCount: 2, trailer: "<!-- m -->" });
+    expect(body.endsWith("Commits: 2\n\n<!-- m -->")).toBe(true);
+  });
 });
 
 describe("followUpPrComment", () => {
