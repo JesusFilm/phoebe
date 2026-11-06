@@ -2590,7 +2590,10 @@ describe("what an agent's own lines carry", () => {
   }
 
   /** A scratch kind whose whole run is one `ctx.agent.run()`. */
-  function agentKind(promptFile: string): LoadedCustomKind {
+  function agentKind(
+    promptFile: string,
+    runOpts: Parameters<WorkKindRunCtx["agent"]["run"]>[0] = {},
+  ): LoadedCustomKind {
     const definition: AnyWorkKindDefinition = {
       name: "nudge",
       oneShotEligible: true,
@@ -2609,21 +2612,24 @@ describe("what an agent's own lines carry", () => {
           total: gathered.prs.length,
         };
       },
-      run: (_unit, ctx: WorkKindRunCtx) => ctx.agent.run(),
+      run: (_unit, ctx: WorkKindRunCtx) => ctx.agent.run(runOpts),
     };
     return { name: "nudge", definition, options: undefined };
   }
 
   /** Run one unit of that kind through a real `createEngine`, on `pipeline`. */
-  async function agentLines(pipeline?: string): Promise<string[]> {
+  async function agentLines(
+    pipeline?: string,
+    opts: { spawnAgent?: SpawnAgent; runOpts?: Parameters<typeof agentKind>[1] } = {},
+  ): Promise<string[]> {
     const dataBase = tenantRoot();
     const promptFile = join(dataBase, "nudge-prompt.md");
     writeFileSync(promptFile, "Nudge PR {{DEFAULT_BRANCH}}.");
     const result = await runCycle({
       config: { workOrder: ["nudge"] },
-      customKinds: [agentKind(promptFile)],
+      customKinds: [agentKind(promptFile, opts.runOpts)],
       dataBase,
-      spawnAgent: chattyAgent(),
+      spawnAgent: opts.spawnAgent ?? chattyAgent(),
       ...(pipeline !== undefined ? { pipeline } : {}),
       github: {
         ...prWorld([{ number: 44, issueNumber: 4 }]),
@@ -2655,6 +2661,20 @@ describe("what an agent's own lines carry", () => {
       "[fleet:acme/widget:intake][nudge pr:44][cursor] Reading the ticket",
       "[fleet:acme/widget:intake][nudge pr:44][cursor:stderr] cli warning",
     ]);
+  });
+
+  test("a signal the kind hands `agent.run` stops the child before the run deadline does", async () => {
+    const killed: string[] = [];
+    const chatty = chattyAgent();
+    const spawnAgent: SpawnAgent = (file, args, spawnOpts) => ({
+      ...chatty(file, args, spawnOpts),
+      kill: (signal) => {
+        killed.push(signal ?? "");
+        return true;
+      },
+    });
+    await agentLines(undefined, { spawnAgent, runOpts: { signal: AbortSignal.abort() } });
+    expect(killed).toEqual(["SIGTERM"]);
   });
 });
 

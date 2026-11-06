@@ -16,11 +16,13 @@ A kind is one registered **definition** — name, prompt, eligibility, reporting
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
 that start new work (`issues`, and `research` for wayfinder research tickets).
-Two more ship as **catalog kinds**, registered only when a tenant declares them:
+Three more ship as **catalog kinds**, registered only when a tenant declares them:
 [`sentry`](#sentry-triage-production-errors-opt-in), which turns production
-errors into agent-ready issues, and
+errors into agent-ready issues,
+[`dependency-updates`](#dependency-updates-file-dependency-tickets-opt-in), which
+files dependency tickets, and
 [`dependencies`](#dependencies-finish-a-dependency-upgrade-opt-in), which works
-the dependency tickets a detector files. A tenant may register more directly under
+them. A tenant may register more directly under
 [`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
@@ -443,6 +445,103 @@ failed run in the contract's own terms; nothing is filed because there is
 nothing to say); a present but unparseable one files not-ready with the raw text
 under **Agent output (unparsed)**.
 
+## `dependency-updates`, file dependency tickets (opt-in)
+
+The daily detector of the dependency feature
+([ADR 0003](adr/0003-dependency-updates-are-three-kinds-over-one-candidate-contract.md)).
+It finds what is outdated, applies the maturity and grouping policy, and files
+one issue per bundle for the
+[`dependencies`](#dependencies-finish-a-dependency-upgrade-opt-in) kind to
+work. It writes no code and opens no PR.
+
+```ts
+pipelines: {
+  deps: {
+    pollIntervalMs: 600_000,
+    kinds: {
+      "dependency-updates": {
+        path: "phoebe-agent/kinds/dependency-updates",
+        // every: "1d", sources: ["native", "agent", "renovate"],
+        // maturity: { patch: 3, minor: 7, major: 14 }, prConcurrentLimit: 5,
+      },
+      dependencies: { path: "phoebe-agent/kinds/dependencies-work" },
+    },
+  },
+},
+```
+
+Every option has a default, so an empty block is a working detector:
+
+| Option              | Default                               | Meaning                                                                                                                                                                                        |
+| ------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`             | `"1d"`                                | How long one scan's results stand. `30m`, `12h`, `1d`, `1w`.                                                                                                                                   |
+| `sources`           | `["native", "agent", "renovate"]`     | The sources to run, in order of trust. When two report the same update, the earlier one's fields win.                                                                                          |
+| `ignore`            | `[]`                                  | Package names never proposed. `*` matches any run of characters: `"@types/*"`.                                                                                                                 |
+| `maturity`          | `{ patch: 3, minor: 7, major: 14 }`   | Days a release must age before it is proposed. `undated: "hold"` holds back a release with no publish date instead of proposing it at once.                                                    |
+| `minSeverity`       | `"high"`                              | The severity `dependency-security` files on its own. The release that fixes an advisory under it skips the maturity wait here; an advisory at or over it does not. Keep the two kinds in step. |
+| `grouping.strategy` | `{ prod: "by-relation", dev: "all" }` | `individual`, `all`, `by-dependency-type`, `by-workspace` or `by-relation`, for both sides or each. Production covers `prod`, `optional` and `peer` dependencies.                              |
+| `grouping.groups`   | `[]`                                  | `{ pattern, group }` overrides. A package matching `pattern` goes in the named bundle, production and development alike. The first match wins.                                                 |
+| `majors`            | `"individual"`                        | `"follow-strategy"` groups a major like the rest, unless its package also has a smaller update.                                                                                                |
+| `label`             | `"phoebe:dependencies"`               | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                               |
+| `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once. `0` turns the cap off.                                                                                                                                    |
+
+An unknown option fails registration, as for `sentry`. The tuning knobs and
+`PHOEBE_DEPENDENCY_UPDATES_*` apply as for any kind. The kind's prompt is the
+agent source's, `prompts/dependency-detect-prompt.md`; to edit it, copy it out
+and re-point `promptFile`.
+
+**One unit is one scan**, `ref` `dependency-updates:scan`, with
+`unitKey: "none"`. `fetch` reads nothing over the network. Inside the `every`
+window since the last scan it gathers nothing; past it, the one unit. The
+window lives in memory, so a restart scans again at once, and the marker below
+keeps that scan from filing anything twice. The scan stamps the window when it
+starts, so a scan that fails waits for the next window too.
+
+**The sources run at once**, each under its own deadline: 15 minutes for
+`native`, 30 for `agent`, and 21 for `renovate`, a minute past Renovate's own.
+The native rows' detection runs first, because the agent is told which
+manifests they claimed. A source that fails or times out costs one log line and
+the rest stand. The run fails only when every source did. What comes back is
+unioned, and then:
+
+1. Packages matching `ignore` go.
+2. A release still inside its maturity wait goes. The one exception is the
+   release that fixes an advisory under `minSeverity`, which ships at once. A
+   release past the fix waits like any other.
+3. Of several targets for one dependency, the highest that survived is kept,
+   one for the majors and one for the rest. While the newest release ages, the
+   fix release can go out alone.
+4. A bump the implementer dropped (a ``- `<package>@<version>` `` line under
+   `## Dropped` in a dependency PR) is pulled out and filed on its own, its
+   body opening "Failed in #N". After two PRs drop the same package-version,
+   it is not filed again.
+5. The rest are grouped, production and development each by its own strategy.
+   A bundle never spans two managers.
+
+**Filing reads GitHub, not memory.** Each issue body ends with
+`<!-- phoebe-dependencies bundle=<key> fingerprint=<hex> -->`, and the
+`dependencies` kind copies it into the PR it opens. Each scan runs one search
+for issues carrying it and one for PRs. Then, per bundle:
+
+| What GitHub holds                                             | Action                                                                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| an open issue with the same key and fingerprint               | leave it                                                                 |
+| an open issue with the same key and another fingerprint       | replace its body and post one comment naming both fingerprints           |
+| a closed issue with this fingerprint that no merged PR closed | skip: a person closed it, and the veto holds until the fingerprint moves |
+| nothing open                                                  | create the issue, labelled `dependencies` and `label`                    |
+
+The fingerprint covers the package-version pairs and the advisory ids, so a
+newer version or a new advisory on the same version lifts a veto. A merged PR
+counts as closing an issue when it names it with a closing keyword
+(`Closes #N`) or carries its marker. New issues stop once the open routed
+issues and open dependency PRs reach `prConcurrentLimit`; an issue and the PR
+working it share a bundle and count once. Refreshing an open issue is never
+capped. Advisory-carrying bundles are filed first.
+
+The kind never adds the tenant's `readyLabel`. A pipeline running `issues`
+would take a ticket wearing it for its own, so the factory refuses a `label`
+equal to it.
+
 ## `dependencies`, finish a dependency upgrade (opt-in)
 
 The implementer half of the dependency feature
@@ -513,12 +612,13 @@ move whatever the marker is keyed on (see the table below) or remove the newest
 matching comment. See [`operating.md`](operating.md#watermark-comments) for the
 operator's view.
 
-| Kind        | Marker                   | Keyed on                    | Effect                                                                                                                                             |
-| ----------- | ------------------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `conflicts` | `phoebe-conflict-fail`   | `prHead` + `mainHead`       | Skip re-fixing until either the PR or the base moves.                                                                                              |
-| `checks`    | `phoebe-checks-fail`     | `prHead`                    | Skip re-fixing until the PR head moves.                                                                                                            |
-| `reviews`   | `phoebe-reviews-handled` | `latest` activity timestamp | Only re-run on review activity newer than this.                                                                                                    |
-| `sentry`    | `phoebe-sentry`          | the Sentry group id         | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)). |
+| Kind                 | Marker                   | Keyed on                       | Effect                                                                                                                                                                       |
+| -------------------- | ------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `conflicts`          | `phoebe-conflict-fail`   | `prHead` + `mainHead`          | Skip re-fixing until either the PR or the base moves.                                                                                                                        |
+| `checks`             | `phoebe-checks-fail`     | `prHead`                       | Skip re-fixing until the PR head moves.                                                                                                                                      |
+| `reviews`            | `phoebe-reviews-handled` | `latest` activity timestamp    | Only re-run on review activity newer than this.                                                                                                                              |
+| `sentry`             | `phoebe-sentry`          | the Sentry group id            | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)).                           |
+| `dependency-updates` | `phoebe-dependencies`    | the bundle key and fingerprint | In the filed issue's body and the PR opened from it; read back by one issue search and one PR search per scan ([above](#dependency-updates-file-dependency-tickets-opt-in)). |
 
 ## Writing your own kind
 

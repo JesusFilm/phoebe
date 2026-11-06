@@ -58,6 +58,22 @@ function advisoryUrl(id: string): string {
   return `https://osv.dev/vulnerability/${encodeURIComponent(id)}`;
 }
 
+/**
+ * The issue title for one bundle: the package and its version when the bundle
+ * moves one package to one version, else a count. A title is plain text, so
+ * only line breaks need removing.
+ */
+export function renderIssueTitle(bundle: Bundle): string {
+  const oneLine = (text: string) => text.replace(/[\r\n]+/g, " ");
+  const packages = [...new Set(bundle.candidates.map((c) => c.package))];
+  const targets = [...new Set(bundle.candidates.map((c) => c.target))];
+  if (packages.length === 1) {
+    const name = oneLine(packages[0]!);
+    return targets.length === 1 ? `Update ${name} to ${oneLine(targets[0]!)}` : `Update ${name}`;
+  }
+  return oneLine(`Update ${packages.length} ${bundle.manager} dependencies (${bundle.group})`);
+}
+
 /** The issue body for one bundle, ending in the marker the next cycle reads back. */
 export function renderIssueBody(
   bundle: Bundle,

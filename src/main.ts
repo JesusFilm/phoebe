@@ -1646,7 +1646,7 @@ export function createEngine(options: EngineOptions): Engine {
           worktreeDir: opts.worktreeDir ?? workspaceDir(),
           promptFile: opts.promptFile ?? defaultPromptFile,
           promptArgs: opts.promptArgs ?? {},
-          signal,
+          signal: opts.signal !== undefined ? AbortSignal.any([signal, opts.signal]) : signal,
         }),
       prWorkflow: (opts) =>
         runAgentWorkflow({

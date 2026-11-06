@@ -161,7 +161,20 @@ export type IssueStateInfo = {
 };
 
 /** One search hit for `listIssuesMentioning`: the body carries whatever marker the caller reads. */
-export type MentioningIssue = IssueStateInfo & { number: number; body: string };
+export type MentioningIssue = IssueStateInfo & {
+  number: number;
+  body: string;
+  /** The label names the issue wears. */
+  labels: string[];
+};
+
+/** One search hit for `listPrsMentioning`. A closed PR is either merged or abandoned. */
+export type MentioningPr = {
+  number: number;
+  body: string;
+  state: "open" | "closed";
+  merged: boolean;
+};
 
 export type UnitTimeoutInputs = {
   /** Comments (body + createdAt + authorLogin), oldest-first — fed to `decideTimeoutRecord`. */
@@ -312,6 +325,8 @@ export type GitHubClient = {
    * so a label the repository has never seen is created rather than refused.
    */
   createIssue(opts: { title: string; body: string }): number;
+  /** Replace an issue's body wholesale. */
+  updateIssueBody(issueNumber: number, body: string): void;
   /** An issue's current state and close reason, fetched fresh. */
   issueState(issueNumber: number): IssueStateInfo;
   /**
@@ -321,6 +336,11 @@ export type GitHubClient = {
    * token; the caller parses the marker out of each body.
    */
   listIssuesMentioning(text: string): MentioningIssue[];
+  /**
+   * Every PR of this repository whose body mentions `text`, across all states,
+   * newest first: `listIssuesMentioning`'s twin for a marker a PR body carries.
+   */
+  listPrsMentioning(text: string): MentioningPr[];
 
   // Identity
   /**
@@ -574,6 +594,39 @@ export function createGitHubClient({
     } catch (error) {
       rethrowAsGhError(error, args, exec);
     }
+  }
+
+  type SearchHit = {
+    number: number;
+    body: string | null;
+    state: "open" | "closed";
+    state_reason?: IssueStateInfo["stateReason"];
+    closed_at?: string | null;
+    labels?: Array<{ name: string }>;
+    pull_request?: { merged_at?: string | null };
+  };
+
+  /**
+   * Every issue or every PR whose body mentions `text`, across all states,
+   * newest first. The REST search endpoint rather than `gh search issues`:
+   * only the REST shape carries `state_reason`, which the Sentry regression
+   * rule reads. Pages are walked by hand (`--paginate` concatenates search
+   * pages into one invalid document) until a short page.
+   */
+  function searchMentioning(text: string, type: "issue" | "pr"): SearchHit[] {
+    const query = encodeURIComponent(`repo:${config.repoSlug} "${text}" in:body is:${type}`);
+    const hits: SearchHit[] = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const result = ghApiJson<{ items: SearchHit[] }>(
+        `search/issues?q=${query}&per_page=100&page=${page}&sort=created&order=desc`,
+      );
+      // The qualifier already filters; this keeps a stray hit of the other type out.
+      hits.push(
+        ...result.items.filter((hit) => (hit.pull_request !== undefined) === (type === "pr")),
+      );
+      if (result.items.length < 100) break;
+    }
+    return hits;
   }
 
   /** A REST call. The endpoint names the resource, so these carry no `-R`. */
@@ -1456,6 +1509,11 @@ export function createGitHubClient({
       return Number(match[1]);
     },
 
+    updateIssueBody: (issueNumber, body) => {
+      // Through stdin for the reason `updatePrBody` gives.
+      ghWrite(["issue", "edit", String(issueNumber), "--body-file", "-"], { input: body });
+    },
+
     issueState: (issueNumber) => {
       type RestIssueState = {
         state: "open" | "closed";
@@ -1470,39 +1528,23 @@ export function createGitHubClient({
       };
     },
 
-    listIssuesMentioning: (text) => {
-      // The REST search endpoint rather than `gh search issues`: only the REST
-      // shape carries `state_reason`, which the regression rule reads. Pages
-      // are walked by hand (`--paginate` concatenates search pages into one
-      // invalid document) until a short page.
-      type SearchHit = {
-        number: number;
-        body: string | null;
-        state: "open" | "closed";
-        state_reason?: IssueStateInfo["stateReason"];
-        closed_at?: string | null;
-        pull_request?: unknown;
-      };
-      const query = encodeURIComponent(`repo:${config.repoSlug} "${text}" in:body is:issue`);
-      const hits: MentioningIssue[] = [];
-      for (let page = 1; page <= 10; page += 1) {
-        const result = ghApiJson<{ items: SearchHit[] }>(
-          `search/issues?q=${query}&per_page=100&page=${page}&sort=created&order=desc`,
-        );
-        for (const hit of result.items) {
-          if (hit.pull_request !== undefined) continue;
-          hits.push({
-            number: hit.number,
-            body: hit.body ?? "",
-            state: hit.state,
-            stateReason: hit.state_reason ?? null,
-            closedAt: hit.closed_at ?? null,
-          });
-        }
-        if (result.items.length < 100) break;
-      }
-      return hits;
-    },
+    listIssuesMentioning: (text) =>
+      searchMentioning(text, "issue").map((hit) => ({
+        number: hit.number,
+        body: hit.body ?? "",
+        state: hit.state,
+        stateReason: hit.state_reason ?? null,
+        closedAt: hit.closed_at ?? null,
+        labels: (hit.labels ?? []).map((label) => label.name),
+      })),
+
+    listPrsMentioning: (text) =>
+      searchMentioning(text, "pr").map((hit) => ({
+        number: hit.number,
+        body: hit.body ?? "",
+        state: hit.state,
+        merged: typeof hit.pull_request?.merged_at === "string",
+      })),
 
     resolveLogin: (envLogin) => {
       if (envLogin) return envLogin;
