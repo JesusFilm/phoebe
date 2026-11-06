@@ -89,7 +89,7 @@ fine but the grant is not.** That cleanly separates "remint and retry" from
 **Two things it does _not_ separate:**
 
 - **Expired / revoked / garbage are byte-identical.** All three are `401 Bad
-credentials`. Since reminting fixes the expired case and fails loudly for the
+  credentials`. Since reminting fixes the expired case and fails loudly for the
   others, a blanket remint-on-401 is still safe — but nothing can log _which_
   happened.
 - **Out-of-scope repo is a 404, not a 403** — indistinguishable from a repo that
@@ -179,7 +179,7 @@ fails loudly rather than silently running under-permissioned.
 - `gh auth setup-git --hostname github.com` exits 0 and writes the usual
   `!gh auth git-credential` helper.
 - `gh auth status` reports `Logged in to github.com account phoebe-probe-1[bot]
-(GH_TOKEN)`.
+  (GH_TOKEN)`.
 - `gh api`, `gh pr list`, `gh issue list`, `gh run list` all work.
 - `git clone` and `git push` against a **private** repo succeed through the
   helper.

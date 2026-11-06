@@ -159,9 +159,9 @@ intentionally not in the hot path for normal T3 Code traffic."
 
 1. The client (or `t3 connect`) requests a challenge, then asks the environment to sign a
    **link proof**: an Ed25519 JWT over `{challenge, descriptor, environmentId,
-environmentPublicKey, endpoint, origin, scopes}` where `endpoint` is the public
+   environmentPublicKey, endpoint, origin, scopes}` where `endpoint` is the public
    `{httpBaseUrl, wsBaseUrl, providerKind}` and `origin` is the loopback `{localHttpHost,
-localHttpPort}` the tunnel will front
+   localHttpPort}` the tunnel will front
    (`RelayEnvironmentLinkProofPayload`, `RelayLinkProofRequest`, relay.ts lines 165–252;
    environment side `POST /api/connect/link-proof`,
    [packages/contracts/src/environmentHttp.ts](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/packages/contracts/src/environmentHttp.ts)

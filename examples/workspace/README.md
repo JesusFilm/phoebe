@@ -93,7 +93,7 @@ repo, but nothing runtime-generated is ever committed at the workspace root.
   bootstrapper reads just the shared `engine` source and the `workspace` discovery
   block from the deployment-root `phoebe.config.ts`, giving one engine version to
   the whole fleet. That is why it is typed `Pick<PhoebeUserConfig, "engine" |
-"workspace">`, with no `repoSlug` or commands, because it describes no single
+  "workspace">`, with no `repoSlug` or commands, because it describes no single
   repo. Each child is a full `PhoebeUserConfig` without `engine`.
 - **Secrets are two-tier and scrubbed.** The root `.env` holds only the
   bootstrapper's engine-checkout `GH_TOKEN`. Each child's engine sees only its own

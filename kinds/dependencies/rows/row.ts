@@ -6,8 +6,12 @@
 //
 // A row whose tool is missing claims nothing, so its manifests fall to the
 // agent fallback rather than going unlisted.
+//
+// GitHub Actions is the exception: deps.dev has no Actions system and OSV
+// matches Actions advisories only by commit, so that row is a CandidateRow,
+// asking GitHub what is newer and OSV what is vulnerable itself.
 
-import { byText, type Advisory, type DepType } from "../candidate.ts";
+import { byText, type Advisory, type Candidate, type DepType } from "../candidate.ts";
 import type { DepsDevSystem } from "../registry/deps-dev.ts";
 import type { OsvEcosystem } from "../registry/osv.ts";
 
@@ -15,7 +19,10 @@ import type { OsvEcosystem } from "../registry/osv.ts";
 export type Manifest = {
   /** The checkout's absolute path; every other path here is relative to it. */
   checkout: string;
-  /** The project's root manifest: `package.json`, `tools/web/Cargo.toml`, `requirements.txt`. */
+  /**
+   * The project's root manifest: `package.json`, `tools/web/Cargo.toml`,
+   * `requirements.txt`; for GitHub Actions, the `.github/workflows` directory.
+   */
   path: string;
   /**
    * Every manifest `list` reports dependencies for, root first: the workspace
@@ -62,6 +69,21 @@ export type Row = {
   list(manifest: Manifest): Promise<RowResult<ListedDependency[]>>;
   /** The manager's own audit, over the whole project including transitive packages. */
   audit?(manifest: Manifest): Promise<RowResult<AuditFinding[]>>;
+};
+
+/**
+ * A row for an ecosystem deps.dev does not carry and OSV does not match by
+ * version: GitHub Actions. It answers what is newer itself, and asks OSV by
+ * commit, so it hands back finished candidates rather than a listing.
+ */
+export type CandidateRow = {
+  /** The row's name in log lines: `github-actions`. */
+  name: string;
+  /** The candidates' `manager`, Renovate's word for the ecosystem. */
+  manager: string;
+  /** The projects in the checkout this row covers. Empty when its tool is missing. */
+  detect(checkout: string): Promise<Manifest[]>;
+  candidates(manifest: Manifest): Promise<RowResult<Candidate[]>>;
 };
 
 /** What a row needs from its caller: a way to run the tool, and a log. */
