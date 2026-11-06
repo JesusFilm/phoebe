@@ -1,0 +1,38 @@
+{
+  "files": {
+    "package.json": "{\n  \"name\": \"y4-root\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"workspaces\": [\n    \"packages/*\"\n  ],\n  \"packageManager\": \"yarn@4.12.0\",\n  \"devDependencies\": {\n    \"minimist\": \"1.2.5\"\n  }\n}\n",
+    "packages/a/package.json": "{\n  \"name\": \"@fx/a\",\n  \"version\": \"1.0.0\",\n  \"dependencies\": {\n    \"@fx/b\": \"workspace:*\",\n    \"lodash\": \"4.17.20\"\n  }\n}\n",
+    "packages/b/package.json": "{\n  \"name\": \"@fx/b\",\n  \"version\": \"1.0.0\",\n  \"dependencies\": {\n    \"lodash\": \"^4.17.21\"\n  },\n  \"devDependencies\": {\n    \"ms\": \"2.1.2\"\n  }\n}\n",
+    "yarn.lock": ""
+  },
+  "runs": [
+    {
+      "cwd": ".",
+      "command": "yarn",
+      "args": ["--version"],
+      "code": 0,
+      "stdout": "4.12.0\n"
+    },
+    {
+      "cwd": ".",
+      "command": "yarn",
+      "args": ["workspaces", "list", "--json"],
+      "code": 0,
+      "stdout": "{\"location\":\".\",\"name\":\"y4-root\"}\n{\"location\":\"packages/a\",\"name\":\"@fx/a\"}\n{\"location\":\"packages/b\",\"name\":\"@fx/b\"}\n"
+    },
+    {
+      "cwd": ".",
+      "command": "yarn",
+      "args": ["info", "--all", "--json"],
+      "code": 0,
+      "stdout": "{\"value\":\"@fx/a@workspace:packages/a\",\"children\":{\"Version\":\"0.0.0-use.local\",\"Dependencies\":[{\"descriptor\":\"@fx/b@workspace:*\",\"locator\":\"@fx/b@workspace:packages/b\"},{\"descriptor\":\"lodash@npm:4.17.20\",\"locator\":\"lodash@npm:4.17.20\"}]}}\n{\"value\":\"@fx/b@workspace:packages/b\",\"children\":{\"Version\":\"0.0.0-use.local\",\"Dependencies\":[{\"descriptor\":\"lodash@npm:^4.17.21\",\"locator\":\"lodash@npm:4.18.1\"},{\"descriptor\":\"ms@npm:2.1.2\",\"locator\":\"ms@npm:2.1.2\"}]}}\n{\"value\":\"lodash@npm:4.17.20\",\"children\":{\"Version\":\"4.17.20\"}}\n{\"value\":\"lodash@npm:4.18.1\",\"children\":{\"Version\":\"4.18.1\"}}\n{\"value\":\"minimist@npm:1.2.5\",\"children\":{\"Version\":\"1.2.5\"}}\n{\"value\":\"ms@npm:2.1.2\",\"children\":{\"Version\":\"2.1.2\"}}\n{\"value\":\"y4-root@workspace:.\",\"children\":{\"Version\":\"0.0.0-use.local\",\"Dependencies\":[{\"descriptor\":\"minimist@npm:1.2.5\",\"locator\":\"minimist@npm:1.2.5\"}]}}\n"
+    },
+    {
+      "cwd": ".",
+      "command": "yarn",
+      "args": ["npm", "audit", "--all", "--recursive", "--json"],
+      "code": 1,
+      "stdout": "{\"value\":\"lodash\",\"children\":{\"ID\":1106913,\"Issue\":\"Command Injection in lodash\",\"URL\":\"https://github.com/advisories/GHSA-35jh-r3h4-6jhm\",\"Severity\":\"high\",\"Vulnerable Versions\":\"<4.17.21\",\"Tree Versions\":[\"4.17.20\"],\"Dependents\":[\"@fx/a@workspace:packages/a\"]}}\n{\"value\":\"lodash\",\"children\":{\"ID\":1108258,\"Issue\":\"Regular Expression Denial of Service (ReDoS) in lodash\",\"URL\":\"https://github.com/advisories/GHSA-29mw-wpgm-hmr9\",\"Severity\":\"moderate\",\"Vulnerable Versions\":\">=4.0.0 <4.17.21\",\"Tree Versions\":[\"4.17.20\"],\"Dependents\":[\"@fx/a@workspace:packages/a\"]}}\n{\"value\":\"lodash\",\"children\":{\"ID\":1115806,\"Issue\":\"lodash vulnerable to Code Injection via `_.template` imports key names\",\"URL\":\"https://github.com/advisories/GHSA-r5fr-rjxr-66jc\",\"Severity\":\"high\",\"Vulnerable Versions\":\">=4.0.0 <=4.17.23\",\"Tree Versions\":[\"4.17.20\"],\"Dependents\":[\"@fx/a@workspace:packages/a\"]}}\n{\"value\":\"lodash\",\"children\":{\"ID\":1244531,\"Issue\":\"Lodash has Prototype Pollution Vulnerability in `_.unset`, `_.omit`, and `_.pullAt` functions\",\"URL\":\"https://github.com/advisories/GHSA-xxjr-mmjv-4gpg\",\"Severity\":\"moderate\",\"Vulnerable Versions\":\">=4.0.0 <=4.17.22\",\"Tree Versions\":[\"4.17.20\"],\"Dependents\":[\"@fx/a@workspace:packages/a\"]}}\n{\"value\":\"minimist\",\"children\":{\"ID\":1097678,\"Issue\":\"Prototype Pollution in minimist\",\"URL\":\"https://github.com/advisories/GHSA-xvch-5gv4-984h\",\"Severity\":\"critical\",\"Vulnerable Versions\":\">=1.0.0 <1.2.6\",\"Tree Versions\":[\"1.2.5\"],\"Dependents\":[\"y4-root@workspace:.\"]}}\n"
+    }
+  ]
+}
