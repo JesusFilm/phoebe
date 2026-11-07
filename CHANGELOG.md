@@ -1,5 +1,28 @@
 # phoebe-agent
 
+## 0.17.0
+
+### Minor Changes
+
+- b1ee84a: Add the `dependencies` catalog kind, the implementer for dependency tickets. Declare it with `path: "phoebe-agent/kinds/dependencies-work"`. It works issues labelled `phoebe:dependencies` (the `label` option changes that) with its own prompt, `prompts/dependencies-prompt.md`. The agent applies the bumps the issue lists, fixes what they break, drops any package that still fails under a `## Dropped` heading, and opens the PR. The kind never adds the ready label, so it can run in its own pipeline beside `issues`. When the engine opens the PR, the body now ends with the issue's dependency marker.
+- 088a2fe: Add the `dependency-security` catalog kind, the hourly detector for severe dependency advisories. Declare it with `path: "phoebe-agent/kinds/dependency-security"`. It runs the native and agent sources by default, and its native pass skips deps.dev. It reads the rows, one OSV batch and the package managers' audits. Every advisory at or above `minSeverity` (default `high`) is filed, one issue per package. With a fix released, the issue targets that fix exactly and carries `dependencies`, `security` and the `phoebe:dependencies` routing label. With no fix yet, it is a tracking issue with `dependencies` and `security` only. The pass that finds a fix rewrites the tracking issue and adds the routing label. Each row says whether the package is direct or transitive, and a transitive one is fixed with a parent bump or a package-manager override. Candidates gain an optional `via` field naming the direct dependencies a package is reached through. The pnpm, npm and yarn classic rows fill it from their audits' paths. The `dependencies` prompt now explains how to handle a transitive row.
+- bc919cc: Add the `dependency-updates` catalog kind, the daily detector that files dependency tickets for the `dependencies` kind to work. Declare it with `path: "phoebe-agent/kinds/dependency-updates"`. Once per `every` window (a day by default) it runs the native, agent and Renovate sources at once, each under its own deadline, and builds from whatever finished. It drops ignored packages and releases still inside their maturity wait, groups the rest, and files one issue per bundle with the `dependencies` and `phoebe:dependencies` labels. A marker in each issue keeps the next scan from filing the same bundle twice, a closed issue vetoes its bundle until a version or an advisory moves, and new issues stop once five bundles are open. The GitHub client gains `listPrsMentioning` and `updateIssueBody`, search hits from `listIssuesMentioning` now carry their labels, and `ctx.agent.run` takes an optional `signal` that stops the agent before the run deadline does.
+- e88fdb3: The container template `phoebe init` scaffolds now installs Renovate, pinned to `44.210.0` by `ARG RENOVATE_VERSION`. The dependency kinds will run it as one of their sources. Renovate is built in a `node:26-bookworm` stage so its `re2` engine compiles against bookworm's glibc, and it adds about 460 MB to the image. An existing `container/Dockerfile` is left alone. To pick the install up, copy the new `renovate-build` stage and the `COPY` and `ln` lines after the bootstrapper install from a fresh `phoebe init`. On a repo the size of `JesusFilm/core` a run uses about 3 GiB of memory, so a container limit under 4 GiB will kill it.
+  
+  The engine side is the Renovate source in `kinds/dependencies/sources/renovate.ts`. It runs Renovate over the read-only checkout on the local platform at `--dry-run=lookup`, with nothing from the engine's environment except `PATH` and `HOME`, under a 20-minute timeout, and reads the report file into candidates. A non-zero exit, a timeout, a missing or unreadable report, or an error in the report comes back as a failed source and a log line. Nothing is thrown.
+- b534980: A work kind's definition can now declare `unitKey: "issue" | "pr" | "none"`, and the tracker sweeps read it in place of the five built-in names. A custom or catalog kind that declares `"issue"`, with its queue label in `unitLabel`, gets the stranded-unit, quarantine, stale-stack and feature-close sweeps that `issues` and `research` get. One that declares `"pr"` gets the PR half of the quarantine sweep. Leaving the field out means `"none"`, which is what every custom kind got before, so no existing custom kind changes behaviour until it opts in.
+  
+  The stranded-unit sweep now decides which kind owns a claimed ticket by the queue label the ticket wears, so an issue kind can run in a pipeline of its own without either pipeline re-arming the other's tickets. One built-in behaviour changes with it. A claimed ticket that wears no queue label, because someone removed `readyLabel` while it was claimed, is now left claimed rather than re-armed with `readyLabel` put back, and a re-arm no longer adds any label.
+
+### Patch Changes
+
+- 9367d83: The companion's bearer vault now uses Electron's async `safeStorage` calls, so launching no longer prints the two `safeStorage` deprecation warnings. Left alone, a future Electron that drops the sync calls would crash the first time the vault read a saved bearer. The remote arm waits for the keyring to answer before it serves anything, and when the keyring says `remote-bearers.bin` was encrypted under an older key, the vault writes it back under the current one.
+- da0e86d: Update dependency lucide-react to v1.66.0
+- 339d1d0: Update dependency lucide-react to v1.67.0
+- 76acaf6: Update dependency lucide-react to v1.68.0
+- b1f68d7: Update dependency lucide-react to v1.69.0
+- c37888d: Update dependency lucide-react to v1.70.0
+
 ## 0.16.0
 
 ### Minor Changes
