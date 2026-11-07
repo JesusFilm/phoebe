@@ -41,8 +41,13 @@ import {
   type CreateSources,
 } from "../dependencies/sources/assemble.ts";
 import { runNativeSecuritySource } from "../dependencies/sources/native.ts";
+import { isTrackingBody } from "./body.ts";
 import { runSources } from "../dependencies/sources/run.ts";
-import { resolveDependencySecurityOptions, type DependencySecurityOptions } from "./options.ts";
+import {
+  FIXED_LABELS,
+  resolveDependencySecurityOptions,
+  type DependencySecurityOptions,
+} from "./options.ts";
 import { planSecurity } from "./plan.ts";
 
 export const DEPENDENCY_SECURITY_KIND_NAME = "dependency-security";
@@ -57,21 +62,39 @@ export type DependencySecurityGathered = { due: ScanUnit | null };
 export type DependencySecurityDeps = { createSources?: CreateSources };
 
 /**
- * Add the routing label to a tracking issue on the pass its fix appears: the
- * refresh that rewrote its body to a routed one. Only that pass, so a label a
- * person took off later stays off. A failure is logged for a person to add by
- * hand, as applyFiling logs one.
+ * Keep the routing label in step with the issue. A tracking issue gains it on
+ * the pass its fix appears: the refresh that rewrote its body from a tracking
+ * one to a routed one. Only that pass, so a label a person took off later stays
+ * off. A routed issue whose refresh leaves it with no fix loses the label, so
+ * the `dependencies` kind cannot claim it. A failure is logged for a person to
+ * handle by hand, as applyFiling logs one.
  */
 function routeFixedIssues(
   actions: readonly FilingAction[],
-  labelsOf: ReadonlyMap<number, readonly string[]>,
+  issues: ReadonlyMap<number, { body: string; labels: readonly string[] }>,
   routingLabel: PhoebeLabel,
   ctx: Pick<WorkKindRunCtx, "github" | "log">,
 ): void {
   for (const a of actions) {
     if (a.action !== "update") continue;
-    if (!a.planned.labels?.includes(routingLabel)) continue;
-    if (labelsOf.get(a.issue)?.includes(routingLabel.name)) continue;
+    const before = issues.get(a.issue);
+    if (before === undefined) continue;
+    const routes = a.planned.labels?.some((l) => l.name === routingLabel.name) === true;
+    if (!routes) {
+      if (!before.labels.includes(routingLabel.name)) continue;
+      try {
+        ctx.github.removeIssueLabel(a.issue, routingLabel.name);
+        ctx.log(`#${a.issue}: no fix is left; took off "${routingLabel.name}".`);
+      } catch (error) {
+        ctx.log(
+          `#${a.issue}: no fix is left but could not remove label "${routingLabel.name}"; remove it by hand. ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      continue;
+    }
+    if (!isTrackingBody(before.body)) continue;
+    if (before.labels.includes(routingLabel.name)) continue;
     try {
       addLabelCreatingIfMissing(ctx.github, a.issue, routingLabel, (line) => ctx.log(line));
       ctx.log(`#${a.issue}: a fix is out; routed with "${routingLabel.name}".`);
@@ -89,6 +112,12 @@ export function createDependencySecurityKind(
   options: DependencySecurityOptions,
   deps: DependencySecurityDeps = {},
 ): WorkKindDefinition<DependencySecurityGathered, ScanUnit> {
+  if (FIXED_LABELS.includes(config.readyLabel)) {
+    throw new Error(
+      `kinds.${DEPENDENCY_SECURITY_KIND_NAME}: the ready label "${config.readyLabel}" is one every ` +
+        "security issue wears; a pipeline running `issues` would take tracking tickets for its own.",
+    );
+  }
   if (options.label === config.readyLabel) {
     throw new Error(
       `kinds.${DEPENDENCY_SECURITY_KIND_NAME}: \`label\` must not be the ready label ` +
@@ -159,7 +188,7 @@ export function createDependencySecurityKind(
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL]);
       routeFixedIssues(
         actions,
-        new Map(filed.issues.map((issue) => [issue.number, issue.labels])),
+        new Map(filed.issues.map((issue) => [issue.number, issue])),
         routingLabel,
         ctx,
       );

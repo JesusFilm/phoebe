@@ -156,8 +156,8 @@ type Listing = {
 
 /**
  * List and audit every claimed project. A project that will not list and an
- * audit that fails each cost a log line. Fails only when there were projects
- * and none of them listed.
+ * audit that fails each cost a log line, and an audit runs whether or not its
+ * project listed. Fails only when there were projects and none of them listed.
  */
 async function listProjects(
   projects: readonly NativeProject[],
@@ -168,12 +168,12 @@ async function listProjects(
   for (const project of projects) {
     const { row, manifest } = project;
     const result = await row.list(manifest);
-    if (!result.ok) {
+    if (result.ok) {
+      listedProjects += 1;
+      listing.listed.push(...result.value.map((dependency) => ({ row, manifest, dependency })));
+    } else {
       log(`${row.name} row: could not list ${manifest.path} (${result.problem}).`);
-      continue;
     }
-    listedProjects += 1;
-    listing.listed.push(...result.value.map((dependency) => ({ row, manifest, dependency })));
     if (row.audit === undefined) continue;
     const audit = await row.audit(manifest);
     if (audit.ok) listing.audits.push({ project, findings: audit.value });
@@ -193,7 +193,7 @@ async function listProjects(
 async function lookupAdvisories(
   listing: Listing,
   deps: Pick<NativeSourceDeps, "osv" | "log">,
-): Promise<(l: Listed) => Advisory[]> {
+): Promise<{ advisoriesOf: (l: Listed) => Advisory[]; osvFailed: boolean }> {
   const queryKey = (l: Listed) =>
     JSON.stringify([l.row.ecosystem, l.dependency.package, l.dependency.current]);
   const queries = [...new Map(listing.listed.map((l) => [queryKey(l), l])).values()];
@@ -210,17 +210,19 @@ async function lookupAdvisories(
     osv?.ok === true ? queries.map((l, i) => [queryKey(l), osv.value[i]!]) : [],
   );
   const audited = new Map<string, Advisory[]>();
-  for (const { findings } of listing.audits) {
+  for (const { project, findings } of listing.audits) {
     for (const finding of findings) {
-      const key = JSON.stringify([finding.package, finding.version]);
+      const key = JSON.stringify([project.row.ecosystem, finding.package, finding.version]);
       audited.set(key, [...(audited.get(key) ?? []), finding.advisory]);
     }
   }
-  return (l) =>
+  const advisoriesOf = (l: Listed): Advisory[] =>
     unionAdvisories([
       osvByQuery.get(queryKey(l)) ?? [],
-      audited.get(JSON.stringify([l.dependency.package, l.dependency.current])) ?? [],
+      audited.get(JSON.stringify([l.row.ecosystem, l.dependency.package, l.dependency.current])) ??
+        [],
     ]);
+  return { advisoriesOf, osvFailed: osv !== null && !osv.ok };
 }
 
 /**
@@ -244,7 +246,7 @@ export async function runNativeSource(
   await eachLimited(packages, DEPS_DEV_CONCURRENCY, async (l) => {
     versions.set(packageKey(l), await deps.depsDev.versions(l.row.system, l.dependency.package));
   });
-  const advisoriesOf = await lookupAdvisories(listing.value, deps);
+  const { advisoriesOf } = await lookupAdvisories(listing.value, deps);
 
   const candidates: Candidate[] = [];
   const unanswered = new Set<string>();
@@ -290,9 +292,9 @@ export async function runNativeSource(
 }
 
 /**
- * The highest version that fixes one of the advisories, or `current` when
- * none has a fix. Each `fixedIn` is the first fix above the version the
- * package is on, so it sits on that release line.
+ * The highest version above `current` that fixes one of the advisories, or
+ * `current` when none does. A fix at or below the installed version, which an
+ * agent source can report, is no upgrade target and is ignored.
  */
 export function fixTarget(
   scheme: VersionScheme,
@@ -301,6 +303,7 @@ export function fixTarget(
 ): string {
   const fixes = advisories
     .flatMap((a) => (a.fixedIn === null ? [] : [a.fixedIn]))
+    .filter((fix) => compareVersions(scheme, fix, current) > 0)
     .sort((a, b) => compareVersions(scheme, a, b));
   return fixes.at(-1) ?? current;
 }
@@ -343,7 +346,14 @@ export async function runNativeSecuritySource(
 ): Promise<SourceResult> {
   const listing = await listProjects(projects, deps.log);
   if (!listing.ok) return { ok: false, problem: listing.problem };
-  const advisoriesOf = await lookupAdvisories(listing.value, deps);
+  const { advisoriesOf, osvFailed } = await lookupAdvisories(listing.value, deps);
+  const auditable = projects.filter((p) => p.row.audit !== undefined).length;
+  if (osvFailed && auditable > 0 && listing.value.audits.length === 0) {
+    return { ok: false, problem: "OSV and every audit failed; no advisory source answered" };
+  }
+  if (osvFailed && auditable === 0) {
+    return { ok: false, problem: "OSV failed and no row audits; no advisory source answered" };
+  }
 
   const candidates: Candidate[] = [];
   for (const l of listing.value.listed) {

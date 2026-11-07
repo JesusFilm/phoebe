@@ -47,6 +47,8 @@ describe("resolveDependencySecurityOptions", () => {
     [{ sources: [] }, "kinds.dependency-security: `sources` must be a non-empty array"],
     [{ minSeverity: "severe" }, "kinds.dependency-security: `minSeverity` must be one of"],
     [{ label: " " }, "kinds.dependency-security: `label` must be a non-empty string"],
+    [{ label: "security" }, 'label must not be "security"'],
+    [{ label: "dependencies" }, 'label must not be "dependencies"'],
     [{ prConcurrentLimit: 5 }, "kinds.dependency-security: unknown option `prConcurrentLimit`"],
   ])("%j fails", (block, message) => {
     expect(() => resolveDependencySecurityOptions(block, at)).toThrow(message);

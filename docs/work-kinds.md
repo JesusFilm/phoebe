@@ -598,9 +598,10 @@ the other managers it says the route is not known.
    filed. `dependency-updates` reads those and lets their fix release skip the
    maturity wait.
 3. Targets the fix release exactly, the highest `fixedIn` among what is left.
-   OSV's `fixedIn` is the first fix above the installed version, so it sits on
-   the package's current release line. Only that release skips the maturity
-   wait, so a newer target would leave the advisory open while it aged.
+   OSV's `fixedIn` is the first fix above the installed version. It is
+   usually on the package's current release line, but when that line has no fix
+   it can be a later major. Only that release skips the maturity wait, so a
+   newer target would leave the advisory open while it aged.
 4. Groups by package: one bundle per manager and package, `individual` style,
    whatever the workspaces.
 

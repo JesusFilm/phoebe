@@ -23,6 +23,11 @@ export function hasFix(candidate: Candidate): boolean {
   return candidate.target !== candidate.current;
 }
 
+/** Whether a body is a tracking issue's: written while no fix was released. */
+export function isTrackingBody(body: string): boolean {
+  return body.startsWith("Tracking ");
+}
+
 /** One table row from its cells, the package and workspace first as the other bodies have them. */
 function row(c: Candidate, ...rest: string[]): string {
   return ["", cell(code(c.package)), cell(code(c.workspace)), c.depType, ...rest, ""]
@@ -52,8 +57,9 @@ export function renderSecurityBody(bundle: Bundle, options: SecurityBodyOptions)
 
   if (options.routed) {
     lines.push(
-      `Security fix for ${pkg} under ${manager}. Its advisories at or above ${severity} have a ` +
-        "released fix. Move each row to the version in its To column.",
+      `Security fix for ${pkg} under ${manager}. A fix is released for its advisories at or ` +
+        `above ${severity}, though it may not cover every one. Move each row to the version in its ` +
+        "To column.",
       "",
       "| Package | Workspace | Type | From | To | Reached through |",
       "| --- | --- | --- | --- | --- | --- |",
@@ -66,10 +72,18 @@ export function renderSecurityBody(bundle: Bundle, options: SecurityBodyOptions)
         ),
       ),
     );
-    if (candidates.some((c) => hasFix(c) && c.via?.length !== 0)) {
+    if (candidates.some((c) => hasFix(c) && c.via === undefined)) {
       lines.push(
         "",
-        "A row that is not direct names a package no manifest declares. Fix it with a bump of " +
+        "A row marked not known has no recorded route to the package. Check the manifests and the " +
+          "lockfile to see whether it is declared directly or pulled in by another dependency " +
+          "before choosing how to move it.",
+      );
+    }
+    if (candidates.some((c) => hasFix(c) && c.via !== undefined && c.via.length > 0)) {
+      lines.push(
+        "",
+        "A transitive row names a package no manifest declares. Fix it with a bump of " +
           "the dependency that pulls it in, to a release that brings the fixed version. When no " +
           "such release exists, pin it to the fixed version with the package manager's override " +
           "instead, which is `pnpm.overrides`, npm `overrides`, yarn `resolutions`, a Cargo " +

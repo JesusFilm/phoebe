@@ -225,6 +225,7 @@ describe("fixTarget", () => {
     const fix = (fixedIn: string | null): Advisory => ({ id: "x", severity: "high", fixedIn });
     expect(fixTarget("semver", "1.0.0", [fix("1.0.2"), fix(null), fix("1.0.10")])).toBe("1.0.10");
     expect(fixTarget("semver", "1.0.0", [fix(null)])).toBe("1.0.0");
+    expect(fixTarget("semver", "2.0.0", [fix("1.9.9"), fix("2.0.0")])).toBe("2.0.0");
   });
 });
 
@@ -269,7 +270,7 @@ describe("runNativeSecuritySource", () => {
           {
             package: "qs",
             version: "6.5.2",
-            advisory: high,
+            advisory: { ...high, fixedIn: "6.5.3" },
             ancestors: [".", "express", "body-parser", "jest"],
           },
           { package: "orphan", version: "0.1.0", advisory: unfixed },
@@ -285,8 +286,8 @@ describe("runNativeSecuritySource", () => {
     expect(
       result.candidates.map((c) => [c.package, c.workspace, c.depType, c.target, c.via]),
     ).toEqual([
-      ["qs", "package.json", "prod", "1.0.5", ["express", "jest"]],
-      ["qs", "web/package.json", "dev", "1.0.5", ["express"]],
+      ["qs", "package.json", "prod", "6.5.3", ["express", "jest"]],
+      ["qs", "web/package.json", "dev", "6.5.3", ["express"]],
       ["orphan", "package.json", "prod", "0.1.0", undefined],
     ]);
   });

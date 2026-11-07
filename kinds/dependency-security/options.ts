@@ -42,6 +42,20 @@ const OPTION_KEYS: readonly (keyof DependencySecurityOptions)[] = [
   "label",
 ];
 
+/** The labels every issue of this kind wears, so none can be the routing label. */
+export const FIXED_LABELS: readonly string[] = ["dependencies", "security"];
+
+function routingLabel(at: string, raw: unknown): string {
+  const label = nonEmptyString(at, "label", raw);
+  if (FIXED_LABELS.includes(label)) {
+    fail(
+      at,
+      `label must not be "${label}": every security issue wears it, so a tracking issue would be routed.`,
+    );
+  }
+  return label;
+}
+
 /**
  * Validate the block a tenant declared and fill the defaults. `at` is the
  * config path the errors name. An unknown field is refused, so a
@@ -63,6 +77,6 @@ export function resolveDependencySecurityOptions(
       raw["minSeverity"] === undefined
         ? defaults.minSeverity
         : oneOf(at, "minSeverity", raw["minSeverity"], SEVERITIES),
-    label: raw["label"] === undefined ? defaults.label : nonEmptyString(at, "label", raw["label"]),
+    label: routingLabel(at, raw["label"] ?? defaults.label),
   };
 }
