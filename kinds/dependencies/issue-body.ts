@@ -14,7 +14,7 @@ import { MATURITY_DEFAULTS, selectionReason, type MaturityPolicy } from "./polic
 // person looking at the issue and still hands to the agent.
 
 /** One line of source-supplied text: no line break, and no `<`, `>` or `&` left to start markup. */
-function plain(text: string): string {
+export function plain(text: string): string {
   return text
     .replace(/[\r\n]+/g, " ")
     .replaceAll("&", "&amp;")
@@ -27,7 +27,7 @@ function plain(text: string): string {
  * the longest run inside, so a backtick in a name cannot close the span early,
  * and inside a span `<` is text, not markup.
  */
-function code(text: string): string {
+export function code(text: string): string {
   const inner = text.replace(/[\r\n]+/g, " ");
   const longest = Math.max(0, ...(inner.match(/`+/g) ?? []).map((run) => run.length));
   const fence = "`".repeat(longest + 1);
@@ -36,7 +36,7 @@ function code(text: string): string {
 }
 
 /** A table cell: a pipe would end the cell early. */
-function cell(text: string): string {
+export function cell(text: string): string {
   return text.replaceAll("|", "\\|");
 }
 
@@ -72,6 +72,30 @@ export function renderIssueTitle(bundle: Bundle): string {
     return targets.length === 1 ? `Update ${name} to ${oneLine(targets[0]!)}` : `Update ${name}`;
   }
   return oneLine(`Update ${packages.length} ${bundle.manager} dependencies (${bundle.group})`);
+}
+
+/**
+ * The `## Advisories` section: one line per advisory and package, linked to
+ * OSV, sorted by id. Empty when no candidate carries one.
+ */
+export function renderAdvisories(candidates: readonly Candidate[]): string[] {
+  const advisories = new Map<string, string>();
+  for (const c of candidates) {
+    for (const a of c.advisories) {
+      const fix = a.fixedIn === null ? "no fix released" : `fixed in ${plain(a.fixedIn)}`;
+      const id = plain(a.id).replace(/[[\]]/g, "\\$&");
+      advisories.set(
+        JSON.stringify([a.id, c.package]),
+        `- [${id}](${advisoryUrl(a.id)}): ${plain(a.severity)}, in ${code(c.package)}, ${fix}`,
+      );
+    }
+  }
+  if (advisories.size === 0) return [];
+  return [
+    "## Advisories",
+    "",
+    ...[...advisories].sort(([a], [b]) => byText(a, b)).map(([, line]) => line),
+  ];
 }
 
 /** The issue body for one bundle, ending in the marker the next cycle reads back. */
@@ -114,21 +138,8 @@ export function renderIssueBody(
     lines.push(`- ${code(pkg)}: ${url ?? "no source repository known"}`);
   }
 
-  const advisories = new Map<string, string>();
-  for (const c of candidates) {
-    for (const a of c.advisories) {
-      const fix = a.fixedIn === null ? "no fix released" : `fixed in ${plain(a.fixedIn)}`;
-      const id = plain(a.id).replace(/[[\]]/g, "\\$&");
-      advisories.set(
-        JSON.stringify([a.id, c.package]),
-        `- [${id}](${advisoryUrl(a.id)}): ${plain(a.severity)}, in ${code(c.package)}, ${fix}`,
-      );
-    }
-  }
-  if (advisories.size > 0) {
-    lines.push("", "## Advisories", "");
-    lines.push(...[...advisories].sort(([a], [b]) => byText(a, b)).map(([, line]) => line));
-  }
+  const advisories = renderAdvisories(candidates);
+  if (advisories.length > 0) lines.push("", ...advisories);
 
   lines.push("", renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) }), "");
   return lines.join("\n");

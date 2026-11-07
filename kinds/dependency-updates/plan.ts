@@ -9,7 +9,7 @@ import { groupCandidates, patternRegExp, type Bundle } from "../dependencies/gro
 import type { PlannedBundle } from "../dependencies/filing.ts";
 import { renderIssueBody, renderIssueTitle } from "../dependencies/issue-body.ts";
 import { isMature, overThreshold } from "../dependencies/policy.ts";
-import { compareVersions, type VersionScheme } from "../dependencies/registry/versions.ts";
+import { compareVersions, managerScheme } from "../dependencies/registry/versions.ts";
 import type { MentioningPr } from "../../src/github-client.ts";
 import type { DependencyUpdatesOptions } from "./options.ts";
 
@@ -39,11 +39,6 @@ export function readFailures(prs: readonly MentioningPr[]): Failures {
   return failures;
 }
 
-/** PEP 440 for the Python managers, SemVer for everything else. */
-function schemeOf(manager: string): VersionScheme {
-  return /^(?:pip|pep|poetry|pipenv|setup|pdm|uv)/.test(manager) ? "pep440" : "semver";
-}
-
 /**
  * Of several proposals for one occurrence, the highest target per release
  * line: one for the majors and one for everything smaller. A source may offer
@@ -62,7 +57,10 @@ function newestPerLine(candidates: readonly Candidate[]): Candidate[] {
       c.updateType === "major",
     ]);
     const seen = best.get(key);
-    if (seen === undefined || compareVersions(schemeOf(c.manager), c.target, seen.target) > 0) {
+    if (
+      seen === undefined ||
+      compareVersions(managerScheme(c.manager), c.target, seen.target) > 0
+    ) {
       best.set(key, c);
     }
   }

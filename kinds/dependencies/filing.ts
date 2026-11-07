@@ -24,11 +24,19 @@ export const DEPENDENCIES_LABEL: PhoebeLabel = {
   description: "Dependency updates Phoebe found",
 };
 
+/** The label a dependency-security issue wears, beside `dependencies`. */
+export const SECURITY_LABEL: PhoebeLabel = {
+  name: "security",
+  description: "A security advisory against a dependency",
+};
+
 /** A bundle ready to file: its rendered title and body, the marker last. */
 export type PlannedBundle = {
   bundle: Bundle;
   title: string;
   body: string;
+  /** The labels a new issue gets, when they differ from the detector's own set. */
+  labels?: readonly PhoebeLabel[];
 };
 
 export type FilingAction =
@@ -131,7 +139,8 @@ export function renderRefreshComment(planned: PlannedBundle, previous: string): 
 export type FilingCounts = Record<FilingAction["action"], number>;
 
 /**
- * Carry out the decisions and log one line per write and one summary. A
+ * Carry out the decisions and log one line per write and one summary. A new
+ * issue gets the bundle's own labels when it names them, else `labels`. A
  * label that cannot be added is logged for a person to add by hand rather than
  * thrown: the issue exists and carries the marker, so a throw would leave the
  * bundle filed without its labels and a retry would file it twice.
@@ -154,7 +163,7 @@ export function applyFiling(
       ctx.log(`${key}: refreshed #${a.issue}.`);
     } else if (a.action === "create") {
       const issue = ctx.github.createIssue({ title: a.planned.title, body: a.planned.body });
-      for (const label of labels) {
+      for (const label of a.planned.labels ?? labels) {
         try {
           addLabelCreatingIfMissing(ctx.github, issue, label, (line) => ctx.log(line));
         } catch (error) {

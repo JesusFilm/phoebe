@@ -256,9 +256,28 @@ function severity(value: unknown): Severity {
 }
 
 /**
+ * Every package on a finding's paths but the last, which is the package
+ * itself. pnpm opens each path with the importer (`.`, `apps__web`), yarn
+ * classic with the direct dependency; the native source keeps only names the
+ * project lists, so the importer drops out there.
+ */
+function pathAncestors(paths: unknown): string[] | undefined {
+  if (!Array.isArray(paths)) return undefined;
+  const names = paths
+    .filter((path): path is string => typeof path === "string")
+    .flatMap((path) =>
+      path
+        .split(">")
+        .map((name) => name.trim())
+        .slice(0, -1),
+    );
+  return [...new Set(names.filter((name) => name !== ""))];
+}
+
+/**
  * The advisory shape the old npm audit endpoint answers with, which `pnpm
  * audit` and `yarn audit` (classic) print: a module, its vulnerable and patched
- * ranges, and a finding per installed version.
+ * ranges, and a finding per installed version with the paths that reach it.
  */
 export function addNpmAdvisory(set: FindingSet, advisory: unknown): void {
   if (!isRecord(advisory)) return;
@@ -274,20 +293,42 @@ export function addNpmAdvisory(set: FindingSet, advisory: unknown): void {
   for (const finding of findings) {
     const version = isRecord(finding) ? str(finding, "version") : undefined;
     if (version === undefined) continue;
+    const ancestors = pathAncestors((finding as Json)["paths"]);
     const fixedIn =
       patched !== undefined
         ? fixedFromPatched(patched, version)
         : vulnerable !== undefined
           ? fixedFromVulnerable(vulnerable, version)
           : null;
-    set.add(pkg, version, { id, severity: severity(advisory["severity"]), fixedIn });
+    set.add(pkg, version, { id, severity: severity(advisory["severity"]), fixedIn }, ancestors);
   }
 }
 
 /**
+ * Every package npm's report says is vulnerable through `name`: the closure
+ * of `effects`, which names the packages that depend on a vulnerable one.
+ * npm marks each of them vulnerable in turn, up to the direct dependency.
+ */
+function effectsClosure(vulnerabilities: Json, name: string): string[] {
+  const seen = new Set<string>();
+  const queue = [name];
+  while (queue.length > 0) {
+    const entry = vulnerabilities[queue.pop()!];
+    const effects = isRecord(entry) && Array.isArray(entry["effects"]) ? entry["effects"] : [];
+    for (const effect of effects) {
+      if (typeof effect === "string" && effect !== name && !seen.has(effect)) {
+        seen.add(effect);
+        queue.push(effect);
+      }
+    }
+  }
+  return [...seen];
+}
+
+/**
  * `npm audit --json` (report version 2): advisories hang off each vulnerable
- * package's `via`, and its installed versions are the lockfile's entries for
- * the `nodes` it names.
+ * package's `via`, its installed versions are the lockfile's entries for the
+ * `nodes` it names, and the packages that reach it are its `effects`.
  */
 export function addNpmAuditReport(
   set: FindingSet,
@@ -304,6 +345,7 @@ export function addNpmAuditReport(
       if (version !== undefined) versions.add(version);
     }
     const via = Array.isArray(entry["via"]) ? entry["via"] : [];
+    const ancestors = effectsClosure(vulnerabilities, name);
     for (const source of via) {
       // A string names another vulnerable package this one depends on.
       if (!isRecord(source) || str(source, "name") !== name) continue;
@@ -315,11 +357,16 @@ export function addNpmAuditReport(
       }
       for (const version of versions) {
         if (inRange(range, version) === false) continue;
-        set.add(name, version, {
-          id,
-          severity: severity(source["severity"]),
-          fixedIn: fixedFromVulnerable(range, version),
-        });
+        set.add(
+          name,
+          version,
+          {
+            id,
+            severity: severity(source["severity"]),
+            fixedIn: fixedFromVulnerable(range, version),
+          },
+          ancestors,
+        );
       }
     }
   }

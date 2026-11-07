@@ -8,7 +8,13 @@ import type { Advisory } from "../candidate.ts";
 import type { DepsDevClient, PackageVersion } from "../registry/deps-dev.ts";
 import type { OsvClient } from "../registry/osv.ts";
 import type { ListedDependency, Manifest, Row } from "../rows/row.ts";
-import { chooseTargets, detectNative, runNativeSource } from "./native.ts";
+import {
+  chooseTargets,
+  detectNative,
+  fixTarget,
+  runNativeSecuritySource,
+  runNativeSource,
+} from "./native.ts";
 
 function versions(...list: Array<string | [string, Partial<PackageVersion>]>): PackageVersion[] {
   return list.map((entry) => {
@@ -211,5 +217,94 @@ describe("runNativeSource", () => {
       ok: true,
       candidates: [],
     });
+  });
+});
+
+describe("fixTarget", () => {
+  test("the highest fix among the advisories, or the current version when none has one", () => {
+    const fix = (fixedIn: string | null): Advisory => ({ id: "x", severity: "high", fixedIn });
+    expect(fixTarget("semver", "1.0.0", [fix("1.0.2"), fix(null), fix("1.0.10")])).toBe("1.0.10");
+    expect(fixTarget("semver", "1.0.0", [fix(null)])).toBe("1.0.0");
+  });
+});
+
+describe("runNativeSecuritySource", () => {
+  const high: Advisory = { id: "GHSA-hhhh-hhhh-hhhh", severity: "high", fixedIn: "1.0.5" };
+  const unfixed: Advisory = { id: "GHSA-nnnn-nnnn-nnnn", severity: "critical", fixedIn: null };
+
+  test("a direct dependency with an advisory targets its fix, and deps.dev is never asked", async () => {
+    const r = row({ listed: [dep("a", "1.0.0"), dep("clean", "2.0.0")] });
+    const c = clients({}, { "a@1.0.0": [high] });
+    const result = await runNativeSecuritySource([{ row: r, manifest }], { ...c, log: () => {} });
+    expect(c.asked).toEqual([]);
+    expect(result).toEqual({
+      ok: true,
+      candidates: [
+        {
+          manager: "npm",
+          package: "a",
+          current: "1.0.0",
+          target: "1.0.5",
+          updateType: "patch",
+          depType: "prod",
+          workspace: "package.json",
+          advisories: [high],
+          peers: [],
+          via: [],
+        },
+      ],
+    });
+  });
+
+  test("a transitive finding is proposed per workspace through the direct dependencies on its paths", async () => {
+    const r = row({
+      listed: [
+        dep("express", "4.0.0"),
+        dep("jest", "29.0.0", { depType: "dev" }),
+        dep("express", "4.0.0", { workspace: "web/package.json", depType: "dev" }),
+      ],
+      audit: async () => ({
+        ok: true,
+        value: [
+          {
+            package: "qs",
+            version: "6.5.2",
+            advisory: high,
+            ancestors: [".", "express", "body-parser", "jest"],
+          },
+          { package: "orphan", version: "0.1.0", advisory: unfixed },
+        ],
+      }),
+    });
+    const result = await runNativeSecuritySource([{ row: r, manifest }], {
+      ...clients({}),
+      log: () => {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      result.candidates.map((c) => [c.package, c.workspace, c.depType, c.target, c.via]),
+    ).toEqual([
+      ["qs", "package.json", "prod", "1.0.5", ["express", "jest"]],
+      ["qs", "web/package.json", "dev", "1.0.5", ["express"]],
+      ["orphan", "package.json", "prod", "0.1.0", undefined],
+    ]);
+  });
+
+  test("an audit finding on a listed version joins that dependency's advisories", async () => {
+    const r = row({
+      listed: [dep("a", "1.0.0")],
+      audit: async () => ({
+        ok: true,
+        value: [{ package: "a", version: "1.0.0", advisory: unfixed }],
+      }),
+    });
+    const result = await runNativeSecuritySource([{ row: r, manifest }], {
+      ...clients({}, { "a@1.0.0": [high] }),
+      log: () => {},
+    });
+    expect(result.ok && result.candidates.map((c) => [c.package, c.target, c.advisories])).toEqual([
+      ["a", "1.0.5", [high, unfixed]],
+    ]);
   });
 });

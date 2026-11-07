@@ -9,12 +9,20 @@ import {
   MIN_SEVERITY_DEFAULT,
   type MaturityPolicy,
 } from "../dependencies/policy.ts";
-import { AGENT_SOURCE_NAME } from "../dependencies/sources/agent.ts";
-import { NATIVE_SOURCE_NAME } from "../dependencies/sources/native.ts";
-import { RENOVATE_SOURCE_NAME } from "../dependencies/sources/renovate.ts";
+import {
+  everyPeriod,
+  fail,
+  isRecord,
+  nonEmptyString,
+  nonNegativeInteger,
+  oneOf,
+  onlyKeys,
+  sources,
+} from "../dependencies/options.ts";
+import { SOURCE_NAMES, type SourceName } from "../dependencies/sources/assemble.ts";
 
-export const SOURCE_NAMES = [NATIVE_SOURCE_NAME, AGENT_SOURCE_NAME, RENOVATE_SOURCE_NAME] as const;
-export type SourceName = (typeof SOURCE_NAMES)[number];
+export { everyMs, EVERY_RE } from "../dependencies/options.ts";
+export { SOURCE_NAMES, type SourceName };
 
 export type DependencyUpdatesOptions = {
   /** How long a scan's results stand before the next: `1d`, `12h`. */
@@ -68,78 +76,6 @@ const OPTION_KEYS: readonly (keyof DependencyUpdatesOptions)[] = [
   "label",
   "prConcurrentLimit",
 ];
-
-/** A count and one of s/m/h/d/w. */
-export const EVERY_RE = /^(\d+)([smhdw])$/;
-
-const UNIT_MS: Record<string, number> = {
-  s: 1_000,
-  m: 60_000,
-  h: 3_600_000,
-  d: 86_400_000,
-  w: 604_800_000,
-};
-
-/** `every` in milliseconds. The value has been validated. */
-export function everyMs(every: string): number {
-  const match = EVERY_RE.exec(every)!;
-  return Number(match[1]) * UNIT_MS[match[2]!]!;
-}
-
-function fail(at: string, problem: string): never {
-  throw new Error(`${at}: ${problem}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function onlyKeys(at: string, block: Record<string, unknown>, keys: readonly string[]): void {
-  for (const key of Object.keys(block)) {
-    if (!keys.includes(key)) {
-      fail(at, `unknown option \`${key}\`. Expected one of: ${keys.join(", ")}.`);
-    }
-  }
-}
-
-function nonEmptyString(at: string, key: string, value: unknown): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    fail(at, `\`${key}\` must be a non-empty string — got ${JSON.stringify(value)}.`);
-  }
-  return value;
-}
-
-function oneOf<T extends string>(
-  at: string,
-  key: string,
-  value: unknown,
-  allowed: readonly T[],
-): T {
-  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
-    fail(at, `\`${key}\` must be one of ${allowed.join(", ")} — got ${JSON.stringify(value)}.`);
-  }
-  return value as T;
-}
-
-function nonNegativeInteger(at: string, key: string, value: unknown): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    fail(at, `\`${key}\` must be a non-negative integer — got ${JSON.stringify(value)}.`);
-  }
-  return value;
-}
-
-function sources(at: string, value: unknown): readonly SourceName[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    fail(at, `\`sources\` must be a non-empty array of ${SOURCE_NAMES.join(", ")}.`);
-  }
-  const seen = new Set<SourceName>();
-  for (const name of value) {
-    const source = oneOf(at, "sources[]", name, SOURCE_NAMES);
-    if (seen.has(source)) fail(at, `\`sources\` lists ${source} twice.`);
-    seen.add(source);
-  }
-  return [...seen];
-}
 
 function ignore(at: string, value: unknown): readonly string[] {
   if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
@@ -227,13 +163,8 @@ export function resolveDependencyUpdatesOptions(
   if (!isRecord(raw)) fail(at, "the dependency-updates kind's options must be an object.");
   onlyKeys(at, raw, OPTION_KEYS);
 
-  const every = raw["every"] ?? defaults.every;
-  if (typeof every !== "string" || !EVERY_RE.test(every) || everyMs(every) === 0) {
-    fail(at, `\`every\` must be a period like "1d" or "12h" — got ${JSON.stringify(every)}.`);
-  }
-
   return {
-    every,
+    every: everyPeriod(at, raw["every"] ?? defaults.every),
     sources: raw["sources"] === undefined ? defaults.sources : sources(at, raw["sources"]),
     ignore: raw["ignore"] === undefined ? defaults.ignore : ignore(at, raw["ignore"]),
     maturity: raw["maturity"] === undefined ? defaults.maturity : maturity(at, raw["maturity"]),
