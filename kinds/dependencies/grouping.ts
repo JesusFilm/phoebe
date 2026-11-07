@@ -34,7 +34,8 @@ export type Bundle = {
   candidates: readonly Candidate[];
 };
 
-function patternRegExp(pattern: string): RegExp {
+/** A package-name pattern as a whole-name RegExp: `*` matches any run, the rest is literal. */
+export function patternRegExp(pattern: string): RegExp {
   const literal = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"));
   return new RegExp(`^${literal.join(".*")}$`);
 }

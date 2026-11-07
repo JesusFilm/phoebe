@@ -1349,6 +1349,23 @@ describe("updatePrBody", () => {
   });
 });
 
+describe("updateIssueBody", () => {
+  test("pipes the new body through stdin", () => {
+    const { github, calls } = clientWith([""]);
+    github.updateIssueBody(42, "| table |\n");
+    expect(calls[0]!.args).toEqual([
+      "issue",
+      "edit",
+      "42",
+      "--body-file",
+      "-",
+      "-R",
+      "acme/widget",
+    ]);
+    expect(calls[0]!.input).toBe("| table |\n");
+  });
+});
+
 describe("createGhExecutor", () => {
   const posix = test.skipIf(process.platform === "win32");
   const tempDirs: string[] = [];
@@ -1433,6 +1450,7 @@ describe("issue filing surface (sentry kind)", () => {
             state: "closed",
             state_reason: "completed",
             closed_at: "2026-09-01T00:00:00Z",
+            labels: [{ name: "sentry" }],
           },
           { number: 201, body: "pr", state: "open", pull_request: { url: "…" } },
         ],
@@ -1446,11 +1464,38 @@ describe("issue filing surface (sentry kind)", () => {
       state: "closed",
       stateReason: "completed",
       closedAt: "2026-09-01T00:00:00Z",
+      labels: ["sentry"],
     });
     expect(calls).toHaveLength(2);
     expect(calls[0]?.args[1]).toBe(
       `search/issues?q=${encodeURIComponent('repo:acme/widget "phoebe-sentry" in:body is:issue')}&per_page=100&page=1&sort=created&order=desc`,
     );
     expect(calls[1]?.args[1]).toContain("page=2");
+  });
+
+  test("listPrsMentioning searches PRs in every state and reads merged from merged_at", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify({
+        items: [
+          {
+            number: 7,
+            body: "m",
+            state: "closed",
+            pull_request: { merged_at: "2026-09-02T00:00:00Z" },
+          },
+          { number: 8, body: null, state: "closed", pull_request: { merged_at: null } },
+          { number: 9, body: "o", state: "open", pull_request: {} },
+          { number: 10, body: "issue", state: "open" },
+        ],
+      }),
+    ]);
+    expect(github.listPrsMentioning("phoebe-dependencies")).toEqual([
+      { number: 7, body: "m", state: "closed", merged: true },
+      { number: 8, body: "", state: "closed", merged: false },
+      { number: 9, body: "o", state: "open", merged: false },
+    ]);
+    expect(calls[0]?.args[1]).toBe(
+      `search/issues?q=${encodeURIComponent('repo:acme/widget "phoebe-dependencies" in:body is:pr')}&per_page=100&page=1&sort=created&order=desc`,
+    );
   });
 });
