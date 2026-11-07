@@ -10,12 +10,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { nativeRows } from "./index.ts";
-import {
-  findProjects,
-  fixedFromPatched,
-  fixedFromVulnerable,
-  registryPackage,
-} from "./npm-family.ts";
+import { fixedFromPatched, fixedFromVulnerable } from "./common.ts";
+import { findProjects, registryPackage } from "./npm-family.ts";
 import { npmRow } from "./npm.ts";
 import { pnpmRow } from "./pnpm.ts";
 import { unionAdvisories, type Manifest, type Row, type RowDeps, type RunTool } from "./row.ts";

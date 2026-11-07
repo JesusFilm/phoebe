@@ -5,18 +5,15 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { dirOf, FindingSet, isRecord, parseJson } from "./common.ts";
 import {
   addNpmAuditReport,
   auditResult,
   declaresWorkspaces,
   detectProjects,
-  dirOf,
-  FindingSet,
-  isRecord,
   listDeclared,
   manifestIn,
   NPM_MANAGER,
-  parseJson,
   reportedError,
 } from "./npm-family.ts";
 import type { Manifest, Row, RowDeps } from "./row.ts";

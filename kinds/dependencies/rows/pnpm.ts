@@ -3,18 +3,14 @@
 // the lockfile, so the read-only checkout needs no install.
 
 import { join } from "node:path";
+import { checkoutPath, dirOf, FindingSet, isRecord, parseJson } from "./common.ts";
 import {
   addNpmAdvisory,
   auditResult,
-  checkoutPath,
   detectProjects,
-  dirOf,
-  FindingSet,
-  isRecord,
   listDeclared,
   manifestIn,
   NPM_MANAGER,
-  parseJson,
   reportedError,
 } from "./npm-family.ts";
 import type { Manifest, Row, RowDeps, RowResult } from "./row.ts";

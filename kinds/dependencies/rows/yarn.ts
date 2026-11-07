@@ -9,19 +9,16 @@
 // descriptor and resolved locator, and every locator's version.
 
 import { join } from "node:path";
+import { dirOf, FindingSet, isRecord, parseJson } from "./common.ts";
 import {
   addNpmAdvisory,
   addYarnAuditRecord,
   auditResult,
   declaresWorkspaces,
   detectProjects,
-  dirOf,
-  FindingSet,
-  isRecord,
   listDeclared,
   manifestIn,
   NPM_MANAGER,
-  parseJson,
   parseJsonLines,
   type WorkspaceRef,
 } from "./npm-family.ts";

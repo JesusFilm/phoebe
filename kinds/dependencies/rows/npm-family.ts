@@ -9,11 +9,23 @@
 // output shapes, normalised here to the candidate's advisory with its GHSA id,
 // the id OSV reports these advisories under, so the two union by id.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-import { SEVERITIES, type Advisory, type DepType, type Severity } from "../candidate.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { SEVERITIES, type DepType, type Severity } from "../candidate.ts";
 import { UNRATED_SEVERITY } from "../registry/osv.ts";
-import { compareVersions } from "../registry/versions.ts";
+import {
+  detectRoots,
+  findDirs,
+  fileIn,
+  FindingSet,
+  fixedFromPatched,
+  fixedFromVulnerable,
+  inRange,
+  isRecord,
+  logUnresolved,
+  str,
+  type Json,
+} from "./common.ts";
 import type {
   AuditFinding,
   ListedDependency,
@@ -46,31 +58,9 @@ const SECTIONS: readonly (readonly [string, DepType])[] = [
 /** A version a registry serves, as opposed to `link:../..` or a git ref. */
 const VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?$/;
 
-type Json = Record<string, unknown>;
-
-export function isRecord(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function toPosix(path: string): string {
-  return path.split(sep).join("/");
-}
-
-/** A path under the checkout as the contract writes it: relative, with `/`. */
-export function checkoutPath(checkout: string, absolute: string): string | null {
-  const rel = toPosix(relative(checkout, absolute));
-  return rel.startsWith("..") ? null : rel;
-}
-
 /** `dir/package.json`, or `package.json` for the checkout's own root. */
 export function manifestIn(dir: string): string {
-  return dir === "" || dir === "." ? "package.json" : `${dir}/package.json`;
-}
-
-/** The directory a manifest path names, `""` for the root. */
-export function dirOf(manifestPath: string): string {
-  const slash = manifestPath.lastIndexOf("/");
-  return slash < 0 ? "" : manifestPath.slice(0, slash);
+  return fileIn(dir, "package.json");
 }
 
 function readJson(path: string): Json | null {
@@ -99,24 +89,7 @@ function managerOf(dir: string): NpmManager | null {
  * directories are not searched.
  */
 export function findProjects(checkout: string, manager: NpmManager): string[] {
-  const found: string[] = [];
-  const walk = (dir: string): void => {
-    if (managerOf(dir) === manager) found.push(toPosix(relative(checkout, dir)));
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name === "node_modules" || entry.name.startsWith(".")) {
-        continue;
-      }
-      walk(join(dir, entry.name));
-    }
-  };
-  walk(checkout);
-  return found.sort();
+  return findDirs(checkout, (dir) => managerOf(dir) === manager);
 }
 
 /** Whether a project's manifest declares workspaces, as npm and yarn read it. */
@@ -217,27 +190,8 @@ export function listDeclared(
       });
     }
   }
-  if (unresolved.length > 0) {
-    log(
-      `${rowName} row: ${unresolved.length} declared dependenc${unresolved.length === 1 ? "y" : "ies"} ` +
-        `with no resolved version under ${manifest.path} (${unresolved.slice(0, 3).join(", ")}` +
-        `${unresolved.length > 3 ? ", …" : ""}).`,
-    );
-  }
+  logUnresolved(log, rowName, manifest.path, unresolved);
   return { ok: true, value: listed };
-}
-
-/** A JSON document, or why the tool's output is not one. */
-export function parseJson(output: ToolOutput, what: string): RowResult<unknown> {
-  if (!output.ok) return { ok: false, problem: output.problem };
-  try {
-    return { ok: true, value: JSON.parse(output.stdout) as unknown };
-  } catch (error) {
-    return {
-      ok: false,
-      problem: `${what} is not JSON (${error instanceof Error ? error.message : String(error)})`,
-    };
-  }
 }
 
 /** One JSON value per line, as yarn prints. Lines that are not JSON are skipped. */
@@ -264,55 +218,21 @@ export function reportedError(value: unknown): string | null {
   return [code, message].filter(Boolean).join(": ") || "an error with no message";
 }
 
-type Unavailable = { missing: boolean; problem: string };
-
 /**
  * The detect every npm-family row runs: find the manager's projects, check its
- * tool runs in each, and ask for each project's workspace packages. A tool
- * that will not run claims nothing and is logged once for the whole checkout,
- * so its manifests go to the agent fallback.
+ * tool runs in each, and ask for each project's workspace packages.
  */
-export async function detectProjects(
+export function detectProjects(
   deps: RowDeps,
   manager: NpmManager,
   checkout: string,
   workspacesOf: (root: string, version: string) => Promise<RowResult<string[]>>,
 ): Promise<Manifest[]> {
-  const roots = findProjects(checkout, manager);
-  const manifests: Manifest[] = [];
-  const unavailable: Unavailable[] = [];
-  const failed: string[] = [];
-  for (const root of roots) {
-    const version = await deps.run(manager, ["--version"], join(checkout, root));
-    if (!version.ok) {
-      unavailable.push(version);
-      // Missing is missing everywhere; a pinned version that will not fetch is per project.
-      if (version.missing) break;
-      continue;
-    }
-    const workspaces = await workspacesOf(root, version.stdout.trim());
-    if (!workspaces.ok) {
-      failed.push(`${manifestIn(root)}: ${workspaces.problem}`);
-      continue;
-    }
-    const path = manifestIn(root);
-    const rest = workspaces.value.filter((w) => w !== path).sort();
-    manifests.push({ checkout, path, workspaces: [path, ...new Set(rest)] });
-  }
-  if (unavailable.length > 0) {
-    const missing = unavailable.find((u) => u.missing);
-    const left = roots.length - manifests.length - failed.length;
-    deps.log(
-      `${manager} row: ${missing?.problem ?? unavailable[0]!.problem}; ` +
-        `${left} project(s) left to the agent fallback.`,
-    );
-  }
-  for (const line of failed) {
-    deps.log(
-      `${manager} row: could not read the workspaces of ${line}; left to the agent fallback.`,
-    );
-  }
-  return manifests;
+  return detectRoots(deps, manager, checkout, findProjects(checkout, manager), {
+    manifest: "package.json",
+    probe: (root) => deps.run(manager, ["--version"], join(checkout, root)),
+    workspacesOf,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -333,76 +253,6 @@ function severity(value: unknown): Severity {
   const word = value.toLowerCase();
   if (word === "info") return "low";
   return (SEVERITIES as readonly string[]).includes(word) ? (word as Severity) : UNRATED_SEVERITY;
-}
-
-type Comparator = { op: string; version: string };
-
-const COMPARATOR_RE = /(<=|>=|<|>|=)?\s*v?(\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z.-]+)?)/g;
-
-function alternatives(range: string): Comparator[][] {
-  return range
-    .split("||")
-    .map((alt) =>
-      [...alt.matchAll(COMPARATOR_RE)].map((m) => ({ op: m[1] ?? "=", version: m[2]! })),
-    )
-    .filter((alt) => alt.length > 0);
-}
-
-function satisfies(alt: readonly Comparator[], version: string): boolean {
-  return alt.every(({ op, version: bound }) => {
-    const order = compareVersions("semver", version, bound);
-    if (op === "<") return order < 0;
-    if (op === "<=") return order <= 0;
-    if (op === ">") return order > 0;
-    if (op === ">=") return order >= 0;
-    return order === 0;
-  });
-}
-
-/** Whether a version is in a range, or null for a range this cannot read. */
-export function inRange(range: string, version: string): boolean | null {
-  const alts = alternatives(range);
-  return alts.length === 0 ? null : alts.some((alt) => satisfies(alt, version));
-}
-
-/**
- * The first fixed version from a vulnerable range: the exclusive upper bound
- * of the part the installed version falls in. `<=` names the last vulnerable
- * version and no fix, which is how GitHub writes an advisory with none.
- */
-export function fixedFromVulnerable(range: string, version: string): string | null {
-  const alt = alternatives(range).find((a) => satisfies(a, version));
-  return alt?.find((c) => c.op === "<")?.version ?? null;
-}
-
-/** The first fixed version from a patched range: its lowest lower bound past the installed one. */
-export function fixedFromPatched(range: string, version: string): string | null {
-  const bounds = alternatives(range)
-    .flatMap((alt) => alt.filter((c) => c.op === ">=" || c.op === "="))
-    .map((c) => c.version)
-    .filter((bound) => compareVersions("semver", bound, version) > 0)
-    .sort((a, b) => compareVersions("semver", a, b));
-  return bounds[0] ?? null;
-}
-
-function str(record: Json, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-/** Findings, one per package, version and advisory id, in the order first seen. */
-export class FindingSet {
-  private readonly byKey = new Map<string, AuditFinding>();
-  dropped = 0;
-
-  add(pkg: string, version: string, advisory: Advisory): void {
-    const key = JSON.stringify([pkg, version, advisory.id]);
-    if (!this.byKey.has(key)) this.byKey.set(key, { package: pkg, version, advisory });
-  }
-
-  get findings(): AuditFinding[] {
-    return [...this.byKey.values()];
-  }
 }
 
 /**
