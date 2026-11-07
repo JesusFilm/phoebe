@@ -368,16 +368,24 @@ export async function runNativeSecuritySource(
     const direct = new Set(
       listed.map((l) => versionKey(l.dependency.package, l.dependency.current)),
     );
-    const transitive = new Map<string, AuditFinding[]>();
+    const grouped = new Map<string, AuditFinding[]>();
     for (const finding of findings) {
       const key = versionKey(finding.package, finding.version);
-      if (!direct.has(key)) transitive.set(key, [...(transitive.get(key) ?? []), finding]);
+      grouped.set(key, [...(grouped.get(key) ?? []), finding]);
     }
-    for (const group of transitive.values()) {
+    for (const [key, group] of grouped) {
       const { package: pkg, version } = group[0]!;
       const advisories = unionAdvisories(group.map((f) => [f.advisory]));
       const ancestors = new Set(group.flatMap((f) => f.ancestors ?? []));
-      const parents = listed.filter((l) => ancestors.has(l.dependency.package));
+      const declaring = new Set(
+        listed
+          .filter((l) => versionKey(l.dependency.package, l.dependency.current) === key)
+          .map((l) => l.dependency.workspace),
+      );
+      const parents = listed.filter(
+        (l) => ancestors.has(l.dependency.package) && !declaring.has(l.dependency.workspace),
+      );
+      if (direct.has(key) && parents.length === 0) continue;
       if (parents.length === 0) {
         const workspace = project.manifest.path;
         const occurrence = { package: pkg, current: version, depType: "prod" as const, workspace };

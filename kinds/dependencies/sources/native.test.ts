@@ -292,6 +292,24 @@ describe("runNativeSecuritySource", () => {
     ]);
   });
 
+  test("a version one workspace declares directly stays transitive for a workspace reaching it through a parent", async () => {
+    const r = row({
+      listed: [dep("qs", "6.5.2"), dep("express", "4.0.0", { workspace: "web/package.json" })],
+      audit: async () => ({
+        ok: true,
+        value: [{ package: "qs", version: "6.5.2", advisory: high, ancestors: ["express"] }],
+      }),
+    });
+    const result = await runNativeSecuritySource([{ row: r, manifest }], {
+      ...clients({}, { "qs@6.5.2": [high] }),
+      log: () => {},
+    });
+    expect(result.ok && result.candidates.map((c) => [c.package, c.workspace, c.via])).toEqual([
+      ["qs", "package.json", []],
+      ["qs", "web/package.json", ["express"]],
+    ]);
+  });
+
   test("an audit finding on a listed version joins that dependency's advisories", async () => {
     const r = row({
       listed: [dep("a", "1.0.0")],
