@@ -48,6 +48,13 @@ export type AuditFinding = {
   package: string;
   version: string;
   advisory: Advisory;
+  /**
+   * The packages on the audit's paths from the project down to this one, when
+   * the audit reports paths. They may include the project's own name or
+   * workspace ids; the native source keeps those the project lists as direct
+   * dependencies.
+   */
+  ancestors?: readonly string[];
 };
 
 export type RowResult<T> = { ok: true; value: T } | { ok: false; problem: string };

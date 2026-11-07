@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { nativeRows } from "./index.ts";
-import { fixedFromPatched, fixedFromVulnerable } from "./common.ts";
-import { findProjects, registryPackage } from "./npm-family.ts";
+import { FindingSet, fixedFromPatched, fixedFromVulnerable } from "./common.ts";
+import { addNpmAuditReport, findProjects, registryPackage } from "./npm-family.ts";
 import { npmRow } from "./npm.ts";
 import { pnpmRow } from "./pnpm.ts";
 import { unionAdvisories, type Manifest, type Row, type RowDeps, type RunTool } from "./row.ts";
@@ -69,7 +69,16 @@ async function listed(row: Row, manifest: Manifest) {
   return result.value;
 }
 
+/** The audit's findings without their ancestors, which the tests below check on their own. */
 async function audited(row: Row, manifest: Manifest) {
+  return (await auditedWithPaths(row, manifest)).map(({ package: pkg, version, advisory }) => ({
+    package: pkg,
+    version,
+    advisory,
+  }));
+}
+
+async function auditedWithPaths(row: Row, manifest: Manifest) {
   const result = await row.audit!(manifest);
   if (!result.ok) throw new Error(result.problem);
   return result.value;
@@ -148,6 +157,17 @@ describe("pnpm row", () => {
     expect(minimatch.map((f) => f.version).sort()).toEqual(["10.2.6", "9.0.9"]);
   });
 
+  test("a finding names the packages on its paths, importer included", async () => {
+    const { checkout, deps } = replay("pnpm-workspace");
+    const row = pnpmRow(deps);
+    const findings = await auditedWithPaths(row, await detectOne(row, checkout));
+    const jsYaml = findings.find((f) => f.package === "js-yaml");
+    expect(jsYaml?.ancestors).toEqual(
+      expect.arrayContaining(["apps__desktop", "electron-updater", "electron-builder"]),
+    );
+    expect(jsYaml?.ancestors).not.toContain("js-yaml");
+  });
+
   test("lists a project without workspaces", async () => {
     const { checkout, deps, calls } = replay("pnpm-single");
     const row = pnpmRow(deps);
@@ -195,6 +215,33 @@ describe("npm row", () => {
       advisory: { id: "GHSA-r5fr-rjxr-66jc", severity: "high", fixedIn: null },
     });
     expect(findings.map((f) => f.version)).not.toContain("4.18.1");
+  });
+
+  test("a vulnerable package's ancestors are its effects, followed up to the direct dependency", async () => {
+    const set = new FindingSet();
+    const advisory = (name: string) => ({
+      name,
+      url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc",
+      severity: "high",
+      range: "<6.5.3",
+    });
+    addNpmAuditReport(
+      set,
+      {
+        qs: { name: "qs", via: [advisory("qs")], effects: ["body-parser"], nodes: ["n/qs"] },
+        "body-parser": { name: "body-parser", via: ["qs"], effects: ["express"], nodes: [] },
+        express: { name: "express", isDirect: true, via: ["body-parser"], effects: [], nodes: [] },
+      },
+      { "n/qs": { version: "6.5.2" } },
+    );
+    expect(set.findings).toEqual([
+      {
+        package: "qs",
+        version: "6.5.2",
+        advisory: { id: "GHSA-aaaa-bbbb-cccc", severity: "high", fixedIn: "6.5.3" },
+        ancestors: ["body-parser", "express"],
+      },
+    ]);
   });
 
   test("lists a project without workspaces, never asking for any", async () => {

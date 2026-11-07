@@ -147,6 +147,19 @@ describe("renderIssueBody", () => {
     expect(body).toContain("fixed in 1.0.1&lt;i&gt;");
   });
 
+  test("a bracket in an advisory id cannot close its link text", () => {
+    const body = renderIssueBody({
+      manager: "npm",
+      group: "all",
+      candidates: [
+        candidate("left-pad", {
+          advisories: [{ id: "GHSA-1]x[2", severity: "high", fixedIn: null }],
+        }),
+      ],
+    });
+    expect(body).toContain("- [GHSA-1\\]x\\[2](https://osv.dev/vulnerability/GHSA-1%5Dx%5B2)");
+  });
+
   test("a backtick in a name cannot close its code span", () => {
     const body = renderIssueBody({
       manager: "pip_requirements",

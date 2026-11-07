@@ -180,9 +180,15 @@ export class FindingSet {
   private readonly byKey = new Map<string, AuditFinding>();
   dropped = 0;
 
-  add(pkg: string, version: string, advisory: Advisory): void {
+  /** Record a finding; the same one added twice keeps the first advisory and every ancestor. */
+  add(pkg: string, version: string, advisory: Advisory, ancestors?: readonly string[]): void {
     const key = JSON.stringify([pkg, version, advisory.id]);
-    if (!this.byKey.has(key)) this.byKey.set(key, { package: pkg, version, advisory });
+    const seen = this.byKey.get(key);
+    const finding: AuditFinding = seen ?? { package: pkg, version, advisory };
+    if (ancestors !== undefined) {
+      finding.ancestors = [...new Set([...(finding.ancestors ?? []), ...ancestors])];
+    }
+    if (seen === undefined) this.byKey.set(key, finding);
   }
 
   get findings(): AuditFinding[] {

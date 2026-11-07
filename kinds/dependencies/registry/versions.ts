@@ -112,3 +112,8 @@ export function compareVersions(scheme: VersionScheme, a: string, b: string): nu
     (scheme === "pep440" ? comparePep440(v, v) : compareSemver(v, v)) !== null;
   return Number(readable(a)) - Number(readable(b)) || byText(a, b);
 }
+
+/** The scheme a candidate's manager versions by: PEP 440 for the Python managers, SemVer for the rest. */
+export function managerScheme(manager: string): VersionScheme {
+  return /^(?:pip|pep|poetry|pipenv|setup|pdm|uv|hatch)/.test(manager) ? "pep440" : "semver";
+}
