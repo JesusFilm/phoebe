@@ -43,6 +43,13 @@ export type Candidate = {
   peers: readonly string[];
   /** The package's source repository, read by `by-relation` grouping. */
   repositoryUrl?: string;
+  /**
+   * The direct dependencies the package is reached through: empty for a
+   * direct dependency, absent when the source cannot say. Native rows fill it
+   * from the listing and the audit's paths; Renovate never reports a
+   * transitive package, so its candidates leave it out.
+   */
+  via?: readonly string[];
 };
 
 /** Code-unit order, so the same input sorts the same under any locale. */
@@ -65,7 +72,7 @@ function uniqueSorted(values: Iterable<string>): string[] {
 
 /**
  * The first record wins every scalar it has; a later record only fills what
- * the first left out. Advisories union by id and peers union by name.
+ * the first left out. Advisories union by id, and peers and `via` by name.
  */
 function merge(a: Candidate, b: Candidate): Candidate {
   const advisories = new Map(a.advisories.map((advisory) => [advisory.id, advisory]));
@@ -81,6 +88,9 @@ function merge(a: Candidate, b: Candidate): Candidate {
   if (publishedAt !== undefined) merged.publishedAt = publishedAt;
   const repositoryUrl = a.repositoryUrl ?? b.repositoryUrl;
   if (repositoryUrl !== undefined) merged.repositoryUrl = repositoryUrl;
+  if (a.via !== undefined || b.via !== undefined) {
+    merged.via = uniqueSorted([...(a.via ?? []), ...(b.via ?? [])]);
+  }
   return merged;
 }
 

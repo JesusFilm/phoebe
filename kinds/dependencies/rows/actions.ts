@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { compareCandidates, type Advisory, type Candidate, type UpdateType } from "../candidate.ts";
 import type { OsvClient, OsvQuery } from "../registry/osv.ts";
 import { compareVersions } from "../registry/versions.ts";
-import { isRecord, parseJsonLines } from "./npm-family.ts";
+import { isRecord } from "./common.ts";
+import { parseJsonLines } from "./npm-family.ts";
 import type { CandidateRow, Manifest, RowDeps, RowResult } from "./row.ts";
 
 /** Renovate's manager for workflow files. */

@@ -73,6 +73,18 @@ describe("unionCandidates", () => {
     expect(merged!.peers).toEqual(["react", "react-dom"]);
   });
 
+  test("via unions by name, and stays absent when no source says", () => {
+    const [merged] = unionCandidates([
+      [candidate({ via: ["express"] })],
+      [candidate({ via: ["body-parser", "express"] })],
+    ]);
+    expect(merged!.via).toEqual(["body-parser", "express"]);
+    const [direct] = unionCandidates([[candidate({ via: [] })], [candidate()]]);
+    expect(direct!.via).toEqual([]);
+    const [unknown] = unionCandidates([[candidate()], [candidate()]]);
+    expect(unknown).not.toHaveProperty("via");
+  });
+
   test("the earlier source wins a conflicting publish date", () => {
     const [merged] = unionCandidates([
       [candidate({ publishedAt: "2025-09-30T00:00:00Z" })],

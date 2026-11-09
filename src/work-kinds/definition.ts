@@ -294,12 +294,15 @@ export type AgentHelpers = {
    * Spawn one agent child: select the provider for this kind, render the
    * prompt (`promptFile` defaults to the definition's), build the allowlisted
    * env, and run inside `worktreeDir` (defaults to the prepared workspace).
-   * `promptArgs` merge over the standard config-derived set.
+   * `promptArgs` merge over the standard config-derived set. `signal` kills
+   * the child early as well as at the run deadline, for a kind that bounds one
+   * agent call inside its `run` more tightly than the whole unit.
    */
   run(opts?: {
     worktreeDir?: string;
     promptFile?: string;
     promptArgs?: Record<string, string>;
+    signal?: AbortSignal;
   }): Promise<void>;
   /**
    * The PR-fix skeleton (the three janitors' shared shape): snapshot origin,

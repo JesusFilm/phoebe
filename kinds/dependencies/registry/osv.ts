@@ -161,7 +161,7 @@ export function cvss3BaseScore(vector: string): number | null {
   return roundUp(Math.min(total, 10));
 }
 
-function scoreSeverity(score: number): Severity {
+export function scoreSeverity(score: number): Severity {
   return score >= 9 ? "critical" : score >= 7 ? "high" : score >= 4 ? "moderate" : "low";
 }
 

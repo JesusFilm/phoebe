@@ -152,13 +152,21 @@ describe("fetch", () => {
     });
     const ctx = ctxWith({
       listIssuesMentioning: () => [
-        { number: 10, body: renderMarker("3"), state: "open", stateReason: null, closedAt: null },
+        {
+          number: 10,
+          body: renderMarker("3"),
+          state: "open",
+          stateReason: null,
+          closedAt: null,
+          labels: [],
+        },
         {
           number: 11,
           body: renderMarker("4"),
           state: "closed",
           stateReason: "completed",
           closedAt: "2026-09-11T12:00:00Z",
+          labels: [],
         },
         {
           number: 12,
@@ -166,8 +174,16 @@ describe("fetch", () => {
           state: "closed",
           stateReason: "not_planned",
           closedAt: "2026-09-01T00:00:00Z",
+          labels: [],
         },
-        { number: 13, body: "no marker at all", state: "open", stateReason: null, closedAt: null },
+        {
+          number: 13,
+          body: "no marker at all",
+          state: "open",
+          stateReason: null,
+          closedAt: null,
+          labels: [],
+        },
       ],
     });
     const gathered = await kind.fetch(ctx);

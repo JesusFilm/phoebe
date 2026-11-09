@@ -6,7 +6,7 @@ import { describe, expect, test } from "vite-plus/test";
 import type { Candidate } from "./candidate.ts";
 import { bundleKey, fingerprint, parseMarker } from "./fingerprint.ts";
 import type { Bundle } from "./grouping.ts";
-import { renderIssueBody } from "./issue-body.ts";
+import { renderIssueBody, renderIssueTitle } from "./issue-body.ts";
 
 function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -147,6 +147,19 @@ describe("renderIssueBody", () => {
     expect(body).toContain("fixed in 1.0.1&lt;i&gt;");
   });
 
+  test("a bracket in an advisory id cannot close its link text", () => {
+    const body = renderIssueBody({
+      manager: "npm",
+      group: "all",
+      candidates: [
+        candidate("left-pad", {
+          advisories: [{ id: "GHSA-1]x[2", severity: "high", fixedIn: null }],
+        }),
+      ],
+    });
+    expect(body).toContain("- [GHSA-1\\]x\\[2](https://osv.dev/vulnerability/GHSA-1%5Dx%5B2)");
+  });
+
   test("a backtick in a name cannot close its code span", () => {
     const body = renderIssueBody({
       manager: "pip_requirements",
@@ -162,5 +175,26 @@ describe("renderIssueBody", () => {
       candidates: [candidate("react", { current: "^17 || ^18" })],
     });
     expect(body).toContain("| ^17 \\|\\| ^18 |");
+  });
+});
+
+describe("renderIssueTitle", () => {
+  test("one package at one version is named; anything wider is counted", () => {
+    const one: Bundle = {
+      manager: "npm",
+      group: "package:react",
+      candidates: [candidate("react")],
+    };
+    expect(renderIssueTitle(one)).toBe("Update react to 18.3.1");
+    expect(renderIssueTitle(bundle)).toBe("Update 4 npm dependencies (relation:react)");
+  });
+
+  test("a line break a source supplied does not survive into the title", () => {
+    const odd: Bundle = {
+      manager: "npm",
+      group: "package:x",
+      candidates: [candidate("x\ny", { target: "2.0.0\r\n" })],
+    };
+    expect(renderIssueTitle(odd)).toBe("Update x y to 2.0.0 ");
   });
 });
