@@ -214,6 +214,14 @@ a {
   padding-left: 80px;
 }
 
+/* Linux can put the buttons at the start of the window instead. The overlay
+   reports where its usable area begins, so the brand starts there; with the
+   buttons at the end the value is 0 and nothing moves. */
+:root[data-platform="win32"] .rail-brand,
+:root[data-platform="linux"] .rail-brand {
+  padding-left: calc(14px + env(titlebar-area-x, 0px));
+}
+
 /* Windows and Linux draw minimise, maximise and close over the end of the route
    line. The overlay's own variables say where its buttons begin; where the
    renderer has none, a fixed width clears Windows' three. */
