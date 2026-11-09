@@ -102,6 +102,13 @@ import { CHECK_EVERY_MS, createCompanionUpdates, type UpdaterControls } from "./
 import { createDispatchVerb } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 import {
+  applicationMenuTemplate,
+  chromeShortcutFor,
+  titleBarOverlayFor,
+  windowChromeOptions,
+  type ChromeShortcut,
+} from "./window-chrome.ts";
+import {
   listWslDistros,
   WSL_PICKER_ROOT,
   wslEventSpawner,
@@ -435,6 +442,37 @@ const UNPACKAGED_UPDATER: UpdaterControls = {
   },
 };
 
+/** One of the menu's old keys, carried out on the window it was pressed in. */
+function runChromeShortcut(window: BrowserWindow, shortcut: ChromeShortcut): void {
+  const contents = window.webContents;
+  switch (shortcut) {
+    case "reload":
+      contents.reload();
+      return;
+    case "force-reload":
+      contents.reloadIgnoringCache();
+      return;
+    case "toggle-devtools":
+      contents.toggleDevTools();
+      return;
+    // The steps the stock menu's zoom roles take.
+    case "zoom-in":
+      contents.zoomLevel += 0.5;
+      return;
+    case "zoom-out":
+      contents.zoomLevel -= 0.5;
+      return;
+    case "reset-zoom":
+      contents.zoomLevel = 0;
+      return;
+    case "toggle-fullscreen":
+      window.setFullScreen(!window.isFullScreen());
+      return;
+    case "quit":
+      app.quit();
+  }
+}
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1180,
@@ -445,6 +483,8 @@ function createWindow(): void {
     // Painted before the bundle lands, so a dark-mode launch does not flash white.
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#14171c" : "#fafafa",
     title: "Phoebe",
+    // The console's top row is the titlebar (window-chrome.ts).
+    ...windowChromeOptions(process.platform, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: path.join(import.meta.dirname, "preload.cjs"),
       contextIsolation: true,
@@ -465,6 +505,14 @@ function createWindow(): void {
   // was waiting on its ladder tries now (#697).
   window.on("focus", () => remotes?.poke());
 
+  // With no menu on Windows and Linux, the keys it carried are caught here.
+  window.webContents.on("before-input-event", (event, input) => {
+    const shortcut = chromeShortcutFor(input, process.platform, !app.isPackaged);
+    if (shortcut === null) return;
+    event.preventDefault();
+    runChromeShortcut(window, shortcut);
+  });
+
   void window.loadURL(consoleSource(process.argv));
 }
 
@@ -481,6 +529,21 @@ app.whenReady().then(
     // A packaged macOS app has its icon in the bundle; a dev run has only
     // Electron's until this.
     if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(APP_ICON);
+
+    // No menu bar on Windows and Linux; a small one in the system bar on macOS
+    // (window-chrome.ts). Set before the window opens, so it never shows the
+    // stock one.
+    const menu = applicationMenuTemplate(process.platform, !app.isPackaged);
+    Menu.setApplicationMenu(menu === null ? null : Menu.buildFromTemplate(menu));
+
+    // The overlay's buttons follow the console from light to dark and back,
+    // as the console's own colours do. macOS draws its traffic lights itself.
+    if (process.platform !== "darwin") {
+      nativeTheme.on("updated", () => {
+        const overlay = titleBarOverlayFor(nativeTheme.shouldUseDarkColors);
+        for (const window of BrowserWindow.getAllWindows()) window.setTitleBarOverlay(overlay);
+      });
+    }
 
     protocol.handle(CONSOLE_SCHEME, async (request) => {
       const file = consoleFileFor(request.url, consoleBundleDir());
