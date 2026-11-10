@@ -573,8 +573,9 @@ the same blocks. What each kind does with these options is in
 [`work-kinds.md`](work-kinds.md#dependency-updates-file-dependency-tickets-opt-in).
 
 A separate pipeline is safe because a dependency ticket never wears
-`readyLabel`, so a pipeline running `issues` never reads one as its own. The
-stranded sweep tells the two apart by each kind's `unitLabel`
+`readyLabel`, so a pipeline running `issues` never reads one as its own. Keep
+`readyLabel` off the fixed `dependencies` label: the security kind rejects it,
+but `dependency-updates` alone does not. The stranded sweep tells the two apart by each kind's `unitLabel`
 ([`work-kinds.md` → The unit and its `ref`](work-kinds.md#the-unit-and-its-ref)).
 
 **Memory.** The `renovate` source needs a container memory limit of at least
