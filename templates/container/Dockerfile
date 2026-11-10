@@ -102,7 +102,7 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
 # copies itself out to PHOEBE_ENGINE_DIR (/data/engine, owned by us) before
 # running anything, because Node 24 refuses to type-strip TypeScript under a
 # `node_modules/` path segment.
-ARG PHOEBE_AGENT_VERSION=0.7.1
+ARG PHOEBE_AGENT_VERSION=0.16.0
 RUN npm install -g {{CLI_BIN}}@${PHOEBE_AGENT_VERSION}
 
 # Renovate from the build stage above, run by the image's own node. Like the
