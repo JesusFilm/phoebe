@@ -53,6 +53,11 @@ a text editor on a Sunday, the output has to be an issue that clears this bar:
   [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in) applies the
   label itself only where a tenant opted in with `applyReadyLabel`, and
   otherwise leaves a `triaged` label for a person to flip.
+  The dependency detectors follow the same rule: declaring
+  [`dependency-updates`](work-kinds.md#dependency-updates-file-dependency-tickets-opt-in)
+  or `dependency-security` is the standing decision that lets them apply the
+  `phoebe:dependencies` routing label, which the `dependencies` kind works in
+  place of the `readyLabel`.
 - **It is sized to one unit of work.** Phoebe works one issue start to finish in
   a single cycle, on one branch, in one worktree. An issue that is really five
   issues will come back as one confused pull request.

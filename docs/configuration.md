@@ -512,7 +512,8 @@ kinds: {
   declared. `path: "phoebe-agent/kinds/sentry"` resolves against the engine
   root, not the config's directory, and the block is otherwise an ordinary
   path block — knobs, options, env vars and all. The catalog today is
-  [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in).
+  [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in) and the
+  three [dependency kinds](#the-dependency-kinds).
 - **Options are the block's own root fields.** Everything beside `path` and
   the tuning knobs reaches the kind unvalidated as `ctx.options` (the kind
   validates); `path` and the knob names are reserved words a kind's options
@@ -542,6 +543,94 @@ kinds: {
 - **Editing a kind module requires a restart.** The reconcile watch
   fingerprints the config file only, so a module edit is invisible until the
   deployment restarts (a documented v1 limitation).
+
+### The dependency kinds
+
+Three catalog kinds make up the dependency bot
+([ADR 0003](adr/0003-dependency-updates-are-three-kinds-over-one-candidate-contract.md)).
+`dependency-updates` and `dependency-security` find what is outdated or
+vulnerable and file issues. `dependencies` works those issues and opens the PRs.
+Declare all three, usually on a pipeline of their own:
+
+```ts
+pipelines: {
+  dependencies: {
+    pollIntervalMs: 600_000,
+    kinds: {
+      "dependency-updates": { path: "phoebe-agent/kinds/dependency-updates" },
+      "dependency-security": { path: "phoebe-agent/kinds/dependency-security" },
+      dependencies: { path: "phoebe-agent/kinds/dependencies-work" },
+    },
+  },
+},
+```
+
+Every option has a default, so the blocks above are a working setup. Each kind
+validates its own block at registration and refuses an unknown option, so a
+typo fails the pipeline listing instead of sitting there doing nothing. The
+tuning knobs (`model`, `effort`, `runTimeoutMs`, `disabled` and the rest) go in
+the same blocks. What each kind does with these options is in
+[`work-kinds.md`](work-kinds.md#dependency-updates-file-dependency-tickets-opt-in).
+
+A separate pipeline is safe because a dependency ticket never wears
+`readyLabel`, so a pipeline running `issues` never reads one as its own. Keep
+`readyLabel` off the fixed `dependencies` label: the security kind rejects it,
+but `dependency-updates` alone does not. The stranded sweep tells the two apart by each kind's `unitLabel`
+([`work-kinds.md` → The unit and its `ref`](work-kinds.md#the-unit-and-its-ref)).
+
+**Memory.** The `renovate` source needs a container memory limit of at least
+4 GiB on a repo the size of `JesusFilm/core`. Renovate peaked near 3 GiB there.
+Under a 2 GiB limit it died without writing a report, and under 4 GiB it
+passed. No limit between the two was tested
+([the spike](research/renovate-extraction-spike.md#4-time-and-memory-on-jesusfilmcore)).
+The scaffolded `container/compose.yml` sets no limit. If you add one, keep it at
+4 GiB or more, or drop `renovate` from `sources`.
+
+#### `dependency-updates`
+
+`path: "phoebe-agent/kinds/dependency-updates"`
+
+| Option              | Default                               | Meaning                                                                                                                         |
+| ------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `every`             | `"1d"`                                | How long one scan's results stand: a count and one of `s`, `m`, `h`, `d`, `w`. Zero is refused.                                 |
+| `sources`           | `["native", "agent", "renovate"]`     | The sources to run, in order of trust; an earlier one wins a conflict. Non-empty, each named once.                              |
+| `ignore`            | `[]`                                  | Package names never proposed. `*` matches any run of characters.                                                                |
+| `maturity.patch`    | `3`                                   | Days a patch release ages before it is proposed.                                                                                |
+| `maturity.minor`    | `7`                                   | Days for a minor release.                                                                                                       |
+| `maturity.major`    | `14`                                  | Days for a major release.                                                                                                       |
+| `maturity.undated`  | `"propose"`                           | A release with no publish date: `"propose"` it at once, or `"hold"` it.                                                         |
+| `minSeverity`       | `"high"`                              | `low`, `moderate`, `high` or `critical`. The fix for an advisory under it skips the maturity wait. Match `dependency-security`. |
+| `grouping.strategy` | `{ prod: "by-relation", dev: "all" }` | `individual`, `all`, `by-dependency-type`, `by-workspace` or `by-relation`: one string for both sides, or `{ prod, dev }`.      |
+| `grouping.groups`   | `[]`                                  | `{ pattern, group }` overrides, checked before the strategy. The first match wins.                                              |
+| `majors`            | `"individual"`                        | `"individual"` files every major on its own; `"follow-strategy"` groups it like the rest.                                       |
+| `label`             | `"phoebe:dependencies"`               | The routing label. Must match the `dependencies` kind's `label` and must not be `readyLabel`.                                   |
+| `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once, issues and PRs together. `0` is no cap.                                                    |
+
+A partial `maturity` or `grouping.strategy` block keeps the defaults for the
+fields it leaves out.
+
+#### `dependency-security`
+
+`path: "phoebe-agent/kinds/dependency-security"`
+
+| Option        | Default                 | Meaning                                                                                                                                |
+| ------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`       | `"1h"`                  | How long one scan's results stand, in the same form as above.                                                                          |
+| `sources`     | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                                      |
+| `minSeverity` | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are left to `dependency-updates`.                                         |
+| `label`       | `"phoebe:dependencies"` | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`. |
+
+It has no `prConcurrentLimit`, so a copy of that field from the updates block
+is refused. A `readyLabel` of `dependencies` or `security` fails registration,
+because every security issue wears both.
+
+#### `dependencies`
+
+`path: "phoebe-agent/kinds/dependencies-work"`
+
+| Option  | Default                 | Meaning                                                                 |
+| ------- | ----------------------- | ----------------------------------------------------------------------- |
+| `label` | `"phoebe:dependencies"` | The label the detectors file under, and the only label this kind lists. |
 
 ## Prompt files
 

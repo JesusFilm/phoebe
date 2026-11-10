@@ -263,6 +263,30 @@ ended. Phoebe neither works nor repairs it; a person closes it or strips the lab
 re-route it. Reported by `phoebe doctor`.
 _Avoid_: stranded (that is a claim with no pull request), orphaned, abandoned, leftover
 
+### Dependencies
+
+**Candidate**:
+One proposed bump of one dependency occurrence: manager, package, current and target
+version, update type, publish date, dependency type, owning workspace package and
+advisories. Every source emits the same record, so policy, grouping and filing never know
+which source produced it.
+_Avoid_: update, upgrade, finding, PR (that is what working a bundle produces)
+
+**Source** (of candidates):
+One way a dependency detector finds candidates: `native`, `agent` or `renovate`. The
+detector unions their output. One failing source costs a log line; the scan fails, and files nothing, only when every configured source fails.
+_Avoid_: detector (that is the kind), datasource (that is Renovate's word), provider
+
+**Bundle**:
+The candidates one dependency issue proposes together, named by a bundle key that stays put
+while their versions move. Never spans two managers.
+_Avoid_: group (that is a grouping override's name), batch, PR
+
+**Fingerprint**:
+A hash of a bundle's package-version pairs and advisory ids, carried beside the bundle key
+in the issue's marker. A moved fingerprint refreshes the issue and lifts a person's veto.
+_Avoid_: hash, version key, checksum
+
 ### Running
 
 **Origin hub**:

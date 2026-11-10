@@ -165,7 +165,7 @@ Docs live under [`docs/`](docs/), in two groups.
 - [`docs/preparing-work.md`](docs/preparing-work.md), what an issue needs before Phoebe can work it, and the planning pipeline that produces one.
 - [`docs/ai-install.md`](docs/ai-install.md), a deterministic, agent-followable install runbook.
 - [`docs/configuration.md`](docs/configuration.md), full config-field reference and env overlay.
-- [`docs/work-kinds.md`](docs/work-kinds.md), issues / conflicts / checks / reviews / research mechanics, PR-scan scope, poll loop, and writing your own kind.
+- [`docs/work-kinds.md`](docs/work-kinds.md), issues / conflicts / checks / reviews / research mechanics, the catalog kinds (Sentry triage and the dependency bot), PR-scan scope, poll loop, and writing your own kind.
 - [`docs/operating.md`](docs/operating.md), controlling Phoebe as a human (labels, drafts, watermarks).
 - [`docs/feature-branches.md`](docs/feature-branches.md), the `phoebe:feature` arm for a group of tickets that only makes sense landed together.
 - [`docs/pipelines.md`](docs/pipelines.md), running more than one stream of work in a tenant: declaring pipelines, supervision, units in flight, and the intake example.

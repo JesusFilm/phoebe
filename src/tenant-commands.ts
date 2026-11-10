@@ -152,6 +152,11 @@ OPENAI_KEY=
 # Only for a tenant that declares the \`sentry\` catalog kind (docs/work-kinds.md).
 # A Sentry auth token with the \`event:read\` scope; the same name sentry-cli uses.
 # SENTRY_AUTH_TOKEN=
+
+# --- Dependency work kinds (optional, no credential) ---
+# The dependency-updates, dependency-security and dependencies catalog kinds
+# (docs/work-kinds.md) read deps.dev and OSV without a key and run Renovate
+# with no token, so they need nothing here. Tune them in phoebe.config.ts.
 `;
 
 /**

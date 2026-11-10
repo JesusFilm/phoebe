@@ -499,6 +499,12 @@ window lives in memory, so a restart scans again at once, and the marker below
 keeps that scan from filing anything twice. The scan stamps the window when it
 starts, so a scan that fails waits for the next window too.
 
+**The `renovate` source needs memory.** Give the container a limit of at least
+4 GiB on a repo the size of `JesusFilm/core`. Renovate peaked near 3 GiB there,
+a 2 GiB limit killed it with no report, and 4 GiB passed; nothing between was
+tested ([the spike](research/renovate-extraction-spike.md#4-time-and-memory-on-jesusfilmcore)).
+Below that, take `renovate` out of `sources`.
+
 **The sources run at once**, each under its own deadline: 15 minutes for
 `native`, 30 for `agent`, and 21 for `renovate`, a minute past Renovate's own.
 The native rows' detection runs first, because the agent is told which
@@ -671,7 +677,8 @@ option, so the stranded sweep re-arms a dead claim with this label. Selection,
 blockers, the processing-label claim and the worktree branch are the `issues`
 kind's. The kind never adds the tenant's `readyLabel`, on claim, failure or
 re-file. A pipeline running `issues` would treat a ticket wearing it as its
-own, and keeping it off is what makes a `deps` pipeline safe beside `work`.
+own, and keeping it off is what makes a `deps` pipeline safe beside `work`
+(see [`unitKey`](#the-unit-and-its-ref)).
 
 **The prompt** tells the agent to apply exactly the bumps the table lists,
 run install, check and test, and read the linked changelog to fix what fails.

@@ -51,6 +51,27 @@ const config: PhoebeUserConfig = {
   // knows (a noreply address is the usual answer), or the commits link to no
   // account at all.
   // gitIdentity: { name: "Phoebe", email: "12345+phoebe@users.noreply.github.com" },
+
+  // A dependency bot that finishes the upgrade (optional). Two detectors file
+  // one issue per bundle, and the `dependencies` kind works the ones labelled
+  // `phoebe:dependencies`: it bumps, fixes what breaks, and opens the PR. An
+  // advisory with no released fix gets a tracking issue without that label,
+  // which nothing works.
+  // Every option has a default; see docs/work-kinds.md → dependency-updates.
+  // Declaring the detectors is what applies the routing label, so treat it as
+  // the standing decision to let Phoebe work those tickets. They never wear your
+  // `readyLabel`. The Renovate source needs at least 4 GiB of memory on a large
+  // repo, so keep any container limit that high (container/compose.yml).
+  // pipelines: {
+  //   dependencies: {
+  //     pollIntervalMs: 600_000,
+  //     kinds: {
+  //       "dependency-updates": { path: "phoebe-agent/kinds/dependency-updates" },
+  //       "dependency-security": { path: "phoebe-agent/kinds/dependency-security" },
+  //       dependencies: { path: "phoebe-agent/kinds/dependencies-work" },
+  //     },
+  //   },
+  // },
 };
 
 export default config;
