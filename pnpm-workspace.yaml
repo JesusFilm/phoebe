@@ -11,6 +11,12 @@ packages:
 # silent flip of a default.
 nodeLinker: isolated
 
+# Security pin for GHSA-587h-7wmj-h5pm (#803). `vite` reaches the console only
+# as the auto-installed peer of `@tailwindcss/vite`, so no release of that
+# plugin can carry the fix; this lifts the vulnerable 8.x line to 8.1.6.
+overrides:
+  "vite@>=8.0.0 <8.1.6": 8.1.6
+
 # pnpm runs no dependency's install script unless it is named here. Electron's
 # postinstall fetches the platform binary the desktop app runs on, which is the
 # one build this repo allows. The agent container sets
