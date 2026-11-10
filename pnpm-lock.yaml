@@ -165,7 +165,7 @@ settings:
 overrides:
   js-yaml: ^4.3.2
   undici@6: 6.29.1
-  undici@7: 7.30.1
+  undici@7: 7.30.2
   vite@>=8.0.0 <8.1.6: 8.1.6
 
 importers:
@@ -2705,8 +2705,8 @@ packages:
     resolution: {integrity: sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==}
     engines: {node: '>=18.17'}
 
-  undici@7.30.1:
-    resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
+  undici@7.30.2:
+    resolution: {integrity: sha512-mLyPQnHwUxaM/rideoK/+KL8DaAJLRl4aBCfmX444aCSLnIaomqPLtNRe2jdCYcsk5wZzXrDIQC8ZeYNRAYyIA==}
     engines: {node: '>=20.18.1'}
 
   undici@8.12.4:
@@ -3130,7 +3130,7 @@ snapshots:
       semver: 7.8.5
       sumchecker: 3.0.1(supports-color@7.2.0)
     optionalDependencies:
-      undici: 7.30.1
+      undici: 7.30.2
     transitivePeerDependencies:
       - supports-color
 
@@ -5254,7 +5254,7 @@ snapshots:
 
   undici@6.29.1: {}
 
-  undici@7.30.1:
+  undici@7.30.2:
     optional: true
 
   undici@8.12.4: {}
