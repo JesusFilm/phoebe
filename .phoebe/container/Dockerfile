@@ -7,6 +7,16 @@
 # CLI — is NOT a permitted deviation, and `src/container-image.test.ts` asserts
 # the two files stay in step on all three.
 
+# Renovate, for the dependency kinds' Renovate source (ADR 0003). The same
+# pinned build stage as templates/container/Dockerfile; the note there says why
+# `re2` has to compile in the full image and what the `test -f` catches. Keep
+# the version equal to the template's: the engine's report parser is tested
+# against a report recorded from exactly that version.
+FROM node:26-bookworm AS renovate-build
+ARG RENOVATE_VERSION=44.210.0
+RUN npm install -g --allow-scripts=re2 "renovate@${RENOVATE_VERSION}" \
+ && test -f /usr/local/lib/node_modules/renovate/node_modules/re2/build/Release/re2.node
+
 FROM node:26-bookworm-slim
 
 # gh CLI + git + tini for signal handling; keep the layer small.
@@ -60,6 +70,12 @@ RUN npm install -g corepack@0.36.0 \
  && corepack enable \
  && mkdir -p /opt/corepack \
  && chown phoebe:phoebe /opt/corepack
+
+# Renovate from the build stage above, run by the image's own node. Root-owned
+# under /usr/local, which `phoebe` only reads. Identical to the template, and
+# asserted so in src/container-image.test.ts.
+COPY --from=renovate-build /usr/local/lib/node_modules/renovate /usr/local/lib/node_modules/renovate
+RUN ln -s ../lib/node_modules/renovate/dist/renovate.js /usr/local/bin/renovate
 
 # Provider agent CLI, pinned and checksum-verified rather than installed by
 # piping `https://cursor.com/install` into a shell — see the long note in
