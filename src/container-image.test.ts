@@ -199,6 +199,20 @@ describe("the two Dockerfiles stay in step", () => {
     expect(dogfood).toBe(scaffold);
   });
 
+  test("identical Renovate pin and install", () => {
+    // The dependency kinds spawn `renovate` by bare name, and the engine's
+    // report parser is tested against a report recorded from the pinned
+    // version. #779 added the build stage to the scaffold alone, and the
+    // dogfood's first scan lost its Renovate source to `spawn renovate ENOENT`.
+    const renovateLines = (source: string) =>
+      instructionsOnly(source)
+        .split("\n")
+        .filter((line) => /renovate/i.test(line));
+    const scaffold = renovateLines(read(SCAFFOLD_DOCKERFILE));
+    expect(scaffold.length).toBeGreaterThan(0);
+    expect(renovateLines(read(DOGFOOD_DOCKERFILE))).toEqual(scaffold);
+  });
+
   test("identical mint-drop directory", () => {
     // `phoebe pair` drops a pairing-code hash under /run/phoebe-mint and the
     // bootstrapper picks it up only from a root-owned file (ADR 0002). The
