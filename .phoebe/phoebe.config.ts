@@ -140,7 +140,43 @@ export const config = defineConfig({
   // pipeline alone refuses to start and `work` is untouched. See
   // docs/work-kinds.md → sentry.
   //
+  // Dogfood for the dependency kinds (ADR 0003, #764): the two detectors file
+  // bundles under `phoebe:dependencies` and the `dependencies` kind works them,
+  // all on a `dependencies` pipeline of their own. The poll only paces the
+  // implementer and the detectors' window checks; each detector's `every`
+  // (one day, one hour) is what spaces the scans. Sources stay at the kinds'
+  // defaults, as the Renovate spike concluded: native, agent and Renovate for
+  // updates, native and agent for security. A separate pipeline is safe because
+  // these tickets never wear `ready-for-agent`, so `work`'s `issues` kind never
+  // reads one as its own (docs/work-kinds.md → The unit and its `ref`).
+  //
+  // Hosted Renovate and renovate.json stay, and so does `renovate/` in the
+  // checks kind's `prScope` below: Phoebe does not run here all the time, and a
+  // bot that only runs sometimes does not replace one (ADR 0003, last
+  // consequence). The Renovate source needs a container limit of at least
+  // 4 GiB on a repo core's size; this one sets none.
+  //
   pipelines: {
+    dependencies: {
+      pollIntervalMs: 600_000,
+      kinds: {
+        // The agent fallback only covers manifests no native row claimed, which
+        // here is close to nothing, so a cheaper model is enough.
+        "dependency-updates": {
+          path: "phoebe-agent/kinds/dependency-updates",
+          model: "claude-sonnet-5-5",
+          effort: "medium",
+        },
+        "dependency-security": {
+          path: "phoebe-agent/kinds/dependency-security",
+          model: "claude-sonnet-5-5",
+          effort: "medium",
+        },
+        // The bump is specified, but a red test means reading a changelog and
+        // fixing code someone else's release broke: the `issues` kind's level.
+        dependencies: { path: "phoebe-agent/kinds/dependencies-work", effort: "high" },
+      },
+    },
     intake: {
       pollIntervalMs: 900_000,
       kinds: {
