@@ -11,6 +11,13 @@ packages:
 # silent flip of a default.
 nodeLinker: isolated
 
+# Security pins for undici reached only through the desktop app's dev tooling
+# (#802): node-gyp under electron-builder takes the 6.x line, @electron/get
+# under electron the 7.x line, and neither parent has a release that moves it.
+overrides:
+  "undici@6": 6.29.1
+  "undici@7": 7.30.1
+
 # pnpm runs no dependency's install script unless it is named here. Electron's
 # postinstall fetches the platform binary the desktop app runs on, which is the
 # one build this repo allows. The agent container sets
