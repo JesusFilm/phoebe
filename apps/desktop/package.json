@@ -15,7 +15,7 @@
     "build-icon": "node scripts/build-icon.mjs"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9",
+    "electron-updater": "^6.8.12",
     "phoebe-agent": "workspace:*"
   },
   "devDependencies": {
