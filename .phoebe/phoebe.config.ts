@@ -141,7 +141,9 @@ export const config = defineConfig({
   // docs/work-kinds.md → sentry.
   //
   // Dogfood for the dependency kinds (ADR 0003, #764): the two detectors file
-  // bundles under `phoebe:dependencies` and the `dependencies` kind works them,
+  // bundles and the `dependencies` kind works those labelled
+  // `phoebe:dependencies` (an advisory with no released fix is filed as an
+  // unlabelled tracking issue),
   // all on a `dependencies` pipeline of their own. The poll only paces the
   // implementer and the detectors' window checks; each detector's `every`
   // (one day, one hour) is what spaces the scans. Sources stay at the kinds'

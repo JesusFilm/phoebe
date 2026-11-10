@@ -274,7 +274,7 @@ _Avoid_: update, upgrade, finding, PR (that is what working a bundle produces)
 
 **Source** (of candidates):
 One way a dependency detector finds candidates: `native`, `agent` or `renovate`. The
-detector unions their output, and a source that fails costs a log line, not the scan.
+detector unions their output. One failing source costs a log line; the scan fails, and files nothing, only when every configured source fails.
 _Avoid_: detector (that is the kind), datasource (that is Renovate's word), provider
 
 **Bundle**:

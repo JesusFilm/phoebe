@@ -47,11 +47,13 @@ services:
     # unit may run up to the per-unit timeout (45 min by default); without this,
     # Compose's 10s default SIGKILLs mid-drain.
     stop_grace_period: 1h
-    # No memory limit is set here. If you add one and run the dependency kinds
-    # with their Renovate source, give the container at least 4 GiB on a repo
-    # the size of JesusFilm/core: Renovate peaks near 3 GiB there, a 2 GiB limit
-    # killed it before it wrote a report, and 4 GiB passed. Nothing between was
-    # tested (docs/research/renovate-extraction-spike.md).
+    # No memory limit is set here, and none is required. If you set one and run
+    # the dependency kinds with their Renovate source, keep it at 4 GiB or more
+    # on a repo the size of JesusFilm/core: Renovate peaks near 3 GiB there, a
+    # 2 GiB limit killed it before it wrote a report, and 4 GiB passed. Nothing
+    # between was tested (docs/research/renovate-extraction-spike.md). That is a
+    # single-scan measurement; allow more for overlapping scans and the
+    # container's other processes.
     # mem_limit: 4g
     environment:
       # Secrets — populate via `.env` (see `.env.example`). GH_TOKEN also
