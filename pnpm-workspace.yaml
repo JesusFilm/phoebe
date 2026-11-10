@@ -1,6 +1,3 @@
-# The repo is a workspace so apps can live beside the published package (#521).
-# `phoebe-agent` stays at the root and publishes exactly as it did before a
-# workspace existed — nothing here reaches the tarball.
 packages:
   - "."
   - "apps/*"
@@ -23,7 +20,7 @@ nodeLinker: isolated
 # @electron/get under electron the 7.x line, and neither parent has a release
 # that moves it.
 overrides:
-  js-yaml: ^4.3.2
+  js-yaml: ^5.0.0
   "undici@6": 6.29.1
   "undici@7": 7.30.1
 
