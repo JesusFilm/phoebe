@@ -479,7 +479,14 @@ describe("runStart with a `remote` block (map #690)", () => {
     ]);
     const outcome = await runStart({
       build: false,
-      deps: { cwd: "/deploy", dockerAvailable: true, exists, runner, waitMs: async () => {} },
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        dockerAvailable: true,
+        exists,
+        runner,
+        waitMs: async () => {},
+      },
     });
     expect(outcome).toEqual({ kind: "started" });
     const up = calls.find((c) => c.args.includes("up"))!;
@@ -505,6 +512,7 @@ describe("runStart with a `remote` block (map #690)", () => {
       build: true,
       deps: {
         cwd: "/deploy",
+        inContainer: false,
         dockerAvailable: true,
         exists,
         runner,
@@ -544,6 +552,7 @@ describe("runStart with a `remote` block (map #690)", () => {
       build: false,
       deps: {
         cwd: "/deploy",
+        inContainer: false,
         dockerAvailable: true,
         exists,
         runner,
@@ -589,6 +598,7 @@ describe("runStart with a `remote` block (map #690)", () => {
       build: false,
       deps: {
         cwd: "/deploy",
+        inContainer: false,
         dockerAvailable: true,
         exists,
         runner,
@@ -616,6 +626,7 @@ describe("runStart with a `remote` block (map #690)", () => {
       build: false,
       deps: {
         cwd: "/deploy",
+        inContainer: false,
         dockerAvailable: true,
         exists,
         runner,
@@ -649,6 +660,7 @@ describe("the env the host overlay reads", () => {
       build: false,
       deps: {
         cwd: "/deploy",
+        inContainer: false,
         dockerAvailable: true,
         exists: deploymentExists(false),
         runner,
