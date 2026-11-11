@@ -496,6 +496,7 @@ describe("runStop with a `remote` block (map #690)", () => {
       now: false,
       deps: {
         cwd: "/deploy",
+        inContainer: false,
         dockerAvailable: true,
         exists: deploymentExists(true),
         runner,
@@ -526,7 +527,13 @@ describe("runStop with a `remote` block (map #690)", () => {
     ]);
     await runStop({
       now: false,
-      deps: { cwd: "/deploy", dockerAvailable: true, exists: deploymentExists(false), runner },
+      deps: {
+        cwd: "/deploy",
+        inContainer: false,
+        dockerAvailable: true,
+        exists: deploymentExists(false),
+        runner,
+      },
     });
     expect(calls[0]!.args).toEqual([
       "compose",
