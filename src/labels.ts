@@ -1,10 +1,11 @@
-// The one path that writes a Phoebe-owned label onto an issue (#484). GitHub
-// rejects an `--add-label` for a label the repository has never seen, so every
-// write here is add-then-heal: try the add, and when the failure says the label
-// does not exist, create it with Phoebe's own colour and description and try
-// once more. A repo that has never heard of `processingLabel` or `mergedLabel`
-// therefore needs no setup — the first write that wants one makes it, and once
-// it exists no later write creates anything.
+// The one path that writes a Phoebe-owned label onto an issue or PR (#484,
+// #823). GitHub rejects an `--add-label` for a label the repository has never
+// seen, so every write here is add-then-heal: try the add, and when the failure
+// says the label does not exist, create it with Phoebe's own colour and
+// description and try once more. A repo that has never heard of
+// `processingLabel`, `mergedLabel` or `phoebe:quarantined` therefore needs no
+// setup — the first write that wants one makes it, and once it exists no later
+// write creates anything.
 //
 // A tenant renames these labels, so a name cannot identify one here. The role
 // does, and the role is what picks the description a human reads in the repo's
@@ -12,6 +13,8 @@
 // a lie told by the engine that created it.
 
 import { isLabelAlreadyExistsError, isLabelNotFoundError } from "./gh-error.ts";
+import type { UnitTarget } from "./github-client.ts";
+import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 
 /** A label Phoebe applies itself: the tenant's name for it, and what it means. */
 export type PhoebeLabel = {
@@ -23,6 +26,12 @@ export type PhoebeLabel = {
 /** The GitHub surface {@link addLabelCreatingIfMissing} needs. */
 export type LabelWriter = {
   addIssueLabel(issueNumber: number, label: string): void;
+  createLabel(name: string, description: string): void;
+};
+
+/** The GitHub surface {@link addUnitLabelCreatingIfMissing} needs: issues and PRs alike. */
+export type UnitLabelWriter = {
+  addUnitLabel(target: UnitTarget, label: string): void;
   createLabel(name: string, description: string): void;
 };
 
@@ -43,6 +52,18 @@ export function mergedLabelOf(config: { mergedLabel: string }): PhoebeLabel {
 }
 
 /**
+ * The label a **quarantined** unit wears (#75): it reached the unproductive-run
+ * limit, so Phoebe stops picking it up. Unlike the others its name is fixed
+ * rather than tenant config, and it lands on PRs as well as issues (#823).
+ */
+export function quarantineLabelOf(): PhoebeLabel {
+  return {
+    name: PHOEBE_QUARANTINE_LABEL,
+    description: "Phoebe stopped retrying this unit; a human takes over",
+  };
+}
+
+/**
  * Add `label` to `issueNumber`, creating the label in the repository when it is
  * not there yet.
  *
@@ -58,8 +79,31 @@ export function addLabelCreatingIfMissing(
   label: PhoebeLabel,
   log: (line: string) => void,
 ): void {
+  addCreatingIfMissing(github, () => github.addIssueLabel(issueNumber, label.name), label, log);
+}
+
+/**
+ * {@link addLabelCreatingIfMissing} for a unit that may be a PR as well as an
+ * issue — the quarantine write, which lands on either (#823).
+ */
+export function addUnitLabelCreatingIfMissing(
+  github: UnitLabelWriter,
+  target: UnitTarget,
+  label: PhoebeLabel,
+  log: (line: string) => void,
+): void {
+  addCreatingIfMissing(github, () => github.addUnitLabel(target, label.name), label, log);
+}
+
+/** Run `add`; on "Label not found", create `label` and run `add` once more. */
+function addCreatingIfMissing(
+  github: { createLabel(name: string, description: string): void },
+  add: () => void,
+  label: PhoebeLabel,
+  log: (line: string) => void,
+): void {
   try {
-    github.addIssueLabel(issueNumber, label.name);
+    add();
   } catch (err) {
     if (!isLabelNotFoundError(err)) throw err;
     log(`Label "${label.name}" not found — creating it and retrying the add.`);
@@ -71,6 +115,6 @@ export function addLabelCreatingIfMissing(
       if (!isLabelAlreadyExistsError(createErr)) throw createErr;
       log(`Label "${label.name}" already exists — another process created it first.`);
     }
-    github.addIssueLabel(issueNumber, label.name);
+    add();
   }
 }

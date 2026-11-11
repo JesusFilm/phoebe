@@ -232,9 +232,10 @@ surface as failures with their hold reason. `--json` for scripts.
 
 The other four run per tenant:
 
-- **labels.** The four workflow labels — `readyLabel`, `processingLabel`,
-  `mergedLabel` and `prOptOutLabel` — exist in the tenant's repo. Any that does
-  not is named with the `gh label create` command that makes it.
+- **labels.** The five workflow labels — `readyLabel`, `processingLabel`,
+  `mergedLabel`, `prOptOutLabel` and `phoebe:quarantined` — exist in the
+  tenant's repo. Any that does not is named with the `gh label create` command
+  that makes it.
 - **stray-members.** Open members of a [feature](feature-branches.md) that has
   ended, still wearing a label Phoebe reads. A feature ends when its integration
   PR merges or closes, or when its parent issue closes; from that moment routing

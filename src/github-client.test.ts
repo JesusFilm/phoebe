@@ -276,8 +276,8 @@ const ARGV_CASES: ArgvCase[] = [
     replies: [""],
   },
   {
-    name: "addQuarantineLabel",
-    call: (g) => g.addQuarantineLabel({ objectType: "pr", id: 1 }),
+    name: "addUnitLabel",
+    call: (g) => g.addUnitLabel({ objectType: "pr", id: 1 }, "phoebe:quarantined"),
     replies: [""],
   },
   {

@@ -300,7 +300,12 @@ export type GitHubClient = {
   updatePrBody(prNumber: PrNumber, body: string): void;
   postPrComment(prNumber: PrNumber, body: string): void;
   postUnitComment(target: UnitTarget, body: string): void;
-  addQuarantineLabel(target: UnitTarget): void;
+  /**
+   * Add `label` to an issue or PR. Captured exec, like `addIssueLabel`, so the
+   * caller can tell a missing label apart — the quarantine write goes through
+   * `addUnitLabelCreatingIfMissing` (src/labels.ts) on this (#823).
+   */
+  addUnitLabel(target: UnitTarget, label: string): void;
   removeQuarantineLabel(target: UnitTarget): void;
   /**
    * Add `label` to an issue. Uses a captured (non-inherited) exec so the
@@ -1435,13 +1440,17 @@ export function createGitHubClient({
       ghWrite([target.objectType, "comment", String(target.id), "--body", body]);
     },
 
-    addQuarantineLabel: (target) => {
-      ghWrite([
+    addUnitLabel: (target, label) => {
+      // Captured exec (not ghWrite/inherit) so callers can inspect the error
+      // with `isLabelNotFoundError` when the label does not exist yet.
+      exec([
         target.objectType,
         "edit",
         String(target.id),
         "--add-label",
-        PHOEBE_QUARANTINE_LABEL,
+        label,
+        "-R",
+        config.repoSlug,
       ]);
     },
 
