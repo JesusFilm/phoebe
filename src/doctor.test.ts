@@ -321,12 +321,19 @@ describe("labelsCheck", () => {
   test("all labels present — ok, names the repo and every label it checked", () => {
     const check = labelsCheck({
       missing: [],
-      present: ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"],
+      present: [
+        "ready-for-agent",
+        "processing",
+        "merged-to-feature",
+        "ready-for-human",
+        "phoebe:quarantined",
+      ],
       slug: "acme/widget",
     });
     expect(check.state).toBe("ok");
     expect(check.detail).toMatch(/acme\/widget/);
     expect(check.detail).toMatch(/mergedLabel/);
+    expect(check.detail).toContain("phoebe:quarantined");
   });
 
   test("one label missing — fail, names the label and the fix command", () => {
@@ -515,7 +522,9 @@ describe("tenantRow landed-member label (#449)", () => {
       if (urlStr.includes("/labels")) {
         return new Response(
           JSON.stringify(
-            ["ready-for-agent", "processing", "ready-for-human"].map((name) => ({ name })),
+            ["ready-for-agent", "processing", "ready-for-human", "phoebe:quarantined"].map(
+              (name) => ({ name }),
+            ),
           ),
           { status: 200 },
         );
@@ -540,6 +549,39 @@ describe("tenantRow landed-member label (#449)", () => {
   });
 });
 
+describe("tenantRow quarantine label (#823)", () => {
+  test("a repo without phoebe:quarantined fails labels and prints the create command", async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/labels")) {
+        return new Response(
+          JSON.stringify(
+            ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map(
+              (name) => ({ name }),
+            ),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
+    };
+    const row = await tenantRow({
+      path: "tenant",
+      slug: "acme/widget",
+      arm: "pat",
+      token: "ghp_tok",
+      envLabel: "/etc/phoebe/.env",
+      fetchFn: mockFetch as typeof fetch,
+      inContainer: false,
+    });
+    const labelsResult = row.checks.find((c) => c.id === "labels");
+    expect(labelsResult?.state).toBe("fail");
+    expect(labelsResult?.detail).toContain(
+      `gh label create "phoebe:quarantined" --repo acme/widget`,
+    );
+  });
+});
+
 describe("tenantRow applies the PHOEBE_* env overlay to label names", () => {
   test("PHOEBE_MERGED_LABEL overrides the config file's mergedLabel", async () => {
     const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-env-overlay-"));
@@ -552,7 +594,13 @@ describe("tenantRow applies the PHOEBE_* env overlay to label names", () => {
       if (urlStr.includes("/labels")) {
         return new Response(
           JSON.stringify(
-            ["ready-for-agent", "processing", "env-label", "ready-for-human"].map((name) => ({
+            [
+              "ready-for-agent",
+              "processing",
+              "env-label",
+              "ready-for-human",
+              "phoebe:quarantined",
+            ].map((name) => ({
               name,
             })),
           ),
@@ -590,7 +638,13 @@ describe("tenantRow applies the PHOEBE_* env overlay to label names", () => {
       if (urlStr.includes("/labels")) {
         return new Response(
           JSON.stringify(
-            ["ready-for-agent", "processing", "config-label", "ready-for-human"].map((name) => ({
+            [
+              "ready-for-agent",
+              "processing",
+              "config-label",
+              "ready-for-human",
+              "phoebe:quarantined",
+            ].map((name) => ({
               name,
             })),
           ),
@@ -923,7 +977,13 @@ describe("tenantRow stray members (#487)", () => {
       const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
       if (href.includes("/labels?")) {
         return json(
-          ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+          [
+            "ready-for-agent",
+            "processing",
+            "merged-to-feature",
+            "ready-for-human",
+            "phoebe:quarantined",
+          ].map((name) => ({
             name,
           })),
         );
@@ -1030,7 +1090,13 @@ describe("tenantRow stray members (#487)", () => {
       const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
       if (href.includes("/labels?")) {
         return json(
-          ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+          [
+            "ready-for-agent",
+            "processing",
+            "merged-to-feature",
+            "ready-for-human",
+            "phoebe:quarantined",
+          ].map((name) => ({
             name,
           })),
         );
@@ -1100,7 +1166,13 @@ describe("the App arm with a lease (#507 §5)", () => {
     const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
     if (href.includes("/labels?")) {
       return json(
-        ["ready-for-agent", "processing", "merged-to-feature", "ready-for-human"].map((name) => ({
+        [
+          "ready-for-agent",
+          "processing",
+          "merged-to-feature",
+          "ready-for-human",
+          "phoebe:quarantined",
+        ].map((name) => ({
           name,
         })),
       );

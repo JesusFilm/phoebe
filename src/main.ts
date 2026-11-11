@@ -130,7 +130,12 @@ import {
   withClosesSection,
   type MergedMemberIssue,
 } from "./feature-closes.ts";
-import { addLabelCreatingIfMissing, mergedLabelOf } from "./labels.ts";
+import {
+  addLabelCreatingIfMissing,
+  addUnitLabelCreatingIfMissing,
+  mergedLabelOf,
+  quarantineLabelOf,
+} from "./labels.ts";
 import {
   createWorkSource,
   type Clock,
@@ -723,7 +728,7 @@ export function createEngine(options: EngineOptions): Engine {
       });
       github.postUnitComment(target, buildUnitTimeoutMarker(count));
       if (quarantine) {
-        github.addQuarantineLabel(target);
+        addUnitLabelCreatingIfMissing(github, target, quarantineLabelOf(), (line) => log.say(line));
         github.postUnitComment(
           target,
           buildQuarantineComment({
@@ -1151,7 +1156,9 @@ export function createEngine(options: EngineOptions): Engine {
         });
         github.postUnitComment(target, buildUnitTimeoutMarker(count));
         if (quarantine) {
-          github.addQuarantineLabel(target);
+          addUnitLabelCreatingIfMissing(github, target, quarantineLabelOf(), (line) =>
+            log.say(line),
+          );
           github.postUnitComment(
             target,
             buildQuarantineComment({

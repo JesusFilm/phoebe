@@ -1794,8 +1794,8 @@ describe("the stranded-unit sweep", () => {
       overrides: {
         ...overrides,
         resolveLogin: () => PHOEBE_LOGIN,
-        addQuarantineLabel: (target) => {
-          writes.push(`quarantine-label ${target.objectType} #${target.id}`);
+        addUnitLabel: (target, label) => {
+          writes.push(`unit-label ${target.objectType} #${target.id} ${label}`);
         },
         issueTimeoutInputs: () => ({
           comments: [],
@@ -1884,10 +1884,53 @@ describe("the stranded-unit sweep", () => {
       { maxUnproductiveRuns: 3 },
     );
 
-    expect(writes).toContain(`quarantine-label issue #7`);
+    expect(writes).toContain(`unit-label issue #7 ${PHOEBE_QUARANTINE_LABEL}`);
     const quarantineComment = writes.find((w) => w.includes("produced no PR"));
     expect(quarantineComment).toBeDefined();
     expect(quarantineComment).not.toContain("timed out");
+  });
+
+  test("a repo without phoebe:quarantined gets it created, and the quarantine lands (#823)", async () => {
+    const { writes, overrides } = writeRecorder();
+    let exists = false;
+    overrides.addUnitLabel = (target, label) => {
+      if (!exists) {
+        const err = new Error("Command failed: gh issue edit") as Error & { stderr: string };
+        err.stderr = `failed to update https://github.com/acme/widget/issues/${target.id}: '${label}' not found\n`;
+        throw err;
+      }
+      writes.push(`unit-label ${target.objectType} #${target.id} ${label}`);
+    };
+    overrides.createLabel = (name) => {
+      exists = true;
+      writes.push(`create-label ${name}`);
+    };
+    overrides.issueTimeoutInputs = () => ({
+      comments: [
+        {
+          body: buildUnitTimeoutMarker(2),
+          createdAt: "2026-01-01T00:00:00Z",
+          authorLogin: PHOEBE_LOGIN,
+        },
+      ],
+      extraActivityAt: null,
+      baseline: "body:aabbcc",
+    });
+    const result = await sweepCycle(
+      {
+        ...overrides,
+        listLabeledIssues: () => [claimed(7)],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+      },
+      { maxUnproductiveRuns: 3 },
+    );
+
+    const created = writes.indexOf(`create-label ${PHOEBE_QUARANTINE_LABEL}`);
+    const added = writes.indexOf(`unit-label issue #7 ${PHOEBE_QUARANTINE_LABEL}`);
+    expect(created).toBeGreaterThanOrEqual(0);
+    expect(added).toBeGreaterThan(created);
+    expect(writes.some((w) => w.includes("produced no PR"))).toBe(true);
+    expect(result.lines.some((line) => line.includes("Could not re-arm"))).toBe(false);
   });
 
   test("a foreign comment resets the counter via decideTimeoutRecord", async () => {
@@ -1916,7 +1959,7 @@ describe("the stranded-unit sweep", () => {
 
     // Count resets to 1 — newer foreign activity is treated as fresh start
     expect(writes).toContain(`comment issue #7 ${buildUnitTimeoutMarker(1)}`);
-    expect(writes).not.toContain("quarantine-label issue #7");
+    expect(writes).not.toContain(`unit-label issue #7 ${PHOEBE_QUARANTINE_LABEL}`);
   });
 
   // #753: nothing in the engine removes a queue label, so a claimed ticket
@@ -4126,8 +4169,8 @@ describe("a claim whose run throws before any PR accrues to quarantine", () => {
           extraActivityAt: null,
           baseline: BASELINE,
         }),
-        addQuarantineLabel: (target) => {
-          writes.push(`add-label ${target.objectType} #${target.id} ${PHOEBE_QUARANTINE_LABEL}`);
+        addUnitLabel: (target, label) => {
+          writes.push(`add-label ${target.objectType} #${target.id} ${label}`);
         },
         postUnitComment: (target, body) => {
           writes.push(`comment issue #${target.id} ${body}`);

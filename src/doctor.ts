@@ -85,6 +85,7 @@ import { featureBranch } from "./feature-branch.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { parseParentIssueUrl, pickIntegrationPr } from "./github-client.ts";
 import { applyEnvOverlay, loadUserConfig } from "./load-config.ts";
+import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 import {
   latestReleaseTag,
   installedCliVersion,
@@ -766,7 +767,7 @@ export function labelsCheck(fields: {
     return {
       id: "labels",
       state: "ok",
-      detail: `readyLabel, processingLabel, mergedLabel, and prOptOutLabel all exist in ${fields.slug}`,
+      detail: `readyLabel, processingLabel, mergedLabel, prOptOutLabel, and ${PHOEBE_QUARANTINE_LABEL} all exist in ${fields.slug}`,
     };
   }
   const fixes = fields.missing
@@ -1622,7 +1623,7 @@ export async function tenantRow(fields: {
     });
   }
 
-  // Labels check: verify the four workflow labels exist in the tenant's repo.
+  // Labels check: verify the five workflow labels exist in the tenant's repo.
   // Only runs when the repo check passed (token works), a slug is known, and
   // the config was loaded (label names are tenant-specific).
   if (fields.configPath !== undefined && !configLoaded) {
@@ -1643,7 +1644,13 @@ export async function tenantRow(fields: {
           `Grant it and re-run \`phoebe doctor\`.`,
       });
     } else {
-      const labelNames = [readyLabel, processingLabel, mergedLabel, prOptOutLabel];
+      const labelNames = [
+        readyLabel,
+        processingLabel,
+        mergedLabel,
+        prOptOutLabel,
+        PHOEBE_QUARANTINE_LABEL,
+      ];
       const missing = labelNames.filter((name) => !allLabels.includes(name));
       const present = labelNames.filter((name) => allLabels.includes(name));
       checks.push(labelsCheck({ missing, present, slug: fields.slug }));

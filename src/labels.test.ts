@@ -4,11 +4,15 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   addLabelCreatingIfMissing,
+  addUnitLabelCreatingIfMissing,
   mergedLabelOf,
   processingLabelOf,
+  quarantineLabelOf,
   type LabelWriter,
+  type UnitLabelWriter,
 } from "./labels.ts";
 import { isLabelNotFoundError } from "./gh-error.ts";
+import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
 
 /** What `gh issue edit --add-label` throws for a label the repo does not have. */
 function labelNotFoundError(): Error {
@@ -158,5 +162,65 @@ describe("addLabelCreatingIfMissing", () => {
     };
     addLabelCreatingIfMissing(repo, 7, mergedLabelOf({ mergedLabel: "landed" }), () => {});
     expect(calls).toEqual(["add:7:landed", "create:landed", "add:7:landed"]);
+  });
+});
+
+describe("addUnitLabelCreatingIfMissing", () => {
+  /** A unit writer over a repo that holds `existing` labels, PRs and issues alike. */
+  function unitRepoWithLabels(existing: string[]): UnitLabelWriter & { writes: string[] } {
+    const labels = new Set(existing);
+    const writes: string[] = [];
+    return {
+      writes,
+      addUnitLabel(target, label) {
+        if (!labels.has(label)) throw labelNotFoundErrorCurrentGh();
+        writes.push(`add:${target.objectType}#${target.id}:${label}`);
+      },
+      createLabel(name, description) {
+        labels.add(name);
+        writes.push(`create:${name}:${description}`);
+      },
+    };
+  }
+
+  test("phoebe:quarantined is created on demand for a PR, and a second call creates nothing (#823)", () => {
+    const repo = unitRepoWithLabels([]);
+    const label = quarantineLabelOf();
+
+    addUnitLabelCreatingIfMissing(repo, { objectType: "pr", id: 5 }, label, () => {});
+    addUnitLabelCreatingIfMissing(repo, { objectType: "issue", id: 23 }, label, () => {});
+
+    expect(repo.writes).toEqual([
+      `create:phoebe:quarantined:${label.description}`,
+      "add:pr#5:phoebe:quarantined",
+      "add:issue#23:phoebe:quarantined",
+    ]);
+  });
+
+  test("the quarantine label says a human takes over", () => {
+    const label = quarantineLabelOf();
+    expect(label.name).toBe(PHOEBE_QUARANTINE_LABEL);
+    expect(label.description).toMatch(/human takes over/);
+  });
+
+  test("a failure that is not a missing label propagates, uncreated", () => {
+    let creates = 0;
+    const repo: UnitLabelWriter = {
+      addUnitLabel: () => {
+        throw new Error("GitHub 403: permission not granted");
+      },
+      createLabel: () => {
+        creates++;
+      },
+    };
+    expect(() =>
+      addUnitLabelCreatingIfMissing(
+        repo,
+        { objectType: "pr", id: 1 },
+        quarantineLabelOf(),
+        () => {},
+      ),
+    ).toThrow(/403/);
+    expect(creates).toBe(0);
   });
 });
