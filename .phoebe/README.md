@@ -20,9 +20,13 @@ one edit, made here. See
 - **pnpm, not npm.** This repo uses pnpm + `vite-plus` (`vp`). The config's
   install/check/test/ready commands are pnpm, and the Dockerfile runs
   `corepack enable` so `pnpm` (pinned by `package.json`'s `packageManager`) is
-  on PATH. `COREPACK_HOME` is pointed at `/opt/corepack` (owned by the
-  unprivileged user) because corepack downloads that pinned pnpm on first use
-  and can no longer write to root's cache.
+  on PATH. The image downloads that pinned pnpm at build time, as root, into
+  `COREPACK_HOME=/opt/corepack`, which the unprivileged user can only read. A
+  work unit can't rewrite the pnpm the next unit runs (#780). The cost is a
+  second copy of the version: `ARG PNPM_VERSION` has to match `packageManager`,
+  a test fails when they drift, and Renovate bumps both in one PR. After a pnpm
+  bump lands on main, relaunch so `run.sh` rebuilds the image. Until then
+  installs fail, because the read-only home refuses the new download.
 - **Bootstrapper _and_ engine from the working tree.** The scaffold installs the
   bootstrapper from npm and lets `boot` check the engine out from GitHub. Here
   both are read from this repo mounted read-only at `/opt/phoebe-engine`:

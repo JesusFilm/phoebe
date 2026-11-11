@@ -47,17 +47,47 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
 # `packageManager`) is on PATH for the engine's installCommand and the agent's
 # check/test gates. This repo is a pnpm + vite-plus toolchain, not npm.
 #
-# corepack downloads the pinned pnpm on first use, which as root landed in
-# /root/.cache. Point it somewhere the unprivileged user owns instead — an
-# explicit path rather than $HOME/.cache so the failure mode (a read-only
-# COREPACK_HOME) is one named path to check, not a home-directory guess.
+# The pnpm every work unit runs is prepared here, as root, into a root-owned
+# COREPACK_HOME that `phoebe` can read and execute but not write (#780). It
+# used to be downloaded on first use into a phoebe-owned /opt/corepack, and
+# corepack reuses a cached version without re-checking it. One unit's agent
+# could then rewrite that pnpm, and every later unit's install, check, test and
+# ready would run the rewritten code with that unit's GH_TOKEN and provider key.
 #
-# COREPACK_ENABLE_DOWNLOAD_PROMPT=0: that first-use download otherwise stops to
-# ask "Do you want to continue? [Y/n]" on a TTY. The engine runs installCommand
-# non-interactively, so the prompt has no one to answer it and boot hangs. Off
-# means corepack fetches the pinned pnpm silently. (The version is still pinned
-# via package.json's `packageManager`, so this suppresses the confirmation, not
-# the pin — corepack won't fetch anything the repo hasn't already named.)
+# Why bake it rather than give each unit a throwaway COREPACK_HOME: no
+# per-unit download (pnpm 12 is a JS wrapper plus a ~60MB native binary), no
+# engine plumbing to point each unit at its own home, and nothing fetched from
+# the network at run time. The cost is a second copy of the version
+# package.json's `packageManager` names. PNPM_VERSION below has to equal it:
+# src/container-image.test.ts fails when the two drift, and renovate.json bumps
+# both in one PR. An image older than a pnpm bump on main can't fetch the new
+# version (the home is read-only), so installs fail until the image is
+# rebuilt; `run.sh` rebuilds on every launch, so relaunch after pulling.
+#
+# The three steps, all as root:
+#   - `corepack install -g` downloads the pinned pnpm and records it in
+#     lastKnownGood.json, so `pnpm` outside any project also resolves to it
+#     without a fetch or a write.
+#   - Running it once makes pnpm 12's wrapper download its native binary
+#     (`pnpm-native`, kept next to the wrapper). Left to first use, that
+#     download would run as `phoebe` and die on the read-only home.
+#   - `test -x` fails the build if the binary didn't land.
+# With the pinned version cached, corepack writes nothing to its home at run
+# time: lastKnownGood.json is only rewritten after a download, and the
+# out-of-project default lookup swallows its write error.
+#
+# The agent child gets COREPACK_HOME through the engine's env allowlist
+# (src/agent-env.ts). Without it the agent's corepack fell back to
+# ~/.cache/node/corepack, a second phoebe-owned copy with the same problem.
+# pnpm 12 keeps its own downloads of a pinned version under
+# ~/.local/share/pnpm/package-manager-store, but only when the pnpm running
+# differs from the pin, and corepack always runs exactly the pin.
+#
+# COREPACK_ENABLE_DOWNLOAD_PROMPT=0: a corepack download otherwise stops to ask
+# "Do you want to continue? [Y/n]" on a TTY. The engine runs installCommand
+# non-interactively, so the prompt has no one to answer it and boot hangs. With
+# the pin baked in nothing should download at run time, but a version bump the
+# image hasn't caught up with should fail, not hang.
 #
 # node:26 no longer ships corepack (Node dropped it from the distribution in
 # 25), so install it from npm first; `corepack enable` on the bare image is
@@ -66,10 +96,13 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 --user-group phoebe \
 # and the shim dies with MODULE_NOT_FOUND on the first `pnpm install`.
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+ARG PNPM_VERSION=12.18.0
 RUN npm install -g corepack@0.36.0 \
  && corepack enable \
- && mkdir -p /opt/corepack \
- && chown phoebe:phoebe /opt/corepack
+ && corepack install -g "pnpm@${PNPM_VERSION}" \
+ && corepack "pnpm@${PNPM_VERSION}" --version \
+ && test -x "/opt/corepack/v1/pnpm/${PNPM_VERSION}/pnpm-native" \
+ && chmod -R go-w /opt/corepack
 
 # Renovate from the build stage above, run by the image's own node. Root-owned
 # under /usr/local, which `phoebe` only reads. Identical to the template, and

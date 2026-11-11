@@ -85,6 +85,17 @@ describe("buildAgentEnv", () => {
     expect(env["PHOEBE_GH_LOGIN"]).toBe("myapp[bot]");
   });
 
+  test("COREPACK_HOME passes through, so the agent's pnpm is the image's (#780)", () => {
+    // Dropped, corepack falls back to ~/.cache/node/corepack — a cache the
+    // agent's own user can write, which one unit could poison for the next.
+    const env = buildAgentEnv({
+      parentEnv: { ...parentEnv, COREPACK_HOME: "/opt/corepack" },
+      provider: "claude",
+      providerEnv,
+    });
+    expect(env["COREPACK_HOME"]).toBe("/opt/corepack");
+  });
+
   test("PHOEBE_GH_LOGIN is absent when not set in parentEnv", () => {
     const env = buildAgentEnv({ parentEnv, provider: "claude", providerEnv });
     expect(env).not.toHaveProperty("PHOEBE_GH_LOGIN");

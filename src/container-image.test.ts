@@ -172,6 +172,65 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
   });
 });
 
+describe(".phoebe/container/Dockerfile keeps the pnpm a unit runs out of its reach (#780)", () => {
+  // Only the dogfood enables corepack. It used to download the pinned pnpm at
+  // run time into a phoebe-owned COREPACK_HOME, so one unit's agent could
+  // rewrite the pnpm every later unit runs. Now the image prepares it as root
+  // before the privilege drop and never hands the directory to `phoebe`.
+  const dockerfile = read(DOGFOOD_DOCKERFILE);
+  const instructions = instructionsOnly(dockerfile);
+  const pnpmVersionArg = /^ARG PNPM_VERSION=(\S+)$/m;
+
+  test("COREPACK_HOME is /opt/corepack, and nothing chowns it to phoebe", () => {
+    expect(instructions).toMatch(/^ENV COREPACK_HOME=\/opt\/corepack\b/m);
+    expect(instructions).not.toMatch(/chown[^\n]*\/opt\/corepack/);
+    expect(instructions).toContain("chmod -R go-w /opt/corepack");
+  });
+
+  test("prepares the pinned pnpm and its native binary as root, before USER phoebe", () => {
+    // pnpm 12's wrapper downloads `pnpm-native` on first use. Left to run
+    // time, that download runs as `phoebe` into a home it can't write.
+    const userIndex = instructionIndex(dockerfile, /^USER phoebe$/);
+    for (const step of [
+      /corepack install -g "pnpm@\$\{PNPM_VERSION\}"/,
+      /corepack "pnpm@\$\{PNPM_VERSION\}" --version/,
+      /test -x "\/opt\/corepack\/v1\/pnpm\/\$\{PNPM_VERSION\}\/pnpm-native"/,
+    ]) {
+      const index = instructionIndex(dockerfile, step);
+      expect(index, String(step)).toBeGreaterThan(-1);
+      expect(index, String(step)).toBeLessThan(userIndex);
+    }
+  });
+
+  test("bakes the pnpm version package.json's packageManager pins", () => {
+    // A drift means every unit's install asks corepack for a version the image
+    // lacks, and the read-only home refuses the download.
+    const pkg = JSON.parse(read("package.json")) as { packageManager?: string };
+    const pinned = /^pnpm@([^+]+)/.exec(pkg.packageManager ?? "")?.[1];
+    expect(pinned).toBeDefined();
+    expect(pnpmVersionArg.exec(instructions)?.[1]).toBe(pinned);
+  });
+
+  test("Renovate bumps the baked pnpm in the same PR as packageManager", () => {
+    // Without this, Renovate's packageManager PR fails the drift test above
+    // and nothing ever moves the ARG.
+    const renovate = JSON.parse(read("renovate.json")) as {
+      customManagers?: { managerFilePatterns?: string[]; matchStrings?: string[] }[];
+      packageRules?: { matchPackageNames?: string[]; groupName?: string }[];
+    };
+    const manager = renovate.customManagers?.find((m) =>
+      m.managerFilePatterns?.some((p) => p.includes(".phoebe/container/Dockerfile")),
+    );
+    expect(manager).toBeDefined();
+    const pattern = new RegExp(manager?.matchStrings?.[0] ?? "^$", "m");
+    expect(pattern.exec(instructions)?.groups?.["currentValue"]).toBe(
+      pnpmVersionArg.exec(instructions)?.[1],
+    );
+    const group = renovate.packageRules?.find((r) => r.matchPackageNames?.includes("pnpm"));
+    expect(group?.groupName).toBeDefined();
+  });
+});
+
 describe("the two Dockerfiles stay in step", () => {
   const pinArgs = (source: string) =>
     instructionsOnly(source)

@@ -9,6 +9,13 @@
 // a key and then names it in `agentEnv` unions that key onto the allowlist for
 // its own agent children and nobody else's. It is opt-in per key because this
 // is the hop where a credential meets a prompt.
+//
+// COREPACK_HOME is a path, not a credential. It is on the list so the agent's
+// `pnpm` resolves to the same corepack cache as the engine's install. Without
+// it corepack falls back to ~/.cache/node/corepack, which the agent's own user
+// owns, and a copy there can be rewritten by one unit and run by the next
+// (#780). An image that sets COREPACK_HOME to a root-owned, prepared cache
+// (the dogfood one does) keeps it that way for the agent too.
 
 import type { PhoebeConfig, ProviderName } from "./config-schema.ts";
 
@@ -17,6 +24,7 @@ const BASE_ALLOWLIST = [
   "HOME",
   "GH_TOKEN",
   "PHOEBE_GH_LOGIN",
+  "COREPACK_HOME",
   "GIT_AUTHOR_NAME",
   "GIT_AUTHOR_EMAIL",
   "GIT_COMMITTER_NAME",

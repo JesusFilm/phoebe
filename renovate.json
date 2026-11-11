@@ -3,7 +3,8 @@
   "extends": ["config:recommended"],
   "description": [
     "`gitIgnoredAuthors` names the address Phoebe commits under on this repo: the noreply identity of the account whose token it runs on. Without it, Renovate treats a branch Phoebe pushed a changeset to as edited by someone else and stops refreshing it. If Phoebe moves to another identity (a GitHub App, a `gitIdentity` in the config), this address moves with it.",
-    "`minimumReleaseAge` matches the gate pnpm 11 applies by default: `vp install` refuses any package published less than 1440 minutes ago, and this repo sets nothing to relax it. Without the same number here Renovate resolves a version the moment it is published, CI fails on the age check, and the PR needs a manual retry a day later (#684)."
+    "`minimumReleaseAge` matches the gate pnpm 11 applies by default: `vp install` refuses any package published less than 1440 minutes ago, and this repo sets nothing to relax it. Without the same number here Renovate resolves a version the moment it is published, CI fails on the age check, and the PR needs a manual retry a day later (#684).",
+    "The dogfood image bakes the pnpm that package.json's `packageManager` pins, as `ARG PNPM_VERSION` in `.phoebe/container/Dockerfile`, so a work unit can't rewrite it (#780). The custom manager finds that ARG, and the `pnpm` group moves it in the same PR as `packageManager`; `src/container-image.test.ts` fails if the two drift."
   ],
   "gitIgnoredAuthors": ["838371+mikeallisonJS@users.noreply.github.com"],
   "minimumReleaseAge": "1 day",
@@ -23,6 +24,22 @@
       "description": "The non-npm managers in this repo: CI workflows, the pinned Node version, the container images. None of them changes anything a consumer of phoebe-agent installs.",
       "matchManagers": ["github-actions", "nodenv", "dockerfile", "docker-compose"],
       "addLabels": ["skip-changeset"]
+    },
+    {
+      "description": "One PR for package.json's packageManager and the dogfood Dockerfile's PNPM_VERSION, which must stay equal. Neither reaches a consumer.",
+      "matchPackageNames": ["pnpm"],
+      "groupName": "pnpm",
+      "addLabels": ["skip-changeset"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The dogfood image's baked pnpm (#780).",
+      "managerFilePatterns": ["/^\\.phoebe/container/Dockerfile$/"],
+      "matchStrings": ["ARG PNPM_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "pnpm",
+      "datasourceTemplate": "npm"
     }
   ]
 }
