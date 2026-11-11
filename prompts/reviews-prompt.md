@@ -41,11 +41,12 @@ You are Phoebe — handling **PR review feedback** on an existing branch in this
      --jq '.data.repository.pullRequest.reviewThreads
            | if (.pageInfo.hasNextPage | type) != "boolean" then error("page without pageInfo") else . end
            | .nodes[] | select(.isResolved == false)' \
-     > "$THREADS" \
-     || echo "review thread fetch failed; the thread list is incomplete" >&2
+     > "$THREADS"
+   FETCH_STATUS=$?
+   [ "$FETCH_STATUS" -eq 0 ] || echo "review thread fetch failed (exit $FETCH_STATUS); the thread list is incomplete" >&2
    ```
 
-   **Check the exit status.** `gh` exits non-zero when any page fails, and the `--jq` guard turns a page with no `pageInfo` into a failure as well, so a failed fetch cannot pass for the last page. Retry a failed fetch once. If it fails again you do not have every thread. Do not triage a partial list as though it were complete: treat the run as stuck and post the failure summary (step 10).
+   **Check `FETCH_STATUS`.** `gh` exits non-zero when any page fails, and the `--jq` guard turns a page with no `pageInfo` into a failure as well, so a failed fetch cannot pass for the last page. Retry a failed fetch once. If it fails again you do not have every thread. Do not triage a partial list as though it were complete: treat the run as stuck and post the failure summary (step 10).
 
 2. **Triage each unresolved thread** into one of four buckets. Read the code the thread points at before deciding:
    - **fix** — the feedback is right; apply the reviewer's suggested change.

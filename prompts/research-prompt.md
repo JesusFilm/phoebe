@@ -28,7 +28,7 @@ You are Phoebe — resolving a **wayfinder research ticket** (a ticket type work
    - **Issue-level artifact (default).** Most research resolves this way: the summary lives as a comment (or a linked asset) on the ticket, with no code change. Leave the worktree without commits.
    - **Committed doc (PR).** _Only_ when the finding is naturally a document that belongs in the repo (a reference note others will read from the tree). Write it where the repo already keeps such notes — match the existing convention; do not invent a new location. **Do not commit yet**: step 5 comes first.
 
-5. **Verify, then commit (committed-doc case only).** If the repo has gates, run `{{READY_COMMAND}}` (or `{{CHECK_COMMAND}}` and `{{TEST_COMMAND}}`) and fix any failure the doc causes. Commit the doc with a `Phoebe:` prefix only once the gate is green. The host will push the branch and open a PR whose body closes this ticket. If you cannot get the gate green, you are blocked: leave the doc uncommitted and remove it (delete the files you added, revert the ones you edited) so the host has nothing to push, post the findings and the gate failure as a comment, and leave the ticket open. A pure issue-level artifact skips this step.
+5. **Verify, then commit (committed-doc case only).** If the repo has gates, run `{{READY_COMMAND}}` (or `{{CHECK_COMMAND}}` and `{{TEST_COMMAND}}`) and fix any failure the doc causes. Commit the doc with a `Phoebe:` prefix only once the gate is green. The host will push the branch and open a PR whose body closes this ticket. If you cannot get the gate green, you are blocked: leave the doc uncommitted and remove it (delete the files you added, revert the ones you edited) so the host has nothing to push, post the findings and the gate failure as a comment, and leave the ticket open. If you committed a doc and the map pointer in step 6 then cannot be written, undo the commit (`git reset --hard HEAD~1`) so the host has nothing to push, and leave the ticket open. A pure issue-level artifact skips this step.
 
 6. **Resolve per wayfinder protocol, in this order.** Closing comes last, so a run that fails partway leaves the ticket open and in the research queue rather than closed and unindexed.
    1. **Post the resolution comment** on ticket #{{ISSUE_NUMBER}} — the answer itself, or the summary with a link to the committed doc/asset:
@@ -42,13 +42,14 @@ You are Phoebe — resolving a **wayfinder research ticket** (a ticket type work
       Another session may be editing the same map, so re-check the body just before you write it back:
       ```sh
       MAP=<map-number>
-      BEFORE=$(mktemp) AFTER=$(mktemp)
-      gh issue view "$MAP" --json body --jq .body > "$BEFORE"
+      BEFORE=$(mktemp) AFTER=$(mktemp) NOW=$(mktemp)
+      gh issue view "$MAP" --json body --jq .body > "$BEFORE" || exit 1
+      [ -s "$BEFORE" ] || exit 1   # an empty body is a failed read, never a map
       # write the amended body to "$AFTER": a copy of "$BEFORE" plus your one line under the heading
-      gh issue view "$MAP" --json body --jq .body | cmp -s - "$BEFORE" \
-        && gh issue edit "$MAP" --body-file "$AFTER"
+      gh issue view "$MAP" --json body --jq .body > "$NOW" || exit 1
+      cmp -s "$NOW" "$BEFORE" && gh issue edit "$MAP" --body-file "$AFTER"
       ```
-      If the bodies differ, someone wrote to the map since you read it. Start over from a fresh fetch rather than overwrite their change. Do not restate the full answer on the map — it is an index, not a store.
+      GitHub has no conditional edit, so this narrows the race rather than closing it. Re-check, then write immediately, and after the edit fetch the map once more and confirm your line is there. If the bodies differ, or your line is missing afterwards, someone wrote to the map since you read it. Start over from a fresh fetch rather than overwrite their change. Do not restate the full answer on the map — it is an index, not a store.
    3. **Close the ticket — but only in the issue-level-artifact case, and only once the map pointer is written:**
       ```
       gh issue close {{ISSUE_NUMBER}}
