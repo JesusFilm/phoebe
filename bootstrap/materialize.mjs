@@ -14,9 +14,12 @@
 import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Package subtrees to copy: the TypeScript bootstrapper + engine, plus the
+// Package subtrees to copy: the TypeScript bootstrapper + engine, the catalog
+// work kinds (`phoebe-agent/kinds/…` resolves against the copy), plus the
 // scaffold resources `phoebe init` reads (init walks up from src/ to find them).
-const MATERIALIZED_PARTS = ["bootstrap", "src", "templates", "prompts"];
+// Keep in step with the code-bearing entries of package.json `files`; a test
+// holds the two together.
+export const MATERIALIZED_PARTS = ["bootstrap", "src", "kinds", "templates", "prompts"];
 
 /** Version-keyed materialization directory under `baseDir`. */
 export function engineDir(baseDir, version) {
@@ -29,12 +32,16 @@ export function engineDir(baseDir, version) {
  * version-keyed marker means repeated invocations (anything that runs the bin
  * over and over) skip the copy after the first. Callers key `baseDir` per
  * install and the package version changes on release, so a stale copy is never
- * reused.
+ * reused. A marked copy that lacks a part the package ships (one written before
+ * that part joined MATERIALIZED_PARTS) is copied again rather than trusted.
  */
 export function ensureEngine({ packageRoot, baseDir, version }) {
   const dir = engineDir(baseDir, version);
   const marker = join(dir, ".materialized");
-  if (!existsSync(marker)) {
+  const missingPart = MATERIALIZED_PARTS.some(
+    (part) => existsSync(join(packageRoot, part)) && !existsSync(join(dir, part)),
+  );
+  if (!existsSync(marker) || missingPart) {
     mkdirSync(dir, { recursive: true });
     for (const part of MATERIALIZED_PARTS) {
       const from = join(packageRoot, part);
