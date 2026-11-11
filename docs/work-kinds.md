@@ -838,6 +838,14 @@ your kind's tickets. A pipeline only knows its own custom kinds, so a pipeline
 running `issues` would read such a ticket as its own, and `issues` would select
 it too.
 
+The same sweep reads one line from your agent. If a claimed ticket has no PR and
+the run's comment holds a `<!-- phoebe-blocked -->` line, the sweep doesn't
+re-arm the ticket. It swaps `processingLabel` for `phoebe:blocked` and counts no
+unproductive run. That is how the shipped `issues` and `research` prompts hand a
+person a ticket only a person can move. The built-in kinds skip that label when they select.
+A custom kind has to filter it out in `select` itself, the same way it filters
+`phoebe:quarantined`.
+
 ### The `ctx` surface
 
 Kind code can never import the engine — configs and kind modules load from a

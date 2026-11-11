@@ -137,6 +137,12 @@ import {
   quarantineLabelOf,
 } from "./labels.ts";
 import {
+  buildBlockedComment,
+  hasLiveBlockedMarker,
+  PHOEBE_BLOCKED,
+  PHOEBE_BLOCKED_LABEL,
+} from "./blocked.ts";
+import {
   createWorkSource,
   type Clock,
   type GatheredCycle,
@@ -1089,6 +1095,10 @@ export function createEngine(options: EngineOptions): Engine {
    * `sweepQuarantine` lifts the quarantine label the issue already carries
    * its kind's queue label, so `sweepQuarantine` needs no change.
    *
+   * A claim whose run left a live `phoebe-blocked` marker is blocked instead of
+   * re-armed: it trades the claim for `phoebe:blocked` and counts no
+   * unproductive run (src/blocked.ts, #817).
+   *
    * Landed members are the one exception: they are finished, not stranded, and
    * the sweep leaves them untouched (#485). An issue no scheduled kind owns by
    * its queue label is left too, claim and all (src/sweep-scope.ts, #753).
@@ -1140,14 +1150,25 @@ export function createEngine(options: EngineOptions): Engine {
       }
       if (hasPr) continue;
       try {
+        const target: UnitTarget = { objectType: "issue", id: issue.number };
+        const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+        const inputs = github.issueTimeoutInputs(issue.number);
+        // A run that said it needs a human is not a crashed one (#817): label it
+        // `phoebe:blocked`, which selection skips, rather than re-arm it
+        // and count it unproductive. Add first, remove second, as the landed
+        // swap does, so a failure between the two never leaves it queued.
+        if (hasLiveBlockedMarker(inputs.comments, login)) {
+          addLabelCreatingIfMissing(github, issue.number, PHOEBE_BLOCKED, (line) => log.say(line));
+          github.removeIssueLabel(issue.number, config.processingLabel);
+          github.postUnitComment(target, buildBlockedComment());
+          log.say(`Labelled ${label} ${PHOEBE_BLOCKED_LABEL} — its run says it needs a human.`);
+          continue;
+        }
         // Dropping the claim is the whole re-arm: the ticket still wears its
         // owner's queue label, which is how it was found to be the owner's. No
         // label is added, so a ticket never lands on another kind's queue.
         github.removeIssueLabel(issue.number, config.processingLabel);
-        const target: UnitTarget = { objectType: "issue", id: issue.number };
-        const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
         const k = resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);
-        const inputs = github.issueTimeoutInputs(issue.number);
         const { count, quarantine } = decideTimeoutRecord({
           comments: inputs.comments,
           phoebeLogin: login,

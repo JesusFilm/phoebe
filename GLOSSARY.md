@@ -240,6 +240,13 @@ no GitHub target, remembered by the pipeline process. The label lapses once the 
 content advances; the memory lapses when the unit's revision changes or the process ends.
 _Avoid_: blocked, stuck, skipped
 
+**Blocked ticket**:
+An issue or research ticket whose run said a person has to act first, by writing the
+blocked marker in its comment. It wears `phoebe:blocked` in place of its claim, and
+selection skips it until a person removes the label.
+_Avoid_: quarantined (that is a unit that kept timing out), waiting on a blocker (that is
+`Blocked by #N`), parked
+
 **Quarantined commit**:
 An engine commit the bootstrapper refuses to launch after it crash-looped, in favour of the
 last commit that ran healthily. Unrelated to a quarantined unit — do not shorten either to

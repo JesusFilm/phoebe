@@ -12,6 +12,7 @@ import {
   type BaseResolution,
   type Issue,
 } from "../orchestrator.ts";
+import { PHOEBE_BLOCKED_LABEL } from "../blocked.ts";
 import { addLabelCreatingIfMissing, processingLabelOf } from "../labels.ts";
 import {
   defineWorkKind,
@@ -69,8 +70,10 @@ function landedCounts(issues: readonly Issue[], ctx: WorkKindCtx): string[] {
  * count is indistinguishable from a legitimate wait (#219). When all unblocked
  * issues carry processingLabel the queue is temporarily full, not stuck (#365),
  * and a landed member is neither: it is done and waiting on its feature, so it
- * is counted apart rather than swept into the fallback (#485). Named blockers
- * first, then the in-progress and landed counts, then the fallback.
+ * is counted apart rather than swept into the fallback (#485). So is a ticket
+ * labelled `phoebe:blocked` (#817), which waits on a person, not a blocker.
+ * Named blockers first, then the in-progress, landed and blocked counts, then the
+ * fallback.
  */
 function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
   const waiting = unresolvedBlockerNumbers(
@@ -90,6 +93,8 @@ function idleBlockerReason(issues: readonly Issue[], ctx: WorkKindCtx): string {
   ).length;
   const counts = processingCount > 0 ? [`${processingCount} in progress`] : [];
   counts.push(...landedCounts(issues, ctx));
+  const blockedCount = issues.filter((i) => i.labels.includes(PHOEBE_BLOCKED_LABEL)).length;
+  if (blockedCount > 0) counts.push(`${blockedCount} waiting on a human`);
   if (counts.length > 0) return `(${counts.join(", ")})`;
   return "(blocked or waiting on blocker PR)";
 }

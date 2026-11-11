@@ -69,6 +69,26 @@ When an agent identifies a blocker, it records `Blocked by #N` in the issue body
 and exits. The `blockedByPattern` section below describes how the engine reads
 that and what happens next.
 
+### `phoebe:blocked` means "waiting on you"
+
+Sometimes a run stops because a person has to do something first. A research
+Question may need a decision, or the agent can't reach a source, or the issue
+leaves out context only you have. The agent says so in a comment and ends that
+comment with a `<!-- phoebe-blocked -->` line. On the next sweep the engine sees
+the line and swaps `processingLabel` for `phoebe:blocked`. It then posts a short
+comment of its own and leaves the ticket out of selection. That run does not
+count toward `maxUnproductiveRuns`.
+
+Do what the agent's comment asks, then **remove `phoebe:blocked`**. The ticket
+goes straight back in the queue. Nothing else clears the label, including a
+reply on the issue, because only you know when the answer is complete. The
+engine only reads the marker in Phoebe's own comments, so pasting the line into
+a comment does not block a ticket.
+
+The agent leaves the line out when a retry could get through without anyone
+acting, such as a flaky test or a service that is down. Those runs are re-armed
+and counted as usual.
+
 ## Blocking one issue on another: `blockedByPattern`
 
 Write a blocker reference in the issue body, by default `Blocked by #123`
@@ -409,6 +429,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Pause a queued issue                          | Remove `readyLabel`.                                                                                                                                                            |
 | Bump an issue up the queue                    | Word it as a bug/fix, or it waits its turn by age.                                                                                                                              |
 | Sequence-dependent issues                     | `Blocked by #N` in the body.                                                                                                                                                    |
+| Hand back a ticket Phoebe said needs you      | Do what its comment asks, then remove `phoebe:blocked`.                                                                                                                         |
 | Land a group of issues in one merge           | Add `featureLabel` (`phoebe:feature`) to their parent issue.                                                                                                                    |
 | Cancel a feature                              | Close its draft integration PR, then close or unlabel the members you are abandoning (`readyLabel` and `researchLabel` alike), then run `phoebe doctor` to catch stray members. |
 | Take a PR away from Phoebe                    | Add `prOptOutLabel` (`ready-for-human`), which works for any PR. Under the default `draftPrs`, marking a **non-Phoebe** PR draft also opts it out.                              |
