@@ -298,7 +298,10 @@ PR number):
    first (including merged-blocker PRs); if that conflicts, defer to the
    `conflicts` kind next cycle.
 2. Otherwise run the agent with the `checks` prompt; the formatted list of
-   failing checks is passed as `{{FAILING_CHECKS}}`.
+   failing checks is passed as `{{FAILING_CHECKS}}`, and the PR's base as
+   `{{BASE_BRANCH}}`. The agent's baseline check runs against that base, not the
+   default branch, so a test that is red on `main` but green on a feature
+   branch still counts as the PR's to fix.
 3. Push new commits. If the agent produced nothing and origin is unchanged, post
    a failure comment with a `prHead` watermark.
 
@@ -321,14 +324,16 @@ bot's own GitHub login (`phoebeLogin`), fetched once per cycle:
 **Execution** (`fixOnePrReviews`):
 
 1. Run the agent with the `reviews` prompt. It triages every unresolved thread,
-   makes code changes where needed, and posts a summary comment containing
-   `reviewsSuccessHeading`.
+   outdated ones included, makes code changes where needed, and posts a summary
+   comment containing `reviewsSuccessHeading`. A run that could not finish (the
+   thread fetch failed, the gate stayed red) posts `## Review feedback not
+   handled` instead, prompt arg `{{REVIEWS_FAILURE_HEADING}}`.
 2. Push new commits (or detect the agent already pushed).
 3. Post a `handled` watermark comment stamped with the newest activity time from
    the **pre-run** snapshot, so feedback posted _during_ the run is not marked
-   handled and correctly re-selects the PR next cycle. If the agent produced no
-   summary and no push, the comment notes the failure and Phoebe retries on new
-   activity.
+   handled and correctly re-selects the PR next cycle. If the agent posted the
+   failure heading, or produced no summary and no push, the comment notes the
+   failure and Phoebe retries on new activity.
 
 ## `sentry`, triage production errors (opt-in)
 

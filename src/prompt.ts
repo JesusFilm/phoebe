@@ -12,7 +12,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import type { PhoebeConfig } from "./config-schema.ts";
+import { REVIEWS_FAILURE_HEADING, type PhoebeConfig } from "./config-schema.ts";
 
 export type PromptArgs = Record<string, string>;
 
@@ -123,6 +123,7 @@ export function buildDefaultPromptArgs(config: PhoebeConfig): PromptArgs {
     RESEARCH_LABEL: config.researchLabel,
     PROCESSING_LABEL: config.processingLabel,
     REVIEWS_SUCCESS_HEADING: config.reviewsSuccessHeading,
+    REVIEWS_FAILURE_HEADING,
   };
 }
 

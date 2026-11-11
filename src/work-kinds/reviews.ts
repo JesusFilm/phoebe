@@ -13,6 +13,7 @@ import { parseFeatureIssueNumber } from "../feature-branch.ts";
 import {
   buildReviewsHandledComment,
   isPrMergeConflicting,
+  isReviewFailureComment,
   isReviewSummaryComment,
   newestReviewThreadCommentCreatedAt,
   parseLatestMarker,
@@ -48,19 +49,20 @@ type ReviewsUnit = {
   phoebeLogin: string;
 };
 
-function hasNewReviewSummaryComment(
+/** What Phoebe's own summary comments, posted since the run started, report. */
+function newReviewSummaryOutcome(
   ctx: WorkKindRunCtx,
   unit: ReviewsUnit,
   since: string,
-): boolean {
-  return ctx.github
+): { summary: boolean; failure: boolean } {
+  const bodies = ctx.github
     .reviewSummaryComments(unit.pr.prNumber)
-    .some(
-      (comment) =>
-        comment.authorLogin === unit.phoebeLogin &&
-        comment.createdAt > since &&
-        isReviewSummaryComment(comment.body),
-    );
+    .filter((comment) => comment.authorLogin === unit.phoebeLogin && comment.createdAt > since)
+    .map((comment) => comment.body);
+  return {
+    summary: bodies.some(isReviewSummaryComment),
+    failure: bodies.some(isReviewFailureComment),
+  };
 }
 
 export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
@@ -145,7 +147,7 @@ export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
             ctx.log(`Review feedback handled for PR #${pr.prNumber} — already pushed by agent.`);
           }
 
-          const hasSummary = hasNewReviewSummaryComment(ctx, unit, runStartedAt);
+          const reported = newReviewSummaryOutcome(ctx, unit, runStartedAt);
           const pushed = localCommitCount > 0 || originShaAfter !== originShaBefore;
           // Watermark only the activity captured before the agent ran (pr.threads
           // is the pre-run snapshot from fetch). Re-fetching here could absorb
@@ -155,18 +157,26 @@ export function reviewsKind(config: PhoebeConfig): AnyWorkKindDefinition {
           // the PR.
           const latestActivityAt = newestReviewThreadCommentCreatedAt(pr.threads);
 
-          if (hasSummary) {
+          // The agent's own failure heading outranks anything else it did: a run
+          // that pushed half the fixes and then got stuck has not handled the
+          // feedback, and recording it as clean would hide that (#816).
+          let failed: boolean;
+          if (reported.failure) {
+            ctx.log(`Review handling for PR #${pr.prNumber} reported it could not finish.`);
+            failed = true;
+          } else if (reported.summary) {
             ctx.log(`Review summary posted for PR #${pr.prNumber}.`);
-          } else if (!pushed) {
-            ctx.log(`Review handling for PR #${pr.prNumber} produced no summary or push.`);
+            failed = false;
+          } else {
+            if (!pushed) {
+              ctx.log(`Review handling for PR #${pr.prNumber} produced no summary or push.`);
+            }
+            failed = !pushed;
           }
 
           ctx.github.postPrComment(
             pr.prNumber,
-            buildReviewsHandledComment({
-              latestActivityAt,
-              failed: !hasSummary && !pushed,
-            }),
+            buildReviewsHandledComment({ latestActivityAt, failed }),
           );
         },
       });

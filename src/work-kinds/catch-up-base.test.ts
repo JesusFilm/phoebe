@@ -110,7 +110,11 @@ function conflictsUnit(opts: { headRefName: BranchRef; baseRefName?: BranchRef }
   };
 }
 
-function checksUnit(opts: { headRefName: BranchRef; baseRefName?: BranchRef }): unknown {
+function checksUnit(opts: {
+  headRefName: BranchRef;
+  baseRefName?: BranchRef;
+  mergeStateStatus?: string;
+}): unknown {
   return {
     ref: "pr:7",
     github: { objectType: "pr", id: 7 },
@@ -120,7 +124,7 @@ function checksUnit(opts: { headRefName: BranchRef; baseRefName?: BranchRef }): 
       ...(opts.baseRefName !== undefined ? { baseRefName: opts.baseRefName } : {}),
       headSha: asSha("f7".padEnd(40, "0")),
       mergeable: "MERGEABLE",
-      mergeStateStatus: "BEHIND",
+      mergeStateStatus: opts.mergeStateStatus ?? "BEHIND",
       failingChecks: [{ name: "ci", conclusion: "failure" }],
     },
     mergedBlockerPrNumbers: [],
@@ -173,7 +177,7 @@ describe("conflicts: the catch-up merges the PR's own base", () => {
   });
 });
 
-describe("checks: the BEHIND catch-up merges the PR's own base", () => {
+describe("checks: the catch-up and the agent pass use the PR's own base", () => {
   test("a feature member is caught up with its feature branch", async () => {
     const { ctx, recorded } = makeCtx("pushed");
     await checksKind(CONFIG).run(
@@ -191,5 +195,20 @@ describe("checks: the BEHIND catch-up merges the PR's own base", () => {
       ctx,
     );
     expect(recorded.cleanMerge).toEqual([{ branch: MEMBER_BRANCH, base: "main" }]);
+  });
+
+  test("the agent pass names the PR's base for its baseline check", async () => {
+    const { ctx, recorded } = makeCtx("pushed");
+    await checksKind(CONFIG).run(
+      checksUnit({
+        headRefName: MEMBER_BRANCH,
+        baseRefName: FEATURE_BRANCH,
+        mergeStateStatus: "CLEAN",
+      }),
+      ctx,
+    );
+    expect(recorded.cleanMerge).toEqual([]);
+    expect(recorded.prWorkflow).toHaveLength(1);
+    expect(recorded.prWorkflow[0]?.promptArgs.BASE_BRANCH).toBe(FEATURE_BRANCH);
   });
 });

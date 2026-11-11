@@ -1111,6 +1111,15 @@ export type PhoebeUserConfig = {
 };
 
 /**
+ * The heading a reviews agent opens its summary with when it could not finish:
+ * the thread list would not fetch, the gate would not go green, or it got
+ * stuck. Distinct from `reviewsSuccessHeading` so a stuck run is not read as a
+ * clean one (#816). Fixed rather than configurable: only the shipped reviews
+ * prompt names it, as `{{REVIEWS_FAILURE_HEADING}}`.
+ */
+export const REVIEWS_FAILURE_HEADING = "## Review feedback not handled";
+
+/**
  * Engine defaults for every optional user field. These land in the resolved
  * config whenever the consumer's `phoebe.config.ts` omits them, so a minimal
  * consumer config only has to name the repo and its three toolchain commands.

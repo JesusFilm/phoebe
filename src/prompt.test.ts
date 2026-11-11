@@ -99,6 +99,7 @@ describe("buildDefaultPromptArgs", () => {
       READY_LABEL: "ready-for-agent",
       PROCESSING_LABEL: "processing",
       REVIEWS_SUCCESS_HEADING: "## Review feedback addressed",
+      REVIEWS_FAILURE_HEADING: "## Review feedback not handled",
     });
   });
 });
@@ -117,6 +118,7 @@ describe("shipped default prompts", () => {
       extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42", FAILING_CHECKS: "- ci: FAILURE" },
     },
     { file: "reviews-prompt.md", extra: { PR_NUMBER: "12", PR_BRANCH: "phoebe/issue-42" } },
+    { file: "research-prompt.md", extra: { ISSUE_NUMBER: "42" } },
   ] as const;
 
   test.each(cases)(
@@ -142,17 +144,20 @@ describe("shipped default prompts", () => {
   });
 
   test("checks + conflict prompts document the baseline-breakage branch", () => {
-    // Each prompt names the branch its own work reconciles against: `checks`
-    // reasons about breakage on the default branch, `conflicts` about the PR's
-    // own base, which for a feature member is the feature branch (#392).
-    for (const [file, branchPlaceholder] of [
-      ["checks-prompt.md", "{{DEFAULT_BRANCH}}"],
-      ["conflict-prompt.md", "{{BASE_BRANCH}}"],
-    ]) {
+    // Both reason about breakage on the PR's own base, which for a feature
+    // member is the feature branch (#392) and for a stacked PR its blocker's
+    // branch. A test red on `main` but green on that base is the PR's to fix
+    // (#816).
+    for (const file of ["checks-prompt.md", "conflict-prompt.md"]) {
       const template = readFileSync(join(promptsDir, file), "utf8");
       // A baseline check against a clean checkout of that branch.
       expect(template, `${file} should describe a baseline check`).toMatch(/baseline/i);
-      expect(template).toContain(branchPlaceholder);
+      expect(template).toContain("{{BASE_BRANCH}}");
+      // An `affected`-style gate selects nothing on a clean baseline, so the
+      // baseline runs the targets that failed rather than the gate (#816).
+      expect(template, `${file} should run the failed targets`).toMatch(
+        /Run the failed targets, not the gate re-derived/,
+      );
       // The reconciliation rule: a green check gate does not clear a red test
       // suite unless every red test is baseline-only.
       expect(template).toContain("{{CHECK_COMMAND}}");
@@ -163,12 +168,44 @@ describe("shipped default prompts", () => {
     }
   });
 
-  test("the conflict prompt names the PR base, never the default branch", () => {
-    // Every merge instruction in this prompt is against the PR's own base. A
-    // stray {{DEFAULT_BRANCH}} would tell a feature member's agent to merge
-    // `main` — the merge GitHub never reported a conflict against (#392).
+  test.each(["conflict-prompt.md", "checks-prompt.md"])(
+    "%s names the PR base, never the default branch",
+    (file) => {
+      // Every merge and baseline instruction here is against the PR's own base.
+      // A stray {{DEFAULT_BRANCH}} would tell a feature member's agent to merge
+      // `main` — the merge GitHub never reported a conflict against (#392) — or
+      // to excuse a regression because `main` was red too (#816).
+      const template = readFileSync(join(promptsDir, file), "utf8");
+      expect(template).not.toContain("{{DEFAULT_BRANCH}}");
+    },
+  );
+
+  test("the checks prompt reruns a named run", () => {
+    // `gh run rerun --failed` without an ID needs a TTY to pick the run (#816).
+    const template = readFileSync(join(promptsDir, "checks-prompt.md"), "utf8");
+    expect(template).toContain("gh run rerun <run-id> --failed");
+    expect(template).not.toMatch(/gh run rerun --failed/);
+  });
+
+  test("the conflict prompt finishes the merge order after a blocker conflict", () => {
+    // The host stops at the first conflicting merge, which may be a blocker's;
+    // the agent must commit it and run the rest before verifying (#816).
     const template = readFileSync(join(promptsDir, "conflict-prompt.md"), "utf8");
-    expect(template).not.toContain("{{DEFAULT_BRANCH}}");
+    expect(template).toMatch(/run the whole merge order above again/);
+  });
+
+  test("the research prompt indexes the answer before it closes the ticket", () => {
+    // A ticket closed before its map pointer is written drops out of the
+    // research queue unindexed (#816).
+    const template = readFileSync(join(promptsDir, "research-prompt.md"), "utf8");
+    const mapStep = template.indexOf("**Append a pointer to the map");
+    const closeStep = template.indexOf("**Close the ticket");
+    expect(mapStep).toBeGreaterThan(-1);
+    expect(closeStep).toBeGreaterThan(mapStep);
+    // And the gate runs before the doc is committed, so a blocked run leaves
+    // nothing for the host to push.
+    expect(template).toMatch(/\*\*Do not commit yet\*\*/);
+    expect(template).not.toMatch(/continue without the map update/);
   });
 
   test("reviews prompt is self-contained (no external skill dependency)", () => {
@@ -180,6 +217,11 @@ describe("shipped default prompts", () => {
     expect(template).toMatch(/reviewThreads/);
     expect(template).toMatch(/resolveReviewThread/);
     expect(template).toContain("{{REVIEWS_SUCCESS_HEADING}}");
+    // A stuck run says so under its own heading, never the success one (#816).
+    expect(template).toContain("{{REVIEWS_FAILURE_HEADING}}");
+    // Pagination that fails loudly, and outdated threads judged on the code.
+    expect(template).toMatch(/--paginate/);
+    expect(template).not.toMatch(/isOutdated === false/);
   });
 });
 
