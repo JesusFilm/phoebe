@@ -28,6 +28,7 @@ import {
   tenantRow,
   tenantTokenCheck,
   remoteCheck,
+  scanDeclaredEnv,
 } from "./doctor.ts";
 import { createDeadline, DEADLINE_DETAIL } from "./doctor-deadline.ts";
 
@@ -716,6 +717,15 @@ describe("declaredEnvCheck", () => {
     expect(declaredEnvCheck(null, "/etc/phoebe/.env").state).toBe("unknown");
   });
 
+  test("an unknown names the error that stopped the scan", () => {
+    const check = declaredEnvCheck(
+      { error: "phoebe.config.ts is missing required field(s): repoSlug." },
+      "/etc/phoebe/.env",
+    );
+    expect(check.state).toBe("unknown");
+    expect(check.detail).toContain("missing required field(s): repoSlug");
+  });
+
   test("the check only appears when the caller ran the scan", async () => {
     const mockFetch = async () =>
       new Response(JSON.stringify({ id: 1, name: "widget" }), { status: 200 });
@@ -729,6 +739,58 @@ describe("declaredEnvCheck", () => {
       inContainer: false,
     });
     expect(row.checks.find((check) => check.id === "declared-env")).toBeUndefined();
+  });
+});
+
+describe("scanDeclaredEnv", () => {
+  const DECLARING_KIND = `export default {
+  name: "nudge",
+  oneShotEligible: true,
+  promptFile: "prompts/custom.md",
+  workspace: "scratch",
+  requiredEnv: ["SLACK_BOT_TOKEN"],
+  report: { noun: "nudge(s)", describe: (unit) => unit.ref },
+  fetch: () => Promise.resolve([]),
+  select: () => ({ unit: null, skipped: [], total: 0 }),
+  run: () => Promise.resolve(),
+};
+`;
+  const GOVERNING_CONFIG = `export default {
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+  pipelines: { intake: { kinds: { nudge: "./nudge.ts" } } },
+};
+`;
+
+  test("a pointer tenant is scanned on the config it points at (#821)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-pointer-"));
+    const root = join(dir, "phoebe.config.ts");
+    writeFileSync(root, `export default { configDir: ".phoebe" };\n`);
+    mkdirSync(join(dir, ".phoebe"));
+    writeFileSync(join(dir, ".phoebe", "phoebe.config.ts"), GOVERNING_CONFIG);
+    // The kind path resolves against the governing config's directory, so the
+    // module sits beside it and not beside the pointer.
+    writeFileSync(join(dir, ".phoebe", "nudge.ts"), DECLARING_KIND);
+
+    expect(await scanDeclaredEnv({ configPath: root, env: {} })).toEqual([
+      { pipeline: "intake", kind: "nudge", key: "SLACK_BOT_TOKEN" },
+    ]);
+    expect(await scanDeclaredEnv({ configPath: root, env: { SLACK_BOT_TOKEN: "x" } })).toEqual([]);
+  });
+
+  test("a config that will not resolve answers with the first line of its error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-unresolved-"));
+    const root = join(dir, "phoebe.config.ts");
+    writeFileSync(root, `export default { repoSlug: "acme/widget" };\n`);
+
+    const scan = await scanDeclaredEnv({ configPath: root, env: {} });
+    expect(Array.isArray(scan)).toBe(false);
+    const { error } = scan as { error: string };
+    expect(error).toMatch(/missing required field\(s\)/);
+    expect(error).not.toContain("\n");
   });
 });
 

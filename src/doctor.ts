@@ -108,6 +108,7 @@ import {
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
 import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store.ts";
+import { followConfigPointer } from "./config-pointer.ts";
 import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
 import {
   createWorktreeInspector,
@@ -146,6 +147,12 @@ import { DOCTOR_LEASE_ENV, parseDoctorLeases, type DoctorLeases } from "./doctor
 // checks below, which reach GitHub, git, npm and the data volume. Re-exported
 // here so every existing reader goes on importing them off this module.
 export type { CheckState, DoctorCheck, DoctorReport, MissingDeclaredEnvKey, TenantDoctorRow };
+
+/**
+ * What {@link scanDeclaredEnv} answers: the declared keys a tenant's scheduled
+ * kinds cannot read, or the first line of the error that stopped the scan.
+ */
+export type DeclaredEnvScan = MissingDeclaredEnvKey[] | { error: string };
 
 /** One check a run did not get to before {@link DOCTOR_DEADLINE_MS} (#507 §7). */
 function deadlineCheck(id: string): DoctorCheck {
@@ -1121,10 +1128,13 @@ async function mapBounded<T, R>(
 }
 
 /**
- * Which declared keys (#425) a tenant's scheduled kinds cannot read. Null when
- * the question could not be answered at all — a config that will not load, a
- * custom kind module that throws — which the check reports as `unknown` rather
- * than inventing a shortfall out of a different fault.
+ * Which declared keys (#425) a tenant's scheduled kinds cannot read, or why the
+ * question could not be answered at all — a config that will not load, a custom
+ * kind module that throws — which the check reports as `unknown` rather than
+ * inventing a shortfall out of a different fault.
+ *
+ * A tenant whose root config is a pointer (#663) is scanned on the governing
+ * config it points at, the same file boot runs the tenant on.
  *
  * Loading kind modules installs the resolved config on a process-wide holder,
  * so this is deliberately awaited one tenant at a time, ahead of the concurrent
@@ -1133,11 +1143,12 @@ async function mapBounded<T, R>(
 export async function scanDeclaredEnv(opts: {
   configPath: string;
   env: Record<string, string | undefined>;
-}): Promise<MissingDeclaredEnvKey[] | null> {
+}): Promise<DeclaredEnvScan> {
   try {
-    const user = await loadUserConfig(opts.configPath);
+    const configPath = await followConfigPointer(opts.configPath);
+    const user = await loadUserConfig(configPath);
     const config = resolveConfig(user, { dataBase: resolveDataBase(process.env) });
-    const declarations = await enumerateDeclaredEnv(config, dirname(opts.configPath));
+    const declarations = await enumerateDeclaredEnv(config, dirname(configPath));
     return declarations.flatMap(({ pipeline, kind, keys }) =>
       keys
         .filter((key) => {
@@ -1146,8 +1157,9 @@ export async function scanDeclaredEnv(opts: {
         })
         .map((key) => ({ pipeline, kind, key })),
     );
-  } catch {
-    return null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { error: message.split("\n")[0]!.trim() };
   }
 }
 
@@ -1156,15 +1168,19 @@ export async function scanDeclaredEnv(opts: {
  * engine child would refuse to boot on exactly this, so doctor says so first —
  * the same relationship the prompt-file check has with its boot assertion.
  */
-export function declaredEnvCheck(
-  missing: MissingDeclaredEnvKey[] | null,
-  envLabel: string,
-): DoctorCheck {
+export function declaredEnvCheck(missing: DeclaredEnvScan | null, envLabel: string): DoctorCheck {
   if (missing === null) {
     return {
       id: "declared-env",
       state: "unknown",
       detail: "not evaluated (config or work-kind modules failed to load)",
+    };
+  }
+  if (!Array.isArray(missing)) {
+    return {
+      id: "declared-env",
+      state: "unknown",
+      detail: `not evaluated (config or work-kind modules failed to load: ${missing.error})`,
     };
   }
   if (missing.length === 0) {
@@ -1451,7 +1467,7 @@ export async function tenantRow(fields: {
    * ask — the sweep runs the scan itself, sequentially, because loading kind
    * modules is not safe to interleave.
    */
-  declaredEnv?: MissingDeclaredEnvKey[] | null;
+  declaredEnv?: DeclaredEnvScan | null;
   /** Where tenant data lives, for the `stale-state` check (#426). */
   dataBase?: string;
   /**
@@ -2014,7 +2030,7 @@ export async function runDoctor(
     // PHOEBE_* overlay — so an edit mid-sweep cannot split one report.
     const dotenvByTenant = new Map<string, Record<string, string>>();
     const storeByTenant = new Map<string, TenantSecretStore>();
-    const declaredEnvByTenant = new Map<string, MissingDeclaredEnvKey[] | null>();
+    const declaredEnvByTenant = new Map<string, DeclaredEnvScan | null>();
     for (const tenant of enumeration.tenants) {
       // The store over the file, exactly as the supervisor builds the child's
       // env (#504): every check below asks what the child would hold, and after
