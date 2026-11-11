@@ -11,6 +11,7 @@ import {
 import { prScopeAdmits } from "./pr-scope.ts";
 import { config } from "./resolved-config.ts";
 import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
+import { PHOEBE_BLOCKED_LABEL } from "./blocked.ts";
 import type { Feature } from "./feature-branch.ts";
 
 export type Issue = {
@@ -248,6 +249,7 @@ export function unresolvedBlockerNumbers(
   const waiting = new Set<number>();
   for (const issue of issues) {
     if (issue.labels.includes(PHOEBE_QUARANTINE_LABEL)) continue;
+    if (issue.labels.includes(PHOEBE_BLOCKED_LABEL)) continue;
     if (processingLabel && issue.labels.includes(processingLabel)) continue;
     if (isLandedMember(issue, config.mergedLabel)) continue;
     if (resolveWorktreeBase(issue, blockerStates, phoebeBase, featureOf)) continue;
@@ -268,7 +270,8 @@ export function selectIssue(
   resolveFeatureFor?: FeatureLookup,
 ): { issue: Issue; resolution: BaseResolution } | null {
   // Quarantined issues/research tickets (#75) are skipped for work until a human
-  // clears the label or the issue is edited (the auto-un-stick sweep).
+  // clears the label or the issue is edited (the auto-un-stick sweep). Blocked
+  // tickets (`phoebe:blocked`, #817) are skipped until a human removes that label.
   // Already-claimed issues (carrying processingLabel) are skipped so the engine
   // never double-picks an issue that another run is already working (#365), and
   // landed members (carrying mergedLabel) so a member whose work is done is never
@@ -276,6 +279,7 @@ export function selectIssue(
   const eligible = issues.filter(
     (issue) =>
       !issue.labels.includes(PHOEBE_QUARANTINE_LABEL) &&
+      !issue.labels.includes(PHOEBE_BLOCKED_LABEL) &&
       (!processingLabel || !issue.labels.includes(processingLabel)) &&
       !isLandedMember(issue, config.mergedLabel),
   );

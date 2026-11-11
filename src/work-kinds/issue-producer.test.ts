@@ -445,6 +445,13 @@ describe("issueProducerKind idle line — landed members (#485)", () => {
     expect(idleLine(issues, () => null)).toContain("(waiting on blockers #98)");
   });
 
+  test("a blocked ticket is counted as waiting on a human (#817)", () => {
+    const blocked = anIssue(12, { labels: [BASE_CONFIG.readyLabel, "phoebe:blocked"] });
+    expect(idleLine([inProgress(1), blocked], () => null)).toContain(
+      "(1 in progress, 1 waiting on a human)",
+    );
+  });
+
   test("with nothing landed and nothing claimed the fallback is unchanged", () => {
     expect(idleLine([anIssue(11)], () => null)).toContain("(blocked or waiting on blocker PR)");
   });

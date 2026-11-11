@@ -52,6 +52,7 @@ import {
   buildUnstickComment,
   PHOEBE_QUARANTINE_LABEL,
 } from "./quarantine.ts";
+import { BLOCKED_MARKER, buildBlockedComment } from "./blocked.ts";
 import { createEngine, type EngineRunOptions } from "./main.ts";
 import type { DrainSignal } from "./drain.ts";
 import { CredentialRefreshBlockedError, type CredentialClient } from "./credential-client.ts";
@@ -2007,6 +2008,86 @@ describe("the stranded-unit sweep", () => {
     expect(result.lines).toContain(
       "[fleet:acme/widget:work] Re-armed issue #7 — stranded with no PR.",
     );
+  });
+
+  // #817: a run that said it needs a human is labelled phoebe:blocked, not
+  // re-armed, and that counts no unproductive run against the ticket.
+  describe("a run that left a blocked marker", () => {
+    function blockedInputs(extra: { body: string; authorLogin: string }[] = []) {
+      return () => ({
+        comments: [
+          {
+            body: `The Question needs a product decision.\n\n${BLOCKED_MARKER}`,
+            createdAt: "2026-01-01T00:00:00Z",
+            authorLogin: PHOEBE_LOGIN,
+          },
+          ...extra.map((c) => ({ ...c, createdAt: "2026-01-02T00:00:00Z" })),
+        ],
+        extraActivityAt: null,
+        baseline: "body:aabbcc",
+      });
+    }
+
+    test("is labelled phoebe:blocked with no unproductive-run marker", async () => {
+      const { writes, overrides } = writeRecorder();
+      overrides.issueTimeoutInputs = blockedInputs();
+      const result = await sweepCycle({
+        ...overrides,
+        listLabeledIssues: () => [claimed(7)],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+      });
+
+      expect(writes).toEqual([
+        "add-label issue #7 phoebe:blocked",
+        "remove-label issue #7 processing",
+        `comment issue #7 ${buildBlockedComment()}`,
+      ]);
+      expect(result.lines).toContain(
+        `${TAG} Labelled issue #7 phoebe:blocked — its run says it needs a human.`,
+      );
+    });
+
+    test("creates the label in a repo that has never seen it", async () => {
+      const { writes, overrides } = writeRecorder();
+      overrides.issueTimeoutInputs = blockedInputs();
+      let added = false;
+      overrides.addIssueLabel = (issueNumber, label) => {
+        if (!added) {
+          added = true;
+          throw Object.assign(new Error("gh failed"), {
+            stderr: `GraphQL: Label not found: ${label} (addLabelsToLabelable)`,
+          });
+        }
+        writes.push(`add-label issue #${issueNumber} ${label}`);
+      };
+      await sweepCycle({
+        ...overrides,
+        listLabeledIssues: () => [claimed(7)],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+      });
+
+      expect(writes.slice(0, 3)).toEqual([
+        "create-label phoebe:blocked",
+        "add-label issue #7 phoebe:blocked",
+        "remove-label issue #7 processing",
+      ]);
+    });
+
+    test("a marker the engine already acknowledged is spent, so the claim is re-armed", async () => {
+      const { writes, overrides } = writeRecorder();
+      overrides.issueTimeoutInputs = blockedInputs([
+        { body: buildBlockedComment(), authorLogin: PHOEBE_LOGIN },
+      ]);
+      await sweepCycle({
+        ...overrides,
+        listLabeledIssues: () => [claimed(7)],
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+      });
+
+      expect(writes).toContain("remove-label issue #7 processing");
+      expect(writes).not.toContain("add-label issue #7 phoebe:blocked");
+      expect(writes.some((w) => w.includes("phoebe-unit-timeout"))).toBe(true);
+    });
   });
 });
 
