@@ -132,13 +132,15 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
           `${pr.failingChecks.map((c) => c.name).join(", ")}.`,
       );
       ctx.origin.fetch();
+      // The PR's own base, not the default branch: a feature member is behind
+      // its feature branch, and merging `main` here would neither catch it up
+      // nor leave a diff its reviewer recognises (#392). The agent's baseline
+      // check runs against the same branch, so a test red on `main` but green
+      // on the feature branch still counts as this PR's breakage (#816).
+      const base = baseBranchOf(pr, ctx);
 
       if (pr.mergeStateStatus === "BEHIND") {
         const merged = unit.mergedBlockerPrNumbers;
-        // The PR's own base, not the default branch: a feature member is behind
-        // its feature branch, and merging `main` here would neither catch it up
-        // nor leave a diff its reviewer recognises (#392).
-        const base = baseBranchOf(pr, ctx);
         if (merged.length > 0) {
           ctx.log(
             `Behind ${base} — catch-up merging blocker PR(s) ${merged.map((n) => `#${n}`).join(", ")} ` +
@@ -177,6 +179,7 @@ export function checksKind(config: PhoebeConfig): AnyWorkKindDefinition {
         promptArgs: {
           PR_NUMBER: String(pr.prNumber),
           PR_BRANCH: pr.headRefName,
+          BASE_BRANCH: base,
           FAILING_CHECKS: formatFailingChecksForPrompt(pr.failingChecks),
         },
         onResult: ({ originShaBefore, originShaAfter, localCommitCount, push }) => {

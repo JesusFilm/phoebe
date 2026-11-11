@@ -2,7 +2,12 @@
 // Kept separate from main.ts so it can be unit-tested without Docker/gh.
 
 import { asBranchRef, asSha, type BranchRef, type PrNumber, type Sha } from "./branded.ts";
-import { WORK_KIND_NAMES, type PrScope, type WorkKindName } from "./config-schema.ts";
+import {
+  REVIEWS_FAILURE_HEADING,
+  WORK_KIND_NAMES,
+  type PrScope,
+  type WorkKindName,
+} from "./config-schema.ts";
 import { prScopeAdmits } from "./pr-scope.ts";
 import { config } from "./resolved-config.ts";
 import { PHOEBE_QUARANTINE_LABEL } from "./quarantine.ts";
@@ -784,8 +789,16 @@ export function parseReviewsHandledWatermark(text: string): ReviewsHandledWaterm
   return { latest: match[1]! };
 }
 
+export function isReviewFailureComment(body: string): boolean {
+  return body.includes(REVIEWS_FAILURE_HEADING);
+}
+
+/**
+ * A clean-run summary. A failure summary is never one, even when a custom
+ * `reviewsSuccessHeading` happens to be a substring of the failure heading.
+ */
 export function isReviewSummaryComment(body: string): boolean {
-  return body.includes(config.reviewsSuccessHeading);
+  return body.includes(config.reviewsSuccessHeading) && !isReviewFailureComment(body);
 }
 
 export function isActivityNewerThanWatermark(

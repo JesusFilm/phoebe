@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { config as sampleUserConfig } from "../.phoebe/phoebe.config.ts";
 import { asBranchRef, asPrNumber, asSha, type Sha } from "./branded.ts";
-import { resolveConfig } from "./config-schema.ts";
+import { REVIEWS_FAILURE_HEADING, resolveConfig } from "./config-schema.ts";
 import { config as installedConfig, setResolvedConfig } from "./resolved-config.ts";
 import {
   buildChecksFailWatermarkMarker,
@@ -20,6 +20,7 @@ import {
   isPhoebeHeadBranch,
   isPrInScope,
   isPrMergeConflicting,
+  isReviewFailureComment,
   isReviewSummaryComment,
   issueBranch,
   listFailingChecks,
@@ -2082,6 +2083,13 @@ describe("isReviewSummaryComment", () => {
       true,
     );
     expect(isReviewSummaryComment("Phoebe update")).toBe(false);
+  });
+
+  test("a failure summary is never a clean one", () => {
+    const failure = `${REVIEWS_FAILURE_HEADING}\n\nThread fetch failed on page 2.`;
+    expect(isReviewFailureComment(failure)).toBe(true);
+    expect(isReviewSummaryComment(failure)).toBe(false);
+    expect(isReviewFailureComment("## Review feedback addressed\n\n**Fixed:** 1")).toBe(false);
   });
 });
 

@@ -26,7 +26,12 @@ When `{{BLOCKER_PR_NUMBERS}}` is empty, merge `origin/{{BASE_BRANCH}}` only (sta
 
 ## Workflow
 
-1. **Assess** — run `git status`. If no merge is in progress, run the merge order above from scratch.
+1. **Assess** — run `git status`. The host ran the merge order and stopped at the first merge that conflicted, which may be a blocker merge with more merges still to come.
+   - **A merge is in progress** — resolve it (step 2), then commit it with a message from step 4. Then **run the whole merge order above again**, from the first blocker. A merge that already landed is a no-op ("Already up to date"); a later one picks up where the host stopped. If another merge conflicts, resolve and commit it the same way, and repeat until every step of the merge order has run.
+   - **No merge is in progress** — run the merge order above from scratch.
+
+   Move on to step 3 only once the final `origin/{{BASE_BRANCH}}` merge is committed. Verifying or pushing after a blocker merge alone leaves the PR still conflicting with `{{BASE_BRANCH}}`.
+
 2. **Resolve** — fix every conflicted file. Prefer preserving both sides' intent; do not drop unrelated changes from `{{BASE_BRANCH}}` or this branch.
    - **Relocated / superseded code is not a blocker.** A conflict often looks unresolvable because this PR _deletes_ code that `{{BASE_BRANCH}}` added (or vice versa). That is legitimate when the PR **moved or superseded** that code elsewhere — a refactor that lifts logic into a new module, hook, or store keeps the behaviour while removing it from the conflict site. Before assuming you must keep both sides, check whether the code you'd drop still lives elsewhere in the merged tree — **excluding the conflicted file(s) themselves**, which still hold both sides mid-merge and would match the very hunk you are about to delete:
      ```sh
@@ -38,16 +43,17 @@ When `{{BLOCKER_PR_NUMBERS}}` is empty, merge `origin/{{BASE_BRANCH}}` only (sta
      ```
      git worktree add /tmp/baseline origin/{{BASE_BRANCH}}
      ```
-     install (`{{INSTALL_COMMAND}}`) and run `{{TEST_COMMAND}}` there, then `git worktree remove /tmp/baseline`.
+     install (`{{INSTALL_COMMAND}}`) and run there **the targets that failed on the merged tree**, named explicitly, then `git worktree remove /tmp/baseline`.
+   - **Run the failed targets, not the gate re-derived.** A test command that picks its targets from a diff (`nx affected`, `turbo run --filter=...[origin/main]`, anything with a `--base`/`--since`) selects nothing on a clean baseline and exits 0. That green proves nothing. Invoke the same projects and tests that failed after the merge, in whatever form the repo's tooling takes (`nx run-many -t test -p <projects>`, the test runner on the failing files).
    - Failures **present on the baseline** are pre-existing and out of scope for this reconciliation — do **not** fix them here. Proceed once the merge's own gate is green (`{{CHECK_COMMAND}}` passes and the merge introduced no _new_ test failures), then note the pre-existing failures in a PR comment and, if no tracking issue covers them, open one:
      ```
      gh issue create --title "<baseline test failure>" --body "<what fails on {{BASE_BRANCH}}, and where you saw it>"
      ```
    - A green `{{CHECK_COMMAND}}` with a red `{{TEST_COMMAND}}` clears you only when every red test is baseline-only. Any failure the **merge** introduced must be fixed before you push.
-4. **Commit** — stage the resolution and commit each merge (e.g. `Phoebe: merge blocker PR #N into {{PR_BRANCH}}`, then `Phoebe: merge {{BASE_BRANCH}} into {{PR_BRANCH}}`). Do **not** force-push.
+4. **Commit** — every merge is committed by now (step 1); commit any fix the gate needed on top, with the `Phoebe:` prefix. Merge commits read like `Phoebe: merge blocker PR #N into {{PR_BRANCH}}`, then `Phoebe: merge {{BASE_BRANCH}} into {{PR_BRANCH}}`. Do **not** force-push.
 5. **Push** — `git push origin {{PR_BRANCH}}`.
 6. **Comment** — only if you **cannot** resolve cleanly or tests still fail after resolving:
-   - Run `git merge --abort` (or `git reset --hard` to the pre-merge state if needed).
+   - Run `git merge --abort` if a merge is still in progress, then `git reset --hard origin/{{PR_BRANCH}}` to drop any merge you already committed in step 1.
    - Leave a PR comment explaining what conflicts and that auto-resolution failed:
      ```
      gh pr comment {{PR_NUMBER}} --body "<explanation>"
