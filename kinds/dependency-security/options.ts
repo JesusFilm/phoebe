@@ -2,6 +2,11 @@
 // registration so a bad block fails the pipeline list rather than a scan.
 // Everything has a default; an empty block, or none, is a working detector.
 
+import {
+  BOOTSTRAPPER_PIN_DEFAULT,
+  BOOTSTRAPPER_PIN_MODES,
+  type BootstrapperPinMode,
+} from "../dependencies/bootstrapper.ts";
 import { SEVERITIES, type Severity } from "../dependencies/candidate.ts";
 import {
   everyPeriod,
@@ -26,6 +31,8 @@ export type DependencySecurityOptions = {
   minSeverity: Severity;
   /** The routing label the `dependencies` kind lists. Never the tenant's ready label. */
   label: string;
+  /** `skip` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `propose` files it. */
+  bootstrapperPin: BootstrapperPinMode;
 };
 
 export const DEPENDENCY_SECURITY_OPTION_DEFAULTS: DependencySecurityOptions = {
@@ -33,6 +40,7 @@ export const DEPENDENCY_SECURITY_OPTION_DEFAULTS: DependencySecurityOptions = {
   sources: [NATIVE_SOURCE_NAME, AGENT_SOURCE_NAME],
   minSeverity: MIN_SEVERITY_DEFAULT,
   label: "phoebe:dependencies",
+  bootstrapperPin: BOOTSTRAPPER_PIN_DEFAULT,
 };
 
 const OPTION_KEYS: readonly (keyof DependencySecurityOptions)[] = [
@@ -40,6 +48,7 @@ const OPTION_KEYS: readonly (keyof DependencySecurityOptions)[] = [
   "sources",
   "minSeverity",
   "label",
+  "bootstrapperPin",
 ];
 
 /** The labels every issue of this kind wears, so none can be the routing label. */
@@ -78,5 +87,9 @@ export function resolveDependencySecurityOptions(
         ? defaults.minSeverity
         : oneOf(at, "minSeverity", raw["minSeverity"], SEVERITIES),
     label: routingLabel(at, raw["label"] ?? defaults.label),
+    bootstrapperPin:
+      raw["bootstrapperPin"] === undefined
+        ? defaults.bootstrapperPin
+        : oneOf(at, "bootstrapperPin", raw["bootstrapperPin"], BOOTSTRAPPER_PIN_MODES),
   };
 }

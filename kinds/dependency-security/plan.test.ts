@@ -9,7 +9,7 @@ import type { PhoebeLabel } from "../../src/labels.ts";
 import { planSecurity } from "./plan.ts";
 
 const routingLabel: PhoebeLabel = { name: "phoebe:dependencies", description: "" };
-const options = { minSeverity: "high" as const, routingLabel };
+const options = { minSeverity: "high" as const, routingLabel, bootstrapperPin: "skip" as const };
 
 function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -147,6 +147,22 @@ describe("planSecurity", () => {
     expect(body).toContain("| `web/package.json` | prod | 6.5.2 | 6.5.3 | not known |");
     expect(body).toContain("bump of the dependency that pulls it in");
     expect(body).toContain("override");
+  });
+
+  test("an advisory on the Dockerfile's phoebe-agent pin is left to phoebe upgrade, unless asked for", () => {
+    const pin = candidate("phoebe-agent", {
+      manager: "dockerfile",
+      current: "0.7.1",
+      workspace: "container/Dockerfile",
+      advisories: [advisory("GHSA-pin", "high", "0.7.2")],
+    });
+    const skipped = planSecurity([pin], options);
+    expect(skipped.planned).toEqual([]);
+    expect(skipped.bootstrapper).toBe(1);
+
+    const proposed = planSecurity([pin], { ...options, bootstrapperPin: "propose" });
+    expect(proposed.planned.map((p) => p.bundle.group)).toEqual(["security:phoebe-agent"]);
+    expect(proposed.bootstrapper).toBe(0);
   });
 
   test("routed issues come before tracking ones, one bundle per package", () => {

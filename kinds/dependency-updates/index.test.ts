@@ -253,7 +253,8 @@ describe("run", () => {
       "sources: native 2 candidate(s), renovate 3 candidate(s), agent failed (not configured in this test).",
     );
     expect(logged).toContain(
-      "4 candidate(s): 0 ignored, 1 not yet mature, 0 failed 2 times; 2 bundle(s).",
+      "4 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 0 ignored, 1 not yet mature, " +
+        "0 failed 2 times; 2 bundle(s).",
     );
   });
 
@@ -285,6 +286,44 @@ describe("run", () => {
     await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock));
     // a is left, b refreshed, c vetoed; a and b fill the cap of 2, so d and e wait.
     expect(writes).toEqual(["update #2", "comment #2"]);
+  });
+
+  // #810: the agent source read this repo's container template and proposed
+  // the bootstrapper pin, which moved it without the engine ref.
+  const bootstrapperPin = (workspace: string) =>
+    candidate("phoebe-agent", {
+      manager: "dockerfile",
+      current: "0.7.1",
+      target: "0.16.0",
+      publishedAt: "2026-10-30T00:00:00Z",
+      workspace,
+    });
+
+  test.each(["templates/container/Dockerfile", "container/Dockerfile"])(
+    "files no bundle for the phoebe-agent pin in %s by default",
+    async (workspace) => {
+      const kind = kindWith({}, { agent: [bootstrapperPin(workspace)] });
+      const { overrides, writes } = gitHub();
+      const logged: string[] = [];
+      await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock, logged));
+      expect(writes).toEqual([]);
+      expect(logged).toContain(
+        "1 candidate(s): 1 bootstrapper pin(s) left to `phoebe upgrade`, 0 ignored, 0 not yet mature, " +
+          "0 failed 2 times; 0 bundle(s).",
+      );
+    },
+  );
+
+  test("`bootstrapperPin: propose` files the pin like any other dependency", async () => {
+    const kind = kindWith(
+      { bootstrapperPin: "propose" },
+      { agent: [bootstrapperPin("container/Dockerfile")] },
+    );
+    const { overrides, writes } = gitHub();
+    await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock));
+    expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+      "create #100 Update phoebe-agent to 0.16.0",
+    ]);
   });
 
   test("a bump the implementer dropped is re-filed on its own", async () => {

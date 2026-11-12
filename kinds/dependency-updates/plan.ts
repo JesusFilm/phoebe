@@ -1,9 +1,10 @@
 // From the sources' union to the bundles this kind files (ADR 0003): drop the
-// ignored packages and the releases still ageing, keep one target per
+// bootstrapper pin unless the tenant asked for it (#832), the ignored packages and the releases still ageing, keep one target per
 // release line, set aside the bumps the implementer already failed, and
 // group the rest. Pure: the clock and the failure record come in as values.
 
 import { parseDropped } from "../dependencies-work/dropped.ts";
+import { withoutBootstrapperPin } from "../dependencies/bootstrapper.ts";
 import { byText, compareCandidates, type Candidate } from "../dependencies/candidate.ts";
 import { groupCandidates, patternRegExp, type Bundle } from "../dependencies/grouping.ts";
 import type { PlannedBundle } from "../dependencies/filing.ts";
@@ -105,7 +106,7 @@ function groupBySide(
 export type Plan = {
   planned: PlannedBundle[];
   /** How many candidates each rule turned away. */
-  dropped: { ignored: number; immature: number; failedTwice: number };
+  dropped: { bootstrapper: number; ignored: number; immature: number; failedTwice: number };
 };
 
 /**
@@ -119,9 +120,10 @@ export function planBundles(
   now: Date,
   failures: Failures,
 ): Plan {
+  const pinless = withoutBootstrapperPin(candidates, options.bootstrapperPin);
   const ignores = options.ignore.map(patternRegExp);
-  const kept = candidates.filter((c) => !ignores.some((re) => re.test(c.package)));
-  const ignored = candidates.length - kept.length;
+  const kept = pinless.kept.filter((c) => !ignores.some((re) => re.test(c.package)));
+  const ignored = pinless.kept.length - kept.length;
 
   // Only an advisory under the threshold lets its fix skip the wait here; one
   // at or over it belongs to dependency-security.
@@ -175,6 +177,6 @@ export function planBundles(
   const advised = (p: PlannedBundle) => p.bundle.candidates.some((c) => c.advisories.length > 0);
   return {
     planned: [...planned.filter(advised), ...planned.filter((p) => !advised(p))],
-    dropped: { ignored, immature, failedTwice },
+    dropped: { bootstrapper: pinless.skipped, ignored, immature, failedTwice },
   };
 }

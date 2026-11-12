@@ -578,6 +578,18 @@ A separate pipeline is safe because a dependency ticket never wears
 but `dependency-updates` alone does not. The stranded sweep tells the two apart by each kind's `unitLabel`
 ([`work-kinds.md` → The unit and its `ref`](work-kinds.md#the-unit-and-its-ref)).
 
+**The bootstrapper pin moves with `phoebe upgrade`.** A deployment's
+`container/Dockerfile` pins `phoebe-agent` in `ARG PHOEBE_AGENT_VERSION`, and
+that pin has to stay in step with the engine ref in `phoebe.config.ts`. A
+dependency issue would move the pin alone, and merging that PR can leave the
+deployment that merged it running a launcher its engine was never tested with.
+So both detectors skip the pin, whichever source finds it, and log how many they
+skipped. Move the two together with `phoebe upgrade --both`
+([`upgrading.md`](upgrading.md)). To have the bot file the pin like any other
+dependency, set `bootstrapperPin: "propose"` on `dependency-updates`, and on
+`dependency-security` too if you want its advisories filed. A `phoebe-agent` in
+a `package.json` is an ordinary dependency and is never skipped.
+
 **Memory.** The `renovate` source needs a container memory limit of at least
 4 GiB on a repo the size of `JesusFilm/core`. Renovate peaked near 3 GiB there.
 Under a 2 GiB limit it died without writing a report, and under 4 GiB it
@@ -605,6 +617,7 @@ The scaffolded `container/compose.yml` sets no limit. If you add one, keep it at
 | `majors`            | `"individual"`                        | `"individual"` files every major on its own; `"follow-strategy"` groups it like the rest.                                       |
 | `label`             | `"phoebe:dependencies"`               | The routing label. Must match the `dependencies` kind's `label` and must not be `readyLabel`.                                   |
 | `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once, issues and PRs together. `0` is no cap.                                                    |
+| `bootstrapperPin`   | `"skip"`                              | `"skip"` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `"propose"` files it like any other dependency.        |
 
 A partial `maturity` or `grouping.strategy` block keeps the defaults for the
 fields it leaves out.
@@ -613,12 +626,13 @@ fields it leaves out.
 
 `path: "phoebe-agent/kinds/dependency-security"`
 
-| Option        | Default                 | Meaning                                                                                                                                |
-| ------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `every`       | `"1h"`                  | How long one scan's results stand, in the same form as above.                                                                          |
-| `sources`     | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                                      |
-| `minSeverity` | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are left to `dependency-updates`.                                         |
-| `label`       | `"phoebe:dependencies"` | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`. |
+| Option            | Default                 | Meaning                                                                                                                                |
+| ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`           | `"1h"`                  | How long one scan's results stand, in the same form as above.                                                                          |
+| `sources`         | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                                      |
+| `minSeverity`     | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are left to `dependency-updates`.                                         |
+| `label`           | `"phoebe:dependencies"` | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`. |
+| `bootstrapperPin` | `"skip"`                | `"skip"` files no advisory on the Dockerfile's `phoebe-agent` pin; `"propose"` files it like any other.                                |
 
 It has no `prConcurrentLimit`, so a copy of that field from the updates block
 is refused. A `readyLabel` of `dependencies` or `security` fails registration,

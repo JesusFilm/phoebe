@@ -95,6 +95,10 @@ launching anything if the running launcher is below it, naming both versions and
 the fix. Refusing to start is the point: the skew it prevents otherwise shows up
 as a container that boots, logs normally, and then does nothing.
 
+The dependency bot leaves this pin alone by default, because a dependency PR
+would move it without the engine ref
+([`configuration.md`](configuration.md#the-dependency-kinds)).
+
 To fix a violation, move the launcher pin and rebuild:
 
 ```bash

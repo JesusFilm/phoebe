@@ -22,6 +22,7 @@ describe("resolveDependencyUpdatesOptions", () => {
       majors: "individual",
       label: "phoebe:dependencies",
       prConcurrentLimit: 5,
+      bootstrapperPin: "skip",
     });
   });
 
@@ -38,6 +39,7 @@ describe("resolveDependencyUpdatesOptions", () => {
           majors: "follow-strategy",
           label: "deps",
           prConcurrentLimit: 0,
+          bootstrapperPin: "propose",
         },
         at,
       ),
@@ -54,6 +56,7 @@ describe("resolveDependencyUpdatesOptions", () => {
       majors: "follow-strategy",
       label: "deps",
       prConcurrentLimit: 0,
+      bootstrapperPin: "propose",
     });
   });
 
@@ -65,6 +68,7 @@ describe("resolveDependencyUpdatesOptions", () => {
 
   test.each([
     [{ evry: "1d" }, "kinds.dependency-updates: unknown option `evry`"],
+    [{ bootstrapperPin: true }, "`bootstrapperPin` must be one of skip, propose"],
     [{ every: "daily" }, "`every` must be a period"],
     [{ every: "0h" }, "`every` must be a period"],
     [{ sources: [] }, "`sources` must be a non-empty array"],

@@ -1,6 +1,8 @@
 // From the sources' union to the issues this kind files (ADR 0003). Pure: no
 // clock, no GitHub.
 //
+//   - The bootstrapper pin goes unless the tenant asked for it (#832): it
+//     moves with the engine ref, through `phoebe upgrade`.
 //   - Each occurrence of a package (manager, package, current version,
 //     dependency type, workspace) is collapsed across every target the
 //     sources proposed, its advisories unioned by id.
@@ -15,6 +17,7 @@
 //     otherwise. Its key does not change between the two, so the tracking
 //     issue is the one refreshed and labelled once a fix ships.
 
+import { withoutBootstrapperPin, type BootstrapperPinMode } from "../dependencies/bootstrapper.ts";
 import {
   byText,
   compareCandidates,
@@ -37,6 +40,8 @@ export type SecurityPlan = {
   planned: PlannedSecurityBundle[];
   /** Occurrences carrying advisories, every one under `minSeverity`. */
   below: number;
+  /** Bootstrapper pins left to `phoebe upgrade`. */
+  bootstrapper: number;
 };
 
 /**
@@ -71,9 +76,14 @@ function securityTarget(c: Candidate, minSeverity: Severity): Candidate | null {
  */
 export function planSecurity(
   candidates: readonly Candidate[],
-  options: { minSeverity: Severity; routingLabel: PhoebeLabel },
+  options: {
+    minSeverity: Severity;
+    routingLabel: PhoebeLabel;
+    bootstrapperPin: BootstrapperPinMode;
+  },
 ): SecurityPlan {
-  const advised = collapse(candidates).filter((c) => c.advisories.length > 0);
+  const pinless = withoutBootstrapperPin(candidates, options.bootstrapperPin);
+  const advised = collapse(pinless.kept).filter((c) => c.advisories.length > 0);
   const severe = advised
     .map((c) => securityTarget(c, options.minSeverity))
     .filter((c): c is Candidate => c !== null);
@@ -112,5 +122,6 @@ export function planSecurity(
   return {
     planned: [...planned.filter((p) => p.routed), ...planned.filter((p) => !p.routed)],
     below: advised.length - severe.length,
+    bootstrapper: pinless.skipped,
   };
 }
