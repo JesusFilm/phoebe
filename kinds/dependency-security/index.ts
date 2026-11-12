@@ -172,10 +172,15 @@ export function createDependencySecurityKind(
         throw new Error("every dependency source failed; nothing to file this window.");
       }
 
-      const plan = planSecurity(candidates, { minSeverity: options.minSeverity, routingLabel });
+      const plan = planSecurity(candidates, {
+        minSeverity: options.minSeverity,
+        routingLabel,
+        bootstrapperPin: options.bootstrapperPin,
+      });
       const routed = plan.planned.filter((p) => p.routed).length;
       ctx.log(
-        `${candidates.length} candidate(s): ${plan.below} with advisories under ` +
+        `${candidates.length} candidate(s): ${plan.bootstrapper} bootstrapper pin(s) left to ` +
+          `\`phoebe upgrade\`, ${plan.below} with advisories under ` +
           `${options.minSeverity} left to dependency-updates; ${routed} package(s) with a fix, ` +
           `${plan.planned.length - routed} awaiting one.`,
       );

@@ -67,7 +67,13 @@ describe("planBundles", () => {
       candidate("lodash"),
     ]);
     expect(shape(result)).toEqual(["npm:prod:relation:lodash: lodash@1.1.0"]);
-    expect(result.dropped).toEqual({ overrides: 2, ignored: 0, immature: 0, failedTwice: 0 });
+    expect(result.dropped).toEqual({
+      bootstrapper: 0,
+      overrides: 2,
+      ignored: 0,
+      immature: 0,
+      failedTwice: 0,
+    });
   });
 
   test("drops a release still inside its maturity wait", () => {

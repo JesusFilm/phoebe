@@ -2,6 +2,11 @@
 // registration so a bad block fails the pipeline list rather than a scan.
 // Everything has a default; an empty block, or none, is a working detector.
 
+import {
+  BOOTSTRAPPER_PIN_DEFAULT,
+  BOOTSTRAPPER_PIN_MODES,
+  type BootstrapperPinMode,
+} from "../dependencies/bootstrapper.ts";
 import { SEVERITIES, type Severity } from "../dependencies/candidate.ts";
 import { STRATEGIES, type GroupOverride, type Strategy } from "../dependencies/grouping.ts";
 import {
@@ -51,6 +56,8 @@ export type DependencyUpdatesOptions = {
   label: string;
   /** Open routed bundles allowed at once, issues and PRs together. `0` is no cap. */
   prConcurrentLimit: number;
+  /** `skip` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `propose` files it. */
+  bootstrapperPin: BootstrapperPinMode;
 };
 
 export const DEPENDENCY_UPDATES_OPTION_DEFAULTS: DependencyUpdatesOptions = {
@@ -63,6 +70,7 @@ export const DEPENDENCY_UPDATES_OPTION_DEFAULTS: DependencyUpdatesOptions = {
   majors: "individual",
   label: "phoebe:dependencies",
   prConcurrentLimit: 5,
+  bootstrapperPin: BOOTSTRAPPER_PIN_DEFAULT,
 };
 
 const OPTION_KEYS: readonly (keyof DependencyUpdatesOptions)[] = [
@@ -75,6 +83,7 @@ const OPTION_KEYS: readonly (keyof DependencyUpdatesOptions)[] = [
   "majors",
   "label",
   "prConcurrentLimit",
+  "bootstrapperPin",
 ];
 
 function ignore(at: string, value: unknown): readonly string[] {
@@ -182,5 +191,9 @@ export function resolveDependencyUpdatesOptions(
       raw["prConcurrentLimit"] === undefined
         ? defaults.prConcurrentLimit
         : nonNegativeInteger(at, "prConcurrentLimit", raw["prConcurrentLimit"]),
+    bootstrapperPin:
+      raw["bootstrapperPin"] === undefined
+        ? defaults.bootstrapperPin
+        : oneOf(at, "bootstrapperPin", raw["bootstrapperPin"], BOOTSTRAPPER_PIN_MODES),
   };
 }

@@ -491,6 +491,7 @@ Every option has a default, so an empty block is a working detector:
 | `majors`            | `"individual"`                        | `"follow-strategy"` groups a major like the rest, unless its package also has a smaller update.                                                                                                |
 | `label`             | `"phoebe:dependencies"`               | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                               |
 | `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once. `0` turns the cap off.                                                                                                                                    |
+| `bootstrapperPin`   | `"skip"`                              | `"skip"` leaves the `phoebe-agent` pin in a Dockerfile to `phoebe upgrade`, which moves it with the engine ref. `"propose"` files it like any other dependency.                                |
 
 An unknown option fails registration, as for `sentry`. The tuning knobs and
 `PHOEBE_DEPENDENCY_UPDATES_*` apply as for any kind. The kind's prompt is the
@@ -517,7 +518,10 @@ manifests they claimed. A source that fails or times out costs one log line and
 the rest stand. The run fails only when every source did. What comes back is
 unioned, and then:
 
-1. Override entries go. These are `overrides` in `package.json` or
+1. The `phoebe-agent` pin in a Dockerfile goes, unless `bootstrapperPin` is
+   `"propose"`. It has to move with the engine ref, and a dependency PR would
+   move it alone ([`configuration.md`](configuration.md#the-dependency-kinds)).
+2. Override entries go. These are `overrides` in `package.json` or
    `pnpm-workspace.yaml`, `pnpm.overrides`, and yarn `resolutions`. Each one
    pins a package for the dependencies that pull it in, and those dependencies
    declare the range it belongs in. Proposing its newest release would carry
@@ -525,18 +529,18 @@ unioned, and then:
    [`dependency-security`](#dependency-security-file-security-advisories-opt-in)
    moves an override, to the fix an advisory names. The scan logs how many it
    skipped.
-2. Packages matching `ignore` go.
-3. A release still inside its maturity wait goes. The one exception is the
+3. Packages matching `ignore` go.
+4. A release still inside its maturity wait goes. The one exception is the
    release that fixes an advisory under `minSeverity`, which ships at once. A
    release past the fix waits like any other.
-4. Of several targets for one dependency, the highest that survived is kept,
+5. Of several targets for one dependency, the highest that survived is kept,
    one for the majors and one for the rest. While the newest release ages, the
    fix release can go out alone.
-5. A bump the implementer dropped (a ``- `<package>@<version>` `` line under
+6. A bump the implementer dropped (a ``- `<package>@<version>` `` line under
    `## Dropped` in a dependency PR) is pulled out and filed on its own, its
    body opening "Failed in #N". After two PRs drop the same package-version,
    it is not filed again.
-6. The rest are grouped, production and development each by its own strategy.
+7. The rest are grouped, production and development each by its own strategy.
    A bundle never spans two managers.
 
 **Filing reads GitHub, not memory.** Each issue body ends with
@@ -588,12 +592,13 @@ pipelines: {
 },
 ```
 
-| Option        | Default                 | Meaning                                                                                                                      |
-| ------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `every`       | `"1h"`                  | How long one scan's results stand.                                                                                           |
-| `sources`     | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                            |
-| `minSeverity` | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are not filed here. Set the same value on `dependency-updates`. |
-| `label`       | `"phoebe:dependencies"` | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.             |
+| Option            | Default                 | Meaning                                                                                                                          |
+| ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `every`           | `"1h"`                  | How long one scan's results stand.                                                                                               |
+| `sources`         | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                                |
+| `minSeverity`     | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are not filed here. Set the same value on `dependency-updates`.     |
+| `label`           | `"phoebe:dependencies"` | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                 |
+| `bootstrapperPin` | `"skip"`                | As on `dependency-updates`: `"skip"` files nothing for the `phoebe-agent` pin in a Dockerfile, `"propose"` files its advisories. |
 
 There is no `prConcurrentLimit`. A security issue is filed whatever the open
 cap says, and an unknown option fails registration. The window, the unit
@@ -610,18 +615,20 @@ the other managers it says the route is not known.
 
 **Each pass:**
 
-1. Collapses every source's proposals for one occurrence of a package (manager,
+1. Sets aside the `phoebe-agent` pin in a Dockerfile, unless `bootstrapperPin`
+   is `"propose"`.
+2. Collapses every source's proposals for one occurrence of a package (manager,
    package, current version, dependency type, workspace), unioning the
    advisories by id.
-2. Drops advisories under `minSeverity`. An occurrence left with none is not
+3. Drops advisories under `minSeverity`. An occurrence left with none is not
    filed. `dependency-updates` reads those and lets their fix release skip the
    maturity wait.
-3. Targets the fix release exactly, the highest `fixedIn` among what is left.
+4. Targets the fix release exactly, the highest `fixedIn` among what is left.
    OSV's `fixedIn` is the first fix above the installed version. It is
    usually on the package's current release line, but when that line has no fix
    it can be a later major. Only that release skips the maturity wait, so a
    newer target would leave the advisory open while it aged.
-4. Groups by package: one bundle per manager and package, `individual` style,
+5. Groups by package: one bundle per manager and package, `individual` style,
    whatever the workspaces.
 
 | The package's advisories         | What it files                                                                                       |

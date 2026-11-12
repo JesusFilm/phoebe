@@ -1,9 +1,11 @@
 // From the sources' union to the bundles this kind files (ADR 0003): drop the
-// override entries, the ignored packages and the releases still ageing, keep
-// one target per release line, set aside the bumps the implementer already
-// failed, and group the rest. Pure: the clock and the failure record come in as values.
+// bootstrapper pin unless the tenant asked for it (#832), the override entries,
+// the ignored packages and the releases still ageing, keep one target per
+// release line, set aside the bumps the implementer already failed, and
+// group the rest. Pure: the clock and the failure record come in as values.
 
 import { parseDropped } from "../dependencies-work/dropped.ts";
+import { withoutBootstrapperPin } from "../dependencies/bootstrapper.ts";
 import { byText, compareCandidates, type Candidate } from "../dependencies/candidate.ts";
 import { groupCandidates, patternRegExp, type Bundle } from "../dependencies/grouping.ts";
 import type { PlannedBundle } from "../dependencies/filing.ts";
@@ -105,7 +107,13 @@ function groupBySide(
 export type Plan = {
   planned: PlannedBundle[];
   /** How many candidates each rule turned away. */
-  dropped: { overrides: number; ignored: number; immature: number; failedTwice: number };
+  dropped: {
+    bootstrapper: number;
+    overrides: number;
+    ignored: number;
+    immature: number;
+    failedTwice: number;
+  };
 };
 
 /**
@@ -123,8 +131,9 @@ export function planBundles(
   now: Date,
   failures: Failures,
 ): Plan {
-  const declared = candidates.filter((c) => c.override !== true);
-  const overrides = candidates.length - declared.length;
+  const pinless = withoutBootstrapperPin(candidates, options.bootstrapperPin);
+  const declared = pinless.kept.filter((c) => c.override !== true);
+  const overrides = pinless.kept.length - declared.length;
 
   const ignores = options.ignore.map(patternRegExp);
   const kept = declared.filter((c) => !ignores.some((re) => re.test(c.package)));
@@ -182,6 +191,6 @@ export function planBundles(
   const advised = (p: PlannedBundle) => p.bundle.candidates.some((c) => c.advisories.length > 0);
   return {
     planned: [...planned.filter(advised), ...planned.filter((p) => !advised(p))],
-    dropped: { overrides, ignored, immature, failedTwice },
+    dropped: { bootstrapper: pinless.skipped, overrides, ignored, immature, failedTwice },
   };
 }
