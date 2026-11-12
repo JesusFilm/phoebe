@@ -50,6 +50,15 @@ export type Candidate = {
    * transitive package, so its candidates leave it out.
    */
   via?: readonly string[];
+  /**
+   * Set when the entry is a package manager override, not a declared
+   * dependency: `overrides` in `package.json` or `pnpm-workspace.yaml`,
+   * `pnpm.overrides`, or yarn `resolutions`. It pins a package that other
+   * packages pull in, and those packages declare the range it belongs in, so
+   * `dependency-updates` never proposes moving it. Only `dependency-security`
+   * does, to the fix an advisory names.
+   */
+  override?: true;
 };
 
 /** Code-unit order, so the same input sorts the same under any locale. */
@@ -73,6 +82,8 @@ function uniqueSorted(values: Iterable<string>): string[] {
 /**
  * The first record wins every scalar it has; a later record only fills what
  * the first left out. Advisories union by id, and peers and `via` by name.
+ * The union is an override only when both records are: a declared dependency
+ * at the same occurrence has its own range in the manifest.
  */
 function merge(a: Candidate, b: Candidate): Candidate {
   const advisories = new Map(a.advisories.map((advisory) => [advisory.id, advisory]));
@@ -91,6 +102,7 @@ function merge(a: Candidate, b: Candidate): Candidate {
   if (a.via !== undefined || b.via !== undefined) {
     merged.via = uniqueSorted([...(a.via ?? []), ...(b.via ?? [])]);
   }
+  if (a.override !== true || b.override !== true) delete merged.override;
   return merged;
 }
 
