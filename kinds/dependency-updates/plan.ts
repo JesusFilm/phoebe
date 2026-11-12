@@ -1,7 +1,7 @@
 // From the sources' union to the bundles this kind files (ADR 0003): drop the
-// ignored packages and the releases still ageing, keep one target per
-// release line, set aside the bumps the implementer already failed, and
-// group the rest. Pure: the clock and the failure record come in as values.
+// override entries, the ignored packages and the releases still ageing, keep
+// one target per release line, set aside the bumps the implementer already
+// failed, and group the rest. Pure: the clock and the failure record come in as values.
 
 import { parseDropped } from "../dependencies-work/dropped.ts";
 import { byText, compareCandidates, type Candidate } from "../dependencies/candidate.ts";
@@ -105,13 +105,17 @@ function groupBySide(
 export type Plan = {
   planned: PlannedBundle[];
   /** How many candidates each rule turned away. */
-  dropped: { ignored: number; immature: number; failedTwice: number };
+  dropped: { overrides: number; ignored: number; immature: number; failedTwice: number };
 };
 
 /**
- * The bundles to file, those carrying an advisory first. A bump that failed
- * once is filed on its own, opening with the PR it failed in; one that failed
- * twice is not filed at all.
+ * The bundles to file, those carrying an advisory first. An override entry is
+ * never filed: it holds a transitive package at a version for its dependents,
+ * so the range it belongs in is theirs, and only `dependency-security` moves
+ * it, to a fix. Proposing the newest release would carry them onto a major
+ * they were not written for (#811). A bump that failed once is filed on its
+ * own, opening with the PR it failed in; one that failed twice is not filed at
+ * all.
  */
 export function planBundles(
   candidates: readonly Candidate[],
@@ -119,9 +123,12 @@ export function planBundles(
   now: Date,
   failures: Failures,
 ): Plan {
+  const declared = candidates.filter((c) => c.override !== true);
+  const overrides = candidates.length - declared.length;
+
   const ignores = options.ignore.map(patternRegExp);
-  const kept = candidates.filter((c) => !ignores.some((re) => re.test(c.package)));
-  const ignored = candidates.length - kept.length;
+  const kept = declared.filter((c) => !ignores.some((re) => re.test(c.package)));
+  const ignored = declared.length - kept.length;
 
   // Only an advisory under the threshold lets its fix skip the wait here; one
   // at or over it belongs to dependency-security.
@@ -175,6 +182,6 @@ export function planBundles(
   const advised = (p: PlannedBundle) => p.bundle.candidates.some((c) => c.advisories.length > 0);
   return {
     planned: [...planned.filter(advised), ...planned.filter((p) => !advised(p))],
-    dropped: { ignored, immature, failedTwice },
+    dropped: { overrides, ignored, immature, failedTwice },
   };
 }

@@ -68,6 +68,22 @@ describe("planSecurity", () => {
     expect(parseMarker(p!.body)?.key).toBe("npm:security:lodash");
   });
 
+  test("an override with a later advisory moves to that fix, not to the newest major", () => {
+    const pin = { override: true, workspace: "pnpm-workspace.yaml", current: "4.3.2" } as const;
+    const later = advisory("GHSA-later", "high", "4.3.5");
+    const plan = planSecurity(
+      [
+        candidate("js-yaml", { ...pin, advisories: [later] }),
+        candidate("js-yaml", { ...pin, target: "5.5.0", updateType: "major" }),
+      ],
+      options,
+    );
+    expect(plan.planned.map((p) => p.routed)).toEqual([true]);
+    expect(plan.planned[0]!.bundle.candidates).toEqual([
+      candidate("js-yaml", { ...pin, target: "4.3.5", updateType: "patch", advisories: [later] }),
+    ]);
+  });
+
   test("over the threshold with no fix: a tracking issue without the routing label", () => {
     const plan = planSecurity(
       [candidate("minimist", { advisories: [advisory("GHSA-crit", "critical", null)] })],

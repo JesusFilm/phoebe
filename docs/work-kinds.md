@@ -517,18 +517,26 @@ manifests they claimed. A source that fails or times out costs one log line and
 the rest stand. The run fails only when every source did. What comes back is
 unioned, and then:
 
-1. Packages matching `ignore` go.
-2. A release still inside its maturity wait goes. The one exception is the
+1. Override entries go. These are `overrides` in `package.json` or
+   `pnpm-workspace.yaml`, `pnpm.overrides`, and yarn `resolutions`. Each one
+   pins a package for the dependencies that pull it in, and those dependencies
+   declare the range it belongs in. Proposing its newest release would carry
+   them onto a version they were not written for. Only
+   [`dependency-security`](#dependency-security-file-security-advisories-opt-in)
+   moves an override, to the fix an advisory names. The scan logs how many it
+   skipped.
+2. Packages matching `ignore` go.
+3. A release still inside its maturity wait goes. The one exception is the
    release that fixes an advisory under `minSeverity`, which ships at once. A
    release past the fix waits like any other.
-3. Of several targets for one dependency, the highest that survived is kept,
+4. Of several targets for one dependency, the highest that survived is kept,
    one for the majors and one for the rest. While the newest release ages, the
    fix release can go out alone.
-4. A bump the implementer dropped (a ``- `<package>@<version>` `` line under
+5. A bump the implementer dropped (a ``- `<package>@<version>` `` line under
    `## Dropped` in a dependency PR) is pulled out and filed on its own, its
    body opening "Failed in #N". After two PRs drop the same package-version,
    it is not filed again.
-5. The rest are grouped, production and development each by its own strategy.
+6. The rest are grouped, production and development each by its own strategy.
    A bundle never spans two managers.
 
 **Filing reads GitHub, not memory.** Each issue body ends with

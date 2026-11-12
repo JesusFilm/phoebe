@@ -85,6 +85,13 @@ describe("unionCandidates", () => {
     expect(unknown).not.toHaveProperty("via");
   });
 
+  test("the union is an override only when every record is", () => {
+    const pin = candidate({ override: true });
+    expect(unionCandidates([[pin], [candidate({ override: true })]])[0]!.override).toBe(true);
+    expect(unionCandidates([[pin], [candidate()]])[0]!.override).toBeUndefined();
+    expect(unionCandidates([[candidate()], [pin]])[0]!.override).toBeUndefined();
+  });
+
   test("the earlier source wins a conflicting publish date", () => {
     const [merged] = unionCandidates([
       [candidate({ publishedAt: "2025-09-30T00:00:00Z" })],
