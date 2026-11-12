@@ -1137,6 +1137,9 @@ export function createGitHubClient({
 
       // Only when no Phoebe PR answers for the blocker is the third call worth it:
       // the work may have landed outside `branchPrefix` and closed the issue (#219).
+      // The number may also be a pull request, since issues and PRs share one
+      // number space. `gh issue view` answers for a PR too, with `MERGED`,
+      // `CLOSED` or `OPEN` and an empty reason (#837).
       const view = ghJson<{ state: string; stateReason?: string | null }>([
         "issue",
         "view",

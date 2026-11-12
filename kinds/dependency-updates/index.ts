@@ -116,10 +116,11 @@ export function createDependencyUpdatesKind(
 
       const filed = readFiled(ctx);
       const plan = planBundles(candidates, options, now, readFailures(filed.prs));
-      const { bootstrapper, ignored, immature, failedTwice } = plan.dropped;
+      const { bootstrapper, overrides, ignored, immature, failedTwice } = plan.dropped;
       ctx.log(
         `${candidates.length} candidate(s): ${bootstrapper} bootstrapper pin(s) left to ` +
-          `\`phoebe upgrade\`, ${ignored} ignored, ${immature} not yet mature, ` +
+          `\`phoebe upgrade\`, ${overrides} override(s) skipped, ${ignored} ignored, ` +
+          `${immature} not yet mature, ` +
           `${failedTwice} failed ${MAX_FAILURES} times; ${plan.planned.length} bundle(s).`,
       );
 

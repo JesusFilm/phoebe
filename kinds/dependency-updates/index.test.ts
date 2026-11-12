@@ -253,8 +253,8 @@ describe("run", () => {
       "sources: native 2 candidate(s), renovate 3 candidate(s), agent failed (not configured in this test).",
     );
     expect(logged).toContain(
-      "4 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 0 ignored, 1 not yet mature, " +
-        "0 failed 2 times; 2 bundle(s).",
+      "4 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 0 override(s) skipped, " +
+        "0 ignored, 1 not yet mature, 0 failed 2 times; 2 bundle(s).",
     );
   });
 
@@ -308,7 +308,7 @@ describe("run", () => {
       await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock, logged));
       expect(writes).toEqual([]);
       expect(logged).toContain(
-        "1 candidate(s): 1 bootstrapper pin(s) left to `phoebe upgrade`, 0 ignored, 0 not yet mature, " +
+        "1 candidate(s): 1 bootstrapper pin(s) left to `phoebe upgrade`, 0 override(s) skipped, 0 ignored, 0 not yet mature, " +
           "0 failed 2 times; 0 bundle(s).",
       );
     },
@@ -348,5 +348,29 @@ describe("run", () => {
       "create #101 Update vite to 1.1.0",
     ]);
     expect(bodies.get(101)).toMatch(/^Failed in #31; filed again on its own\./);
+  });
+
+  test("a security override is not raised to the newest release of its package (#811)", async () => {
+    const kind = kindWith(
+      { sources: ["renovate"] },
+      {
+        renovate: [
+          candidate("js-yaml", {
+            override: true,
+            workspace: "pnpm-workspace.yaml",
+            current: "4.3.2",
+            target: "5.5.0",
+            updateType: "major",
+          }),
+        ],
+      },
+    );
+    const { overrides, writes } = gitHub();
+    const logged: string[] = [];
+    await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock, logged));
+    expect(writes).toEqual([]);
+    expect(logged).toContain(
+      "1 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 1 override(s) skipped, 0 ignored, 0 not yet mature, 0 failed 2 times; 0 bundle(s).",
+    );
   });
 });

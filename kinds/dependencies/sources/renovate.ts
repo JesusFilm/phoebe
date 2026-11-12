@@ -127,6 +127,19 @@ function depType(renovateDepType: string | undefined): DepType {
 }
 
 /**
+ * The npm manager's `depType` for an entry that overrides a package other
+ * packages pull in, not one a manifest declares: `overrides` in `package.json`,
+ * `pnpm.overrides`, `overrides` in `pnpm-workspace.yaml`, and yarn
+ * `resolutions`. Read from Renovate's own list of npm dependency types.
+ */
+const OVERRIDE_DEP_TYPES: ReadonlySet<string> = new Set([
+  "overrides",
+  "pnpm.overrides",
+  "pnpm-workspace.overrides",
+  "resolutions",
+]);
+
+/**
  * The contract's update type for one of Renovate's proposals, or null for one
  * it has no word for (`rollback`, `replacement`, `bump`, `lockFileMaintenance`).
  * An in-range move Renovate makes in the lockfile alone is `lockfile` whatever
@@ -168,17 +181,25 @@ function candidateFor(
     target = str(update, "newVersion") ?? str(update, "newValue");
   }
   if (pkg === undefined || current === undefined || target === undefined) return null;
+  const renovateDepType = str(dep, "depType");
   const candidate: Candidate = {
     manager,
     package: pkg,
     current,
     target,
     updateType: type,
-    depType: depType(str(dep, "depType")),
+    depType: depType(renovateDepType),
     workspace: packageFile,
     advisories: [],
     peers: [],
   };
+  if (
+    manager === "npm" &&
+    renovateDepType !== undefined &&
+    OVERRIDE_DEP_TYPES.has(renovateDepType)
+  ) {
+    candidate.override = true;
+  }
   const publishedAt = str(update, "releaseTimestamp");
   if (publishedAt !== undefined) candidate.publishedAt = publishedAt;
   const repositoryUrl = str(dep, "sourceUrl");

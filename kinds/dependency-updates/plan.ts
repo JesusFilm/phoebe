@@ -1,5 +1,6 @@
 // From the sources' union to the bundles this kind files (ADR 0003): drop the
-// bootstrapper pin unless the tenant asked for it (#832), the ignored packages and the releases still ageing, keep one target per
+// bootstrapper pin unless the tenant asked for it (#832), the override entries,
+// the ignored packages and the releases still ageing, keep one target per
 // release line, set aside the bumps the implementer already failed, and
 // group the rest. Pure: the clock and the failure record come in as values.
 
@@ -106,13 +107,23 @@ function groupBySide(
 export type Plan = {
   planned: PlannedBundle[];
   /** How many candidates each rule turned away. */
-  dropped: { bootstrapper: number; ignored: number; immature: number; failedTwice: number };
+  dropped: {
+    bootstrapper: number;
+    overrides: number;
+    ignored: number;
+    immature: number;
+    failedTwice: number;
+  };
 };
 
 /**
- * The bundles to file, those carrying an advisory first. A bump that failed
- * once is filed on its own, opening with the PR it failed in; one that failed
- * twice is not filed at all.
+ * The bundles to file, those carrying an advisory first. An override entry is
+ * never filed: it holds a transitive package at a version for its dependents,
+ * so the range it belongs in is theirs, and only `dependency-security` moves
+ * it, to a fix. Proposing the newest release would carry them onto a major
+ * they were not written for (#811). A bump that failed once is filed on its
+ * own, opening with the PR it failed in; one that failed twice is not filed at
+ * all.
  */
 export function planBundles(
   candidates: readonly Candidate[],
@@ -121,9 +132,12 @@ export function planBundles(
   failures: Failures,
 ): Plan {
   const pinless = withoutBootstrapperPin(candidates, options.bootstrapperPin);
+  const declared = pinless.kept.filter((c) => c.override !== true);
+  const overrides = pinless.kept.length - declared.length;
+
   const ignores = options.ignore.map(patternRegExp);
-  const kept = pinless.kept.filter((c) => !ignores.some((re) => re.test(c.package)));
-  const ignored = pinless.kept.length - kept.length;
+  const kept = declared.filter((c) => !ignores.some((re) => re.test(c.package)));
+  const ignored = declared.length - kept.length;
 
   // Only an advisory under the threshold lets its fix skip the wait here; one
   // at or over it belongs to dependency-security.
@@ -177,6 +191,6 @@ export function planBundles(
   const advised = (p: PlannedBundle) => p.bundle.candidates.some((c) => c.advisories.length > 0);
   return {
     planned: [...planned.filter(advised), ...planned.filter((p) => !advised(p))],
-    dropped: { bootstrapper: pinless.skipped, ignored, immature, failedTwice },
+    dropped: { bootstrapper: pinless.skipped, overrides, ignored, immature, failedTwice },
   };
 }

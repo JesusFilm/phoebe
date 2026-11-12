@@ -245,6 +245,36 @@ describe("parseRenovateReport", () => {
     expect(parsed.coverage.unmapped).toEqual({ rollback: 1 });
   });
 
+  test("an override entry is marked an override, and a declared dependency is not", () => {
+    const major = { updateType: "major", newVersion: "5.5.0" };
+    const entry = (depName: string, depType: string) => ({
+      ...lookedUp,
+      depName,
+      packageName: "js-yaml",
+      depType,
+      currentValue: "^4.3.2",
+      currentVersion: "4.3.2",
+      updates: [major],
+    });
+    const parsed = parseRenovateReport(
+      report([
+        entry("js-yaml", "pnpm-workspace.overrides"),
+        entry("js-yaml@4", "pnpm.overrides"),
+        entry("js-yaml", "overrides"),
+        entry("**/js-yaml", "resolutions"),
+        entry("js-yaml", "dependencies"),
+      ]),
+    );
+    if (!parsed.ok) throw new Error(parsed.problem);
+    expect(parsed.candidates.map((c) => [c.package, c.depType, c.override])).toEqual([
+      ["js-yaml", "prod", true],
+      ["js-yaml", "prod", true],
+      ["js-yaml", "prod", true],
+      ["js-yaml", "prod", true],
+      ["js-yaml", "prod", undefined],
+    ]);
+  });
+
   test("an error-level problem fails the report; warnings do not", () => {
     const warning = { level: 40, msg: "GitHub token is required for some dependencies" };
     expect(parseRenovateReport(report([], [warning])).ok).toBe(true);

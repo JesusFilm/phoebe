@@ -57,6 +57,25 @@ describe("planBundles", () => {
     expect(result.dropped.ignored).toBe(1);
   });
 
+  test("files nothing for an override entry, whatever release is out (#811)", () => {
+    // js-yaml held at the 4.3.2 fix by a pnpm-workspace.yaml override, its
+    // dependents declaring ^4.1.0, and 5.5.0 well past the 14-day major wait.
+    const pin = { override: true, workspace: "pnpm-workspace.yaml", current: "4.3.2" } as const;
+    const result = plan([
+      candidate("js-yaml", { ...pin, target: "5.5.0", updateType: "major", publishedAt: OLD }),
+      candidate("js-yaml", { ...pin, target: "4.3.3", updateType: "patch", publishedAt: OLD }),
+      candidate("lodash"),
+    ]);
+    expect(shape(result)).toEqual(["npm:prod:relation:lodash: lodash@1.1.0"]);
+    expect(result.dropped).toEqual({
+      bootstrapper: 0,
+      overrides: 2,
+      ignored: 0,
+      immature: 0,
+      failedTwice: 0,
+    });
+  });
+
   test("drops a release still inside its maturity wait", () => {
     const result = plan([candidate("fresh", { publishedAt: YESTERDAY }), candidate("aged")]);
     expect(shape(result)).toEqual(["npm:prod:relation:aged: aged@1.1.0"]);
