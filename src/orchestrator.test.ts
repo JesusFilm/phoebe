@@ -186,6 +186,26 @@ describe("resolveWorktreeBase", () => {
     });
   });
 
+  test("uses origin/main without stacking when the blocker is a merged pull request", () => {
+    // The blocker line names a PR (#837): no Phoebe PR sits on its issue branch,
+    // and `gh issue view` reported it `MERGED`, which reads as completed.
+    const blocked = issue({ number: 780, body: "Blocked by #773" });
+    const states = new Map<number, BlockerPrState>([
+      [
+        773,
+        {
+          hasOpenPr: false,
+          hasMergedPr: false,
+          blockerCompleted: isCompletedBlockerIssue({ state: "MERGED", stateReason: "" }),
+        },
+      ],
+    ]);
+    expect(resolveWorktreeBase(blocked, states)).toEqual({
+      worktreeBase: "origin/main",
+      stacked: false,
+    });
+  });
+
   test("skips when the blocker issue is closed as not planned", () => {
     const blocked = issue({ number: 102, body: "Blocked by #98" });
     const states = new Map<number, BlockerPrState>([
@@ -396,6 +416,19 @@ describe("isCompletedBlockerIssue", () => {
   test("an open issue does not, whatever the reason field says", () => {
     expect(isCompletedBlockerIssue({ state: "OPEN", stateReason: null })).toBe(false);
     expect(isCompletedBlockerIssue({ state: "OPEN", stateReason: "COMPLETED" })).toBe(false);
+  });
+
+  test("a merged pull request named as the blocker satisfies it", () => {
+    expect(isCompletedBlockerIssue({ state: "MERGED", stateReason: "" })).toBe(true);
+    expect(isCompletedBlockerIssue({ state: "merged", stateReason: null })).toBe(true);
+  });
+
+  test("a pull request closed without merging does not", () => {
+    expect(isCompletedBlockerIssue({ state: "CLOSED", stateReason: "" })).toBe(false);
+  });
+
+  test("an open pull request does not", () => {
+    expect(isCompletedBlockerIssue({ state: "OPEN", stateReason: "" })).toBe(false);
   });
 
   test("tolerates lowercase and missing reason", () => {

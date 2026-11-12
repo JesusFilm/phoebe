@@ -28,8 +28,8 @@ export type BlockerPrState = {
   hasMergedPr: boolean;
   mergedPrNumber?: PrNumber;
   /**
-   * Blocker issue is closed as `COMPLETED` — the work landed, whoever did it and
-   * on whatever branch. Only fetched when both PR lookups miss, so it is
+   * Blocker issue is closed as `COMPLETED`, or the blocker number is a pull
+   * request that merged — the work landed, whoever did it and on whatever branch. Only fetched when both PR lookups miss, so it is
    * `undefined` whenever an open or merged Phoebe PR already answered the
    * question. `false` covers `NOT_PLANNED`, which does *not* satisfy the block.
    */
@@ -202,14 +202,20 @@ export function resolveWorktreeBase(
  * Does a blocker `gh issue view --json state,stateReason` payload mean "done"?
  * `CLOSED`/`COMPLETED` does; `NOT_PLANNED` (abandoned) leaves dependents on
  * unbuilt ground and does not.
+ *
+ * The number on a blocker line may be a pull request rather than an issue:
+ * GitHub numbers both from one sequence, and `gh issue view` answers for a PR
+ * too (#837). A merged PR comes back as `MERGED` with an empty reason, and that
+ * is done. A PR closed without merging comes back as `CLOSED` with an empty
+ * reason and keeps blocking, as does an open one.
  */
 export function isCompletedBlockerIssue(view: {
   state: string;
   stateReason?: string | null;
 }): boolean {
-  return (
-    view.state.toUpperCase() === "CLOSED" && (view.stateReason ?? "").toUpperCase() === "COMPLETED"
-  );
+  const state = view.state.toUpperCase();
+  if (state === "MERGED") return true;
+  return state === "CLOSED" && (view.stateReason ?? "").toUpperCase() === "COMPLETED";
 }
 
 /**
