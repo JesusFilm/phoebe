@@ -52,11 +52,14 @@ services:
       GH_TOKEN: "${GH_TOKEN:?GH_TOKEN is required}"
       CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # The subscription credential this deployment actually runs on — the
-      # config's `providerEnv.claude` names it, so it is the one var the agent
-      # child inherits (src/agent-env.ts). Required, since defaultProvider is
-      # "claude": without it the CLI has nothing to authenticate with.
-      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:?CLAUDE_CODE_OAUTH_TOKEN is required}"
+      # The Claude CLI authenticates against the gateway named in
+      # ../claude-home/settings.json (ANTHROPIC_BASE_URL) with ANTHROPIC_API_KEY
+      # above — the config's `providerEnv.claude` names that var, so it is the
+      # one the agent child inherits (src/agent-env.ts). A gateway with no api
+      # keys configured ignores the value; it still has to be non-empty or the
+      # CLI reports "Not logged in". The OAuth token stays wired for running the
+      # deployment on a Pro/Max subscription directly (docs/claude-subscription-auth.md).
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
       # The `intake` pipeline's Sentry token (the config's `sentry` kind declares
       # it). A solo child inherits this container's env and the `.env` below is
@@ -98,6 +101,13 @@ services:
       # in any consumer deployment. See templates/container/compose.yml for the
       # full rationale.
       - /dev/null:/opt/phoebe-engine/.phoebe/.env:ro
+      # The Claude CLI's home. settings.json inside it names the gateway the CLI
+      # talks to (ANTHROPIC_BASE_URL) — the engine's agent allowlist forwards
+      # only the one provider var, so the URL rides in through the CLI's own
+      # settings file instead. A directory, not a file: the CLI writes its
+      # state beside settings.json and a file mount would leave it a root-owned
+      # parent it cannot write into. Gitignored; copy ../claude-home.example.
+      - ../claude-home:/home/phoebe/.claude
 
 volumes:
   phoebe-data:
