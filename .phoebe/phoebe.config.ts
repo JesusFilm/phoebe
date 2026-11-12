@@ -73,18 +73,17 @@ export const config = defineConfig({
   // `engine`: a workspace ignores it in a tenant's config, the engine drops it.
   remote: { tailscale: "host", httpsPort: 7463 },
 
-  // Run the `claude` provider above on a Pro/Max subscription rather than
-  // metered API billing: name the OAuth token's var instead of the shipped
-  // `ANTHROPIC_API_KEY` default. `providerEnv` merges key-by-key, so cursor and
-  // codex keep theirs.
-  //
-  // This is not cosmetic — `buildAgentEnv` (src/agent-env.ts) forwards exactly
-  // the one var named here, so with the default mapping a `.env` holding only
-  // CLAUDE_CODE_OAUTH_TOKEN hands the CLI nothing and every unit dies on
-  // "Not logged in · Please run /login". Mint the token with `claude
-  // setup-token` (or `node scripts/hoist-claude-login.mjs`); see
+  // The `claude` provider above talks to a self-hosted gateway (CLIProxyAPI
+  // fronting a Pro/Max subscription), not to Anthropic directly. The gateway's
+  // URL reaches the CLI through container/claude-home/settings.json; its key
+  // is the shipped `ANTHROPIC_API_KEY` default, spelled out here because it is
+  // load-bearing: `buildAgentEnv` (src/agent-env.ts) forwards exactly the one
+  // var named here, so a `.env` holding a different key hands the CLI nothing
+  // and every unit dies on "Not logged in · Please run /login". To run on the
+  // subscription token directly instead, name CLAUDE_CODE_OAUTH_TOKEN here and
+  // mint one with `node scripts/hoist-claude-login.mjs`; see
   // docs/claude-subscription-auth.md.
-  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },
+  providerEnv: { claude: "ANTHROPIC_API_KEY" },
 
   // This tenant's pipelines of work (#415/#419). Only the reserved `work` pipeline, which
   // is what an engine child with no `--pipeline` flag runs; `pipelines.work.kinds`

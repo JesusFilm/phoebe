@@ -1,2 +1,6 @@
 .env
 node_modules/
+# The Claude CLI's home inside the container (compose mounts it at
+# /home/phoebe/.claude): settings.json names the gateway the CLI talks to, and
+# the CLI writes its own state beside it. Copy claude-home.example to start.
+claude-home/
