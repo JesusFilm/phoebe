@@ -1,0 +1,91 @@
+name: dogfood-image
+
+# Builds the dogfood runtime image (.phoebe/container/Dockerfile) and runs the
+# engine's installCommand in it the way a fresh container first meets it: as
+# `phoebe` (uid 10001), with no corepack cache of its own, in a checkout of
+# this repo. Nothing else builds this image — src/container-image.test.ts reads
+# the Dockerfile as text and ready.yml's pack-and-smoke covers the npm package
+# — so without this job a corepack pin that cannot run the project's pnpm
+# passes every check. That is #773: corepack 0.34.0 built cleanly, its shim
+# looked for pnpm's bin/pnpm.cjs, pnpm 12 ships bin/pnpm.mjs, and every work
+# unit died on `pnpm install --frozen-lockfile` with MODULE_NOT_FOUND (#781).
+#
+# Since #780 the image prepares the pinned pnpm at build time, as root, into a
+# COREPACK_HOME that `phoebe` can only read. The pnpm a work unit runs is that
+# baked copy, so this job installs with it: a bad corepack pin now fails the
+# build step, and anything the read-only home breaks at run time fails the
+# install step.
+#
+# Path-filtered to what can break that install: the image itself, the
+# `packageManager` pin in package.json, the lockfile, the workspace file (its
+# `allowBuilds` decides which install scripts run), and this workflow.
+
+on:
+  pull_request:
+    paths:
+      - ".phoebe/container/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/dogfood-image.yml"
+
+# Least privilege: this job only reads the repo.
+permissions:
+  contents: read
+
+# A new push to a branch cancels its in-flight run.
+concurrency:
+  group: dogfood-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  first-use-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same build context compose uses (`build.context: .` in
+      # .phoebe/container/compose.yml).
+      - name: Build the dogfood image
+        run: docker build --tag phoebe-runtime:ci .phoebe/container
+
+      # The checkout goes in as a `git archive` stream rather than a bind mount:
+      # the runner's workspace belongs to its own uid, and uid 10001 has to
+      # write the tree (pnpm rewrites the lockfile, or warns with
+      # ERR_PNPM_LOCKFILE_WRITE_FILE). It lands on a fresh named volume at
+      # /data/repos, the same mount compose gives the engine's clones, which
+      # Docker seeds phoebe-owned from the image. Not a --tmpfs: that is
+      # noexec by default and pnpm 12's native binary fails on it with EACCES.
+      #
+      # Before installing, the script checks the state a fresh container
+      # starts in: running as uid 10001, no phoebe-owned corepack cache under
+      # ~/.cache, and a COREPACK_HOME that phoebe cannot write.
+      #
+      # ELECTRON_SKIP_BINARY_DOWNLOAD matches .phoebe/container/compose.yml,
+      # so the install skips electron's ~100MB binary just as the agent does.
+      - name: pnpm install --frozen-lockfile as phoebe
+        run: |
+          set -euo pipefail
+          docker volume create phoebe-ci-data
+          git archive --format=tar HEAD | docker run --rm -i \
+            --env ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+            --volume phoebe-ci-data:/data/repos \
+            phoebe-runtime:ci \
+            bash -euo pipefail -c '
+              echo "user: $(id -un) ($(id -u)), COREPACK_HOME=$COREPACK_HOME"
+              test "$(id -u)" = 10001
+              if [ -e "$HOME/.cache/node/corepack" ]; then
+                echo "phoebe already has a corepack cache at $HOME/.cache/node/corepack" >&2
+                exit 1
+              fi
+              if [ -w "$COREPACK_HOME" ]; then
+                echo "COREPACK_HOME ($COREPACK_HOME) is writable by phoebe" >&2
+                exit 1
+              fi
+              mkdir /data/repos/checkout
+              cd /data/repos/checkout
+              tar -x
+              echo "corepack $(corepack --version)"
+              pnpm --version
+              pnpm install --frozen-lockfile
+            '
