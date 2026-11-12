@@ -26,7 +26,10 @@ one edit, made here. See
   second copy of the version: `ARG PNPM_VERSION` has to match `packageManager`,
   a test fails when they drift, and Renovate bumps both in one PR. After a pnpm
   bump lands on main, relaunch so `run.sh` rebuilds the image. Until then
-  installs fail, because the read-only home refuses the new download.
+  installs fail, because the read-only home refuses the new download. A PR
+  that touches the image, `package.json`, the lockfile or the workspace file
+  also runs `.github/workflows/dogfood-image.yml`. It builds the image and runs
+  `pnpm install --frozen-lockfile` in it as `phoebe` (#781).
 - **Bootstrapper _and_ engine from the working tree.** The scaffold installs the
   bootstrapper from npm and lets `boot` check the engine out from GitHub. Here
   both are read from this repo mounted read-only at `/opt/phoebe-engine`:
