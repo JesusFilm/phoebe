@@ -8,7 +8,7 @@
 import { compareCandidates, type Candidate, type Severity } from "../dependencies/candidate.ts";
 import { bundleKey, fingerprint, renderMarker } from "../dependencies/fingerprint.ts";
 import type { Bundle } from "../dependencies/grouping.ts";
-import { cell, code, plain, renderAdvisories } from "../dependencies/issue-body.ts";
+import { cell, code, plain, renderAdvisories, STAYS_CELL } from "../dependencies/issue-body.ts";
 
 export type SecurityBodyOptions = {
   /** Whether a fix exists, so the issue routes to the `dependencies` kind. */
@@ -67,7 +67,7 @@ export function renderSecurityBody(bundle: Bundle, options: SecurityBodyOptions)
         row(
           c,
           cell(plain(c.current)),
-          hasFix(c) ? cell(plain(c.target)) : "no fix released; leave it",
+          hasFix(c) ? cell(plain(c.target)) : STAYS_CELL,
           cell(reachedThrough(c)),
         ),
       ),
