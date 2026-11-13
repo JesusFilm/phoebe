@@ -9,6 +9,7 @@ import { describe, expect, test } from "vite-plus/test";
 import type { Candidate } from "../candidate.ts";
 import {
   CANDIDATES_FILE,
+  agentUpdateType,
   CLAIMED_FILE,
   DEPENDENCY_DETECT_PROMPT_FILE,
   parseAgentCandidates,
@@ -167,20 +168,21 @@ describe("parseAgentCandidates", () => {
     });
   });
 
-  test("an absolute workspace path or an unknown update type drops the record", () => {
+  test("an absolute workspace path drops the record", () => {
     const parsed = parseAgentCandidates(
-      JSON.stringify([
-        { ...gradle, workspace: "/work/android/app/build.gradle" },
-        { ...gradle, updateType: "upgrade" },
-      ]),
+      JSON.stringify([{ ...gradle, workspace: "/work/android/app/build.gradle" }]),
     );
     expect(parsed).toEqual({
       ok: true,
       candidates: [],
-      dropped: [
-        "record 0: workspace must be relative to the checkout",
-        "record 1: updateType must be one of patch, minor, major, pin, digest, lockfile",
-      ],
+      dropped: ["record 0: workspace must be relative to the checkout"],
+    });
+  });
+
+  test("a depType outside the contract drops a record whose manifest has the split", () => {
+    const parsed = parseAgentCandidates(JSON.stringify([{ ...gradle, depType: "runtime" }]));
+    expect(parsed).toMatchObject({
+      dropped: ["record 0: depType must be one of prod, dev, optional, peer"],
     });
   });
 
@@ -190,9 +192,90 @@ describe("parseAgentCandidates", () => {
   });
 });
 
+// #860: on 2026-11-13 four scans of one commit gave the same pins different
+// `depType` and `updateType` values, and each answer filed a different bundle.
+describe("what the engine decides, not the agent", () => {
+  const claude = {
+    manager: "dockerfile",
+    package: "@anthropic-ai/claude-code",
+    current: "2.1.287",
+    target: "2.1.325",
+    depType: "prod",
+    workspace: "templates/container/Dockerfile",
+  };
+  const only = (record: Record<string, unknown>): Candidate => {
+    const parsed = parseAgentCandidates(JSON.stringify([record]));
+    if (!parsed.ok || parsed.candidates.length !== 1) throw new Error(JSON.stringify(parsed));
+    return parsed.candidates[0]!;
+  };
+
+  test("updateType comes from the versions, whatever the agent wrote or left out", () => {
+    expect(only({ ...claude, updateType: "minor" }).updateType).toBe("patch");
+    expect(only({ ...claude, updateType: "upgrade" }).updateType).toBe("patch");
+    expect(only(claude).updateType).toBe("patch");
+    expect(only({ ...claude, target: "2.2.0" }).updateType).toBe("minor");
+    expect(only({ ...claude, target: "3.0.0" }).updateType).toBe("major");
+  });
+
+  test("a move between two digests is a digest update", () => {
+    const a = `sha256:${"a".repeat(64)}`;
+    const b = `sha256:${"b".repeat(64)}`;
+    expect(agentUpdateType(a, b)).toBe("digest");
+    expect(agentUpdateType("a".repeat(40), "b".repeat(40))).toBe("digest");
+    expect(agentUpdateType("latest", b)).toBe("major");
+  });
+
+  test("a pin in a Dockerfile, a workflow file or a script is prod, whatever the agent wrote", () => {
+    for (const workspace of [
+      "Dockerfile",
+      "templates/container/Dockerfile",
+      "docker/app.Dockerfile",
+      "Dockerfile.dev",
+      "compose.yaml",
+      ".github/workflows/ci.yml",
+      ".github/actions/setup/action.yml",
+      ".gitlab-ci.yml",
+      "scripts/build-edit-substrate.sh",
+    ]) {
+      const record = { ...claude, manager: "npm", workspace, depType: "dev" };
+      expect(only(record).depType, workspace).toBe("prod");
+      const { depType: _d, ...noDepType } = record;
+      expect(only(noDepType).depType, workspace).toBe("prod");
+    }
+    const dockerManager = { ...claude, workspace: "build.gradle", depType: "dev" };
+    expect(only(dockerManager).depType).toBe("prod");
+  });
+
+  test("a manifest with the split keeps the section the agent reported", () => {
+    expect(only({ ...gradle, depType: "dev" }).depType).toBe("dev");
+    expect(
+      only({ ...gradle, workspace: "composer.json", manager: "composer", depType: "dev" }),
+    ).toMatchObject({ depType: "dev" });
+  });
+
+  test("one pin reported as prod and minor, then dev and patch, is the same candidate", () => {
+    const renovate = {
+      manager: "dockerfile",
+      package: "renovate",
+      current: "44.210.0",
+      target: "44.239.1",
+      workspace: "templates/container/Dockerfile",
+    };
+    const first = parseAgentCandidates(
+      JSON.stringify([{ ...renovate, depType: "prod", updateType: "major" }]),
+    );
+    const next = parseAgentCandidates(
+      JSON.stringify([{ ...renovate, depType: "dev", updateType: "patch" }]),
+    );
+    expect(first).toEqual(next);
+    expect(first).toMatchObject({ candidates: [{ depType: "prod", updateType: "minor" }] });
+  });
+});
+
 test("the detection prompt ships beside the kinds", () => {
   expect(existsSync(DEPENDENCY_DETECT_PROMPT_FILE)).toBe(true);
   const prompt = readFileSync(DEPENDENCY_DETECT_PROMPT_FILE, "utf8");
+  expect(prompt).not.toContain(`"updateType"`);
   for (const placeholder of ["{{CLAIMED_JSON}}", "{{CANDIDATES_JSON}}", "{{SCRATCH_DIR}}"]) {
     expect(prompt).toContain(placeholder);
   }
