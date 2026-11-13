@@ -20,15 +20,17 @@ nodeLinker: isolated
 #
 # undici (#802): node-gyp under electron-builder takes the 6.x line,
 # @electron/get under electron the 7.x line, and neither parent has a release
-# that moves it.
+# that moves it. Each pin holds its own line at a fixed release. Two
+# dependency bumps moved both to 8.x (#820, #825). No advisory is open against
+# 6.29.1 or 7.30.2, so each parent is back on the major it declares.
 #
 # vite (#803, GHSA-587h-7wmj-h5pm): it reaches the console only as the
 # auto-installed peer of `@tailwindcss/vite`, so no release of that plugin can
 # carry the fix; this lifts the vulnerable 8.x line to 8.1.6.
 overrides:
   js-yaml: ^4.3.2
-  "undici@6": 8.12.4
-  "undici@7": 8.12.4
+  "undici@6": 6.29.1
+  "undici@7": 7.30.2
   "vite@>=8.0.0 <8.1.6": 8.3.8
 
 # pnpm runs no dependency's install script unless it is named here. Electron's
