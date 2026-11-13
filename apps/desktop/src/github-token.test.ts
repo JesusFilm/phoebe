@@ -1,4 +1,4 @@
-// The five probes, read into a verdict the window can draw.
+// The six probes, read into a verdict the window can draw.
 
 import { describe, expect, test } from "vite-plus/test";
 import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
@@ -43,6 +43,10 @@ describe("verifyGithubToken", () => {
       "/repos/JesusFilm/phoebe/pulls/999999999": { status: 404 },
       "/repos/JesusFilm/phoebe/issues/999999999": { status: 404 },
       "/repos/JesusFilm/phoebe/actions/runs": { status: 200 },
+      "/repos/JesusFilm/phoebe/contents/.github/workflows/": {
+        status: 404,
+        body: { message: "Branch phoebe-token-probe-never-created not found" },
+      },
       "/repos/JesusFilm/phoebe": { status: 200 },
     });
 
@@ -61,13 +65,22 @@ describe("verifyGithubToken", () => {
       ["pull_requests", "granted", "HTTP 404"],
       ["issues", "granted", "HTTP 404"],
       ["actions", "granted", "HTTP 200"],
+      ["workflows", "granted", "HTTP 404"],
     ]);
     expect(verdict.grants[1]!.label).toBe("Contents: Read and write");
+    expect(verdict.grants[5]!.label).toBe("Workflows: Read and write");
 
     // The write probes aim at nothing: an all-zero sha and an issue that is not there.
     const refs = asked.find((call) => call.url.endsWith("/git/refs"))!;
     expect(refs.method).toBe("POST");
     expect(refs.body).toContain("0000000000000000000000000000000000000000");
+    // The workflows probe deletes a file that is not there, on a branch that is not there.
+    const workflow = asked.find((call) => call.url.includes("/contents/.github/workflows/"))!;
+    expect(workflow.method).toBe("DELETE");
+    expect(JSON.parse(workflow.body!)).toMatchObject({
+      sha: "0000000000000000000000000000000000000000",
+      branch: "phoebe-token-probe-never-created",
+    });
     expect(asked.every((call) => call.auth === `Bearer ${TOKEN}`)).toBe(true);
   });
 
@@ -80,6 +93,7 @@ describe("verifyGithubToken", () => {
         body: { message: "Resource not accessible by personal access token" },
       },
       "/repos/JesusFilm/phoebe/actions/runs": { status: 403 },
+      "/repos/JesusFilm/phoebe/contents/.github/workflows/": { status: 404 },
       "/repos/JesusFilm/phoebe": { status: 200 },
     });
 
@@ -91,6 +105,55 @@ describe("verifyGithubToken", () => {
       detail: "HTTP 403",
     });
     expect(verdict.grants.find((grant) => grant.id === "actions")!.state).toBe("missing");
+  });
+
+  test("a token short only the Workflows grant is not ok, and says which one", async () => {
+    const { fetchFn } = github({
+      "/repos/JesusFilm/phoebe/git/refs": { status: 422 },
+      "/repos/JesusFilm/phoebe/pulls/999999999": { status: 404 },
+      "/repos/JesusFilm/phoebe/issues/999999999": { status: 404 },
+      "/repos/JesusFilm/phoebe/actions/runs": { status: 200 },
+      "/repos/JesusFilm/phoebe/contents/.github/workflows/": {
+        status: 403,
+        body: { message: "Resource not accessible by personal access token" },
+      },
+      "/repos/JesusFilm/phoebe": { status: 200 },
+    });
+
+    const verdict = await verifyGithubToken(SLUG, TOKEN, { fetchFn });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.grants.filter((grant) => grant.state !== "granted")).toMatchObject([
+      { id: "workflows", label: "Workflows: Read and write", state: "missing", detail: "HTTP 403" },
+    ]);
+  });
+
+  test("a classic token's workflow scope is read off the header, since its 404 proves nothing", async () => {
+    const answers = (scopes: string) => ({
+      "/repos/JesusFilm/phoebe/git/refs": { status: 422 },
+      "/repos/JesusFilm/phoebe/pulls/999999999": { status: 404 },
+      "/repos/JesusFilm/phoebe/issues/999999999": { status: 404 },
+      "/repos/JesusFilm/phoebe/actions/runs": { status: 200 },
+      "/repos/JesusFilm/phoebe/contents/.github/workflows/": {
+        status: 404,
+        headers: { "x-oauth-scopes": scopes },
+      },
+      "/repos/JesusFilm/phoebe": { status: 200 },
+    });
+
+    const without = await verifyGithubToken(SLUG, "ghp_example", {
+      fetchFn: github(answers("gist, repo")).fetchFn,
+    });
+    expect(without.ok).toBe(false);
+    expect(without.grants.find((grant) => grant.id === "workflows")).toMatchObject({
+      state: "missing",
+      detail: "the token has no `workflow` scope",
+    });
+
+    const withScope = await verifyGithubToken(SLUG, "ghp_example", {
+      fetchFn: github(answers("gist, repo, workflow")).fetchFn,
+    });
+    expect(withScope.grants.find((grant) => grant.id === "workflows")!.state).toBe("granted");
   });
 
   test("a 403 that is about rate limits or SSO is unknown, with the message", async () => {
@@ -106,6 +169,7 @@ describe("verifyGithubToken", () => {
       },
       "/repos/JesusFilm/phoebe/issues/999999999": { status: 404 },
       "/repos/JesusFilm/phoebe/actions/runs": { status: 200 },
+      "/repos/JesusFilm/phoebe/contents/.github/workflows/": { status: 404 },
       "/repos/JesusFilm/phoebe": { status: 200 },
     });
 

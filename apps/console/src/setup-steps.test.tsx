@@ -172,7 +172,7 @@ describe("the steps", () => {
     );
     expect(markup).toContain("target_name=JesusFilm");
     expect(markup).toContain(
-      "contents=write&amp;pull_requests=write&amp;issues=write&amp;actions=read",
+      "contents=write&amp;pull_requests=write&amp;issues=write&amp;actions=read&amp;workflows=write",
     );
     expect(markup).toContain("choose <code>phoebe</code>");
     expect(markup).toContain("Check and save");

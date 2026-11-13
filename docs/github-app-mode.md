@@ -84,7 +84,7 @@ installation approves, minting a token with the new permission fails with a
 permission change walks the fleet through a mixed period where some tenants have the new
 grant and others do not. Any preflight must read the **installation's** grants,
 not the App's. See [Registering the App](#3-registering-the-app) for the
-five-permission table.
+six-permission table.
 
 ## 3. Registering the App
 
@@ -96,7 +96,7 @@ same by hand.
 
 ### Permissions
 
-The App needs the same five grants that §2 of
+The App needs the same six grants that §2 of
 [`phoebe-core-onboarding.md`](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)
 requires for a fine-grained PAT:
 
@@ -107,9 +107,17 @@ requires for a fine-grained PAT:
 | Pull requests | Read and write | Open/update PRs, post PR comments and watermarks.               |
 | Issues        | Read and write | Read `readyLabel`, swap in `processingLabel`, comment.          |
 | Actions       | Read-only      | `gh run list`, the check-state source for the `checks` janitor. |
+| Workflows     | Read and write | Push a branch that changes anything under `.github/workflows/`. |
 
-Leave everything else at _No access_. Add _Workflows: Read and write_ only if
-the agent will edit `.github/workflows/` files.
+Leave everything else at _No access_.
+
+Workflows used to be optional here and no longer is. GitHub refuses a push that
+changes a workflow file when the installation lacks it, and catching a PR
+branch up with a base branch that carries a workflow change is such a push. An
+App registered before this was on the list gets it under **Permissions &
+events** in the App's settings, and then each installation has to approve the
+change
+([what the fleet looks like in between](#permission-widening-needs-per-installation-approval)).
 
 ### Install on the repos you serve
 

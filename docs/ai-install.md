@@ -12,8 +12,9 @@ top to bottom. It assumes no `vp` on the target side.
 - Node.js ≥ 24, `npm` on `PATH`.
 - `git`, `gh` (GitHub CLI), Docker + Docker Compose on the host that will run
   the container.
-- A GitHub token in `GH_TOKEN`: a fine-grained PAT (the five grants listed in
-  [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)),
+- A GitHub token in `GH_TOKEN`: a fine-grained PAT (the six grants listed in
+  [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat),
+  **Workflows: Read and write** included),
   or a GitHub App installation token for multi-repo deployments
   ([`github-app-mode.md`](github-app-mode.md)).
 - An API key for whichever agent provider you plan to use

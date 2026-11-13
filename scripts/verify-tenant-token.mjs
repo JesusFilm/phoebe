@@ -7,14 +7,15 @@
 // applies the appropriate verification path to each.
 //
 // `pat` arm — docs/phoebe-core-onboarding.md §2 asks the operator to
-// hand-mint a fine-grained PAT with five repository permissions and — for an
+// hand-mint a fine-grained PAT with six repository permissions and — for an
 // org-owned repo — to get it approved by an org owner. Fine-grained PATs are
 // not introspectable, so this arm probes: one call per grant, reading the
 // status code. The discriminator is 403 (no permission) vs 404/422 (no such
 // resource), which is what lets a *write* grant be proven without writing
 // anything — every mutating probe is aimed at a deliberately non-existent
-// target (issue/PR 999999999, a ref whose sha is 40 zeroes). NOTHING THIS
-// SCRIPT DOES MUTATES THE REPO. It is safe to run against production.
+// target (issue/PR 999999999, a ref whose sha is 40 zeroes, a workflow file
+// and a branch that were never created). NOTHING THIS SCRIPT DOES MUTATES THE
+// REPO. It is safe to run against production.
 //
 // Verified first-hand on 2026-08-10, against a token with full access to a
 // real repo: metadata 200, actions/runs 200, PATCH issues/999999999 → 404,
@@ -27,9 +28,17 @@
 // That is why a token carrying `x-oauth-scopes` has its scopes reported
 // directly and is not probed.
 //
+// The Workflows probe was added on 2026-11-12 and is the least proven of the
+// six. Observed, with a token allowed to change workflow files: DELETE of the
+// absent workflow file on the absent branch → 404 "Branch … not found", and
+// nothing deleted. NOT observed: the 403 a fine-grained token without the grant
+// is documented to get. If GitHub turns out to look the branch up before it
+// checks the grant, that token reads 404 too, which is a wrong green. Run this
+// once against a token known to lack Workflows before leaning on that line.
+//
 // `app` arm — the script reads the installation's grants directly from the
 // GitHub API (`GET /repos/{slug}/installation` via an App JWT), maps them to
-// the same five-permission shape the `pat` arm reports, and applies the same
+// the same six-permission shape the `pat` arm reports, and applies the same
 // output format. No calls are made on behalf of any individual tenant; the
 // App JWT authenticates as the App, and only the installation's approved
 // permissions are read — never the App's own (which include permissions an
@@ -493,7 +502,7 @@ async function callInstallationApi(jwt, slug) {
  * Verify a tenant on the `app` arm by reading its installation's grants
  * directly from the GitHub API (`GET /repos/{slug}/installation`). No
  * per-permission probes are issued — the installation's approved permissions
- * are read once and mapped to the same five-grant output shape the `pat` arm
+ * are read once and mapped to the same six-grant output shape the `pat` arm
  * produces. Grants come from the INSTALLATION, not from `GET /app`, so they
  * reflect only what the operator has actually approved.
  *

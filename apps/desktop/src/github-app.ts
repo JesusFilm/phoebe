@@ -20,13 +20,14 @@ import type { GithubAppCreated, GithubAppRequest, VerbIo } from "phoebe-agent/co
 import { BridgeRefusal } from "./channels.ts";
 import { setSecretInHostEnv } from "./secret-write.ts";
 
-/** The App's permissions: the same five grants as the PAT, in GitHub's manifest names. */
+/** The App's permissions: the same six grants as the PAT, in GitHub's manifest names. */
 export const APP_PERMISSIONS: Readonly<Record<string, "read" | "write">> = {
   metadata: "read",
   contents: "write",
   pull_requests: "write",
   issues: "write",
   actions: "read",
+  workflows: "write",
 };
 
 /** Where the App's "homepage" link goes. GitHub requires one. */

@@ -37,7 +37,7 @@
 // warn-only), and — the one check that reads the data volume rather than the
 // tracker — is there state under `/data/repos` that no pipeline owns (#426,
 // warn-only). The full
-// five-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
+// six-permission grant probe stays in scripts/verify-tenant-token.mjs (it ships
 // with the repo, not the package); doctor's per-tenant probe is the
 // reachability slice of it.
 //
@@ -2185,7 +2185,7 @@ repo, labels and stray-member checks are real on App-arm deployments. That
 report, with its age, is in \`<data>/state/deployment.json\`; this command prints
 and changes nothing.
 
-The full five-permission token probe is scripts/verify-tenant-token.mjs.
+The full six-permission token probe is scripts/verify-tenant-token.mjs.
 Exit code is 1 when any check fails. \`phoebe upgrade\` moves versions;
 doctor reports whether the version you are on works.
 `;

@@ -301,7 +301,7 @@ export type DesktopBridge = {
    * as an argument and is held for the call; the verdict carries no value.
    */
   github: {
-    /** The five non-mutating probes against `slug`, with `token`. */
+    /** The six non-mutating probes against `slug`, with `token`. */
     verifyToken: (slug: string, token: string) => Promise<GithubTokenVerdict>;
     /**
      * Register a GitHub App through GitHub's manifest flow and put its id and

@@ -10,7 +10,7 @@
 //
 // The GitHub step is the one with something new in it. GitHub's token page
 // takes the name, owner, lifetime and permissions in the URL
-// (github-token.ts), so the link opens a page with the five grants already
+// (github-token.ts), so the link opens a page with the six grants already
 // ticked and the repository left to pick. The pasted token is then checked
 // against the repo with the probes that mutate nothing, and saved as GH_TOKEN
 // through the same `secret set` the form below the steps uses. A token with a
@@ -92,7 +92,7 @@ export function SetupSteps({
   /** Why main refused the last run this page asked for, or null. */
   trouble?: string | null;
   onStart: (request: VerbRunRequest) => void;
-  /** The five-grant probe, through main. Absent where there is no bridge. */
+  /** The six-grant probe, through main. Absent where there is no bridge. */
   onVerifyToken?: (slug: string, token: string) => Promise<GithubTokenVerdict>;
   /** The App manifest flow, through main. Absent where there is no bridge. */
   onCreateApp?: (request: GithubAppRequest) => Promise<GithubAppCreated>;
@@ -344,7 +344,7 @@ function GithubStep({
       <p className="muted">
         Phoebe works the repository as a GitHub token&apos;s identity: it clones, pushes{" "}
         <code>phoebe/</code> branches, opens pull requests and moves issue labels. A fine-grained
-        token with five grants is what it is built for.
+        token with six grants is what it is built for.
       </p>
       {placeholder !== null ? (
         <p className="refusal">
@@ -355,7 +355,7 @@ function GithubStep({
       ) : slug === null ? (
         <p className="muted">
           {initialised
-            ? "The config does not state a repoSlug, so the token cannot be checked here. Create one on GitHub with Contents, Pull requests and Issues read and write, Actions read-only, and paste it below."
+            ? "The config does not state a repoSlug, so the token cannot be checked here. Create one on GitHub with Contents, Pull requests, Issues and Workflows read and write, Actions read-only, and paste it below."
             : "Initialise the folder first, so the config names the repository the token is for."}
         </p>
       ) : (
@@ -556,7 +556,7 @@ function AppStep({
         <p className="muted">
           A workspace serves several repositories, and the App arm gives it one credential for all
           of them: a GitHub App whose tokens Phoebe mints itself, one per tenant, an hour at a time.
-          Phoebe registers it for you through GitHub&apos;s manifest flow with the five permissions
+          Phoebe registers it for you through GitHub&apos;s manifest flow with the six permissions
           it needs; GitHub shows one page to confirm, and the App&apos;s id and key come straight
           back into this install&apos;s <code>.env</code>.
         </p>
