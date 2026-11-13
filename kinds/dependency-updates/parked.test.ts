@@ -107,13 +107,15 @@ describe("releaseParked", () => {
     bundle: { manager: "npm", group: "retry:electron", candidates: [candidate] },
     title: "Update electron to 45.3.2",
     body: "",
+    render: () => ({ title: "Update electron to 45.3.2", body: "" }),
   };
-  const leave = (n: number): FilingAction => ({ action: "leave", planned, issue: n });
+  const leave = (n: number): FilingAction => ({ action: "leave", planned, issue: n, held: [] });
   const update = (n: number): FilingAction => ({
     action: "update",
     planned,
     issue: n,
     previous: "000000000000",
+    held: [],
   });
   const parked = (number: number, comments: string[], open = true): ParkedIssue => ({
     number,
@@ -208,7 +210,7 @@ describe("releaseParked", () => {
 
   test("leaves a closed ticket, one parked with no dropped list, and one the scan does not plan", () => {
     const { removed } = release(
-      [leave(1), leave(2), { action: "create", planned }],
+      [leave(1), leave(2), { action: "create", planned, held: [] }],
       [
         parked(1, [dropped("- `electron@45.3.2` (too new): today")], false),
         parked(2, [`A person has to decide.\n\n${BLOCKED_MARKER}`]),
