@@ -24,7 +24,16 @@ one edit, made here. See
   `COREPACK_HOME=/opt/corepack`, which the unprivileged user can only read. A
   work unit can't rewrite the pnpm the next unit runs (#780). The cost is a
   second copy of the version: `ARG PNPM_VERSION` has to match `packageManager`,
-  a test fails when they drift, and Renovate bumps both in one PR. After a pnpm
+  a test fails when they drift. Renovate's `pnpm` group moves both in one PR,
+  but hosted Renovate now waits for a tick on the Dependency Dashboard (#831).
+  On an ordinary day Phoebe's `dependency-updates` kind is what notices a new
+  pnpm, and its Renovate source reports it twice: under the `npm` manager for
+  `packageManager` and under `regex` for the ARG. A bundle never spans two
+  managers, so expect two bundles. The PR for the first one fails
+  `src/container-image.test.ts` until the ARG moves too, either in that PR or
+  in the second bundle's. No pnpm bundle has been filed yet (2026-11-13), so
+  that is read from the code, not watched. If it goes badly, tick `pnpm` on
+  the dashboard and Renovate moves the pair together. After a pnpm
   bump lands on main, relaunch so `run.sh` rebuilds the image. Until then
   installs fail, because the read-only home refuses the new download. A PR
   that touches the image, `package.json`, the lockfile or the workspace file
