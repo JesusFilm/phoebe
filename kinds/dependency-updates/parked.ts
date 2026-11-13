@@ -14,7 +14,7 @@
 //     scan. So does a scan that refreshes the bundle, because the run that
 //     parked it worked a set of bumps the ticket no longer holds.
 
-import { PHOEBE_BLOCKED_LABEL } from "../../src/blocked.ts";
+import { PHOEBE_BLOCKED_LABEL, hasBlockedMarker } from "../../src/blocked.ts";
 import type { MentioningIssue } from "../../src/github-client.ts";
 import type { WorkKindCtx } from "../../src/work-kinds/definition.ts";
 import { parseDropped } from "../dependencies-work/dropped.ts";
@@ -22,12 +22,22 @@ import { bundleKey } from "../dependencies/fingerprint.ts";
 import type { FilingAction } from "../dependencies/filing.ts";
 import type { DroppedRecord } from "./plan.ts";
 
-/** A dependency ticket wearing `phoebe:blocked`, with Phoebe's comments on it, oldest first. */
-export type ParkedIssue = { number: number; open: boolean; comments: readonly string[] };
+/**
+ * A dependency ticket with Phoebe's comments on it, oldest first. `blocked` says
+ * whether it wears `phoebe:blocked` now; its drop history counts either way.
+ */
+export type ParkedIssue = {
+  number: number;
+  open: boolean;
+  blocked: boolean;
+  comments: readonly string[];
+};
 
 /**
- * Every issue in `issues` wearing `phoebe:blocked`, open or closed, with the
- * comments Phoebe's own login wrote. Only Phoebe's count, so a passer-by on a
+ * Every issue in `issues`, open or closed, with the comments Phoebe's own
+ * login wrote. The history is read whether or not the ticket still wears
+ * `phoebe:blocked`: a bundle that dropped everything opened no PR, so lifting
+ * the label must not erase the only record of its failures. Only Phoebe's count, so a passer-by on a
  * public repo cannot pad a failure count or lift a label by pasting a section.
  * An issue whose comments cannot be read is logged and left out.
  */
@@ -35,21 +45,21 @@ export function readParked(
   issues: readonly MentioningIssue[],
   ctx: Pick<WorkKindCtx, "github" | "env" | "log">,
 ): ParkedIssue[] {
-  const parked = issues.filter((issue) => issue.labels.includes(PHOEBE_BLOCKED_LABEL));
-  if (parked.length === 0) return [];
+  if (issues.length === 0) return [];
   const login = ctx.github.resolveLogin(ctx.env["PHOEBE_GH_LOGIN"]);
   const read: ParkedIssue[] = [];
-  for (const issue of parked) {
+  for (const issue of issues) {
     try {
       const { comments } = ctx.github.issueTimeoutInputs(issue.number);
       read.push({
         number: issue.number,
         open: issue.state === "open",
+        blocked: issue.labels.includes(PHOEBE_BLOCKED_LABEL),
         comments: comments.filter((c) => c.authorLogin === login).map((c) => c.body),
       });
     } catch (error) {
       ctx.log(
-        `Could not read the comments on parked #${issue.number}; its drops are not counted ` +
+        `Could not read the comments on #${issue.number}; its drops are not counted ` +
           `this scan. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -65,8 +75,11 @@ export function parkedRecords(parked: readonly ParkedIssue[]): DroppedRecord[] {
 /** The bumps the newest comment with a `## Dropped` section listed, or none. */
 function lastDropped(issue: ParkedIssue) {
   for (let i = issue.comments.length - 1; i >= 0; i--) {
-    const dropped = parseDropped(issue.comments[i]!);
+    const body = issue.comments[i]!;
+    const dropped = parseDropped(body);
     if (dropped.length > 0) return dropped;
+    // A newer blocked run without drops ends the search: a person has to act (#817).
+    if (hasBlockedMarker(body)) return [];
   }
   return [];
 }
@@ -88,7 +101,7 @@ export function releaseParked(
   for (const a of actions) {
     if (a.action !== "leave" && a.action !== "update") continue;
     const issue = byNumber.get(a.issue);
-    if (issue === undefined || !issue.open) continue;
+    if (issue === undefined || !issue.open || !issue.blocked) continue;
     const dropped = lastDropped(issue);
     if (dropped.length === 0) continue;
     const tooNew = dropped.every((bump) => bump.tooNew);

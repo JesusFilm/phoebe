@@ -168,6 +168,16 @@ describe("decideFiling", () => {
       expect(actionsOf(actions)).toEqual(["create", "create", "create", "create"]);
     });
 
+    test("an open issue parked under phoebe:blocked holds no slot", () => {
+      const parked = issue(30, planned("package:a", candidate("a")).bundle, "open", [
+        "dependencies",
+        "phoebe:dependencies",
+        "phoebe:blocked",
+      ]);
+      const actions = decideFiling(others, [parked], [], { ...options, cap: 4 });
+      expect(actionsOf(actions)).toEqual(["create", "create", "create", "create"]);
+    });
+
     test("refreshing an open issue is never held by the cap", () => {
       const filed = issue(30, react.bundle, "open", undefined, "000000000000");
       const actions = decideFiling([react], [filed], [], { ...options, cap: 1 });

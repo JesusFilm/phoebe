@@ -12,6 +12,7 @@
 //
 // `decideFiling` is the pure half; `applyFiling` makes the GitHub calls.
 
+import { PHOEBE_BLOCKED_LABEL } from "../../src/blocked.ts";
 import type { MentioningIssue, MentioningPr } from "../../src/github-client.ts";
 import { addLabelCreatingIfMissing, type PhoebeLabel } from "../../src/labels.ts";
 import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
@@ -99,7 +100,13 @@ export function decideFiling(
       if (!open.has(marker.key)) {
         open.set(marker.key, { number: issue.number, fingerprint: marker.fingerprint });
       }
-      if (issue.labels.includes(options.routingLabel)) inFlight.add(marker.key);
+      // A parked ticket is passed over by the implementer, so it holds no slot.
+      if (
+        issue.labels.includes(options.routingLabel) &&
+        !issue.labels.includes(PHOEBE_BLOCKED_LABEL)
+      ) {
+        inFlight.add(marker.key);
+      }
       continue;
     }
     const pair = pairKey(marker.key, marker.fingerprint);

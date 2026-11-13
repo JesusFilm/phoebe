@@ -33,7 +33,7 @@ const dropped = (...entries: string[]) =>
   ["Every bump dropped.", "", "## Dropped", "", ...entries, "", BLOCKED_MARKER].join("\n");
 
 describe("readParked", () => {
-  test("reads Phoebe's own comments on each issue wearing phoebe:blocked, open or closed", () => {
+  test("reads Phoebe's own comments on every issue, open or closed, and notes which wear phoebe:blocked", () => {
     const asked: number[] = [];
     const ctx = ctxFor({
       resolveLogin: (env) => env ?? "unset",
@@ -57,19 +57,21 @@ describe("readParked", () => {
       ],
       ctx,
     );
-    expect(asked).toEqual([1, 3]);
+    expect(asked).toEqual([1, 2, 3]);
     expect(parked).toEqual([
-      { number: 1, open: true, comments: ["mine"] },
-      { number: 3, open: false, comments: ["mine"] },
+      { number: 1, open: true, blocked: true, comments: ["mine"] },
+      { number: 2, open: true, blocked: false, comments: ["mine"] },
+      { number: 3, open: false, blocked: true, comments: ["mine"] },
     ]);
     expect(parkedRecords(parked)).toEqual([
       { number: 1, body: "mine" },
+      { number: 2, body: "mine" },
       { number: 3, body: "mine" },
     ]);
   });
 
-  test("asks GitHub nothing when no issue is parked", () => {
-    expect(readParked([issue(1, ["phoebe:dependencies"])], ctxFor({}))).toEqual([]);
+  test("asks GitHub nothing when there are no issues", () => {
+    expect(readParked([], ctxFor({}))).toEqual([]);
   });
 
   test("an issue whose comments cannot be read is logged and left out", () => {
@@ -84,7 +86,7 @@ describe("readParked", () => {
       logged,
     );
     expect(readParked([issue(4, [PHOEBE_BLOCKED_LABEL])], ctx)).toEqual([]);
-    expect(logged.join("\n")).toContain("Could not read the comments on parked #4");
+    expect(logged.join("\n")).toContain("Could not read the comments on #4");
   });
 });
 
@@ -116,6 +118,7 @@ describe("releaseParked", () => {
   const parked = (number: number, comments: string[], open = true): ParkedIssue => ({
     number,
     open,
+    blocked: true,
     comments,
   });
 
@@ -154,6 +157,27 @@ describe("releaseParked", () => {
           dropped("- `electron@45.3.2`: the build broke"),
         ]),
       ],
+    );
+    expect(removed).toEqual([]);
+  });
+
+  test("a newer blocked run without drops ends the search, so the label stays", () => {
+    const { removed } = release(
+      [leave(858)],
+      [
+        parked(858, [
+          dropped("- `electron@45.3.2` (too new): published today"),
+          `The run stopped.\n\n${BLOCKED_MARKER}`,
+        ]),
+      ],
+    );
+    expect(removed).toEqual([]);
+  });
+
+  test("a ticket whose label is already gone is not touched", () => {
+    const { removed } = release(
+      [update(858)],
+      [{ ...parked(858, [dropped("- `electron@45.3.2` (too new): today")]), blocked: false }],
     );
     expect(removed).toEqual([]);
   });

@@ -37,6 +37,11 @@ export const BLOCKED_MARKER = "<!-- phoebe-blocked -->";
 // of an old comment (`> <!-- phoebe-blocked -->`) is not read as a fresh one.
 const BLOCKED_MARKER_RE = /^<!--\s*phoebe-blocked\s*-->/im;
 
+/** Whether a comment is a blocked run's, with the marker on its own line. */
+export function hasBlockedMarker(body: string): boolean {
+  return BLOCKED_MARKER_RE.test(body);
+}
+
 const ACK_MARKER = "<!-- phoebe-blocked-ack -->";
 const ACK_MARKER_RE = /^<!--\s*phoebe-blocked-ack\s*-->/im;
 
