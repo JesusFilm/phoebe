@@ -6,7 +6,8 @@ import { describe, expect, test } from "vite-plus/test";
 import type { Candidate } from "./candidate.ts";
 import { bundleKey, fingerprint, parseMarker } from "./fingerprint.ts";
 import type { Bundle } from "./grouping.ts";
-import { renderIssueBody, renderIssueTitle } from "./issue-body.ts";
+import { readIssueRows, renderIssueBody, renderIssueTitle } from "./issue-body.ts";
+import { renderSecurityBody } from "../dependency-security/body.ts";
 
 function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -196,5 +197,87 @@ describe("renderIssueTitle", () => {
       candidates: [candidate("x\ny", { target: "2.0.0\r\n" })],
     };
     expect(renderIssueTitle(odd)).toBe("Update x y to 2.0.0 ");
+  });
+});
+
+// A closed issue's rows are its veto (#861), so filing reads back what the
+// renderers wrote: each package, workspace and target, and the advisories
+// listed against the package.
+describe("readIssueRows", () => {
+  test("reads every row of a rendered body back, with its package's advisories", () => {
+    expect(readIssueRows(renderIssueBody(bundle))).toEqual([
+      { package: "left-pad", workspace: "package.json", target: "18.3.1", advisories: [] },
+      { package: "react", workspace: "package.json", target: "18.3.1", advisories: [] },
+      {
+        package: "react-dom",
+        workspace: "package.json",
+        target: "18.3.1",
+        advisories: ["CVE-2026-0001", "GHSA-2222-bbbb-cccc"],
+      },
+      {
+        package: "scheduler",
+        workspace: "apps/web/package.json",
+        target: "0.23.2",
+        advisories: [],
+      },
+    ]);
+  });
+
+  test("undoes the escaping a source-supplied name and version went through", () => {
+    const odd: Bundle = {
+      manager: "npm",
+      group: "package:odd",
+      candidates: [
+        candidate("`tick|pipe`", {
+          target: "1.0.0-<rc>&1",
+          workspace: "a|b/package.json",
+          advisories: [{ id: "GHSA-[x]", severity: "low", fixedIn: null }],
+        }),
+      ],
+    };
+    expect(readIssueRows(renderIssueBody(odd))).toEqual([
+      {
+        package: "`tick|pipe`",
+        workspace: "a|b/package.json",
+        target: "1.0.0-<rc>&1",
+        advisories: ["GHSA-[x]"],
+      },
+    ]);
+  });
+
+  test("reads a security body: a row with no fix stays at its version", () => {
+    const advisory = { id: "GHSA-9999-8888-7777", severity: "high" as const, fixedIn: "2.0.1" };
+    const security: Bundle = {
+      manager: "npm",
+      group: "security:pkg",
+      candidates: [
+        candidate("pkg", { current: "2.0.0", target: "2.0.1", advisories: [advisory] }),
+        candidate("pkg", {
+          current: "1.0.0",
+          target: "1.0.0",
+          workspace: "apps/web/package.json",
+          advisories: [{ ...advisory, fixedIn: null }],
+        }),
+      ],
+    };
+    const options = { minSeverity: "high" as const, routingLabel: "phoebe:dependencies" };
+    const rows = (routed: boolean) =>
+      readIssueRows(renderSecurityBody(security, { ...options, routed })).map(
+        (r) => `${r.workspace} ${r.package}@${r.target} ${r.advisories.join(",")}`,
+      );
+    expect(rows(true)).toEqual([
+      "apps/web/package.json pkg@1.0.0 GHSA-9999-8888-7777",
+      "package.json pkg@2.0.1 GHSA-9999-8888-7777",
+    ]);
+    expect(rows(false)).toEqual([
+      "apps/web/package.json pkg@1.0.0 GHSA-9999-8888-7777",
+      "package.json pkg@2.0.0 GHSA-9999-8888-7777",
+    ]);
+  });
+
+  test("a body with no table has no rows", () => {
+    expect(
+      readIssueRows("Closed by hand.\n\n<!-- phoebe-dependencies bundle=x fingerprint=0 -->"),
+    ).toEqual([]);
   });
 });

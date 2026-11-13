@@ -302,7 +302,7 @@ describe("run", () => {
     expect(again.writes).toEqual([]);
   });
 
-  test("a closed tracking issue vetoes its fingerprint; a fix lifts the veto", async () => {
+  test("a closed tracking issue vetoes its rows; a fix lifts the veto", async () => {
     const first = gitHub();
     await kindWith({}, { native: [candidate("pkg", [unfixed])] }).run(
       { ref: SCAN_REF, revision: "0" },

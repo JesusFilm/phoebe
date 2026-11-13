@@ -8,7 +8,7 @@ import { parseDropped } from "../dependencies-work/dropped.ts";
 import { withoutBootstrapperPin } from "../dependencies/bootstrapper.ts";
 import { byText, compareCandidates, type Candidate } from "../dependencies/candidate.ts";
 import { groupCandidates, patternRegExp, type Bundle } from "../dependencies/grouping.ts";
-import type { PlannedBundle } from "../dependencies/filing.ts";
+import { planBundle, type PlannedBundle } from "../dependencies/filing.ts";
 import { renderIssueBody, renderIssueTitle } from "../dependencies/issue-body.ts";
 import { isMature, overThreshold } from "../dependencies/policy.ts";
 import { compareVersions, managerScheme } from "../dependencies/registry/versions.ts";
@@ -172,21 +172,19 @@ export function planBundles(
   }
 
   const planned: PlannedBundle[] = [
-    ...groupBySide(fresh, options).map((bundle) => ({
-      bundle,
-      title: renderIssueTitle(bundle),
-      body: renderIssueBody(bundle, options.maturity),
-    })),
-    ...[...retries.values()].map(({ bundle, pr }) => {
-      const sorted = { ...bundle, candidates: bundle.candidates.sort(compareCandidates) };
-      return {
-        bundle: sorted,
-        title: renderIssueTitle(sorted),
+    ...groupBySide(fresh, options).map((bundle) =>
+      planBundle(bundle, (b) => ({
+        title: renderIssueTitle(b),
+        body: renderIssueBody(b, options.maturity),
+      })),
+    ),
+    ...[...retries.values()].map(({ bundle, pr }) =>
+      planBundle({ ...bundle, candidates: bundle.candidates.sort(compareCandidates) }, (b) => ({
+        title: renderIssueTitle(b),
         body:
-          `Failed in #${pr}; filed again on its own.\n\n` +
-          renderIssueBody(sorted, options.maturity),
-      };
-    }),
+          `Failed in #${pr}; filed again on its own.\n\n` + renderIssueBody(b, options.maturity),
+      })),
+    ),
   ];
   const advised = (p: PlannedBundle) => p.bundle.candidates.some((c) => c.advisories.length > 0);
   return {

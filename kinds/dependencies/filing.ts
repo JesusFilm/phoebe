@@ -6,8 +6,10 @@
 //   - an open issue with the bundle's key and fingerprint is left alone;
 //   - an open issue with the key and another fingerprint gets the new body and
 //     a one-line comment;
-//   - a closed issue that no merged PR closed vetoes its fingerprint, so the
-//     bundle is filed again only once a version or an advisory moves;
+//   - a closed issue that no merged PR closed vetoes the rows it listed, so a
+//     row is filed again only once its own target or advisories move, and the
+//     rest of its bundle files without it (#861). A body with no rows to read
+//     vetoes its fingerprint instead;
 //   - anything else is a new issue, unless the open cap is reached.
 //
 // `decideFiling` is the pure half; `applyFiling` makes the GitHub calls.
@@ -17,6 +19,7 @@ import { addLabelCreatingIfMissing, type PhoebeLabel } from "../../src/labels.ts
 import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { bundleKey, fingerprint, MARKER_TEXT, parseMarker } from "./fingerprint.ts";
 import type { Bundle } from "./grouping.ts";
+import { readIssueRows } from "./issue-body.ts";
 
 /** The label every dependency issue wears, beside the routing label. */
 export const DEPENDENCIES_LABEL: PhoebeLabel = {
@@ -30,21 +33,35 @@ export const SECURITY_LABEL: PhoebeLabel = {
   description: "A security advisory against a dependency",
 };
 
-/** A bundle ready to file: its rendered title and body, the marker last. */
-export type PlannedBundle = {
-  bundle: Bundle;
+/** What a detector renders for one bundle: its title and body, the marker last. */
+export type Rendered = {
   title: string;
   body: string;
   /** The labels a new issue gets, when they differ from the detector's own set. */
   labels?: readonly PhoebeLabel[];
 };
 
-export type FilingAction =
+/** A bundle ready to file, and how to render it again once a veto drops rows from it. */
+export type PlannedBundle = Rendered & {
+  bundle: Bundle;
+  render: (bundle: Bundle) => Rendered;
+};
+
+/** A bundle rendered by `render`, which filing calls again on whatever rows a veto leaves. */
+export function planBundle(bundle: Bundle, render: (bundle: Bundle) => Rendered): PlannedBundle {
+  return { bundle, ...render(bundle), render };
+}
+
+/** A row a closed issue vetoed, dropped from its bundle before filing. */
+export type HeldRow = { package: string; target: string; issue: number };
+
+export type FilingAction = (
   | { action: "leave"; planned: PlannedBundle; issue: number }
   | { action: "update"; planned: PlannedBundle; issue: number; previous: string }
   | { action: "vetoed"; planned: PlannedBundle; issue: number }
   | { action: "create"; planned: PlannedBundle }
-  | { action: "capped"; planned: PlannedBundle };
+  | { action: "capped"; planned: PlannedBundle }
+) & { held: readonly HeldRow[] };
 
 export type FilingOptions = {
   /** The routing label; an open issue counts toward the cap only when it wears it. */
@@ -62,6 +79,15 @@ function closedIssues(body: string): number[] {
 
 const pairKey = (key: string, print: string) => JSON.stringify([key, print]);
 
+/** A row's identity across bundles: one package in one workspace moving to one target. */
+const rowKey = (manager: string, pkg: string, workspace: string, target: string) =>
+  JSON.stringify([manager, pkg, workspace, target]);
+
+/** The manager a bundle key opens with; no manager name holds a colon. */
+const managerOf = (key: string) => key.slice(0, key.indexOf(":"));
+
+type RowVeto = { issue: number; advisories: ReadonlySet<string> };
+
 /**
  * One decision per bundle, in the order the bundles come. The cap counts
  * bundles in flight, not objects: an open routed issue and the open PR working
@@ -69,6 +95,13 @@ const pairKey = (key: string, print: string) => JSON.stringify([key, print]);
  * names it in a closing keyword or carries its marker; the PR's own marker is
  * the issue's at the time the PR opened, so the closing keyword is what holds
  * when the issue was refreshed after.
+ *
+ * A closed, unmerged issue vetoes each row it listed, by manager, package,
+ * workspace and target, in whichever bundle the row turns up next. The row
+ * comes back once its target moves or it carries an advisory the issue did
+ * not list against its package. Vetoed rows are dropped before a bundle is
+ * filed or refreshed and the bundle is rendered again without them; a bundle
+ * left with none is vetoed whole.
  */
 export function decideFiling(
   planned: readonly PlannedBundle[],
@@ -92,6 +125,7 @@ export function decideFiling(
   // Newest first, so the first open issue per key is the one to keep current.
   const open = new Map<string, { number: number; fingerprint: string }>();
   const vetoes = new Map<string, number>();
+  const rowVetoes = new Map<string, RowVeto[]>();
   for (const issue of issues) {
     const marker = parseMarker(issue.body);
     if (marker === null) continue;
@@ -103,28 +137,57 @@ export function decideFiling(
       continue;
     }
     const pair = pairKey(marker.key, marker.fingerprint);
-    if (!mergedIssues.has(issue.number) && !mergedPairs.has(pair) && !vetoes.has(pair)) {
-      vetoes.set(pair, issue.number);
+    if (mergedIssues.has(issue.number) || mergedPairs.has(pair)) continue;
+    const rows = readIssueRows(issue.body);
+    if (rows.length === 0 && !vetoes.has(pair)) vetoes.set(pair, issue.number);
+    const manager = managerOf(marker.key);
+    for (const row of rows) {
+      const key = rowKey(manager, row.package, row.workspace, row.target);
+      const list = rowVetoes.get(key) ?? [];
+      list.push({ issue: issue.number, advisories: new Set(row.advisories) });
+      rowVetoes.set(key, list);
     }
   }
 
-  return planned.map((p): FilingAction => {
+  return planned.map((given): FilingAction => {
+    const held: HeldRow[] = [];
+    const kept = given.bundle.candidates.filter((c) => {
+      const veto = rowVetoes
+        .get(rowKey(given.bundle.manager, c.package, c.workspace, c.target))
+        ?.find((v) => c.advisories.every((a) => v.advisories.has(a.id)));
+      if (veto === undefined) return true;
+      held.push({ package: c.package, target: c.target, issue: veto.issue });
+      return false;
+    });
+    const first = held[0];
+    if (kept.length === 0 && first !== undefined) {
+      return { action: "vetoed", planned: given, issue: first.issue, held };
+    }
+    const p =
+      held.length === 0 ? given : planBundle({ ...given.bundle, candidates: kept }, given.render);
+
     const key = bundleKey(p.bundle);
     const print = fingerprint(p.bundle);
     const filed = open.get(key);
     if (filed !== undefined) {
       return filed.fingerprint === print
-        ? { action: "leave", planned: p, issue: filed.number }
-        : { action: "update", planned: p, issue: filed.number, previous: filed.fingerprint };
+        ? { action: "leave", planned: p, issue: filed.number, held }
+        : { action: "update", planned: p, issue: filed.number, previous: filed.fingerprint, held };
     }
     const vetoedBy = vetoes.get(pairKey(key, print));
-    if (vetoedBy !== undefined) return { action: "vetoed", planned: p, issue: vetoedBy };
+    if (vetoedBy !== undefined) return { action: "vetoed", planned: p, issue: vetoedBy, held };
     if (options.cap !== null && inFlight.size >= options.cap) {
-      return { action: "capped", planned: p };
+      return { action: "capped", planned: p, held };
     }
     inFlight.add(key);
-    return { action: "create", planned: p };
+    return { action: "create", planned: p, held };
   });
+}
+
+/** The log line naming each row a veto held back from a bundle, once per package and target. */
+export function renderHeldLine(key: string, held: readonly HeldRow[]): string {
+  const named = new Set(held.map((r) => `${r.package}@${r.target} (vetoed by #${r.issue})`));
+  return `${key}: held back ${[...named].join(", ")}.`;
 }
 
 /** The one line posted on an issue whose bundle moved. */
@@ -154,6 +217,7 @@ export function applyFiling(
   for (const a of actions) {
     counts[a.action] += 1;
     const key = bundleKey(a.planned.bundle);
+    if (a.held.length > 0) ctx.log(renderHeldLine(key, a.held));
     if (a.action === "update") {
       ctx.github.updateIssueBody(a.issue, a.planned.body);
       ctx.github.postUnitComment(
