@@ -12,10 +12,11 @@ nodeLinker: isolated
 #
 # electron-builder and electron-updater both take js-yaml at ^4.1.0, and their
 # latest releases still resolve 4.3.0, which carries GHSA-2883-xcg3-v3hh and
-# GHSA-5p4m-2wfm-xmqj (#801). The override started as a floor at the fixed
-# 4.3.2; since #811 it carries both onto the 5.x line, past the ^4.1.0 they
-# declare. They only call load and dump through CommonJS named imports, and 5.x
-# keeps both.
+# GHSA-5p4m-2wfm-xmqj (#801). The floor holds the tree at the fixed 4.3.2,
+# inside the range they declare, until a bump of either brings it on its own.
+# Two dependency bumps moved it to 5.x (#809, #811). No advisory is open
+# against 4.3.2, so nothing called for carrying both past ^4.1.0, and the
+# floor is back.
 #
 # undici (#802): node-gyp under electron-builder takes the 6.x line,
 # @electron/get under electron the 7.x line, and neither parent has a release
@@ -25,7 +26,7 @@ nodeLinker: isolated
 # auto-installed peer of `@tailwindcss/vite`, so no release of that plugin can
 # carry the fix; this lifts the vulnerable 8.x line to 8.1.6.
 overrides:
-  js-yaml: ^5.5.0
+  js-yaml: ^4.3.2
   "undici@6": 8.12.4
   "undici@7": 8.12.4
   "vite@>=8.0.0 <8.1.6": 8.3.8
