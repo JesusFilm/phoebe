@@ -279,7 +279,101 @@ describe("decideFiling", () => {
         "npm:dev:all: held back electron@45.3.2 (vetoed by #855), jsdom@31.0.1 (vetoed by #855).",
         "npm:dev:all: filed #856.",
         "npm:dev:other: held back electron@45.3.2 (vetoed by #855).",
-        "filing: 1 filed, 0 refreshed, 0 unchanged, 1 vetoed by a closed issue, 0 held by the open cap.",
+        "filing: 1 filed, 0 refreshed, 0 unchanged, 1 vetoed by a closed issue, 0 already proposed by an open issue, 0 held by the open cap.",
+      ]);
+    });
+  });
+
+  // On 2026-11-13 the agent source called renovate in templates/container/Dockerfile
+  // `prod` in one scan and `dev` in the next, so #854 under the prod key and
+  // #850 under dev:all both proposed renovate 44.239.1 (#860).
+  describe("a row another open issue already proposes", () => {
+    const pin = (pkg: string, target: string, workspace: string) =>
+      candidate(pkg, target, { manager: "dockerfile", workspace });
+    const renovate = pin("renovate", "44.239.1", "templates/container/Dockerfile");
+    const claude = pin("@anthropic-ai/claude-code", "2.1.325", "templates/container/Dockerfile");
+    const docker = (group: string, ...candidates: Candidate[]): PlannedBundle =>
+      planBundle({ manager: "dockerfile", group, candidates }, (bundle) => ({
+        title: renderIssueTitle(bundle),
+        body: renderIssueBody(bundle),
+      }));
+    const openIssue = (number: number, bundle: PlannedBundle): MentioningIssue => ({
+      ...issue(number, null, "open"),
+      body: bundle.body,
+    });
+
+    test("is held out of a new bundle under another key, which files nothing", () => {
+      const actions = decideFiling(
+        [docker("relation:renovate", renovate)],
+        [openIssue(850, docker("dev:all", renovate))],
+        [],
+        options,
+      );
+      expect(actions).toMatchObject([
+        {
+          action: "proposed",
+          issue: 850,
+          held: [{ package: "renovate", target: "44.239.1", issue: 850, by: "proposed" }],
+        },
+      ]);
+    });
+
+    test("is held out of a refresh, while the rest of the bundle files", () => {
+      const [action] = decideFiling(
+        [docker("all", renovate, claude)],
+        [openIssue(850, docker("relation:renovate", renovate))],
+        [],
+        options,
+      );
+      expect(action).toMatchObject({ action: "create", held: [{ package: "renovate" }] });
+      expect(action!.planned.bundle.candidates).toEqual([claude]);
+      expect(action!.planned.body).not.toContain("44.239.1");
+    });
+
+    test("stays in an issue that already lists it, even when another open issue does too", () => {
+      const actions = decideFiling(
+        [docker("relation:renovate", renovate)],
+        [
+          openIssue(854, docker("relation:renovate", renovate)),
+          openIssue(850, docker("dev:all", renovate)),
+        ],
+        [],
+        options,
+      );
+      expect(actions).toMatchObject([{ action: "leave", issue: 854, held: [] }]);
+    });
+
+    test("is not held in another workspace, at another target, or with a new advisory", () => {
+      const advisory = { id: "GHSA-aaaa-bbbb-cccc", severity: "high" as const, fixedIn: null };
+      const actions = decideFiling(
+        [
+          docker("a", pin("renovate", "44.239.1", ".phoebe/container/Dockerfile")),
+          docker("b", pin("renovate", "44.240.0", "templates/container/Dockerfile")),
+          docker("c", { ...renovate, advisories: [advisory] }),
+        ],
+        [openIssue(850, docker("dev:all", renovate))],
+        [],
+        options,
+      );
+      expect(actionsOf(actions)).toEqual(["create", "create", "create"]);
+    });
+
+    test("the scan log names the issue that already proposes it", () => {
+      const github = stubGitHub({ createIssue: () => 900 });
+      const logged: string[] = [];
+      applyFiling(
+        decideFiling(
+          [docker("relation:renovate", renovate)],
+          [openIssue(850, docker("dev:all", renovate))],
+          [],
+          options,
+        ),
+        { github: github.forCycle() as WorkKindRunCtx["github"], log: (l) => logged.push(l) },
+        [],
+      );
+      expect(logged).toEqual([
+        "dockerfile:relation:renovate: held back renovate@44.239.1 (already proposed in #850).",
+        "filing: 0 filed, 0 refreshed, 0 unchanged, 0 vetoed by a closed issue, 1 already proposed by an open issue, 0 held by the open cap.",
       ]);
     });
   });
@@ -378,9 +472,9 @@ describe("applyFiling", () => {
       "body #41 body package:b",
       `comment #41 Phoebe refreshed this issue: the bundle now proposes 1 update(s) (fingerprint 000000000000 → ${fingerprint(b.bundle)}).`,
     ]);
-    expect(counts).toEqual({ create: 1, update: 1, leave: 1, vetoed: 0, capped: 1 });
+    expect(counts).toEqual({ create: 1, update: 1, leave: 1, vetoed: 0, proposed: 0, capped: 1 });
     expect(logged.at(-1)).toBe(
-      "filing: 1 filed, 1 refreshed, 1 unchanged, 0 vetoed by a closed issue, 1 held by the open cap.",
+      "filing: 1 filed, 1 refreshed, 1 unchanged, 0 vetoed by a closed issue, 0 already proposed by an open issue, 1 held by the open cap.",
     );
   });
 

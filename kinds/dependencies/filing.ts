@@ -10,6 +10,9 @@
 //     row is filed again only once its own target or advisories move, and the
 //     rest of its bundle files without it (#861). A body with no rows to read
 //     vetoes its fingerprint instead;
+//   - a row an open issue under another key already lists is held back from
+//     a bundle whose own open issue does not list it, so one bump is never
+//     proposed by two open issues (#860);
 //   - anything else is a new issue, unless the open cap is reached.
 //
 // `decideFiling` is the pure half; `applyFiling` makes the GitHub calls.
@@ -52,13 +55,22 @@ export function planBundle(bundle: Bundle, render: (bundle: Bundle) => Rendered)
   return { bundle, ...render(bundle), render };
 }
 
-/** A row a closed issue vetoed, dropped from its bundle before filing. */
-export type HeldRow = { package: string; target: string; issue: number };
+/**
+ * A row dropped from its bundle before filing: `vetoed` when a closed issue
+ * listed it, `proposed` when an open issue under another key already does.
+ */
+export type HeldRow = {
+  package: string;
+  target: string;
+  issue: number;
+  by: "vetoed" | "proposed";
+};
 
 export type FilingAction = (
   | { action: "leave"; planned: PlannedBundle; issue: number }
   | { action: "update"; planned: PlannedBundle; issue: number; previous: string }
   | { action: "vetoed"; planned: PlannedBundle; issue: number }
+  | { action: "proposed"; planned: PlannedBundle; issue: number }
   | { action: "create"; planned: PlannedBundle }
   | { action: "capped"; planned: PlannedBundle }
 ) & { held: readonly HeldRow[] };
@@ -88,6 +100,15 @@ const managerOf = (key: string) => key.slice(0, key.indexOf(":"));
 
 type RowVeto = { issue: number; advisories: ReadonlySet<string> };
 
+/** An open issue listing a row, the bundle key it files under, and the advisories it lists. */
+type RowListing = RowVeto & { key: string };
+
+function pushTo<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const list = map.get(key) ?? [];
+  list.push(value);
+  map.set(key, list);
+}
+
 /**
  * One decision per bundle, in the order the bundles come. The cap counts
  * bundles in flight, not objects: an open routed issue and the open PR working
@@ -99,9 +120,18 @@ type RowVeto = { issue: number; advisories: ReadonlySet<string> };
  * A closed, unmerged issue vetoes each row it listed, by manager, package,
  * workspace and target, in whichever bundle the row turns up next. The row
  * comes back once its target moves or it carries an advisory the issue did
- * not list against its package. Vetoed rows are dropped before a bundle is
- * filed or refreshed and the bundle is rendered again without them; a bundle
- * left with none is vetoed whole.
+ * not list against its package.
+ *
+ * An open issue holds each row it lists, by the same four fields, out of
+ * every bundle under another key, unless that bundle's own open issue lists
+ * the row too. A row whose bundle moves to a new key between scans then stays
+ * with the issue that already proposes it rather than being filed twice, and
+ * an issue that already lists a row keeps it. As with a veto, a row carrying
+ * an advisory the open issue does not list is not held.
+ *
+ * Held rows are dropped before a bundle is filed or refreshed and the bundle
+ * is rendered again without them. A bundle left with none is vetoed whole when
+ * a closed issue held any of its rows, and is left as proposed otherwise.
  */
 export function decideFiling(
   planned: readonly PlannedBundle[],
@@ -126,42 +156,55 @@ export function decideFiling(
   const open = new Map<string, { number: number; fingerprint: string }>();
   const vetoes = new Map<string, number>();
   const rowVetoes = new Map<string, RowVeto[]>();
+  const rowListings = new Map<string, RowListing[]>();
   for (const issue of issues) {
     const marker = parseMarker(issue.body);
     if (marker === null) continue;
+    const manager = managerOf(marker.key);
+    const rows = readIssueRows(issue.body);
     if (issue.state === "open") {
       if (!open.has(marker.key)) {
         open.set(marker.key, { number: issue.number, fingerprint: marker.fingerprint });
       }
       if (issue.labels.includes(options.routingLabel)) inFlight.add(marker.key);
+      for (const row of rows) {
+        const key = rowKey(manager, row.package, row.workspace, row.target);
+        const advisories = new Set(row.advisories);
+        pushTo(rowListings, key, { issue: issue.number, key: marker.key, advisories });
+      }
       continue;
     }
     const pair = pairKey(marker.key, marker.fingerprint);
     if (mergedIssues.has(issue.number) || mergedPairs.has(pair)) continue;
-    const rows = readIssueRows(issue.body);
     if (rows.length === 0 && !vetoes.has(pair)) vetoes.set(pair, issue.number);
-    const manager = managerOf(marker.key);
     for (const row of rows) {
       const key = rowKey(manager, row.package, row.workspace, row.target);
-      const list = rowVetoes.get(key) ?? [];
-      list.push({ issue: issue.number, advisories: new Set(row.advisories) });
-      rowVetoes.set(key, list);
+      pushTo(rowVetoes, key, { issue: issue.number, advisories: new Set(row.advisories) });
     }
   }
 
   return planned.map((given): FilingAction => {
+    const own = bundleKey(given.bundle);
     const held: HeldRow[] = [];
     const kept = given.bundle.candidates.filter((c) => {
-      const veto = rowVetoes
-        .get(rowKey(given.bundle.manager, c.package, c.workspace, c.target))
-        ?.find((v) => c.advisories.every((a) => v.advisories.has(a.id)));
-      if (veto === undefined) return true;
-      held.push({ package: c.package, target: c.target, issue: veto.issue });
+      const row = rowKey(given.bundle.manager, c.package, c.workspace, c.target);
+      const covers = (v: RowVeto) => c.advisories.every((a) => v.advisories.has(a.id));
+      const veto = rowVetoes.get(row)?.find(covers);
+      if (veto !== undefined) {
+        held.push({ package: c.package, target: c.target, issue: veto.issue, by: "vetoed" });
+        return false;
+      }
+      const listings = rowListings.get(row) ?? [];
+      const elsewhere = listings.find((l) => l.key !== own && covers(l));
+      if (elsewhere === undefined || listings.some((l) => l.key === own)) return true;
+      held.push({ package: c.package, target: c.target, issue: elsewhere.issue, by: "proposed" });
       return false;
     });
-    const first = held[0];
-    if (kept.length === 0 && first !== undefined) {
-      return { action: "vetoed", planned: given, issue: first.issue, held };
+    if (kept.length === 0 && held.length > 0) {
+      const veto = held.find((r) => r.by === "vetoed");
+      return veto !== undefined
+        ? { action: "vetoed", planned: given, issue: veto.issue, held }
+        : { action: "proposed", planned: given, issue: held[0]!.issue, held };
     }
     const p =
       held.length === 0 ? given : planBundle({ ...given.bundle, candidates: kept }, given.render);
@@ -184,9 +227,11 @@ export function decideFiling(
   });
 }
 
-/** The log line naming each row a veto held back from a bundle, once per package and target. */
+/** The log line naming each row held back from a bundle, once per package and target. */
 export function renderHeldLine(key: string, held: readonly HeldRow[]): string {
-  const named = new Set(held.map((r) => `${r.package}@${r.target} (vetoed by #${r.issue})`));
+  const why = (r: HeldRow) =>
+    r.by === "vetoed" ? `vetoed by #${r.issue}` : `already proposed in #${r.issue}`;
+  const named = new Set(held.map((r) => `${r.package}@${r.target} (${why(r)})`));
   return `${key}: held back ${[...named].join(", ")}.`;
 }
 
@@ -213,7 +258,14 @@ export function applyFiling(
   ctx: Pick<WorkKindRunCtx, "github" | "log">,
   labels: readonly PhoebeLabel[],
 ): FilingCounts {
-  const counts: FilingCounts = { leave: 0, update: 0, vetoed: 0, create: 0, capped: 0 };
+  const counts: FilingCounts = {
+    leave: 0,
+    update: 0,
+    vetoed: 0,
+    proposed: 0,
+    create: 0,
+    capped: 0,
+  };
   for (const a of actions) {
     counts[a.action] += 1;
     const key = bundleKey(a.planned.bundle);
@@ -242,7 +294,8 @@ export function applyFiling(
   }
   ctx.log(
     `filing: ${counts.create} filed, ${counts.update} refreshed, ${counts.leave} unchanged, ` +
-      `${counts.vetoed} vetoed by a closed issue, ${counts.capped} held by the open cap.`,
+      `${counts.vetoed} vetoed by a closed issue, ${counts.proposed} already proposed by an open ` +
+      `issue, ${counts.capped} held by the open cap.`,
   );
   return counts;
 }
