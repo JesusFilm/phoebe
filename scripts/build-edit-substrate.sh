@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerates src/migrations/vendor/babel-parser.mjs from @babel/parser@8.1.0.
+# Regenerates src/migrations/vendor/babel-parser.mjs from @babel/parser@8.1.2.
 #
 # Runs in a temporary npm project so the main package.json and pnpm-lock.yaml
 # are not touched. Pinning both package versions and esbuild guarantees
@@ -19,7 +19,7 @@ npm init -y >/dev/null 2>&1
 
 # Pin both versions — the committed bundle was produced with these exact versions.
 npm install --no-audit --no-fund \
-  "@babel/parser@8.1.0" \
+  "@babel/parser@8.1.2" \
   "esbuild@0.28.2" \
   2>/dev/null
 
@@ -44,8 +44,8 @@ node_modules/.bin/esbuild entry.mjs \
 # Prepend the required MIT attribution header.
 mkdir -p "$VENDOR_DIR"
 {
-  echo "// @babel/parser@8.1.0 — vendored ESM bundle (MIT)"
-  echo "// Includes: @babel/types@8.1.0, @babel/helper-string-parser@8.0.8,"
+  echo "// @babel/parser@8.1.2 — vendored ESM bundle (MIT)"
+  echo "// Includes: @babel/types@8.1.2, @babel/helper-string-parser@8.1.2,"
   echo "//           @babel/helper-validator-identifier@8.0.6"
   echo "// DO NOT EDIT — regenerate with: bash scripts/build-edit-substrate.sh"
   echo "// See src/migrations/vendor/LICENSE for the full MIT license text."
