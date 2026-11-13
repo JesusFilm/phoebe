@@ -1,7 +1,7 @@
-// Filing against what GitHub already holds: leave, refresh, veto (and the
-// veto lifting when the fingerprint moves), create, and the open cap counting
-// a bundle once whether its issue, its PR or both are open. Then the GitHub
-// calls each decision makes.
+// Filing against what GitHub already holds: leave, refresh, veto (by the rows
+// a closed issue listed, and lifting when a row's target or advisories move),
+// create, and the open cap counting a bundle once whether its issue, its PR or
+// both are open. Then the GitHub calls each decision makes.
 
 import { describe, expect, test } from "vite-plus/test";
 import type { MentioningIssue, MentioningPr } from "../../src/github-client.ts";
@@ -12,11 +12,13 @@ import {
   applyFiling,
   decideFiling,
   DEPENDENCIES_LABEL,
+  planBundle,
   type FilingAction,
   type PlannedBundle,
 } from "./filing.ts";
 import { bundleKey, fingerprint, renderMarker } from "./fingerprint.ts";
 import type { Bundle } from "./grouping.ts";
+import { renderIssueBody, renderIssueTitle } from "./issue-body.ts";
 
 function candidate(pkg: string, target = "1.1.0", overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -34,8 +36,18 @@ function candidate(pkg: string, target = "1.1.0", overrides: Partial<Candidate> 
 }
 
 function planned(group: string, ...candidates: Candidate[]): PlannedBundle {
-  const bundle: Bundle = { manager: "npm", group, candidates };
-  return { bundle, title: `title ${group}`, body: `body ${group}\n\n${markerOf(bundle)}\n` };
+  return planBundle({ manager: "npm", group, candidates }, (bundle) => ({
+    title: `title ${group}`,
+    body: `body ${group}\n\n${markerOf(bundle)}\n`,
+  }));
+}
+
+/** A bundle rendered as dependency-updates renders it, table and all. */
+function rendered(group: string, ...candidates: Candidate[]): PlannedBundle {
+  return planBundle({ manager: "npm", group, candidates }, (bundle) => ({
+    title: renderIssueTitle(bundle),
+    body: renderIssueBody(bundle),
+  }));
 }
 
 function markerOf(bundle: Bundle): string {
@@ -97,7 +109,7 @@ describe("decideFiling", () => {
     expect(actionsOf(decideFiling([react], issues, [], options))).toEqual(["leave #12"]);
   });
 
-  test("a closed issue no merged PR closed vetoes its fingerprint", () => {
+  test("a closed issue with no rows to read vetoes its fingerprint", () => {
     const issues = [issue(10, react.bundle, "closed")];
     expect(actionsOf(decideFiling([react], issues, [], options))).toEqual(["vetoed #10"]);
   });
@@ -134,6 +146,236 @@ describe("decideFiling", () => {
     expect(actionsOf(decideFiling([react], [issue(9, null, "open")], [], options))).toEqual([
       "create",
     ]);
+  });
+
+  // #855 proposed electron and jsdom in npm:dev:all and was closed as not
+  // planned; the next scan filed #856 with both again, because @babel/parser
+  // had joined the bundle and moved its fingerprint.
+  describe("a veto by row", () => {
+    const dev = (pkg: string, target: string, overrides: Partial<Candidate> = {}) =>
+      candidate(pkg, target, { depType: "dev", ...overrides });
+    const electron = dev("electron", "45.3.2");
+    const jsdom = dev("jsdom", "31.0.1");
+    const babel = dev("@babel/parser", "8.1.2");
+    const closed855 = (...candidates: Candidate[]): MentioningIssue => ({
+      ...issue(855, null, "closed"),
+      body: rendered("dev:all", ...candidates).body,
+    });
+    const filedRows = (a: FilingAction) => a.planned.bundle.candidates.map((c) => c.package);
+
+    test("keeps a closed issue's rows out when another package joins the bundle", () => {
+      const [action] = decideFiling(
+        [rendered("dev:all", electron, jsdom, babel)],
+        [closed855(electron, jsdom)],
+        [],
+        options,
+      );
+      expect(action).toMatchObject({
+        action: "create",
+        held: [
+          { package: "electron", target: "45.3.2", issue: 855 },
+          { package: "jsdom", target: "31.0.1", issue: 855 },
+        ],
+      });
+      expect(filedRows(action!)).toEqual(["@babel/parser"]);
+      expect(action!.planned.title).toBe("Update @babel/parser to 8.1.2");
+      expect(action!.planned.body).not.toContain("electron");
+      expect(action!.planned.body).toContain(markerOf(rendered("dev:all", babel).bundle));
+    });
+
+    test("a bundle left with no rows files nothing and counts as vetoed", () => {
+      const actions = decideFiling(
+        [rendered("dev:all", jsdom, electron)],
+        [closed855(electron, jsdom)],
+        [],
+        options,
+      );
+      expect(actionsOf(actions)).toEqual(["vetoed #855"]);
+      expect(actions[0]!.held).toHaveLength(2);
+    });
+
+    test("drops vetoed rows before an open issue is refreshed", () => {
+      const open856: MentioningIssue = {
+        ...issue(856, null, "open"),
+        body: rendered("dev:all", babel).body,
+      };
+      const actions = decideFiling(
+        [rendered("dev:all", electron, jsdom, babel)],
+        [open856, closed855(electron, jsdom)],
+        [],
+        options,
+      );
+      expect(actionsOf(actions)).toEqual(["leave #856"]);
+    });
+
+    test("a row comes back when its own target moves", () => {
+      const [action] = decideFiling(
+        [rendered("dev:all", dev("electron", "45.3.3"), jsdom)],
+        [closed855(electron, jsdom)],
+        [],
+        options,
+      );
+      expect(action).toMatchObject({ action: "create", held: [{ package: "jsdom", issue: 855 }] });
+      expect(filedRows(action!)).toEqual(["electron"]);
+    });
+
+    test("a row comes back when it carries an advisory the closed issue did not list", () => {
+      const listed = { id: "GHSA-aaaa-bbbb-cccc", severity: "low" as const, fixedIn: "31.0.1" };
+      const added = { id: "GHSA-dddd-eeee-ffff", severity: "low" as const, fixedIn: "31.0.1" };
+      const issues = [closed855(electron, dev("jsdom", "31.0.1", { advisories: [listed] }))];
+      const same = decideFiling(
+        [rendered("dev:all", dev("jsdom", "31.0.1", { advisories: [listed] }))],
+        issues,
+        [],
+        options,
+      );
+      const more = decideFiling(
+        [rendered("dev:all", dev("jsdom", "31.0.1", { advisories: [listed, added] }))],
+        issues,
+        [],
+        options,
+      );
+      expect(actionsOf(same)).toEqual(["vetoed #855"]);
+      expect(actionsOf(more)).toEqual(["create"]);
+    });
+
+    test("follows the row into another bundle, but not into another workspace", () => {
+      const elsewhere = dev("jsdom", "31.0.1", { workspace: "apps/console/package.json" });
+      const [action] = decideFiling(
+        [rendered("group:test", jsdom, elsewhere)],
+        [closed855(electron, jsdom)],
+        [],
+        options,
+      );
+      expect(action).toMatchObject({ action: "create", held: [{ package: "jsdom", issue: 855 }] });
+      expect(action!.planned.bundle.candidates).toEqual([elsewhere]);
+    });
+
+    test("a closed issue a merged PR closed vetoes none of its rows", () => {
+      const actions = decideFiling(
+        [rendered("dev:all", electron, jsdom)],
+        [closed855(electron, jsdom)],
+        [pr(857, "Closes #855", "closed", true)],
+        options,
+      );
+      expect(actionsOf(actions)).toEqual(["create"]);
+      expect(actions[0]!.held).toEqual([]);
+    });
+
+    test("the scan log names each held row and the issue that vetoed it", () => {
+      const github = stubGitHub({ createIssue: () => 856 });
+      const logged: string[] = [];
+      applyFiling(
+        decideFiling(
+          [rendered("dev:all", electron, jsdom, babel), rendered("dev:other", electron)],
+          [closed855(electron, jsdom)],
+          [],
+          options,
+        ),
+        { github: github.forCycle() as WorkKindRunCtx["github"], log: (l) => logged.push(l) },
+        [],
+      );
+      expect(logged).toEqual([
+        "npm:dev:all: held back electron@45.3.2 (vetoed by #855), jsdom@31.0.1 (vetoed by #855).",
+        "npm:dev:all: filed #856.",
+        "npm:dev:other: held back electron@45.3.2 (vetoed by #855).",
+        "filing: 1 filed, 0 refreshed, 0 unchanged, 1 vetoed by a closed issue, 0 already proposed by an open issue, 0 held by the open cap.",
+      ]);
+    });
+  });
+
+  // On 2026-11-13 the agent source called renovate in templates/container/Dockerfile
+  // `prod` in one scan and `dev` in the next, so #854 under the prod key and
+  // #850 under dev:all both proposed renovate 44.239.1 (#860).
+  describe("a row another open issue already proposes", () => {
+    const pin = (pkg: string, target: string, workspace: string) =>
+      candidate(pkg, target, { manager: "dockerfile", workspace });
+    const renovate = pin("renovate", "44.239.1", "templates/container/Dockerfile");
+    const claude = pin("@anthropic-ai/claude-code", "2.1.325", "templates/container/Dockerfile");
+    const docker = (group: string, ...candidates: Candidate[]): PlannedBundle =>
+      planBundle({ manager: "dockerfile", group, candidates }, (bundle) => ({
+        title: renderIssueTitle(bundle),
+        body: renderIssueBody(bundle),
+      }));
+    const openIssue = (number: number, bundle: PlannedBundle): MentioningIssue => ({
+      ...issue(number, null, "open"),
+      body: bundle.body,
+    });
+
+    test("is held out of a new bundle under another key, which files nothing", () => {
+      const actions = decideFiling(
+        [docker("relation:renovate", renovate)],
+        [openIssue(850, docker("dev:all", renovate))],
+        [],
+        options,
+      );
+      expect(actions).toMatchObject([
+        {
+          action: "proposed",
+          issue: 850,
+          held: [{ package: "renovate", target: "44.239.1", issue: 850, by: "proposed" }],
+        },
+      ]);
+    });
+
+    test("is held out of a refresh, while the rest of the bundle files", () => {
+      const [action] = decideFiling(
+        [docker("all", renovate, claude)],
+        [openIssue(850, docker("relation:renovate", renovate))],
+        [],
+        options,
+      );
+      expect(action).toMatchObject({ action: "create", held: [{ package: "renovate" }] });
+      expect(action!.planned.bundle.candidates).toEqual([claude]);
+      expect(action!.planned.body).not.toContain("44.239.1");
+    });
+
+    test("stays in an issue that already lists it, even when another open issue does too", () => {
+      const actions = decideFiling(
+        [docker("relation:renovate", renovate)],
+        [
+          openIssue(854, docker("relation:renovate", renovate)),
+          openIssue(850, docker("dev:all", renovate)),
+        ],
+        [],
+        options,
+      );
+      expect(actions).toMatchObject([{ action: "leave", issue: 854, held: [] }]);
+    });
+
+    test("is not held in another workspace, at another target, or with a new advisory", () => {
+      const advisory = { id: "GHSA-aaaa-bbbb-cccc", severity: "high" as const, fixedIn: null };
+      const actions = decideFiling(
+        [
+          docker("a", pin("renovate", "44.239.1", ".phoebe/container/Dockerfile")),
+          docker("b", pin("renovate", "44.240.0", "templates/container/Dockerfile")),
+          docker("c", { ...renovate, advisories: [advisory] }),
+        ],
+        [openIssue(850, docker("dev:all", renovate))],
+        [],
+        options,
+      );
+      expect(actionsOf(actions)).toEqual(["create", "create", "create"]);
+    });
+
+    test("the scan log names the issue that already proposes it", () => {
+      const github = stubGitHub({ createIssue: () => 900 });
+      const logged: string[] = [];
+      applyFiling(
+        decideFiling(
+          [docker("relation:renovate", renovate)],
+          [openIssue(850, docker("dev:all", renovate))],
+          [],
+          options,
+        ),
+        { github: github.forCycle() as WorkKindRunCtx["github"], log: (l) => logged.push(l) },
+        [],
+      );
+      expect(logged).toEqual([
+        "dockerfile:relation:renovate: held back renovate@44.239.1 (already proposed in #850).",
+        "filing: 0 filed, 0 refreshed, 0 unchanged, 0 vetoed by a closed issue, 1 already proposed by an open issue, 0 held by the open cap.",
+      ]);
+    });
   });
 
   describe("the open cap", () => {
@@ -224,10 +466,10 @@ describe("applyFiling", () => {
     const c = planned("package:c", candidate("c"));
     const counts = applyFiling(
       [
-        { action: "create", planned: a },
-        { action: "update", planned: b, issue: 41, previous: "000000000000" },
-        { action: "leave", planned: c, issue: 42 },
-        { action: "capped", planned: c },
+        { action: "create", planned: a, held: [] },
+        { action: "update", planned: b, issue: 41, previous: "000000000000", held: [] },
+        { action: "leave", planned: c, issue: 42, held: [] },
+        { action: "capped", planned: c, held: [] },
       ],
       { github: github.forCycle() as WorkKindRunCtx["github"], log: (l) => logged.push(l) },
       [DEPENDENCIES_LABEL, { name: "phoebe:dependencies", description: "route" }],
@@ -240,9 +482,9 @@ describe("applyFiling", () => {
       "body #41 body package:b",
       `comment #41 Phoebe refreshed this issue: the bundle now proposes 1 update(s) (fingerprint 000000000000 → ${fingerprint(b.bundle)}).`,
     ]);
-    expect(counts).toEqual({ create: 1, update: 1, leave: 1, vetoed: 0, capped: 1 });
+    expect(counts).toEqual({ create: 1, update: 1, leave: 1, vetoed: 0, proposed: 0, capped: 1 });
     expect(logged.at(-1)).toBe(
-      "filing: 1 filed, 1 refreshed, 1 unchanged, 0 vetoed by a closed issue, 1 held by the open cap.",
+      "filing: 1 filed, 1 refreshed, 1 unchanged, 0 vetoed by a closed issue, 0 already proposed by an open issue, 1 held by the open cap.",
     );
   });
 
@@ -255,7 +497,7 @@ describe("applyFiling", () => {
     });
     const logged: string[] = [];
     applyFiling(
-      [{ action: "create", planned: planned("package:a", candidate("a")) }],
+      [{ action: "create", planned: planned("package:a", candidate("a")), held: [] }],
       { github: github.forCycle() as WorkKindRunCtx["github"], log: (l) => logged.push(l) },
       [DEPENDENCIES_LABEL],
     );

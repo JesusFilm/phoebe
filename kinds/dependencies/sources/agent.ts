@@ -11,6 +11,12 @@
 // DEPENDENCY_DETECT_PROMPT_FILE as its `promptFile` and a consumer overrides
 // it on the kind block like any other prompt. The agent gets no token beyond
 // what the kind's `agentEnv` already grants.
+//
+// Two fields are not taken from the agent (#860). The size of the move comes
+// from `current` and `target`, worked out the way the native rows do it, and
+// a manifest with no dev and prod split is always `prod`. Both fields feed a
+// bundle's key or its maturity wait, so a model that answers differently from
+// one scan to the next would otherwise file the same bump twice.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -19,10 +25,12 @@ import {
   byText,
   DEP_TYPES,
   SEVERITIES,
-  UPDATE_TYPES,
   type Advisory,
   type Candidate,
+  type DepType,
+  type UpdateType,
 } from "../candidate.ts";
+import { moveOf } from "./native.ts";
 import type { SourceResult } from "./source.ts";
 
 /** The name the detectors' `sources` option lists this source by. */
@@ -103,8 +111,49 @@ function advisory(value: unknown): Checked<Advisory> {
   };
 }
 
+// An image digest or a commit SHA: a move between two of these names no version.
+const DIGEST_RE = /^(?:sha256:[0-9a-f]{64}|[0-9a-f]{40})$/i;
+
 /**
- * One record as a candidate, or why it is not one. An absent `advisories` or
+ * The size of a move, from its two versions alone. Two digests are a
+ * `digest` move. Anything else is sized by `moveOf`, the rule the native rows
+ * use, which reads a version with no leading number as a major.
+ */
+export function agentUpdateType(current: string, target: string): UpdateType {
+  if (DIGEST_RE.test(current) && DIGEST_RE.test(target)) return "digest";
+  return moveOf(current, target);
+}
+
+// Managers whose manifests declare no dev and prod sections.
+const UNSPLIT_MANAGERS = new Set(["docker", "docker-compose", "dockerfile", "github-actions"]);
+
+// Dockerfiles and compose files, CI workflow files, and scripts, by path.
+const UNSPLIT_PATHS = [
+  /(?:^|\/)(?:Dockerfile|Containerfile)(?:[.-][^/]*)?$/i,
+  /\.(?:dockerfile|containerfile)$/i,
+  /(?:^|\/)(?:docker-)?compose(?:\.[^/]*)?\.ya?ml$/i,
+  /^\.github\/workflows\/[^/]+\.ya?ml$/,
+  /(?:^|\/)action\.ya?ml$/,
+  /(?:^|\/)\.gitlab-ci\.ya?ml$/,
+  /^\.circleci\/config\.ya?ml$/,
+  /\.(?:sh|bash|zsh|ps1|psm1|bat|cmd)$/i,
+];
+
+/**
+ * Whether a manifest has no dev and prod split: a Dockerfile, a workflow file
+ * or a script. A pin in one is `prod`, as the native rows file a workflow step
+ * or a pip requirement.
+ */
+export function hasNoDepTypeSplit(manager: string, workspace: string): boolean {
+  return (
+    UNSPLIT_MANAGERS.has(manager.toLowerCase()) || UNSPLIT_PATHS.some((re) => re.test(workspace))
+  );
+}
+
+/**
+ * One record as a candidate, or why it is not one. Its `updateType` is
+ * worked out from its versions, whatever the record says, and its `depType`
+ * is `prod` whenever its manifest has no dev and prod split. An absent `advisories` or
  * `peers` is an empty list; a present one that is malformed anywhere drops the
  * whole record, since half an advisory list could skip a wait it should not.
  */
@@ -118,14 +167,16 @@ export function checkCandidate(value: unknown): Checked<Candidate> {
   if (!current.ok) return current;
   const target = text(value, "target");
   if (!target.ok) return target;
-  const updateType = oneOf(value, "updateType", UPDATE_TYPES);
-  if (!updateType.ok) return updateType;
-  const depType = oneOf(value, "depType", DEP_TYPES);
-  if (!depType.ok) return depType;
   const workspace = text(value, "workspace");
   if (!workspace.ok) return workspace;
   if (isAbsolute(workspace.value)) {
     return { ok: false, problem: "workspace must be relative to the checkout" };
+  }
+  let depType: DepType = "prod";
+  if (!hasNoDepTypeSplit(manager.value, workspace.value)) {
+    const reported = oneOf(value, "depType", DEP_TYPES);
+    if (!reported.ok) return reported;
+    depType = reported.value;
   }
   const publishedAt = optionalText(value, "publishedAt");
   if (!publishedAt.ok) return publishedAt;
@@ -150,8 +201,8 @@ export function checkCandidate(value: unknown): Checked<Candidate> {
     package: pkg.value,
     current: current.value,
     target: target.value,
-    updateType: updateType.value,
-    depType: depType.value,
+    updateType: agentUpdateType(current.value, target.value),
+    depType,
     workspace: workspace.value,
     advisories: advisories.sort((a, b) => byText(a.id, b.id)),
     peers: [...new Set(rawPeers as string[])].sort(byText),

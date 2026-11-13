@@ -25,7 +25,13 @@ import {
   type Candidate,
   type Severity,
 } from "../dependencies/candidate.ts";
-import { DEPENDENCIES_LABEL, SECURITY_LABEL, type PlannedBundle } from "../dependencies/filing.ts";
+import {
+  DEPENDENCIES_LABEL,
+  planBundle,
+  SECURITY_LABEL,
+  type PlannedBundle,
+  type Rendered,
+} from "../dependencies/filing.ts";
 import type { Bundle } from "../dependencies/grouping.ts";
 import { overThreshold } from "../dependencies/policy.ts";
 import { managerScheme } from "../dependencies/registry/versions.ts";
@@ -100,25 +106,28 @@ export function planSecurity(
     bundles.set(key, bundle);
   }
 
+  // Rendered from the bundle alone, so a bundle a veto trimmed routes by the rows it kept.
+  const render = (bundle: Bundle): Rendered => {
+    const routed = bundle.candidates.some(hasFix);
+    return {
+      title: renderSecurityTitle(bundle),
+      body: renderSecurityBody(bundle, {
+        routed,
+        minSeverity: options.minSeverity,
+        routingLabel: options.routingLabel.name,
+      }),
+      labels: routed
+        ? [DEPENDENCIES_LABEL, SECURITY_LABEL, options.routingLabel]
+        : [DEPENDENCIES_LABEL, SECURITY_LABEL],
+    };
+  };
   const planned = [...bundles.values()]
     .map((b) => ({ ...b, candidates: b.candidates.sort(compareCandidates) }))
     .sort((a, b) => byText(a.manager, b.manager) || byText(a.group, b.group))
-    .map((bundle): PlannedSecurityBundle => {
-      const routed = bundle.candidates.some(hasFix);
-      return {
-        bundle,
-        routed,
-        title: renderSecurityTitle(bundle),
-        body: renderSecurityBody(bundle, {
-          routed,
-          minSeverity: options.minSeverity,
-          routingLabel: options.routingLabel.name,
-        }),
-        labels: routed
-          ? [DEPENDENCIES_LABEL, SECURITY_LABEL, options.routingLabel]
-          : [DEPENDENCIES_LABEL, SECURITY_LABEL],
-      };
-    });
+    .map((bundle): PlannedSecurityBundle => ({
+      ...planBundle(bundle, render),
+      routed: bundle.candidates.some(hasFix),
+    }));
   return {
     planned: [...planned.filter((p) => p.routed), ...planned.filter((p) => !p.routed)],
     below: advised.length - severe.length,

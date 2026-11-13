@@ -2,8 +2,8 @@
 // is the record: every issue a dependency kind files carries an HTML marker
 // naming its bundle and the fingerprint of what the bundle proposes. The
 // filing step reads them back to decide: same fingerprint, leave the issue;
-// new fingerprint, update it; closed without a merge, the fingerprint is
-// vetoed until it changes. This module only renders and reads them.
+// new fingerprint, update it. A closed issue's veto is read from its rows,
+// not its fingerprint (filing.ts). This module only renders and reads them.
 
 import { createHash } from "node:crypto";
 import { byText } from "./candidate.ts";

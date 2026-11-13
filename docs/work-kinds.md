@@ -550,17 +550,26 @@ unioned, and then:
 **Filing reads GitHub, not memory.** Each issue body ends with
 `<!-- phoebe-dependencies bundle=<key> fingerprint=<hex> -->`, and the
 `dependencies` kind copies it into the PR it opens. Each scan runs one search
-for issues carrying it and one for PRs. Then, per bundle:
+for issues carrying it and one for PRs. Then, per bundle, it first drops every
+row a closed issue vetoed, then decides what to do with what is left:
 
-| What GitHub holds                                             | Action                                                                   |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| an open issue with the same key and fingerprint               | leave it                                                                 |
-| an open issue with the same key and another fingerprint       | replace its body and post one comment naming both fingerprints           |
-| a closed issue with this fingerprint that no merged PR closed | skip: a person closed it, and the veto holds until the fingerprint moves |
-| nothing open                                                  | create the issue, labelled `dependencies` and `label`                    |
+| What GitHub holds                                       | Action                                                         |
+| ------------------------------------------------------- | -------------------------------------------------------------- |
+| an open issue with the same key and fingerprint         | leave it                                                       |
+| an open issue with the same key and another fingerprint | replace its body and post one comment naming both fingerprints |
+| every row vetoed                                        | skip: a person closed an issue listing them                    |
+| nothing open                                            | create the issue, labelled `dependencies` and `label`          |
 
-The fingerprint covers the package-version pairs and the advisory ids, so a
-newer version or a new advisory on the same version lifts a veto. A merged PR
+A closed issue that no merged PR closed vetoes each row it listed: one package
+in one workspace, moving to one target. The veto follows the row into any
+bundle and lifts once that package's target moves or it carries an advisory the
+issue did not list. So a person who closes "Update 2 npm dependencies (dev:all)"
+does not see those two bumps again when a third package joins the bundle; the
+third files alone. The scan log names each row held back and the issue that
+vetoed it (`npm:dev:all: held back electron@45.3.2 (vetoed by #855)`), since
+nothing on the tracker shows it. A closed issue whose body has no table to read
+vetoes its fingerprint instead, which covers the package-version pairs and the
+advisory ids. A merged PR
 counts as closing an issue when it names it with a closing keyword
 (`Closes #N`) or carries its marker. New issues stop once the open routed
 issues and open dependency PRs reach `prConcurrentLimit`; an issue and the PR
@@ -656,7 +665,7 @@ unless an advisory comes or goes.
 
 Filing follows the [`dependency-updates` rules](#dependency-updates-file-dependency-tickets-opt-in):
 the same marker, the same two searches, the same veto. Closing a tracking issue
-by hand vetoes its fingerprint, and a fix or a new advisory lifts the veto.
+by hand vetoes its rows, and a fix or a new advisory lifts the veto.
 Routed security issues count toward `dependency-updates`' open cap, though
 nothing caps them.
 

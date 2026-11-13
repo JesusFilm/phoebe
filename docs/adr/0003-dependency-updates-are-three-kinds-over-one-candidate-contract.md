@@ -89,10 +89,18 @@ results stand.
   Open dependency PRs are capped at 5. Nothing auto-merges.
 - State lives in GitHub. An HTML marker in each issue carries the bundle key
   and a fingerprint of the package, version and advisory-id set. Same
-  fingerprint, leave the issue; new fingerprint, update the body and comment;
-  closed without a merged PR, veto that fingerprint for as long as it stays the
-  same, so a newer version or a new advisory on the same version both lift the
-  veto. A bump the
+  fingerprint, leave the issue; new fingerprint, update the body and comment.
+  The veto is per row. When an issue is closed without a merged PR, each row
+  it listed (a package in a workspace, moving to a target) stays out of every
+  bundle until that package's target moves or the row gains an advisory the
+  issue did not list. The rest of the bundle files without those rows, and a
+  bundle left with none files nothing.
+  A whole-bundle veto failed under the default `all` grouping for development
+  dependencies (#861): any package joining the bundle moved its fingerprint
+  and brought the declined bumps back. Nothing on the tracker shows a row held
+  this way, so the scan log names each one and the issue that vetoed it. A
+  closed issue whose body has no table to read still vetoes its fingerprint.
+  A bump the
   implementer had to drop is re-filed on its own and stops after two failures
   per package-version. Window state is in memory, so a boot re-runs detection
   and files nothing new.

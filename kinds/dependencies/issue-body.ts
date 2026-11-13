@@ -144,3 +144,112 @@ export function renderIssueBody(
   lines.push("", renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) }), "");
   return lines.join("\n");
 }
+
+/** The To cell of a security row whose package has no fix to move to: the row stays at From. */
+export const STAYS_CELL = "no fix released; leave it";
+
+/** One row a filed issue lists, read back from its body. */
+export type FiledRow = {
+  package: string;
+  workspace: string;
+  target: string;
+  /** The advisory ids the issue listed against the row's package. */
+  advisories: readonly string[];
+};
+
+/** A table line's cells, split on the pipes `cell` left unescaped. */
+function cellsOf(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/(?<!\\)\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim().replaceAll("\\|", "|"));
+}
+
+/** The text inside a code span `code` rendered, or null when `text` is not one. */
+function uncode(text: string): string | null {
+  const match = /^(`+)(.*)\1$/s.exec(text);
+  if (match === null) return null;
+  const inner = match[2]!;
+  const padded =
+    inner.length >= 2 &&
+    inner.startsWith(" ") &&
+    inner.endsWith(" ") &&
+    (inner[1] === "`" || inner.at(-2) === "`");
+  return padded ? inner.slice(1, -1) : inner;
+}
+
+/** The code span `text` opens with, unwrapped, or null. */
+function leadingCode(text: string): string | null {
+  const fence = /^`+/.exec(text)?.[0];
+  if (fence === undefined) return null;
+  const close = new RegExp(`(?<!\`)${fence}(?!\`)`, "g");
+  close.lastIndex = fence.length;
+  const match = close.exec(text);
+  return match === null ? null : uncode(text.slice(0, match.index + fence.length));
+}
+
+function unplain(text: string): string {
+  return text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+}
+
+const ADVISORY_LINE_RE = /^- \[.*\]\(https:\/\/osv\.dev\/vulnerability\/(\S+?)\): [a-z]+, in (.+)$/;
+
+/** Advisory ids by package, from the `## Advisories` lines `renderAdvisories` wrote. */
+function advisoriesByPackage(lines: readonly string[]): Map<string, Set<string>> {
+  const byPackage = new Map<string, Set<string>>();
+  for (const line of lines) {
+    const match = ADVISORY_LINE_RE.exec(line);
+    if (match === null) continue;
+    const pkg = leadingCode(match[2]!);
+    if (pkg === null) continue;
+    let id: string;
+    try {
+      id = decodeURIComponent(match[1]!);
+    } catch {
+      continue;
+    }
+    const ids = byPackage.get(pkg) ?? new Set<string>();
+    ids.add(id);
+    byPackage.set(pkg, ids);
+  }
+  return byPackage;
+}
+
+/**
+ * The rows an issue body lists, as the person who read it saw them: the first
+ * table with a Package, a Workspace and a To or Version column, each row with
+ * the advisories listed against its package. Reads what `renderIssueBody` and
+ * the security bodies write; a row it cannot read is skipped, and a body with
+ * no such table gives none.
+ */
+export function readIssueRows(body: string): FiledRow[] {
+  const lines = body.split("\n");
+  const start = lines.findIndex((l) => l.startsWith("|") && cellsOf(l)[0] === "Package");
+  if (start < 0) return [];
+  const header = cellsOf(lines[start]!);
+  const workspaceAt = header.indexOf("Workspace");
+  const fromAt = header.indexOf("From");
+  const targetAt = header.includes("To") ? header.indexOf("To") : header.indexOf("Version");
+  if (workspaceAt < 0 || targetAt < 0) return [];
+
+  const advisories = advisoriesByPackage(lines);
+  const rows: FiledRow[] = [];
+  for (const line of lines.slice(start + 2)) {
+    if (!line.startsWith("|")) break;
+    const cells = cellsOf(line);
+    const pkg = uncode(cells[0] ?? "");
+    const workspace = uncode(cells[workspaceAt] ?? "");
+    const to = cells[targetAt];
+    const target = to === STAYS_CELL && fromAt >= 0 ? cells[fromAt] : to;
+    if (pkg === null || workspace === null || target === undefined) continue;
+    rows.push({
+      package: pkg,
+      workspace,
+      target: unplain(target),
+      advisories: [...(advisories.get(pkg) ?? [])],
+    });
+  }
+  return rows;
+}
