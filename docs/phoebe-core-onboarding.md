@@ -62,7 +62,8 @@ _inside_ the container, which installs its own toolchain from the repo.
 ## 2. Operator GitHub token, a fine-grained PAT
 
 Phoebe acts entirely as the token's identity: it clones, pushes `phoebe/`
-branches, opens/updates PRs, and reads/writes issue labels and comments. Mint a
+branches (workflow files included), opens/updates PRs, and reads/writes issue
+labels and comments. Mint a
 **fine-grained** personal access token scoped to the single repo. Phoebe is built
 to work under a fine-grained PAT. It reads check state from the REST Actions API
 rather than the GraphQL rollup precisely because fine-grained PATs cannot read the
@@ -86,10 +87,21 @@ Create it at **Settings → Developer settings → Fine-grained tokens**:
   | Pull requests | Read and write        | Read and write        | Open/update PRs, post PR comments & watermarks.                 |
   | Issues        | Read and write        | Read and write        | Read `readyLabel`, swap in `processingLabel`, comment.          |
   | Actions       | Read-only             | Read-only             | `gh run list`, the check-state source for the `checks` janitor. |
+  | Workflows     | Read and write        | Read and write        | Push a branch that changes anything under `.github/workflows/`. |
 
-  Leave everything else _No access_. Add **Workflows: Read and write** only if you
-  expect the agent to edit files under `.github/workflows/` (GitHub blocks pushing
-  workflow changes otherwise).
+  Leave everything else _No access_.
+
+  **Workflows is not optional.** GitHub refuses a whole push when it changes a
+  file under `.github/workflows/` and the token lacks this grant, and Phoebe
+  runs into that without ever being asked to edit CI. Catching a PR branch up
+  with `main` after someone else's workflow change landed is enough, and so is
+  fixing a failing check whose cause is in the workflow. The refusal arrives at
+  the push, after the agent has done the work.
+
+  A token minted before this grant was on the list can have it added. Open the
+  token under **Fine-grained tokens**, choose **Edit**, tick **Workflows: Read
+  and write**, and save. An org-owned token goes back to an org owner for
+  approval.
 
 Set an expiry you can live with and rotate it into `.env` when it lapses. Store it
 only in `GH_TOKEN` (§5), and never commit it.
@@ -105,11 +117,11 @@ node scripts/verify-tenant-token.mjs --slug JesusFilm/core --token github_pat_�
 node scripts/verify-tenant-token.mjs
 ```
 
-It reports each of the five permissions above as granted / missing / unknown,
+It reports each of the six permissions above as granted / missing / unknown,
 names the missing ones as the GitHub UI spells them (the Access column above), tells "no access at all"
 (the usual sign of a token still awaiting org approval) apart from one missing
 checkbox, and reports the expiry date, warning inside 14 days. No probe changes
-anything: the three write grants are proven by aiming a `POST`/`PATCH`
+anything: the four write grants are proven by aiming a `POST`, `PATCH` or `DELETE`
 at a resource that cannot exist, so GitHub answers with the permission verdict
 and there is nothing to mutate. It is safe against a production repo, though it
 does issue write-method requests, which is worth knowing if you are approving it

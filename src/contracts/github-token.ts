@@ -4,14 +4,20 @@
 // what a token may do. What it has is status codes, and scripts/verify-tenant-
 // token.mjs turned those into a probe per grant that mutates nothing (every
 // write probe aims at a target that does not exist). The companion runs the
-// same five probes when a token is pasted into the setup steps, so the operator
+// same six probes when a token is pasted into the setup steps, so the operator
 // learns which checkbox they missed before the deployment 403s an hour in.
 //
 // Nothing here carries the token. The verdict names the grants and what each
 // answered; the value went to main as an argument and was held for the call.
 
-/** The five grants Phoebe needs, in the order the onboarding doc lists them. */
-export type GithubGrantId = "metadata" | "contents" | "pull_requests" | "issues" | "actions";
+/** The six grants Phoebe needs, in the order the onboarding doc lists them. */
+export type GithubGrantId =
+  | "metadata"
+  | "contents"
+  | "pull_requests"
+  | "issues"
+  | "actions"
+  | "workflows";
 
 /** One grant, as the probe read it. */
 export type GithubGrant = {

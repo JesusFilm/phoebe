@@ -69,13 +69,14 @@ describe("parseArgs", () => {
 describe("PERMISSION_PROBES", () => {
   const byId = new Map(PERMISSION_PROBES.map((p) => [p.id, p]));
 
-  it("covers exactly the five permissions onboarding §2 asks for", () => {
+  it("covers exactly the six permissions onboarding §2 asks for", () => {
     expect(PERMISSION_PROBES.map((p) => p.id)).toEqual([
       "metadata",
       "contents",
       "pull_requests",
       "issues",
       "actions",
+      "workflows",
     ]);
   });
 
@@ -83,6 +84,20 @@ describe("PERMISSION_PROBES", () => {
     expect(byId.get("contents")!.ui).toBe("Contents: Read and write");
     expect(byId.get("pull_requests")!.ui).toBe("Pull requests: Read and write");
     expect(byId.get("actions")!.ui).toBe("Actions: Read-only");
+    expect(byId.get("workflows")!.ui).toBe("Workflows: Read and write");
+  });
+
+  it("aims the workflows probe at a workflow file and a branch that do not exist", () => {
+    const probe = byId.get("workflows")!;
+    expect(probe.method).toBe("DELETE");
+    expect(probe.path("owner/repo")).toBe(
+      "/repos/owner/repo/contents/.github/workflows/phoebe-token-probe-never-created.yml",
+    );
+    expect(probe.body).toEqual({
+      message: "phoebe token probe",
+      sha: "0".repeat(40),
+      branch: "phoebe-token-probe-never-created",
+    });
   });
 
   it("aims every mutating probe at a resource that cannot exist", () => {
@@ -106,6 +121,9 @@ describe("PERMISSION_PROBES", () => {
     expect(classifyProbe(byId.get("pull_requests")!, 404)).toBe("granted");
     expect(classifyProbe(byId.get("contents")!, 422)).toBe("granted");
     expect(classifyProbe(byId.get("actions")!, 200)).toBe("granted");
+    // Observed 2026-11-12 with a token that may change workflow files: DELETE
+    // of the absent workflow file on the absent branch → 404 "Branch … not found".
+    expect(classifyProbe(byId.get("workflows")!, 404)).toBe("granted");
     for (const probe of PERMISSION_PROBES) {
       if (probe.id === "metadata") continue;
       expect(classifyProbe(probe, 403)).toBe("missing");
@@ -167,11 +185,22 @@ describe("parseScopes", () => {
 });
 
 describe("scopeCoverage", () => {
-  it("reads `repo` as covering all five repository permissions", () => {
-    const cover = scopeCoverage(["repo"]);
+  it("reads `repo` plus `workflow` as covering all six repository permissions", () => {
+    const cover = scopeCoverage(["repo", "workflow"]);
     for (const probe of PERMISSION_PROBES) {
       expect(cover[probe.id]).toBe("granted");
     }
+  });
+
+  it("reports Workflows as missing when `repo` comes without the `workflow` scope", () => {
+    const cover = scopeCoverage(["repo"]);
+    expect(cover["workflows"]).toBe("missing");
+    expect(cover["contents"]).toBe("granted");
+  });
+
+  it("does not let `workflow` alone stand in for the scopes it rides on", () => {
+    expect(scopeCoverage(["workflow"])["workflows"]).toBe("missing");
+    expect(scopeCoverage(["public_repo", "workflow"])["workflows"]).toBe("unknown");
   });
 
   it("reports public_repo as unknown — it covers public repos only", () => {
@@ -280,11 +309,12 @@ describe("diagnose", () => {
         pull_requests: "missing",
         issues: "missing",
         actions: "missing",
+        workflows: "missing",
       }),
       metadataStatus: 200,
     });
     expect(d.verdict).toBe("missing-grants");
-    expect(d.advice.join(" ")).toMatch(/Repository permissions/);
+    expect(d.advice.join(" ")).toMatch(/no \*\*Repository permissions\*\* were ticked at all/);
   });
 
   it("does not list the unprobed grants when the repo was invisible anyway", () => {
@@ -472,10 +502,24 @@ describe("parseInstallationGrants", () => {
       pull_requests: "write",
       issues: "write",
       actions: "read",
+      workflows: "write",
     });
     for (const g of grants) {
       expect(g.state).toBe("granted");
     }
+  });
+
+  it("marks workflows as missing on an installation approved before it was asked for", () => {
+    const grants = parseInstallationGrants({
+      metadata: "read",
+      contents: "write",
+      pull_requests: "write",
+      issues: "write",
+      actions: "read",
+    });
+    expect(grants.filter((g) => g.state === "missing").map((g) => g.ui)).toEqual([
+      "Workflows: Read and write",
+    ]);
   });
 
   it("marks a permission as missing when it is absent from the installation", () => {
@@ -512,6 +556,7 @@ describe("parseInstallationGrants", () => {
       pull_requests: "admin",
       issues: "admin",
       actions: "admin",
+      workflows: "admin",
     });
     for (const g of grants) {
       expect(g.state).toBe("granted");

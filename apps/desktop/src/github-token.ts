@@ -1,16 +1,18 @@
 // Checking a GitHub token against its repo (contracts/github-token.ts).
 //
 // The probes are scripts/token-probe-lib.mjs's, imported rather than copied:
-// one table of five, each a request whose status code says granted or missing
+// one table of six, each a request whose status code says granted or missing
 // and whose write half aims at a target that does not exist, so nothing here
 // mutates the repo. What this module adds is the shape the window renders and
-// the two rules the script has in its driver: a bound on each probe, and a 403
-// that the body or headers say is not about permissions reads `unknown`.
+// three rules the script has in its driver: a bound on each probe, a 403 that
+// the body or headers say is not about permissions reads `unknown`, and a
+// classic token's `workflow` scope is read off the header, not probed.
 
 import type { GithubGrant, GithubGrantId, GithubTokenVerdict } from "phoebe-agent/contracts";
 import {
   classifyProbe,
   classifyTokenKind,
+  parseScopes,
   PERMISSION_PROBES,
 } from "../../../scripts/token-probe-lib.mjs";
 
@@ -41,7 +43,7 @@ export function repoSlugArg(slug: unknown): string {
 }
 
 /**
- * Run the five probes against `slug` with `token` and say what each answered.
+ * Run the six probes against `slug` with `token` and say what each answered.
  * In parallel, because none depends on another and a person is waiting.
  */
 export async function verifyGithubToken(
@@ -102,6 +104,18 @@ async function runProbe(
       ssoHeader: response.headers.get("x-github-sso"),
       rateLimitRemaining: response.headers.get("x-ratelimit-remaining"),
     }) as GithubGrant["state"];
+    // A classic or OAuth token answers the workflows probe 404 whether or not
+    // it may change workflow files, so the status proves nothing there. Its
+    // scopes say it outright, and they come back on the same response.
+    const scopes = parseScopes(response.headers.get("x-oauth-scopes")) as string[] | null;
+    if (
+      probe.id === "workflows" &&
+      state === "granted" &&
+      scopes !== null &&
+      !scopes.includes("workflow")
+    ) {
+      return { ...base, state: "missing", detail: "the token has no `workflow` scope" };
+    }
     const detail =
       state === "unknown" && message !== undefined
         ? `HTTP ${response.status}: ${message}`

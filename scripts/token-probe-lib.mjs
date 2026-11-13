@@ -40,7 +40,7 @@ export function mintAppJwt({ appId, privateKey, nowSeconds = Math.floor(Date.now
 
 /**
  * The permission level required from a GitHub App installation for each of
- * onboarding §2's five grants. "write" for GitHub Apps encompasses "read and
+ * onboarding §2's six grants. "write" for GitHub Apps encompasses "read and
  * write"; "read" is read-only. A grant at or above the required level
  * satisfies the check.
  */
@@ -50,6 +50,7 @@ const APP_REQUIRED_LEVEL = {
   pull_requests: "write",
   issues: "write",
   actions: "read",
+  workflows: "write",
 };
 
 /** Numeric order of GitHub App permission levels. */
@@ -104,6 +105,15 @@ export const NONEXISTENT_SHA = "0".repeat(40);
 /** Branch the contents probe pretends to create. Never actually created. */
 export const PROBE_REF = "refs/heads/phoebe-token-probe-never-created";
 
+/** The same branch by its short name, for the calls that take one. */
+export const PROBE_BRANCH = PROBE_REF.slice("refs/heads/".length);
+
+/**
+ * Workflow file the workflows probe pretends to delete. It does not exist, and
+ * neither does the branch the probe names, so there is nothing to delete.
+ */
+export const PROBE_WORKFLOW_PATH = ".github/workflows/phoebe-token-probe-never-created.yml";
+
 /**
  * One probe per permission in `docs/phoebe-core-onboarding.md` §2, in the
  * order that document lists them.
@@ -121,8 +131,16 @@ export const PROBE_REF = "refs/heads/phoebe-token-probe-never-created";
  * also what an unapproved org token looks like, which is why `diagnose` treats
  * it as its own verdict rather than one missing checkbox.
  *
- * Verified against a live token on 2026-08-10 (see the header of
- * `verify-tenant-token.mjs` for what was and was not observed first-hand).
+ * Workflows is the grant GitHub has no call of its own for. It rides on
+ * Contents: the same push or `PUT /contents` that Contents allows is refused
+ * once it touches `.github/workflows/`. So the probe is a `DELETE /contents`
+ * of a workflow file that does not exist, on a branch that does not exist. A
+ * token allowed to change workflow files is told the branch is missing (404); a
+ * token that is not is refused first (403).
+ *
+ * Verified against a live token on 2026-08-10, and the workflows probe on
+ * 2026-11-12 (see the header of `verify-tenant-token.mjs` for what was and was
+ * not observed first-hand).
  */
 export const PERMISSION_PROBES = [
   {
@@ -171,6 +189,18 @@ export const PERMISSION_PROBES = [
     method: "GET",
     path: (slug) => `/repos/${slug}/actions/runs?per_page=1`,
     granted: [200],
+    missing: [403],
+  },
+  {
+    id: "workflows",
+    ui: "Workflows: Read and write",
+    why:
+      "Push a branch that changes .github/workflows/, including one that only " +
+      "merges the base branch's workflow changes in.",
+    method: "DELETE",
+    path: (slug) => `/repos/${slug}/contents/${PROBE_WORKFLOW_PATH}`,
+    body: { message: "phoebe token probe", sha: NONEXISTENT_SHA, branch: PROBE_BRANCH },
+    granted: [404],
     missing: [403],
   },
 ];
@@ -253,10 +283,14 @@ export function parseScopes(header) {
 }
 
 /**
- * What a classic token's scopes say about onboarding §2's five permissions.
- * `repo` is the whole set; `public_repo` covers the same calls but only on
+ * What a classic token's scopes say about onboarding §2's six permissions.
+ * `repo` covers five of them; `public_repo` covers the same calls but only on
  * public repos, which this function cannot see — so it reports `unknown` rather
  * than a green that would be wrong for the private case.
+ *
+ * Workflows is the one `repo` does not carry. A classic token needs the
+ * separate `workflow` scope to push a change under `.github/workflows/`, so
+ * without it that grant is missing whatever else the token holds.
  */
 export function scopeCoverage(scopes) {
   const state = scopes.includes("repo")
@@ -264,7 +298,12 @@ export function scopeCoverage(scopes) {
     : scopes.includes("public_repo")
       ? "unknown"
       : "missing";
-  return Object.fromEntries(PERMISSION_PROBES.map((probe) => [probe.id, state]));
+  return Object.fromEntries(
+    PERMISSION_PROBES.map((probe) => [
+      probe.id,
+      probe.id === "workflows" && !scopes.includes("workflow") ? "missing" : state,
+    ]),
+  );
 }
 
 /** Warn this many days out — long enough to rotate before Phoebe starts 401ing. */

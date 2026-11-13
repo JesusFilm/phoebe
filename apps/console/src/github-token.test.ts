@@ -36,7 +36,7 @@ describe("isPlaceholderSlug", () => {
 });
 
 describe("tokenPageUrl", () => {
-  test("names the token after the repo, sets the owner, a year, and the five grants", () => {
+  test("names the token after the repo, sets the owner, a year, and the six grants", () => {
     const url = new URL(tokenPageUrl("JesusFilm/phoebe"));
 
     expect(url.origin + url.pathname).toBe(
@@ -49,6 +49,7 @@ describe("tokenPageUrl", () => {
     expect(url.searchParams.get("pull_requests")).toBe("write");
     expect(url.searchParams.get("issues")).toBe("write");
     expect(url.searchParams.get("actions")).toBe("read");
+    expect(url.searchParams.get("workflows")).toBe("write");
     expect(url.searchParams.get("description")).toContain("JesusFilm/phoebe");
   });
 

@@ -45,10 +45,12 @@ machine that only watches deployments elsewhere has no need of a daemon.
 `.env` yet, opens its install tab on four numbered steps: initialise, give
 Phoebe access to the repository, give it an agent to run, start. The second is
 the one with help in it. **Create a token on GitHub** opens GitHub's
-fine-grained token page with the five grants Phoebe needs already ticked, a
+fine-grained token page with the six grants Phoebe needs already ticked
+(Workflows among them, so a push that touches `.github/workflows/` is not
+refused), a
 year's lifetime, and the config's owner selected; the repository is the one
 thing that page cannot be told, so you pick it there. The token you paste back
-is checked against the repository with the five probes
+is checked against the repository with the six probes
 `scripts/verify-tenant-token.mjs` runs, none of which writes anything, and
 saved as `GH_TOKEN` into the `.env` when every grant answers. A grant that
 did not answer is named, with the save still offered. The third step asks for
@@ -58,7 +60,7 @@ for a subscription instead of a key.
 A workspace takes the same steps with a different second one. Its tenants
 share one owner, so the companion offers to register a **GitHub App** under
 that owner through GitHub's manifest flow: it opens a browser tab on a page
-that posts the App's name and the five permissions to GitHub, GitHub shows one
+that posts the App's name and the six permissions to GitHub, GitHub shows one
 page to confirm, and the App's id and private key come back to the companion,
 which writes them into the deployment `.env` as `GH_APP_ID` and
 `GH_APP_PRIVATE_KEY`. One thing is left on GitHub, and the step links to it:

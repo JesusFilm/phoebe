@@ -325,8 +325,17 @@ Under the PAT arm, Phoebe acts entirely as `GH_TOKEN`'s identity. When that
 token is short a permission, or its org approval never landed, nothing fails at
 boot. It fails mid-run as a 403 from whichever API hop needed the grant. Under
 the App arm, `GH_TOKEN` is a synthesized installation token minted at startup;
-org approval does not apply, but the same five permissions must be granted to the
+org approval does not apply, but the same six permissions must be granted to the
 App installation.
+
+The grant that goes missing most often is **Workflows: Read and write**, because
+it used to be optional. Without it GitHub rejects any push that changes a file
+under `.github/workflows/`, with `refusing to allow a Personal Access Token to
+create or update workflow` in the push output. That includes a push that only
+merges the base branch in after a workflow change landed there. Add the grant to
+the token or the App
+([onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat))
+and the next cycle's push goes through.
 
 **Branch-protection note (both arms).** If the repo enables
 `dismiss_stale_reviews_on_push` or `require_last_push_approval`, Phoebe's push
@@ -352,13 +361,13 @@ Phoebe runs.
 | `verify-tenant-token.mjs --slug o/r --token ghp_…` | A token you have not written to a file yet.                           |
 | `--json` / `--check`                               | Machine-readable output / exit 1 on any finding (as `phoebe status`). |
 
-It reports each of the five permissions
+It reports each of the six permissions
 [onboarding §2](phoebe-core-onboarding.md#2-operator-github-token-a-fine-grained-pat)
 asks for as granted / missing / unknown, distinguishes "no access at all" (the
 usual sign of a fine-grained PAT still awaiting org approval) from one missing
 checkbox, and warns when the token expires inside 14 days. No probe changes
-anything: the three write grants are proven by aiming a `POST`/`PATCH` at a
-resource that cannot exist, so GitHub answers with the permission verdict and
+anything: the four write grants are proven by aiming a `POST`, `PATCH` or
+`DELETE` at a resource that cannot exist, so GitHub answers with the permission verdict and
 there is nothing to mutate. It is safe against production, but note that it does
 issue write-method requests, which matters if you are approving it through
 a network policy. It never prints the token, and `--all` does not abort when one

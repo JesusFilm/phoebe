@@ -3,7 +3,7 @@
 // The App arm (docs/github-app-mode.md) replaces a hand-minted token per
 // tenant with one App whose installation tokens the bootstrapper mints. The
 // manifest flow is GitHub's way of registering an App without filling the
-// form by hand: the companion posts the name and the five permissions, GitHub
+// form by hand: the companion posts the name and the six permissions, GitHub
 // shows one confirm page, and the companion receives the App's id and private
 // key straight back. That key goes into the deployment `.env` and nowhere
 // else; this type names the App and never carries the key.

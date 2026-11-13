@@ -8,12 +8,17 @@
 
 import type { ConfigFieldFacts, GithubGrant, HarnessName } from "phoebe-agent/contracts";
 
-/** The five grants, as GitHub's URL parameters name them, at the access Phoebe needs. */
+/**
+ * The grants GitHub's URL parameters can tick, at the access Phoebe needs.
+ * Metadata is the sixth; GitHub adds it by itself. Workflows has no read
+ * level: `write` is the only value the page takes for it.
+ */
 export const TOKEN_PAGE_GRANTS: readonly [string, string][] = [
   ["contents", "write"],
   ["pull_requests", "write"],
   ["issues", "write"],
   ["actions", "read"],
+  ["workflows", "write"],
 ];
 
 /** The longest lifetime GitHub allows a fine-grained token, in days. */
@@ -34,7 +39,7 @@ export function slugOf(fields: readonly ConfigFieldFacts[] | undefined): string 
 
 /**
  * GitHub's fine-grained token page, filled in for one repo: named after it,
- * owned by its owner, a year long, with the five grants ticked. The
+ * owned by its owner, a year long, with the six grants ticked. The
  * repository itself has to be picked on the page; there is no parameter for
  * it, and the page says so beside the link.
  */
@@ -42,7 +47,7 @@ export function tokenPageUrl(slug: string): string {
   const [owner, repo] = slug.split("/") as [string, string];
   const params = new URLSearchParams({
     name: `Phoebe ${repo}`.slice(0, 40),
-    description: `Phoebe works ${slug}: clones, pushes phoebe/ branches, opens PRs, moves issue labels, reads Actions.`,
+    description: `Phoebe works ${slug}: clones, pushes phoebe/ branches (workflow files included), opens PRs, moves issue labels, reads Actions.`,
     target_name: owner,
     expires_in: String(TOKEN_LIFETIME_DAYS),
   });

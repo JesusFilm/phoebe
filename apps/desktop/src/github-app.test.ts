@@ -18,7 +18,7 @@ import {
 const PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEabc\ndef\n-----END RSA PRIVATE KEY-----\n";
 
 describe("the manifest", () => {
-  test("carries the five permissions, no events, and the redirect back to the listener", () => {
+  test("carries the six permissions, no events, and the redirect back to the listener", () => {
     const manifest = appManifest({
       name: "phoebe-acme",
       redirectUrl: "http://127.0.0.1:4321/callback",
@@ -38,6 +38,7 @@ describe("the manifest", () => {
       pull_requests: "write",
       issues: "write",
       actions: "read",
+      workflows: "write",
     });
   });
 
