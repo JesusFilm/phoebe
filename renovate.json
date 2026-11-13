@@ -4,11 +4,20 @@
   "description": [
     "`gitIgnoredAuthors` names the address Phoebe commits under on this repo: the noreply identity of the account whose token it runs on. Without it, Renovate treats a branch Phoebe pushed a changeset to as edited by someone else and stops refreshing it. If Phoebe moves to another identity (a GitHub App, a `gitIdentity` in the config), this address moves with it.",
     "`minimumReleaseAge` matches the gate pnpm 11 applies by default: `vp install` refuses any package published less than 1440 minutes ago, and this repo sets nothing to relax it. Without the same number here Renovate resolves a version the moment it is published, CI fails on the age check, and the PR needs a manual retry a day later (#684).",
-    "The dogfood image bakes the pnpm that package.json's `packageManager` pins, as `ARG PNPM_VERSION` in `.phoebe/container/Dockerfile`, so a work unit can't rewrite it (#780). The custom manager finds that ARG, and the `pnpm` group moves it in the same PR as `packageManager`; `src/container-image.test.ts` fails if the two drift."
+    "The dogfood image bakes the pnpm that package.json's `packageManager` pins, as `ARG PNPM_VERSION` in `.phoebe/container/Dockerfile`, so a work unit can't rewrite it (#780). The custom manager finds that ARG, and the `pnpm` group moves it in the same PR as `packageManager`; `src/container-image.test.ts` fails if the two drift.",
+    "`dependencyDashboardApproval` keeps hosted Renovate passive (#831). On 2026-11-10 it and Phoebe's dependency kinds opened the same js-yaml bump twice (#809, #814) and kept moving each other's pins. Renovate still scans and keeps the Dependency Dashboard (#642) current, but it opens a PR only when someone ticks that update's box. Phoebe's dependency kinds do the routine bumps; a tick is the fallback for days the dogfood is down. Check the open `phoebe:dependencies` issues before ticking, because a tick can still duplicate a bundle Phoebe already filed.",
+    "`vulnerabilityAlerts` is off because Renovate's security PRs skip the approval above. In renovate 44.210.0 the option's own defaults set `dependencyDashboardApproval: false` and `prCreation: immediate`, so an alert would still open a PR by itself and collide with Phoebe's `dependency-security` kind, which owns security bumps here. The cost: with the dogfood down, nothing opens a security PR on this repo until someone looks."
   ],
+  "dependencyDashboardApproval": true,
   "gitIgnoredAuthors": ["838371+mikeallisonJS@users.noreply.github.com"],
   "minimumReleaseAge": "1 day",
+  "vulnerabilityAlerts": { "enabled": false },
   "packageRules": [
+    {
+      "description": "The `overrides` in pnpm-workspace.yaml are security pins that Phoebe's `dependency-security` kind sets to fix an advisory (#805). Renovate bumped them anyway, the undici pins in #812, #820 and #825 and the vite one in #819, so it proposes none now, ticked or not. The dependency type is `pnpm-workspace.overrides`; a rule on `pnpm.overrides` matches nothing in this repo.",
+      "matchDepTypes": ["pnpm-workspace.overrides"],
+      "enabled": false
+    },
     {
       "description": "Only a runtime dependency bump is a line a consumer would notice, so every other kind opens already labelled and never trips the changeset gate (#655). Phoebe's checks kind writes the changeset for the ones that are left.",
       "matchDepTypes": [

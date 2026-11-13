@@ -154,8 +154,15 @@ export const config = defineConfig({
   // Hosted Renovate and renovate.json stay, and so does `renovate/` in the
   // checks kind's `prScope` below: Phoebe does not run here all the time, and a
   // bot that only runs sometimes does not replace one (ADR 0003, last
-  // consequence). The Renovate source needs a container limit of at least
-  // 4 GiB on a repo core's size; this one sets none.
+  // consequence). It only acts on a tick, though (#831): it opens a PR when
+  // someone ticks that update on the Dependency Dashboard (#642), never for an
+  // override entry, and never for a security alert. On an ordinary day the
+  // bumps are these kinds' alone. The Renovate source reads renovate.json too,
+  // so its report lists the override rows as `skipReason: disabled`;
+  // `dependency-updates` leaves override entries alone regardless (#830).
+  //
+  // The Renovate source needs a container limit of at least 4 GiB on a repo
+  // core's size; this one sets none.
   //
   pipelines: {
     dependencies: {

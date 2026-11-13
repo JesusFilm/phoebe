@@ -114,4 +114,14 @@ results stand.
   dependencies, five batches for the whole lockfile.
 - Hosted Renovate and `renovate.json` stay on this repo for now. Phoebe does
   not run here continuously, and a bot that only runs sometimes is not yet a
-  replacement.
+  replacement. Since 2026-11-12 (#831) hosted Renovate waits for approval. It
+  still scans and keeps the Dependency Dashboard current, but it opens a PR
+  only when someone ticks that update's box. The two bots had filed the same
+  js-yaml bump twice and kept bumping each other's pins. The `overrides` in
+  `pnpm-workspace.yaml` and all security PRs belong to Phoebe, so
+  `renovate.json` disables Renovate on override entries and turns its
+  vulnerability alerts off, since Renovate's security PRs skip approval. This has
+  two costs. With the dogfood down, nothing opens a security PR on this repo
+  until someone looks. And a ticked box can still duplicate a bundle Phoebe
+  already filed, so check the open `phoebe:dependencies` issues before
+  ticking.
