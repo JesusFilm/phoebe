@@ -537,9 +537,13 @@ unioned, and then:
    one for the majors and one for the rest. While the newest release ages, the
    fix release can go out alone.
 6. A bump the implementer dropped (a ``- `<package>@<version>` `` line under
-   `## Dropped` in a dependency PR) is pulled out and filed on its own, its
-   body opening "Failed in #N". After two PRs drop the same package-version,
-   it is not filed again.
+   `## Dropped`) is pulled out and filed on its own, its body opening
+   "Failed in #N". The scan reads the section from dependency PR bodies, and
+   from Phoebe's comments on tickets parked under `phoebe:blocked`, where it
+   lands when every bump in a bundle dropped and there is no PR. Each PR or
+   ticket counts once. After two of them drop the same package-version, it is
+   not filed again. An entry tagged `(too new)` counts nothing: the package
+   manager refused the release only for its age, and it passes once it ages.
 7. The rest are grouped, production and development each by its own strategy.
    A bundle never spans two managers.
 
@@ -710,6 +714,17 @@ one line, ``- `<package>@<version>`: <reason>``, followed by the
 failing output in a `<details>` block. `parseDropped` in
 `kinds/dependencies-work/dropped.ts` reads that list back so the detector can
 re-file each drop on its own.
+
+When every bump drops there is no commit and no PR. The agent comments on the
+issue with the same `## Dropped` section and ends the comment with the
+`<!-- phoebe-blocked -->` line, so the stranded sweep parks the ticket under
+`phoebe:blocked` and counts no unproductive run. A bump the package manager
+refused only because the release is younger than its minimum release age (pnpm's
+`minimumReleaseAge`) is tagged ``- `<package>@<version>` (too new): <reason>``.
+A later `dependency-updates` scan lifts the label without a person when it
+still plans the bundle and every drop on the ticket was too new, or when it
+refreshes the bundle. That is at most one more run per scan. A ticket parked
+for a real failure keeps the label until someone removes it.
 
 The PR body carries the issue's marker on its last line. The agent copies it
 into a PR it opens. When the engine opens the PR instead, the kind passes the

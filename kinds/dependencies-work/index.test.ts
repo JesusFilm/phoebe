@@ -146,6 +146,23 @@ describe("claiming", () => {
     ]);
   });
 
+  // #862: a ticket whose every bump dropped is parked under phoebe:blocked,
+  // and selection must pass over it until the label comes off.
+  test("passes over a ticket parked under phoebe:blocked", async () => {
+    const { config, entry } = await registered({ path: "phoebe-agent/kinds/dependencies-work" });
+    const kind = entry!.definition;
+    const calls = { listed: [] as string[], added: [] as string[], workflows: [] as unknown[] };
+    const ctx = ctxFor(
+      config,
+      [issue(1, ["phoebe:dependencies", "phoebe:blocked"]), issue(2, ["phoebe:dependencies"])],
+      calls,
+    );
+    expect(kind.select(await kind.fetch(ctx), ctx).unit?.ref).toBe("issue:2");
+
+    const parkedOnly = ctxFor(config, [issue(1, ["phoebe:dependencies", "phoebe:blocked"])], calls);
+    expect(kind.select(await kind.fetch(parkedOnly), parkedOnly).unit).toBeNull();
+  });
+
   test("an issue without a marker gets no trailer", async () => {
     const { config, entry } = await registered({ path: "phoebe-agent/kinds/dependencies-work" });
     const kind = entry!.definition;

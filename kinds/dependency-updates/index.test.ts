@@ -113,8 +113,15 @@ function kindWith(
   );
 }
 
-/** A GitHub that holds `issues` and `prs` and records every write. */
-function gitHub(issues: MentioningIssue[] = [], prs: MentioningPr[] = []) {
+/**
+ * A GitHub that holds `issues` and `prs`, and Phoebe's comments on each issue
+ * by number, and records every write.
+ */
+function gitHub(
+  issues: MentioningIssue[] = [],
+  prs: MentioningPr[] = [],
+  comments: Record<number, string[]> = {},
+) {
   const writes: string[] = [];
   const bodies = new Map<number, string>();
   let next = 100;
@@ -136,6 +143,19 @@ function gitHub(issues: MentioningIssue[] = [], prs: MentioningPr[] = []) {
     },
     postUnitComment: (target) => {
       writes.push(`comment #${target.id}`);
+    },
+    resolveLogin: () => "phoebe-bot",
+    issueTimeoutInputs: (n) => ({
+      comments: (comments[n] ?? []).map((body) => ({
+        body,
+        createdAt: "2026-11-05T00:00:00Z",
+        authorLogin: "phoebe-bot",
+      })),
+      extraActivityAt: null,
+      baseline: "body:aa",
+    }),
+    removeIssueLabel: (n, label) => {
+      writes.push(`unlabel #${n} ${label}`);
     },
   };
   return { overrides, writes, bodies };
@@ -348,6 +368,88 @@ describe("run", () => {
       "create #101 Update vite to 1.1.0",
     ]);
     expect(bodies.get(101)).toMatch(/^Failed in #31; filed again on its own\./);
+  });
+
+  // #862, from #856's dogfood: PR #857 dropped electron, the retry #858
+  // dropped it again with no PR, and the scan after counted one failure.
+  describe("a bundle whose every bump dropped", () => {
+    const electron = candidate("electron", { current: "45.3.1", target: "45.3.2" });
+    const jsdom = candidate("jsdom", { current: "31.0.0", target: "31.0.1" });
+    const retryOf = (c: Candidate) => ({
+      manager: "npm",
+      group: `retry:${c.package}`,
+      candidates: [c],
+    });
+    const markerOf = (bundle: ReturnType<typeof retryOf>) =>
+      renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) });
+    const ticket = (n: number, body: string, parked: boolean): MentioningIssue => ({
+      number: n,
+      body,
+      state: "open",
+      stateReason: null,
+      closedAt: null,
+      labels: ["dependencies", "phoebe:dependencies", ...(parked ? ["phoebe:blocked"] : [])],
+    });
+    const pr857 = (entries: string): MentioningPr => ({
+      number: 857,
+      body: `Closes #856\n\n## Dropped\n\n${entries}\n`,
+      state: "closed",
+      merged: true,
+    });
+    const allDropped = (entry: string) =>
+      `Every bump dropped.\n\n## Dropped\n\n${entry}\n\n<!-- phoebe-blocked -->`;
+
+    test("counts the comment on a parked retry as the second failure", async () => {
+      const kind = kindWith({}, { native: [electron, jsdom] });
+      const { overrides, writes } = gitHub(
+        [
+          ticket(859, markerOf(retryOf(jsdom)), false),
+          ticket(858, markerOf(retryOf(electron)), true),
+        ],
+        [pr857("- `electron@45.3.2`: install refused it\n- `jsdom@31.0.1`: install refused it")],
+        { 858: [allDropped("- `electron@45.3.2`: install refused it")] },
+      );
+      const logged: string[] = [];
+      await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock, logged));
+      expect(logged).toContain(
+        "2 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 0 override(s) skipped, " +
+          "0 ignored, 0 not yet mature, 1 failed 2 times; 1 bundle(s).",
+      );
+      // jsdom's retry is left; electron is no longer planned, so #858 stays parked.
+      expect(writes).toEqual([]);
+    });
+
+    test("a retry parked only because its release was too new is lifted, and counts nothing more", async () => {
+      const kind = kindWith({}, { native: [electron] });
+      const { overrides, writes } = gitHub(
+        [ticket(858, markerOf(retryOf(electron)), true)],
+        [pr857("- `electron@45.3.2`: install refused it")],
+        { 858: [allDropped("- `electron@45.3.2` (too new): published today")] },
+      );
+      const logged: string[] = [];
+      await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock, logged));
+      expect(logged).toContain(
+        "1 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 0 override(s) skipped, " +
+          "0 ignored, 0 not yet mature, 0 failed 2 times; 1 bundle(s).",
+      );
+      expect(writes).toEqual(["unlabel #858 phoebe:blocked"]);
+    });
+
+    test("a bump a PR dropped only because it was too new is filed again in a bundle, not on its own", async () => {
+      const kind = kindWith({ grouping: { strategy: "all" } }, { native: [electron, jsdom] });
+      const { overrides, writes } = gitHub(
+        [],
+        [
+          pr857(
+            "- `electron@45.3.2` (too new): published today\n- `jsdom@31.0.1` (too new): today",
+          ),
+        ],
+      );
+      await kind.run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock));
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Update 2 npm dependencies (prod:all)",
+      ]);
+    });
   });
 
   test("a security override is not raised to the newest release of its package (#811)", async () => {

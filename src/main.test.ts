@@ -2991,6 +2991,53 @@ describe("sweeps scoped to the pipeline's kinds", () => {
       expect(rearmed).toEqual([9]);
       expect(added).toEqual([]);
     });
+
+    // #862, reproducing #858: a retry bundle whose only bump dropped left no
+    // PR, and the sweep re-armed it three times into quarantine. The
+    // implementer's comment now ends with the blocked line, so its one run
+    // parks the ticket and counts nothing unproductive.
+    test("a dependency ticket whose every bump dropped is parked, not re-armed", async () => {
+      const added: string[] = [];
+      const removed: string[] = [];
+      const comments: string[] = [];
+      const allDropped = [
+        "Every bump in this bundle was dropped, so there is no commit and no PR.",
+        "",
+        "## Dropped",
+        "",
+        "- `electron@45.3.2`: install refused the version",
+        "",
+        BLOCKED_MARKER,
+      ].join("\n");
+      const result = await sweepCycle({
+        config: { workOrder: ["dependencies"] },
+        customKinds: [dependenciesKind],
+        github: {
+          ...sweepGithub([], added),
+          removeIssueLabel: (issueNumber, label) => {
+            removed.push(`${issueNumber} ${label}`);
+          },
+          listLabeledIssues: (label) =>
+            label === "processing" ? [anIssue(858, { labels: ["processing", DEPENDENCIES] })] : [],
+          issueTimeoutInputs: () => ({
+            comments: [
+              { body: allDropped, createdAt: "2026-11-13T21:25:20Z", authorLogin: PHOEBE_LOGIN },
+            ],
+            extraActivityAt: null,
+            baseline: "body:aa",
+          }),
+          postUnitComment: (_target, body) => {
+            comments.push(body);
+          },
+        },
+      });
+
+      expect(added).toEqual(["858 phoebe:blocked"]);
+      expect(removed).toEqual(["858 processing"]);
+      expect(comments).toEqual([buildBlockedComment()]);
+      expect(result.lines.join("\n")).not.toContain("Re-armed issue #858");
+      expect(result.lines.join("\n")).toContain("Labelled issue #858 phoebe:blocked");
+    });
   });
 });
 

@@ -14,7 +14,9 @@
 //     GitHub keeps that scan from filing anything twice;
 //   - `run` starts the sources at once, each under its own deadline, and files
 //     from whatever finished;
-//   - filing reads the marker back from GitHub (kinds/dependencies/filing.ts).
+//   - filing reads the marker back from GitHub (kinds/dependencies/filing.ts),
+//     and a ticket parked under `phoebe:blocked` is read for the bumps its
+//     run dropped and lifted when it can pass alone (./parked.ts, #862).
 //     The kind never adds the tenant's ready label: a pipeline running
 //     `issues` would take the ticket for its own.
 
@@ -40,6 +42,7 @@ import {
   resolveDependencyUpdatesOptions,
   type DependencyUpdatesOptions,
 } from "./options.ts";
+import { parkedRecords, readParked, releaseParked } from "./parked.ts";
 import { MAX_FAILURES, planBundles, readFailures } from "./plan.ts";
 
 export const DEPENDENCY_UPDATES_KIND_NAME = "dependency-updates";
@@ -115,7 +118,9 @@ export function createDependencyUpdatesKind(
       }
 
       const filed = readFiled(ctx);
-      const plan = planBundles(candidates, options, now, readFailures(filed.prs));
+      const parked = readParked(filed.issues, ctx);
+      const failures = readFailures([...filed.prs, ...parkedRecords(parked)]);
+      const plan = planBundles(candidates, options, now, failures);
       const { bootstrapper, overrides, ignored, immature, failedTwice } = plan.dropped;
       ctx.log(
         `${candidates.length} candidate(s): ${bootstrapper} bootstrapper pin(s) left to ` +
@@ -129,6 +134,7 @@ export function createDependencyUpdatesKind(
         cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,
       });
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL, routingLabel]);
+      releaseParked(actions, parked, ctx);
     },
   });
 }

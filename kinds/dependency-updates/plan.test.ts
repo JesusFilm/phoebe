@@ -207,4 +207,21 @@ describe("readFailures", () => {
     expect(failures.get("@types/node@26.0.0")).toEqual([10]);
     expect(failures.size).toBe(2);
   });
+
+  // #862: when every bump drops there is no PR, so the implementer's comment
+  // on the issue is the record, counted once per issue however many runs wrote one.
+  test("an issue comment counts like a PR body, once per issue", () => {
+    const failures = readFailures([
+      pr(857, dropped("electron@45.3.2")),
+      { number: 858, body: dropped("electron@45.3.2") },
+      { number: 858, body: dropped("electron@45.3.2") },
+    ]);
+    expect(failures.get("electron@45.3.2")).toEqual([858, 857]);
+  });
+
+  test("a bump dropped only because its release is too new counts nothing", () => {
+    const tooNew = "## Dropped\n\n- `electron@45.3.2` (too new): published today\n";
+    const failures = readFailures([pr(857, tooNew), { number: 858, body: tooNew }]);
+    expect(failures.size).toBe(0);
+  });
 });
