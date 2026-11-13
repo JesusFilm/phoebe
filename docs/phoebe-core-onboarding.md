@@ -121,9 +121,11 @@ It reports each of the six permissions above as granted / missing / unknown,
 names the missing ones as the GitHub UI spells them (the Access column above), tells "no access at all"
 (the usual sign of a token still awaiting org approval) apart from one missing
 checkbox, and reports the expiry date, warning inside 14 days. No probe changes
-anything: the four write grants are proven by aiming a `POST`, `PATCH` or `DELETE`
+anything: the four write grants are probed by aiming a `POST`, `PATCH` or `DELETE`
 at a resource that cannot exist, so GitHub answers with the permission verdict
-and there is nothing to mutate. It is safe against a production repo, though it
+and there is nothing to mutate. Trust the Workflows line least. Nobody has yet
+seen what GitHub answers that probe for a token without the grant, so a ✓ there
+could be wrong until someone has. It is safe against a production repo, though it
 does issue write-method requests, which is worth knowing if you are approving it
 through a network policy. It never prints the token.
 

@@ -366,9 +366,11 @@ It reports each of the six permissions
 asks for as granted / missing / unknown, distinguishes "no access at all" (the
 usual sign of a fine-grained PAT still awaiting org approval) from one missing
 checkbox, and warns when the token expires inside 14 days. No probe changes
-anything: the four write grants are proven by aiming a `POST`, `PATCH` or
+anything: the four write grants are probed by aiming a `POST`, `PATCH` or
 `DELETE` at a resource that cannot exist, so GitHub answers with the permission verdict and
-there is nothing to mutate. It is safe against production, but note that it does
+there is nothing to mutate. Trust the Workflows line least. Nobody has yet seen
+what GitHub answers that probe for a token without the grant, so a ✓ there
+could be wrong until someone has. It is safe against production, but note that it does
 issue write-method requests, which matters if you are approving it through
 a network policy. It never prints the token, and `--all` does not abort when one
 tenant fails.
