@@ -12,29 +12,38 @@ import { planBundle, type PlannedBundle } from "../dependencies/filing.ts";
 import { renderIssueBody, renderIssueTitle } from "../dependencies/issue-body.ts";
 import { isMature, overThreshold } from "../dependencies/policy.ts";
 import { compareVersions, managerScheme } from "../dependencies/registry/versions.ts";
-import type { MentioningPr } from "../../src/github-client.ts";
 import type { DependencyUpdatesOptions } from "./options.ts";
 
 /** Failures per package-version past which a bump is not filed again. */
 export const MAX_FAILURES = 2;
 
-/** The PRs that dropped each `package@version`, newest first. */
+/** The PRs and issues that dropped each `package@version`, newest first. */
 export type Failures = ReadonlyMap<string, readonly number[]>;
+
+/**
+ * A text that may hold a `## Dropped` section, under the number it counts
+ * for: a dependency PR's body, or one of the implementer's comments on an
+ * issue whose bumps all dropped, so that no PR was opened (#862).
+ */
+export type DroppedRecord = { number: number; body: string };
 
 const failureKey = (pkg: string, version: string) => `${pkg}@${version}`;
 
 /**
- * Every bump a dependency PR listed under its `## Dropped` heading, by the
- * PRs that dropped it. A PR counts one failure whatever its state: a bump the
- * agent gave up on failed whether or not the rest of the PR merged.
+ * Every bump a record listed under its `## Dropped` heading, by the PRs and
+ * issues that dropped it. A PR counts one failure whatever its state: a bump
+ * the agent gave up on failed whether or not the rest of the PR merged. An
+ * issue counts one however many runs commented on it. A bump dropped only
+ * because its release was too new counts nothing: it passes once it ages.
  */
-export function readFailures(prs: readonly MentioningPr[]): Failures {
+export function readFailures(records: readonly DroppedRecord[]): Failures {
   const failures = new Map<string, number[]>();
-  for (const pr of [...prs].sort((a, b) => b.number - a.number)) {
-    for (const bump of parseDropped(pr.body)) {
+  for (const record of [...records].sort((a, b) => b.number - a.number)) {
+    for (const bump of parseDropped(record.body)) {
+      if (bump.tooNew) continue;
       const key = failureKey(bump.package, bump.version);
       const list = failures.get(key) ?? [];
-      if (!list.includes(pr.number)) list.push(pr.number);
+      if (!list.includes(record.number)) list.push(record.number);
       failures.set(key, list);
     }
   }

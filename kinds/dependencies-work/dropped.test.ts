@@ -29,8 +29,23 @@ describe("parseDropped", () => {
       "- `after@2.0.0`: below the section",
     ].join("\n");
     expect(parseDropped(body)).toEqual([
-      { package: "vite", version: "8.0.0" },
-      { package: "@types/node", version: "26.1.0" },
+      { package: "vite", version: "8.0.0", tooNew: false },
+      { package: "@types/node", version: "26.1.0", tooNew: false },
+    ]);
+  });
+
+  test("a bump tagged `(too new)` after its code span is marked as such (#862)", () => {
+    const body = [
+      "## Dropped",
+      "",
+      "- `electron@45.3.2` (too new): published today; pnpm's minimumReleaseAge refuses it",
+      "- `@scope/pkg@2.0.0` (Too New): the same",
+      "- `jsdom@31.0.1`: the tests fail (too new for our setup)",
+    ].join("\n");
+    expect(parseDropped(body)).toEqual([
+      { package: "electron", version: "45.3.2", tooNew: true },
+      { package: "@scope/pkg", version: "2.0.0", tooNew: true },
+      { package: "jsdom", version: "31.0.1", tooNew: false },
     ]);
   });
 
