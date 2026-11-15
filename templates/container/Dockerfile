@@ -122,16 +122,16 @@ RUN ln -s ../lib/node_modules/renovate/dist/renovate.js /usr/local/bin/renovate
 # images and neither records which agent it got. Cursor publishes no checksums
 # and no `latest` indirection, but its installer does resolve to a plain
 # versioned artifact, which is what we pin to. The digests below are ours,
-# computed on 2026-07-28 by fetching both architectures' tarballs from the URL
+# computed on 2026-11-15 by fetching both architectures' tarballs from the URL
 # below — they pin the build, they are not a vendor attestation.
 #
 # To bump: run the vendor installer once and read the version out of the
 # DOWNLOAD_URL it echoes, then `sha256sum` the linux/x64 *and* linux/arm64
 # tarballs. Both, even if you only build one — an unchecked digest for the other
 # arch turns into a hard build failure the day someone builds on it.
-ARG CURSOR_AGENT_VERSION=2026.07.23-e383d2b
-ARG CURSOR_AGENT_SHA256_X64=702ad595213bee5df0268be9f80a19f29fcceaa2a42fc55e39f2b5199051f0c4
-ARG CURSOR_AGENT_SHA256_ARM64=f40b99647cb24e0da885e97620a2048034f1fe8961910d573d827d77c4d26dcb
+ARG CURSOR_AGENT_VERSION=2026.11.13-eacade1
+ARG CURSOR_AGENT_SHA256_X64=c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f
+ARG CURSOR_AGENT_SHA256_ARM64=e4ba0611045a24d1cf78f021d34c19461680fc7234c19c1f981f1cc169f70cdc
 # Set by BuildKit; the fallback keeps the classic builder working.
 ARG TARGETARCH
 RUN set -eux; \
