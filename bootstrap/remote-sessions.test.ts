@@ -125,12 +125,22 @@ describe("revocation", () => {
     const store = createSessions(base);
     const a = store.issue(ISSUE, at(0));
     const b = store.issue({ ...ISSUE, label: "b" }, at(0));
-    expect(store.revoke("nope")).toBe(false);
-    expect(store.revoke(a.row.id)).toBe(true);
+    expect(store.revoke("nope", at(0))).toBe(false);
+    expect(store.revoke(a.row.id, at(0))).toBe(true);
     expect(store.authenticate(a.token, at(1))).toEqual({ ok: false, reason: "unknown" });
     expect(store.authenticate(b.token, at(1)).ok).toBe(true);
-    expect(store.revokeAll()).toBe(1);
+    expect(store.revokeAll(at(1))).toBe(1);
     expect(store.list(at(0))).toEqual([]);
+  });
+
+  test("a revoke prunes against the clock it is handed, never the wall clock", () => {
+    // Every row here expired decades ago by the wall clock.
+    const then = new Date("2000-01-01T00:00:00.000Z");
+    const store = createSessions(tmp());
+    const a = store.issue(ISSUE, then);
+    store.issue({ ...ISSUE, label: "b" }, then);
+    expect(store.revoke(a.row.id, then)).toBe(true);
+    expect(store.list(then).map((row) => row.label)).toEqual(["b"]);
   });
 });
 

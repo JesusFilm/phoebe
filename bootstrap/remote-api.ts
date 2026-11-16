@@ -524,7 +524,7 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
       }
       if (method === "DELETE") {
         // Idempotent: a second sign-out finds nothing and still says 204.
-        deps.sessions.revoke(caller.row.id);
+        deps.sessions.revoke(caller.row.id, new Date(now()));
         closeStreams(caller.row.id);
         log(`[phoebe] remote: session revoked by ${caller.by} (signed out).`);
         return empty(response, 204);
@@ -546,7 +546,8 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
       if (caller === null) return;
       const id = decodeURIComponent(path.slice(REMOTE_ROUTES.sessions.length + 1));
       if (id === caller.row.id) return json(response, 409, { error: "revoke-self" });
-      if (!deps.sessions.revoke(id)) return json(response, 404, { error: "not-found" });
+      if (!deps.sessions.revoke(id, new Date(now())))
+        return json(response, 404, { error: "not-found" });
       closeStreams(id);
       log(`[phoebe] remote: session ${id} revoked by ${caller.by}.`);
       return empty(response, 204);
