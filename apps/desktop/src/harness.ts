@@ -199,6 +199,20 @@ function insertionPoint(lines: readonly string[]): { index: number; after: boole
   if (last !== -1) {
     // Past the instruction's continuation lines, if it has any.
     while (last < lines.length - 1 && /\\\s*$/.test(lines[last]!)) last += 1;
+    // Past the provider block it sits in, so a new block never lands inside one
+    // and goes when that one is removed.
+    let open: string | null = null;
+    for (let index = 0; index <= last; index += 1) {
+      const marker = /^# phoebe:(provider|end-provider) (\S+)\s*$/.exec(lines[index]!);
+      if (marker === null) continue;
+      open = marker[1] === "provider" ? marker[2]! : null;
+    }
+    if (open !== null) {
+      const close = lines.findIndex(
+        (line, index) => index > last && line.trimEnd() === `# phoebe:end-provider ${open}`,
+      );
+      if (close !== -1) last = close;
+    }
     return { index: last + 1, after: true };
   }
   const user = lines.findIndex(

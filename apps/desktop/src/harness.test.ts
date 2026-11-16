@@ -1,4 +1,9 @@
 import { readFileSync } from "node:fs";
+import {
+  keepProviderBlocks,
+  providerBlocksIn,
+  removeProviderBlock,
+} from "../../../src/provider-install.ts";
 import path from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
@@ -318,6 +323,22 @@ describe("adding Cursor where there is none, and taking a harness out", () => {
     "USER phoebe",
     "",
   ].join("\n");
+
+  test("a block added to a Claude-only scaffold lands outside Claude's block", () => {
+    const claudeOnly = keepProviderBlocks(SHIPPED, ["claude"]);
+    const added = rewriteHarnessPin(
+      claudeOnly,
+      "cursor",
+      "2026.10.01-e373342",
+      { x64: "1111", arm64: "2222" },
+      SHIPPED,
+    );
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    const removed = removeProviderBlock(added.content, "claude");
+    expect(removed).not.toBeNull();
+    expect(providerBlocksIn(removed!)).toEqual(["cursor"]);
+  });
 
   test("Cursor is added as the scaffold's whole block, digests and all", () => {
     const out = rewriteHarnessPin(

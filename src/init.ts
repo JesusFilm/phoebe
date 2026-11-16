@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import { DEFAULT_PROMPT_FILE_BY_KIND, type ProviderName } from "./config-schema.ts";
+import { DEFAULT_PROMPT_FILE_BY_KIND, PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
 import type {
   InitOutcome,
   InitProfile,
@@ -33,6 +33,7 @@ import {
   DEFAULT_INIT_PROVIDERS,
   defaultProviderFor,
   keepProviderBlocks,
+  providerBlocksIn,
 } from "./provider-install.ts";
 import {
   defaultRepoUrl,
@@ -387,7 +388,7 @@ export function runInit(opts: RunInitOptions): InitOutcome {
     cliVersion: opts.params?.cliVersion ?? DEFAULT_TEMPLATE_PARAMS.cliVersion,
   };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
-  const providers = opts.providers ?? DEFAULT_INIT_PROVIDERS;
+  const providers = retainedProviders(targetDir) ?? opts.providers ?? DEFAULT_INIT_PROVIDERS;
 
   mkdirSync(targetDir, { recursive: true });
 
@@ -446,6 +447,27 @@ export function runInit(opts: RunInitOptions): InitOutcome {
   }
 
   return { ...report, profile, targetDir };
+}
+
+/**
+ * The providers a re-run takes from the scaffold files it keeps, so a file it
+ * writes agrees with one it does not: a kept Dockerfile's marked blocks decide
+ * the config it is missing, and a kept config's `defaultProvider` decides the
+ * Dockerfile it is missing. Null when neither file is kept, or the kept one
+ * says nothing to go by; then the chosen providers stand.
+ */
+function retainedProviders(targetDir: string): readonly ProviderName[] | null {
+  const dockerfile = join(targetDir, "container", "Dockerfile");
+  const config = join(targetDir, "phoebe.config.ts");
+  if (existsSync(dockerfile)) {
+    const installed = providerBlocksIn(readFileSync(dockerfile, "utf8"));
+    return installed.length === 0 ? null : installed;
+  }
+  if (existsSync(config)) {
+    const named = /^\s*defaultProvider:\s*["'](\w+)["']/m.exec(readFileSync(config, "utf8"))?.[1];
+    if ((PROVIDER_NAMES as readonly string[]).includes(named ?? "")) return [named as ProviderName];
+  }
+  return null;
 }
 
 /**

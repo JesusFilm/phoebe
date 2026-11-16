@@ -7,7 +7,15 @@
 //     acceptance criterion),
 //   * workspace profile (#93) writes engine + workspace block, no child files.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
@@ -487,6 +495,16 @@ describe("runInit — the providers the image installs (#869)", () => {
       };
       expect(resolveConfig(user).defaultProvider).toBe(providers[0]);
     }
+  });
+
+  test("a re-run fits the file it writes to the one it keeps", () => {
+    const dir = makeTempDir();
+    runInit({ targetDir: dir, providers: ["cursor"] });
+    rmSync(join(dir, "phoebe.config.ts"));
+    runInit({ targetDir: dir, providers: ["claude"] });
+    expect(readFileSync(join(dir, "phoebe.config.ts"), "utf8")).toContain(
+      'defaultProvider: "cursor",',
+    );
   });
 
   test("a workspace tenant names the provider the root's image runs", () => {

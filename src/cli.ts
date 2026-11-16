@@ -503,7 +503,10 @@ export function assertNotConfigPointer(
 /** The provider the workspace root's image runs, read off its Dockerfile; null when there is none to read. */
 function rootImageProvider(rootDir: string): ProviderName | null {
   try {
-    return providerForImage(readFileSync(join(rootDir, "container", "Dockerfile"), "utf8"));
+    // A Dockerfile scaffolded before the markers existed installs Cursor alone.
+    return (
+      providerForImage(readFileSync(join(rootDir, "container", "Dockerfile"), "utf8")) ?? "cursor"
+    );
   } catch {
     return null;
   }

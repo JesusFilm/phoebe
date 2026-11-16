@@ -446,8 +446,10 @@ To add one later:
    block. Put its key in `.env` (the `providerEnv` row above).
 3. Rebuild the image: `phoebe start --build`.
 
-To drop a provider, delete its block and rebuild. Leave the marker lines in
-place if you want `phoebe init` and the companion to keep managing the blocks.
+To drop a provider, delete its whole block, including the
+`# phoebe:provider <name>` and `# phoebe:end-provider <name>` lines, then rebuild.
+A block that keeps its markers but loses its install lines still counts as an
+installed provider.
 
 ### Per-work-kind overrides
 

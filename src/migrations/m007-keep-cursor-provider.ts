@@ -43,7 +43,7 @@ export const keepCursorProviderMigration: Migration = {
     if (content === null) return null;
     const field = editConfigGetField(content, KEY);
     if (!field.ok) return { content, readable: false, reason: field.reason } satisfies DetectData;
-    if (field.found) return null;
+    if (field.found && field.literal !== undefined && field.literal !== null) return null;
     return { content, readable: true } satisfies DetectData;
   },
 

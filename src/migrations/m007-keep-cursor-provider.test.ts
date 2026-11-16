@@ -57,6 +57,13 @@ describe("detect", () => {
   test("non-null when the config names no provider", () => {
     expect(m.detect(".", withConfig(NO_PROVIDER))).not.toBeNull();
   });
+
+  test("a defaultProvider that is undefined or null still gets the migration", () => {
+    for (const value of ["undefined", "null"]) {
+      const config = NO_PROVIDER.replace("{", `{ defaultProvider: ${value},`);
+      expect(m.detect(".", withConfig(config))).not.toBeNull();
+    }
+  });
 });
 
 describe("apply", () => {
