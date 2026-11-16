@@ -1,0 +1,7 @@
+---
+"phoebe-agent": minor
+---
+
+`claude` is now the default provider. It used to be `cursor`, so a config that never set `defaultProvider` has been running Cursor, and its image installs Cursor's CLI and nothing else. `phoebe upgrade` writes `defaultProvider: "cursor"` into such a config, and its migration report says it did, so the deployment keeps the agent it has. If you move `engine.ref` by hand instead, run `phoebe migrate` from the new engine, or add `defaultProvider: "cursor"` yourself. A config that already names a provider is left alone.
+
+`phoebe init` now asks which agent CLIs the image installs: any of `claude`, `cursor` and `codex`, with `claude` picked by default. `--providers claude,cursor` answers it without a terminal, and with neither `init` installs `claude`. The scaffolded Dockerfile gets a pinned install block for each provider you pick and none for the others. Cursor's block keeps its per-architecture sha256 digests, and Codex's makes its native binary execute-only, as Cursor's `node` already is. The scaffolded config names `claude` when you pick it, else the first provider you list. `init --tenant` writes `defaultProvider` too, naming a provider the workspace root's Dockerfile installs, or `claude` when there is none to read. The companion adds a provider by copying the same block out of the shipped template, and lists Claude first. docs/configuration.md → "Adding a provider after init" covers adding one by hand.

@@ -260,13 +260,17 @@ Set:
 
   | Provider | `PHOEBE_AGENT` | Key env var (`providerEnv`) | Example `PHOEBE_MODEL` (`defaultModels`) |
   | -------- | -------------- | --------------------------- | ---------------------------------------- |
-  | Cursor   | `cursor`       | `CURSOR_API_KEY`            | `composer-2.5`                           |
   | Claude   | `claude`       | `ANTHROPIC_API_KEY`         | `claude-sonnet-5-5`                      |
+  | Cursor   | `cursor`       | `CURSOR_API_KEY`            | `composer-2.5`                           |
   | Codex    | `codex`        | `OPENAI_KEY`                | `gpt-5.4-mini`                           |
 
-  Leaving `PHOEBE_AGENT` unset falls back to `defaultProvider` (`cursor`). Setting
+  Leaving `PHOEBE_AGENT` unset falls back to `defaultProvider`, which `phoebe
+  init` writes into the config (`claude` unless you chose otherwise). Setting
   it in `.env` keeps the choice local to this operator's box, so a different
-  operator can run the same committed runtime under a different provider.
+  operator can run the same committed runtime under a different provider. The
+  image has to carry that provider's CLI, so install every one your operators
+  use: `phoebe init --providers claude,cursor`, or add a block later
+  ([configuration.md](configuration.md#adding-a-provider-after-init)).
 
 The engine version is **not** an env var: it is `engine.ref` in
 `phoebe.config.ts`. Pin an explicit released tag for a real deployment

@@ -34,6 +34,7 @@ import {
   type ResolvedWorkspace,
 } from "../bootstrap/workspace-source.ts";
 import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
+import type { ProviderName } from "./config-schema.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { listPipelines, type LoadPipelines, type PipelineListing } from "./pipeline-listing.ts";
 
@@ -107,6 +108,8 @@ export function renderTenantConfig(fields: {
   installCommand: string;
   checkCommand: string;
   testCommand: string;
+  /** Default `claude`. `init --tenant` passes one the workspace root's image installs. */
+  defaultProvider?: ProviderName;
 }): string {
   return `// Per-tenant Phoebe config — scaffolded by \`phoebe init --tenant\`.
 //
@@ -121,6 +124,10 @@ const config: PhoebeUserConfig = {
   installCommand: ${JSON.stringify(fields.installCommand)},
   checkCommand: ${JSON.stringify(fields.checkCommand)},
   testCommand: ${JSON.stringify(fields.testCommand)},
+
+  // The agent that works this repo: "claude", "cursor" or "codex". The
+  // deployment root's container/Dockerfile has to install its CLI.
+  defaultProvider: ${JSON.stringify(fields.defaultProvider ?? "claude")},
 
   // How this repo's commits are attributed (optional, #199). Declaring it here
   // means every deployment that adopts this repo agrees, instead of each one

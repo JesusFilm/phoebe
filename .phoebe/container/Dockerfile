@@ -110,54 +110,29 @@ RUN npm install -g corepack@0.36.0 \
 COPY --from=renovate-build /usr/local/lib/node_modules/renovate /usr/local/lib/node_modules/renovate
 RUN ln -s ../lib/node_modules/renovate/dist/renovate.js /usr/local/bin/renovate
 
-# Provider agent CLI, pinned and checksum-verified rather than installed by
-# piping `https://cursor.com/install` into a shell — see the long note in
-# templates/container/Dockerfile for why, and for how to bump the pin. The pins
-# and the install block below must both match that file byte for byte
-# (asserted in src/container-image.test.ts).
-ARG CURSOR_AGENT_VERSION=2026.11.13-eacade1
-ARG CURSOR_AGENT_SHA256_X64=c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f
-ARG CURSOR_AGENT_SHA256_ARM64=e4ba0611045a24d1cf78f021d34c19461680fc7234c19c1f981f1cc169f70cdc
-# Set by BuildKit; the fallback keeps the classic builder working.
-ARG TARGETARCH
-RUN set -eux; \
-    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-      amd64) cursor_arch=x64;   cursor_sha="${CURSOR_AGENT_SHA256_X64}" ;; \
-      arm64) cursor_arch=arm64; cursor_sha="${CURSOR_AGENT_SHA256_ARM64}" ;; \
-      *) echo "cursor-agent publishes no build for ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/cursor-agent.tar.gz \
-      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz"; \
-    echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
-    mkdir -p /opt/cursor-agent; \
-    tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
-    chmod 0711 /opt/cursor-agent/node; \
-    rm /tmp/cursor-agent.tar.gz; \
-    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
-    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
+# Provider agent CLI: Claude Code alone, because this deployment's
+# `defaultProvider` is "claude" (phoebe.config.ts) and no kind here names
+# another. The block is the template's own (templates/container/Dockerfile,
+# where the notes on pinning live), markers and all, so `phoebe init --providers
+# claude` scaffolds the same install. Its ARG and RUN must match the
+# template's byte for byte (asserted in src/container-image.test.ts).
+#
+# The pin is also a floor set by the model policy: claude-opus-5-5 and
+# claude-sonnet-5-5 (phoebe.config.ts) need 2.1.280 or newer. Move this pin in
+# the same change as any model bump there, and the template's with it.
 
-# DOGFOOD DEVIATION: the Claude Code CLI, because this deployment's
-# `defaultProvider` is "claude" (phoebe.config.ts) and the engine spawns the
-# provider CLI by bare name — without it every unit dies on `spawn claude
-# ENOENT`. The shipped scaffold leaves this commented out and installs Cursor,
-# which stays above so flipping PHOEBE_AGENT back needs no rebuild.
-#
-# Pinned for the same reason the Cursor artifact is: an unpinned `npm install
-# -g` bakes an unrecorded version into the image. npm resolves the tarball
-# through the registry with an integrity hash from the lock metadata, so there
-# is no separate digest to carry here — the version pin is the whole control.
-#
-# The pin is also a floor set by the model policy: the CLI refuses a model it
-# was released before ("Claude Code <v> does not support this model"), and
-# claude-opus-5-5 / claude-sonnet-5-5 (phoebe.config.ts) need 2.1.280 or newer.
-# Move this pin in the same change as any model bump there.
+# phoebe:provider claude
+# Claude Code, which the "claude" provider spawns as `claude`. npm resolves the
+# tarball through the registry with an integrity hash from the lock metadata,
+# so there is no separate digest to carry here: the version pin is the whole
+# control. It runs on the image's own node, which the `chmod` below makes
+# execute-only.
 ARG CLAUDE_CODE_VERSION=2.1.287
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+# phoebe:end-provider claude
 
-# DOGFOOD DEVIATION (consequence of the line above): the image's own `node`
-# made execute-only, mirroring `chmod 0711 /opt/cursor-agent/node` in the
-# pinned block above. Cursor ships its own vendored `node`; Claude Code runs on
-# this one, so without this the long-lived process holding GH_TOKEN and
+# The image's own `node` made execute-only, as in the template. Claude Code
+# runs on it, so without this the long-lived process holding GH_TOKEN and
 # CLAUDE_CODE_OAUTH_TOKEN is an ordinary exec and stays dumpable — a same-uid
 # sibling tenant could read its /proc/<pid>/environ (#61). Non-readable is
 # enough: the exec still maps the image, the kernel marks it non-dumpable

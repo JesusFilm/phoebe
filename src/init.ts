@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TENANT_CONFIG_FILE, TENANT_ENV_FILE } from "../bootstrap/tenants.ts";
-import { DEFAULT_PROMPT_FILE_BY_KIND } from "./config-schema.ts";
+import { DEFAULT_PROMPT_FILE_BY_KIND, PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
 import type {
   InitOutcome,
   InitProfile,
@@ -29,6 +29,12 @@ import type {
 } from "./contracts/init-report.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { moduleDirOf, resolvePackageResource } from "./package-resource.ts";
+import {
+  DEFAULT_INIT_PROVIDERS,
+  defaultProviderFor,
+  keepProviderBlocks,
+  providerBlocksIn,
+} from "./provider-install.ts";
 import {
   defaultRepoUrl,
   parseSlug,
@@ -96,6 +102,13 @@ function thisPackageVersion(): string {
  * by swapping this line rather than rendering a placeholder.
  */
 export const REPORTING_TEMPLATE_LINE = "reporting: { maintainers: false },";
+
+/**
+ * The solo config template's provider line (#869). Swapped, like the consent
+ * line, for the provider the scaffolded image installs when that is not
+ * claude.
+ */
+export const DEFAULT_PROVIDER_TEMPLATE_LINE = 'defaultProvider: "claude",';
 
 /**
  * One consumer-owned output produced by init. Sources are one of:
@@ -301,8 +314,15 @@ export type RunInitOptions = {
    * `maintainers: false`.
    */
   reportingMaintainers?: boolean;
+  /**
+   * The agent CLIs the scaffolded image installs (#869): the answer to init's
+   * second TTY question, or `--providers`. Default {@link DEFAULT_INIT_PROVIDERS}.
+   * The Dockerfile gets a block for each and none for the rest, and a solo
+   * config names claude when it is among them, else the first.
+   */
+  providers?: readonly ProviderName[];
   /** Tenant profile only: the origin-prefill overrides and the prompt opt-in. */
-  tenant?: Pick<InitTenantOptions, "repoSlug" | "repoUrl" | "withPrompts">;
+  tenant?: Pick<InitTenantOptions, "repoSlug" | "repoUrl" | "withPrompts" | "defaultProvider">;
   deps?: InitDeps;
 };
 
@@ -350,6 +370,9 @@ export function runInit(opts: RunInitOptions): InitOutcome {
       ...(opts.tenant?.repoSlug !== undefined ? { repoSlug: opts.tenant.repoSlug } : {}),
       ...(opts.tenant?.repoUrl !== undefined ? { repoUrl: opts.tenant.repoUrl } : {}),
       withPrompts: opts.tenant?.withPrompts ?? false,
+      ...(opts.tenant?.defaultProvider !== undefined
+        ? { defaultProvider: opts.tenant.defaultProvider }
+        : {}),
       ...(opts.deps?.seedPrompt !== undefined ? { seedPrompt: opts.deps.seedPrompt } : {}),
       ...(opts.deps?.git !== undefined ? { git: opts.deps.git } : {}),
     });
@@ -365,6 +388,7 @@ export function runInit(opts: RunInitOptions): InitOutcome {
     cliVersion: opts.params?.cliVersion ?? DEFAULT_TEMPLATE_PARAMS.cliVersion,
   };
   const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const providers = retainedProviders(targetDir) ?? opts.providers ?? DEFAULT_INIT_PROVIDERS;
 
   mkdirSync(targetDir, { recursive: true });
 
@@ -401,7 +425,14 @@ export function runInit(opts: RunInitOptions): InitOutcome {
         moduleDir,
       );
       const rendered = renderTemplate(rawTemplate, params);
-      writeFileSync(destAbs, withReportingConsent(rendered, output, opts.reportingMaintainers));
+      writeFileSync(
+        destAbs,
+        withProviders(
+          withReportingConsent(rendered, output, opts.reportingMaintainers),
+          output,
+          providers,
+        ),
+      );
     } else {
       // Shipped prompts ship verbatim — the engine's own render step handles
       // their `{{PLACEHOLDER}}` tokens at run time.
@@ -416,6 +447,27 @@ export function runInit(opts: RunInitOptions): InitOutcome {
   }
 
   return { ...report, profile, targetDir };
+}
+
+/**
+ * The providers a re-run takes from the scaffold files it keeps, so a file it
+ * writes agrees with one it does not: a kept Dockerfile's marked blocks decide
+ * the config it is missing, and a kept config's `defaultProvider` decides the
+ * Dockerfile it is missing. Null when neither file is kept, or the kept one
+ * says nothing to go by; then the chosen providers stand.
+ */
+function retainedProviders(targetDir: string): readonly ProviderName[] | null {
+  const dockerfile = join(targetDir, "container", "Dockerfile");
+  const config = join(targetDir, "phoebe.config.ts");
+  if (existsSync(dockerfile)) {
+    const installed = providerBlocksIn(readFileSync(dockerfile, "utf8"));
+    return installed.length === 0 ? null : installed;
+  }
+  if (existsSync(config)) {
+    const named = /^\s*defaultProvider:\s*["'](\w+)["']/m.exec(readFileSync(config, "utf8"))?.[1];
+    if ((PROVIDER_NAMES as readonly string[]).includes(named ?? "")) return [named as ProviderName];
+  }
+  return null;
 }
 
 /**
@@ -435,6 +487,33 @@ function withReportingConsent(
     );
   }
   return rendered.replace(REPORTING_TEMPLATE_LINE, "reporting: { maintainers: true },");
+}
+
+/**
+ * Fit a scaffolded file to the chosen providers (#869): the Dockerfile keeps
+ * the install block of each and drops the rest, and the solo config names the
+ * one {@link defaultProviderFor} picks, so the config and the image agree. The
+ * workspace root's config names no provider; each tenant names its own.
+ */
+function withProviders(
+  rendered: string,
+  output: PlannedOutput,
+  providers: readonly ProviderName[],
+): string {
+  if (output.source.kind !== "template") return rendered;
+  if (output.source.templateRelPath === "container/Dockerfile") {
+    return keepProviderBlocks(rendered, providers);
+  }
+  if (output.source.templateRelPath !== "phoebe.config.ts") return rendered;
+  if (!rendered.includes(DEFAULT_PROVIDER_TEMPLATE_LINE)) {
+    throw new Error(
+      `Template ${output.destRelPath} carries no \`${DEFAULT_PROVIDER_TEMPLATE_LINE}\` line to name the provider on.`,
+    );
+  }
+  return rendered.replace(
+    DEFAULT_PROVIDER_TEMPLATE_LINE,
+    `defaultProvider: ${JSON.stringify(defaultProviderFor(providers))},`,
+  );
 }
 
 /**
@@ -471,6 +550,11 @@ export type InitTenantOptions = {
   testCommand?: string;
   /** Opt-in seed of shipped prompts into `prompts/` (#63 pattern). */
   withPrompts?: boolean;
+  /**
+   * The provider the config names (#869). Default `claude`; the CLI passes one
+   * the workspace root's container/Dockerfile installs.
+   */
+  defaultProvider?: ProviderName;
   /** Override prompt seeder (tests). Defaults to {@link copyShippedPromptsInto}. */
   seedPrompt?: (promptsDir: string) => string[];
   /** Git runner seam for origin prefill (tests). */
@@ -540,6 +624,7 @@ export function initTenant(opts: InitTenantOptions): InitTenantResult {
       installCommand: opts.installCommand ?? "npm ci",
       checkCommand: opts.checkCommand ?? "npm run check",
       testCommand: opts.testCommand ?? "npm test",
+      ...(opts.defaultProvider !== undefined ? { defaultProvider: opts.defaultProvider } : {}),
     }),
   );
   report.created.push(TENANT_CONFIG_FILE);

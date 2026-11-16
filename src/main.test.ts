@@ -2768,13 +2768,13 @@ describe("what an agent's own lines carry", () => {
   }
 
   /** The lines the agent wrote, told apart from the engine's by the provider bracket. */
-  const fromAgent = (lines: string[]): string[] => lines.filter((line) => line.includes("[cursor"));
+  const fromAgent = (lines: string[]): string[] => lines.filter((line) => line.includes("[claude"));
 
   test("an agent line opens with the bracket the pipeline's own lines use", async () => {
     const lines = await agentLines();
     expect(fromAgent(lines)).toEqual([
-      "[fleet:acme/widget:work][nudge pr:44][cursor] Reading the ticket",
-      "[fleet:acme/widget:work][nudge pr:44][cursor:stderr] cli warning",
+      "[fleet:acme/widget:work][nudge pr:44][claude] Reading the ticket",
+      "[fleet:acme/widget:work][nudge pr:44][claude:stderr] cli warning",
     ]);
     expect(lines.length).toBeGreaterThan(fromAgent(lines).length);
     for (const line of lines) expect(line.startsWith(TAG)).toBe(true);
@@ -2782,8 +2782,8 @@ describe("what an agent's own lines carry", () => {
 
   test("a second pipeline's agent tags itself apart from the first's", async () => {
     expect(fromAgent(await agentLines("intake"))).toEqual([
-      "[fleet:acme/widget:intake][nudge pr:44][cursor] Reading the ticket",
-      "[fleet:acme/widget:intake][nudge pr:44][cursor:stderr] cli warning",
+      "[fleet:acme/widget:intake][nudge pr:44][claude] Reading the ticket",
+      "[fleet:acme/widget:intake][nudge pr:44][claude:stderr] cli warning",
     ]);
   });
 

@@ -67,7 +67,7 @@ const CONFIG_FILE = "phoebe.config.ts";
  * resources sit beside the executable. Packaging is #561's; this is the hook it
  * fills.
  */
-function packageRoot(): string {
+export function packageRoot(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, "phoebe-agent")
     : path.join(import.meta.dirname, "..", "..", "..");

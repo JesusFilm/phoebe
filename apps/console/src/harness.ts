@@ -29,12 +29,13 @@ import type { RailProblem } from "./local-install.ts";
 
 /** Each harness by the name its vendor gives it, not the provider's short one. */
 export const HARNESS_LABEL: Record<HarnessName, string> = {
-  cursor: "Cursor agent",
   claude: "Claude Code",
+  cursor: "Cursor agent",
   codex: "Codex",
 };
 
-const HARNESS_ORDER: readonly HarnessName[] = ["cursor", "claude", "codex"];
+/** Claude first: it is the default provider (#869). */
+const HARNESS_ORDER: readonly HarnessName[] = ["claude", "cursor", "codex"];
 
 /**
  * The provider a config runs, off its field facts: the literal it sets, or the

@@ -11,6 +11,7 @@ import { containerLauncherArgMigration } from "./m003-container-launcher-arg.ts"
 import { renameMaxUnitTimeoutsMigration } from "./m004-rename-max-unit-timeouts.ts";
 import { pipelinesWorkBlockMigration } from "./m005-pipelines-work-block.ts";
 import { flattenCustomKindsMigration } from "./m006-flatten-custom-kinds.ts";
+import { keepCursorProviderMigration } from "./m007-keep-cursor-provider.ts";
 
 export const MIGRATIONS: readonly Migration[] = [
   researchPromptMigration,
@@ -22,4 +23,5 @@ export const MIGRATIONS: readonly Migration[] = [
   // flattening must have happened by the time m005 touches a config.
   flattenCustomKindsMigration,
   pipelinesWorkBlockMigration,
+  keepCursorProviderMigration,
 ];

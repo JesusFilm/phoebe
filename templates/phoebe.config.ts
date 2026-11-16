@@ -20,6 +20,13 @@ const config: PhoebeUserConfig = {
   checkCommand: "npm run check",
   testCommand: "npm test",
 
+  // The agent that does the work: "claude", "cursor" or "codex". The image has
+  // to install its CLI, so this names one that container/Dockerfile installs.
+  // `phoebe init` installed the ones you chose and named one of them here. To
+  // switch to one it did not install, add its block to the Dockerfile first
+  // (docs/configuration.md → "Adding a provider after init").
+  defaultProvider: "claude",
+
   // Which engine `phoebe boot` runs. This is the upgrade knob: edit it and the
   // running container drains the engine and relaunches on the new code at the
   // next work-unit boundary — no rebuild, no restart.

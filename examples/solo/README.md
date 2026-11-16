@@ -14,10 +14,10 @@ self-configured child repos. See [`../workspace/`](../workspace/), the
 
 ## What's here
 
-| File               | Role                                                                            |
-| ------------------ | ------------------------------------------------------------------------------- |
-| `phoebe.config.ts` | The consumer config: five required fields plus a pinned `engine.ref`.           |
-| `.env.example`     | The secrets template. Copy to `.env` and fill in `GH_TOKEN` and a provider key. |
+| File               | Role                                                                              |
+| ------------------ | --------------------------------------------------------------------------------- |
+| `phoebe.config.ts` | The five required fields, `defaultProvider: "claude"`, and a pinned `engine.ref`. |
+| `.env.example`     | The secrets template. Copy to `.env` and fill in `GH_TOKEN` and a provider key.   |
 
 These illustrate rather than run. Read them to see the canonical shape, then
 scaffold your own with `npx --yes phoebe-agent init`. The `acme/widget` naming is

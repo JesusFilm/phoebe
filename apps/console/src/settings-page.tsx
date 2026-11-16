@@ -132,7 +132,7 @@ export function SettingsPage({
         <h2 id="settings-updates">Updates</h2>
         <p className="muted">
           Check each workspace and install for newer agent versions: Phoebe&apos;s launcher and
-          engine, and the Cursor, Claude Code and Codex CLIs its container carries. Shortly after
+          engine, and the Claude Code, Cursor and Codex CLIs its container carries. Shortly after
           launch and every few hours, the companion asks npm and Cursor what is newest and says so
           when an install is behind, with a button to update. It never updates anything by itself.
         </p>

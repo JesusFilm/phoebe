@@ -14,6 +14,12 @@
 // `curl … | bash`, and the header comment lists all four `/data` paths. Matching
 // against comments would let someone delete the real instruction and stay green.
 //
+// The template carries one marked install block per provider, and `phoebe init`
+// keeps the ones a deployment chose (#869). The dogfood installs Claude Code
+// alone, so the Cursor and Codex blocks are asserted on the template here and
+// built by .github/workflows/provider-images.yml; the parity tests compare the
+// Claude block, the one both files carry.
+//
 // Like `vouched-file.test.ts`, this is repo governance rather than engine
 // behaviour. It lives under `src/` because test files never ship (package.json
 // `files` excludes `**/*.test.ts`) and `vp test` already covers this tree.
@@ -21,6 +27,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { PROVIDER_NAMES, type ProviderName } from "./config-schema.ts";
+import { providerBlock } from "./provider-install.ts";
 
 const repoRoot = join(import.meta.dirname, "..");
 
@@ -55,21 +63,19 @@ function instructionIndex(source: string, pattern: RegExp): number {
 }
 
 /**
- * The multi-line `RUN` that downloads, verifies, and links the provider CLI —
- * from `RUN set -eux;` through the last backslash-continued line.
+ * The instructions of one provider's marked block (src/provider-install.ts),
+ * comments out; empty when the file has no such block.
  */
-function providerInstallBlock(source: string): string {
-  const lines = instructionsOnly(source).split("\n");
-  const start = lines.findIndex((line) => line.startsWith("RUN set -eux;"));
-  if (start === -1) return "";
-  const block: string[] = [];
-  for (let i = start; i < lines.length; i += 1) {
-    const line = lines[i] ?? "";
-    block.push(line);
-    if (!line.trimEnd().endsWith("\\")) break;
-  }
-  return block.join("\n");
+function providerInstructions(source: string, provider: ProviderName): string {
+  return instructionsOnly((providerBlock(source, provider) ?? []).join("\n")).trim();
 }
+
+/** The ARG a provider's block pins its version in. */
+const VERSION_ARG: Record<ProviderName, string> = {
+  claude: "CLAUDE_CODE_VERSION",
+  cursor: "CURSOR_AGENT_VERSION",
+  codex: "CODEX_VERSION",
+};
 
 describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
   test("drops out of root into a dedicated unprivileged user", () => {
@@ -104,50 +110,18 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     expect(userIndex).toBeGreaterThan(chownIndex);
   });
 
-  test("installs the provider CLI from a pinned, checksum-verified artifact", () => {
+  test("never pipes a vendor installer into a shell", () => {
     // `curl … | bash` executes whatever the vendor serves at build time, and
-    // bakes an unrecorded version into the image. Pin the artifact and verify
-    // it instead.
-    const instructions = instructionsOnly(read(relPath));
-    expect(instructions).not.toMatch(/curl[^\n]*\|\s*(bash|sh)\b/);
-    expect(instructions).toMatch(/^ARG CURSOR_AGENT_VERSION=/m);
-    expect(instructions).toContain("sha256sum -c");
+    // bakes an unrecorded version into the image.
+    expect(instructionsOnly(read(relPath))).not.toMatch(/curl[^\n]*\|\s*(bash|sh)\b/);
   });
 
-  test("pins a checksum for every architecture it will build for", () => {
-    // The build hard-fails on a digest mismatch, so a wrong or missing arm64
-    // digest breaks the build for every Apple-silicon consumer while amd64
-    // stays green — exactly the "fails to build for every consumer" trap.
-    // Every arch the case arm names must have a digest, and vice versa.
-    const block = providerInstallBlock(read(relPath));
-    const instructions = instructionsOnly(read(relPath));
-    for (const arch of ["X64", "ARM64"]) {
-      expect(instructions).toMatch(
-        new RegExp(`^ARG CURSOR_AGENT_SHA256_${arch}=[0-9a-f]{64}$`, "m"),
-      );
-      expect(block).toContain(`CURSOR_AGENT_SHA256_${arch}`);
-    }
-  });
-
-  test("ships the vendored node 0711 (unreadable exec → non-dumpable, #61)", () => {
-    // The agent runs as the same uid 10001 as every tenant's engine child. A
-    // process that execs a binary it cannot *read* is made non-dumpable by the
-    // kernel (would_dump() in fs/exec.c) — a same-uid sibling can't read its
-    // /proc/<pid>/environ and lift another tenant's secrets. Enforced by shipping
-    // the binary root:root mode 0711 (executable, not readable by others), inside
-    // the pinned install block so it can't drift.
-    //
-    // The 0711 is on `node`, NOT on the `cursor-agent` entry point: every entry
-    // point the vendor ships is a *shell script* that execs this bundled `node`,
-    // and a shell script chmod-ed 0711 just fails to run (its interpreter can't
-    // read it — `bash: agent: Permission denied`, exit 126). `node` is the
-    // long-lived process that actually holds GH_TOKEN and the provider key
-    // (src/agent-env.ts) in its environ, so it is the one that must be
-    // non-dumpable — and every entry point funnels through it, so one chmod
-    // covers them all. Guard against a regression back onto the wrapper.
-    const block = providerInstallBlock(read(relPath));
-    expect(block).toMatch(/chmod 0711 \/opt\/cursor-agent\/node/);
-    expect(block).not.toMatch(/chmod 0711 \/opt\/cursor-agent\/cursor-agent/);
+  test("installs Claude Code from a pinned version, on PATH as `claude`", () => {
+    const block = providerInstructions(read(relPath), "claude");
+    expect(block).toMatch(/^ARG CLAUDE_CODE_VERSION=\d+\.\d+\.\d+$/m);
+    expect(block).toContain(
+      'RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"',
+    );
   });
 
   test("makes the system node non-dumpable (supervisor + engine children, #196)", () => {
@@ -161,14 +135,88 @@ describe.each(Object.entries(DOCKERFILES))("%s", (_label, relPath) => {
     const instructions = instructionsOnly(read(relPath));
     expect(instructions).toMatch(/RUN chmod 0711 "\$\(command -v node\)"/);
   });
+});
 
-  test("keeps the provider CLI on PATH as `agent` after the privilege drop", () => {
-    // The engine spawns the provider CLI by bare name and the agent child
-    // inherits only the allowlisted PATH (src/agent-env.ts), so an install
-    // location the unprivileged user cannot resolve dies with `spawn agent
-    // ENOENT` at the first work unit.
-    const instructions = instructionsOnly(read(relPath));
-    expect(instructions).toMatch(/ln -s \S+ \/usr\/local\/bin\/agent\b/);
+describe("templates/container/Dockerfile carries a pinned block per provider (#869)", () => {
+  const template = read(SCAFFOLD_DOCKERFILE);
+
+  test.each(PROVIDER_NAMES)("%s: one marked block, its version pinned", (provider) => {
+    const block = providerInstructions(template, provider);
+    expect(block).not.toBe("");
+    expect(block).toMatch(new RegExp(`^ARG ${VERSION_ARG[provider]}=[0-9][0-9A-Za-z.-]*$`, "m"));
+    expect(block).toContain(`\${${VERSION_ARG[provider]}}`);
+  });
+
+  test("the blocks sit before the privilege drop, where npm and /usr/local are root's", () => {
+    const userIndex = instructionIndex(template, /^USER phoebe$/);
+    for (const provider of PROVIDER_NAMES) {
+      const argIndex = instructionIndex(template, new RegExp(`^ARG ${VERSION_ARG[provider]}=`));
+      expect(argIndex, provider).toBeGreaterThan(-1);
+      expect(argIndex, provider).toBeLessThan(userIndex);
+    }
+  });
+
+  describe("cursor", () => {
+    const block = providerInstructions(template, "cursor");
+
+    test("installs from a checksum-verified artifact", () => {
+      expect(block).toContain("sha256sum -c");
+    });
+
+    test("pins a checksum for every architecture it will build for", () => {
+      // The build hard-fails on a digest mismatch, so a wrong or missing arm64
+      // digest breaks the build for every Apple-silicon consumer while amd64
+      // stays green — exactly the "fails to build for every consumer" trap.
+      // Every arch the case arm names must have a digest, and vice versa.
+      const run = block.slice(block.indexOf("RUN set -eux;"));
+      for (const arch of ["X64", "ARM64"]) {
+        expect(block).toMatch(new RegExp(`^ARG CURSOR_AGENT_SHA256_${arch}=[0-9a-f]{64}$`, "m"));
+        expect(run).toContain(`CURSOR_AGENT_SHA256_${arch}`);
+      }
+    });
+
+    test("ships the vendored node 0711 (unreadable exec → non-dumpable, #61)", () => {
+      // The agent runs as the same uid 10001 as every tenant's engine child. A
+      // process that execs a binary it cannot *read* is made non-dumpable by the
+      // kernel (would_dump() in fs/exec.c) — a same-uid sibling can't read its
+      // /proc/<pid>/environ and lift another tenant's secrets.
+      //
+      // The 0711 is on `node`, NOT on the `cursor-agent` entry point: every entry
+      // point the vendor ships is a *shell script* that execs this bundled `node`,
+      // and a shell script chmod-ed 0711 just fails to run (its interpreter can't
+      // read it — `bash: agent: Permission denied`, exit 126). Guard against a
+      // regression back onto the wrapper.
+      expect(block).toMatch(/chmod 0711 \/opt\/cursor-agent\/node/);
+      expect(block).not.toMatch(/chmod 0711 \/opt\/cursor-agent\/cursor-agent/);
+    });
+
+    test("puts the CLI on PATH as `agent`", () => {
+      // The engine spawns the provider CLI by bare name and the agent child
+      // inherits only the allowlisted PATH (src/agent-env.ts), so an install
+      // location the unprivileged user cannot resolve dies with `spawn agent
+      // ENOENT` at the first work unit.
+      expect(block).toMatch(/ln -s \S+ \/usr\/local\/bin\/agent\b/);
+    });
+  });
+
+  test("codex: its native binary ships 0711, and the build fails if it is not found (#61)", () => {
+    const block = providerInstructions(template, "codex");
+    expect(block).toContain('npm install -g "@openai/codex@${CODEX_VERSION}"');
+    expect(block).toContain('test -n "$codex_bin"');
+    expect(block).toContain("chmod 0711 $codex_bin");
+  });
+});
+
+describe(".phoebe/container/Dockerfile installs Claude Code alone (#869)", () => {
+  test("no Cursor and no Codex: this repo runs claude", () => {
+    const dogfood = read(DOGFOOD_DOCKERFILE);
+    const instructions = instructionsOnly(dogfood);
+    expect(instructions).not.toMatch(
+      /CURSOR_AGENT|downloads\.cursor\.com|\/usr\/local\/bin\/agent/,
+    );
+    expect(instructions).not.toMatch(/CODEX_VERSION|@openai\/codex/);
+    expect(providerBlock(dogfood, "cursor")).toBeNull();
+    expect(providerBlock(dogfood, "codex")).toBeNull();
   });
 });
 
@@ -232,28 +280,13 @@ describe(".phoebe/container/Dockerfile keeps the pnpm a unit runs out of its rea
 });
 
 describe("the two Dockerfiles stay in step", () => {
-  const pinArgs = (source: string) =>
-    instructionsOnly(source)
-      .split("\n")
-      .filter((line) => line.startsWith("ARG CURSOR_AGENT_"));
-
-  test("identical provider CLI pins", () => {
+  test("byte-identical Claude Code block", () => {
     // Bumping the pin in one file and not the other would silently give the
-    // dogfood a different agent than every consumer runs.
-    const scaffold = pinArgs(read(SCAFFOLD_DOCKERFILE));
-    const dogfood = pinArgs(read(DOGFOOD_DOCKERFILE));
-    expect(scaffold.length).toBeGreaterThan(0);
-    expect(dogfood).toEqual(scaffold);
-  });
-
-  test("byte-identical provider CLI install block", () => {
-    // The pins alone are not enough: the download URL, the extract flags, the
-    // install prefix, and the symlink targets can all drift while the three ARG
-    // values still match. This is the file whose whole premise is that a fix
-    // landing in only one copy is not a fix, so compare the work, not just the
-    // constants.
-    const scaffold = providerInstallBlock(read(SCAFFOLD_DOCKERFILE));
-    const dogfood = providerInstallBlock(read(DOGFOOD_DOCKERFILE));
+    // dogfood a different agent than every consumer who picks claude runs, and
+    // the install line can drift while the pin still matches. Compare the work,
+    // not just the constant.
+    const scaffold = providerInstructions(read(SCAFFOLD_DOCKERFILE), "claude");
+    const dogfood = providerInstructions(read(DOGFOOD_DOCKERFILE), "claude");
     expect(scaffold).not.toBe("");
     expect(dogfood).toBe(scaffold);
   });

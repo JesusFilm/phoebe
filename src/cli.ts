@@ -23,13 +23,15 @@
 // (#527 §3) — not a public API, and not a second way to run the engine.
 
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { matchConfigFlag, matchPipelineFlag } from "./cli-flags.ts";
 import {
   deprecatedPipelineAliases,
+  PROVIDER_NAMES,
   resolveConfig,
   type PhoebeUserConfig,
+  type ProviderName,
 } from "./config-schema.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import {
@@ -40,6 +42,13 @@ import {
   type CrashReporter,
 } from "./crash-reporter.ts";
 import { promptReportingConsent } from "./reporting-consent.ts";
+import {
+  DEFAULT_INIT_PROVIDERS,
+  defaultProviderFor,
+  parseProviders,
+  promptProviders,
+  providerForImage,
+} from "./provider-install.ts";
 import { formatInitReport, runInit, type InitProfile } from "./init.ts";
 import { formatInitTenantRegistrationAdviceForRoot } from "./init-tenant-advice.ts";
 import { governingConfigFor } from "../bootstrap/tenants.ts";
@@ -159,6 +168,11 @@ export type ParsedInitArgs = {
   withPrompts: boolean;
   /** Tenant profile: deployment root for workspace registration advice (default cwd). */
   rootDir?: string;
+  /**
+   * Solo/workspace: the agent CLIs the image installs (`--providers claude,cursor`,
+   * #869). Absent means ask on a TTY, else {@link DEFAULT_INIT_PROVIDERS}.
+   */
+  providers?: ProviderName[];
 };
 
 /**
@@ -182,11 +196,22 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
   let repoUrl: string | undefined;
   let withPrompts = false;
   let rootDir: string | undefined;
+  let providers: ProviderName[] | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
       help = true;
+      continue;
+    }
+    if (arg === "--providers" || arg.startsWith("--providers=")) {
+      const value = arg === "--providers" ? argv[++i] : arg.slice("--providers=".length);
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        throw new Error(
+          `\`--providers\` requires a list, such as \`--providers claude,cursor\` (any of ${PROVIDER_NAMES.join(", ")}).`,
+        );
+      }
+      providers = parseProviders(value);
       continue;
     }
     if (arg === "--solo" || arg === "--workspace" || arg === "--tenant") {
@@ -247,6 +272,12 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
       `\`--slug\`, \`--url\`, \`--with-prompts\`, and \`--root\` are only valid with \`phoebe init --tenant\`.`,
     );
   }
+  if (providers !== undefined && profile === "tenant") {
+    throw new Error(
+      "`--providers` is not valid with `phoebe init --tenant`: a tenant has no image. " +
+        "The workspace root's container/Dockerfile installs the providers.",
+    );
+  }
 
   return {
     targetDir: targetDir ?? ".",
@@ -256,14 +287,17 @@ export function parseInitArgs(argv: readonly string[]): ParsedInitArgs {
     ...(repoUrl !== undefined ? { repoUrl } : {}),
     withPrompts,
     ...(rootDir !== undefined ? { rootDir } : {}),
+    ...(providers !== undefined ? { providers } : {}),
   };
 }
 
 const HELP_TEXT = `phoebe — software factory for GitHub repositories
 
 Usage:
-  phoebe init [--solo] [dir]       Scaffold a solo single-tenant deployment
-  phoebe init --workspace [dir]    Scaffold a workspace root (multi-child)
+  phoebe init [--solo] [--providers <list>] [dir]
+                                   Scaffold a solo single-tenant deployment
+  phoebe init --workspace [--providers <list>] [dir]
+                                   Scaffold a workspace root (multi-child)
   phoebe init --tenant [dir]       Scaffold a workspace child in-tree install
   phoebe status [--json] [--check] [--verbose]
                                    What the deployment is doing, from its report
@@ -304,6 +338,8 @@ const INIT_HELP_TEXT = `phoebe init — scaffold a consumer-owned runtime
 Usage:
   phoebe init [--solo] [dir]        Solo single-tenant deployment (default)
   phoebe init --workspace [dir]     Workspace root (engine + workspace block)
+              [--providers claude,cursor,codex]
+                                    Solo and workspace: the agent CLIs the image installs
   phoebe init --tenant [dir]        Workspace child in-tree install
                                     [--slug owner/repo] [--url <git-url>]
                                     [--root <workspace-root>] [--with-prompts]
@@ -339,6 +375,13 @@ Profiles (mutually exclusive; default is solo):
 
     Prefills repoSlug/repoUrl from the child's \`origin\` remote; --slug/--url win.
     Absent origin → placeholder slug/url the operator fills. Re-run refuses if config exists.
+
+Providers (solo and workspace):
+  --providers <list>           Any of claude, cursor, codex, comma-separated. The
+                               Dockerfile installs those, each pinned, and no others.
+                               Without the flag init asks on a terminal, and installs
+                               claude when there is no terminal to ask on. A solo
+                               config names claude when it is chosen, else the first.
 
 Solo/workspace: existing files are left untouched. Tenant: refuses to overwrite.
 `;
@@ -457,6 +500,18 @@ export function assertNotConfigPointer(
   );
 }
 
+/** The provider the workspace root's image runs, read off its Dockerfile; null when there is none to read. */
+function rootImageProvider(rootDir: string): ProviderName | null {
+  try {
+    // A Dockerfile scaffolded before the markers existed installs Cursor alone.
+    return (
+      providerForImage(readFileSync(join(rootDir, "container", "Dockerfile"), "utf8")) ?? "cursor"
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** The crash reporter for the config under cwd, or the silent one (#474). */
 async function reporterForCwd(): Promise<CrashReporter> {
   try {
@@ -507,6 +562,10 @@ export async function runCli(): Promise<void> {
       return;
     }
     if (parsed.profile === "tenant") {
+      const rootDir = parsed.rootDir ?? process.cwd();
+      // The tenant runs on the workspace root's image (#869), so it names a
+      // provider that image installs. No readable root Dockerfile: the default.
+      const defaultProvider = rootImageProvider(rootDir);
       const result = runInit({
         targetDir: parsed.targetDir,
         profile: "tenant",
@@ -514,9 +573,9 @@ export async function runCli(): Promise<void> {
           ...(parsed.repoSlug !== undefined ? { repoSlug: parsed.repoSlug } : {}),
           ...(parsed.repoUrl !== undefined ? { repoUrl: parsed.repoUrl } : {}),
           withPrompts: parsed.withPrompts,
+          ...(defaultProvider !== null ? { defaultProvider } : {}),
         },
       });
-      const rootDir = parsed.rootDir ?? process.cwd();
       const registrationAdvice = await formatInitTenantRegistrationAdviceForRoot({
         rootDir,
         tenantDir: result.targetDir,
@@ -541,6 +600,9 @@ export async function runCli(): Promise<void> {
     // Non-TTY writes `false`. A refusal such as "config already exists" is a
     // skip in the report, not a throw, so it is never reported.
     const consent = (await promptReportingConsent()) ?? false;
+    // The second question (#869): which agent CLIs the image installs. The
+    // flag answers it without a terminal; with neither, the default.
+    const providers = parsed.providers ?? (await promptProviders()) ?? [...DEFAULT_INIT_PROVIDERS];
     const reporter = createCrashReporter({
       reporting: { maintainers: consent },
       context: {
@@ -556,8 +618,20 @@ export async function runCli(): Promise<void> {
         targetDir: parsed.targetDir,
         profile: parsed.profile,
         reportingMaintainers: consent,
+        providers,
       });
-      process.stdout.write(formatInitReport(report, parsed.targetDir));
+      // Said only when this run wrote the Dockerfile: a re-run that kept an
+      // existing one installed nothing it was asked for.
+      const wroteImage = report.created.includes("container/Dockerfile");
+      process.stdout.write(
+        formatInitReport(report, parsed.targetDir) +
+          (!wroteImage
+            ? ""
+            : `  providers: ${providers.join(", ")}` +
+              (parsed.profile === "workspace"
+                ? " (each tenant names its own defaultProvider)\n"
+                : ` (defaultProvider: ${defaultProviderFor(providers)})\n`)),
+      );
     } catch (error) {
       await reporter.report({ phase: "init", level: "error", error });
       throw error;

@@ -406,16 +406,50 @@ See [`work-kinds.md`](work-kinds.md).
 
 | Field             | Default                                                                          | Meaning                                                                                                                                                                                                                                                                                                                     |
 | ----------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultProvider` | `"cursor"`                                                                       | Which agent CLI to drive: `cursor`, `claude`, or `codex`.                                                                                                                                                                                                                                                                   |
-| `defaultModels`   | `{ cursor: "composer-2.5", claude: "claude-sonnet-5-5", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                      |
+| `defaultProvider` | `"claude"`                                                                       | Which agent CLI to drive: `claude`, `cursor`, or `codex`. The image has to install it; see [Adding a provider after init](#adding-a-provider-after-init).                                                                                                                                                                   |
+| `defaultModels`   | `{ claude: "claude-sonnet-5-5", cursor: "composer-2.5", codex: "gpt-5.4-mini" }` | Per-provider model. Merged key-by-key.                                                                                                                                                                                                                                                                                      |
 | `defaultEfforts`  | `{}`                                                                             | Per-provider reasoning effort, merged key-by-key. Only `claude` honours it today (`--effort`, one of `low`, `medium`, `high`, `xhigh`, `max`); `cursor` and `codex` ignore it. A provider left unset gets **no** effort flag, so its CLI default stands.                                                                    |
-| `providerEnv`     | `{ cursor: "CURSOR_API_KEY", claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                             |
+| `providerEnv`     | `{ claude: "ANTHROPIC_API_KEY", cursor: "CURSOR_API_KEY", codex: "OPENAI_KEY" }` | Env var holding each provider's API key. This is the only key the agent child inherits for the active provider.                                                                                                                                                                                                             |
 | `workKinds`       | `{}`                                                                             | **Deprecated alias** for [`pipelines.work.kinds`](#pipelines); still honoured. Per-work-kind overrides, e.g. `{ reviews: { provider: "claude", model: "claude-haiku-4-5", effort: "low" } }`. Keys are the work kinds — a built-in name is a tuning block, any other name declares a tenant-authored kind, described below. |
 
 `PHOEBE_DEFAULT_PROVIDER` (permanent alias `PHOEBE_AGENT`), `PHOEBE_MODEL`, and
 `PHOEBE_EFFORT` set the same three leaves for one run, without editing the
 config. `model` and `effort` are the config fields those two names address:
 `defaultModels` and `defaultEfforts` are the per-provider floor under them.
+
+The default became `claude` in 0.17.0. Before that it was
+`cursor`, and a config that never named a provider ran Cursor. `phoebe upgrade`
+writes `defaultProvider: "cursor"` into such a config, so the deployment keeps
+the agent its image installs. If you move `engine.ref` by hand instead, run
+`phoebe migrate` to make the same edit, or set `defaultProvider` yourself.
+
+### Adding a provider after init
+
+The engine spawns the provider's CLI by name (`claude`, `agent` for Cursor,
+`codex`), so a provider runs only if `container/Dockerfile` installs it.
+`phoebe init` writes an install block for each provider you chose
+(`--providers`, or its question on a terminal) and none for the others.
+
+To add one later:
+
+1. Copy its block into `container/Dockerfile`. The shipped template
+   (`templates/container/Dockerfile` in the `phoebe-agent` package) carries
+   all three, each between a `# phoebe:provider <name>` line and a
+   `# phoebe:end-provider <name>` line. Put it beside the blocks you have,
+   before `USER phoebe`: the install runs as root. Each block pins its
+   version, and Cursor's also pins a sha256 per architecture. Another way to get
+   the block is to scaffold into a scratch directory with
+   `npx phoebe-agent init --providers <name> /tmp/scratch` and copy it from there.
+   The companion's AI harness section does the copy for you when you press
+   **Add**.
+2. Name it in the config: `defaultProvider`, or `provider` on one kind's
+   block. Put its key in `.env` (the `providerEnv` row above).
+3. Rebuild the image: `phoebe start --build`.
+
+To drop a provider, delete its whole block, including the
+`# phoebe:provider <name>` and `# phoebe:end-provider <name>` lines, then rebuild.
+A block that keeps its markers but loses its install lines still counts as an
+installed provider.
 
 ### Per-work-kind overrides
 
@@ -1235,7 +1269,7 @@ bootstrapper-only setting never reaches an engine child.
 | `PHOEBE_PR_SCOPE`                         | `prScope`                        | engine       | `phoebe` \| `all`. The array form is file-only. Per kind: `PHOEBE_<KIND>_PR_SCOPE`, same two values.                     |
 | `PHOEBE_DRAFT_PRS`                        | `draftPrs`                       | engine       | `skip-non-phoebe` \| `skip-all` \| `include`.                                                                            |
 | `PHOEBE_FEATURE_BRANCH_CATCH_UP`          | `featureBranchCatchUp`           | engine       | `true` \| `false`.                                                                                                       |
-| `PHOEBE_DEFAULT_PROVIDER`                 | `defaultProvider`                | engine       | `cursor` \| `claude` \| `codex`. Per kind: `PHOEBE_<KIND>_PROVIDER`.                                                     |
+| `PHOEBE_DEFAULT_PROVIDER`                 | `defaultProvider`                | engine       | `claude` \| `cursor` \| `codex`. Per kind: `PHOEBE_<KIND>_PROVIDER`.                                                     |
 | `PHOEBE_MODEL`                            | `model`                          | engine       | For the active provider. Per kind: `PHOEBE_<KIND>_MODEL`.                                                                |
 | `PHOEBE_EFFORT`                           | `effort`                         | engine       | For the active provider; only `claude` honours it. Per kind: `PHOEBE_<KIND>_EFFORT`.                                     |
 | `PHOEBE_RUN_TIMEOUT_MS`                   | `runTimeoutMs`                   | engine       | Default 2700000 (45 min). Per kind: `PHOEBE_<KIND>_RUN_TIMEOUT_MS`.                                                      |

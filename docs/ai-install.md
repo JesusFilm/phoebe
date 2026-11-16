@@ -17,29 +17,38 @@ top to bottom. It assumes no `vp` on the target side.
   **Workflows: Read and write** included),
   or a GitHub App installation token for multi-repo deployments
   ([`github-app-mode.md`](github-app-mode.md)).
-- An API key for whichever agent provider you plan to use
-  (`ANTHROPIC_API_KEY`, `CURSOR_API_KEY`, or `OPENAI_KEY`).
+- An API key for the agent provider you plan to use. The default is Claude
+  Code (`ANTHROPIC_API_KEY`, or a subscription token: see
+  [`claude-subscription-auth.md`](claude-subscription-auth.md)); Cursor takes
+  `CURSOR_API_KEY` and Codex `OPENAI_KEY`.
 
 ## 1. Scaffold the runtime
 
 From the root of the repo that Phoebe will work:
 
 ```
-npx --yes phoebe-agent init
+npx --yes phoebe-agent init --providers claude
 ```
+
+`--providers` names the agent CLIs the image installs: any of `claude`,
+`cursor`, `codex`, comma-separated. The image gets a pinned install for each
+and none for the others, and the config's `defaultProvider` names `claude` if
+you chose it, otherwise the first one listed. Without the flag, `init` asks on a
+terminal and installs `claude` when there is no terminal to ask on.
 
 That drops these files into place. Re-running is safe, because existing files are
 skipped:
 
 - `phoebe.config.ts`, the consumer config. Edit `repoSlug`, `repoUrl`, and the
-  three toolchain commands.
+  three toolchain commands. `defaultProvider` is already set to match the image.
 - `prompts/`, copies of the shipped agent prompts. Edit any of them to
   override; leave them as-is to use the defaults.
 - `.env.example`, which you copy to `.env` and fill in with secrets.
 - `.gitignore`, with Phoebe entries appended rather than replacing what is there.
 - `container/Dockerfile`, `container/compose.yml`,
   `container/compose.local.yml`, the runtime image and its compose files.
-  Consumer-owned; commit them.
+  Consumer-owned; commit them. To add a provider later, see
+  [configuration.md](configuration.md#adding-a-provider-after-init).
 
 Point `phoebe init` at a subdirectory when you want the runtime out of the
 repo root:
@@ -61,6 +70,7 @@ const config: PhoebeUserConfig = {
   installCommand: "npm ci",
   checkCommand: "npm run check",
   testCommand: "npm test",
+  defaultProvider: "claude",
   engine: { source: "github", ref: "v0.7.1" },
 };
 

@@ -23,7 +23,10 @@ import { derivePaths } from "./paths.ts";
 // lives beside the registry in src/work-kinds/.
 import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
 
-export const PROVIDER_NAMES = ["cursor", "claude", "codex"] as const;
+// Claude first: it is the default provider (#869), and every list of the three
+// (an error message, the settings enum, `phoebe init`'s question) reads in this
+// order.
+export const PROVIDER_NAMES = ["claude", "cursor", "codex"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 // The closed work-kind set. Owned here (rather than by the orchestrator, which
@@ -1149,10 +1152,14 @@ export const CONFIG_DEFAULTS = {
     research: DEFAULT_PROMPT_FILE_BY_KIND.research,
   } satisfies PromptFilesConfig,
   workOrder: ["conflicts", "checks", "reviews", "issues", "research"] as readonly string[],
-  defaultProvider: "cursor" as ProviderName,
+  // Claude since #869. A deployment that predates the change and never named a
+  // provider ran Cursor by default; `phoebe upgrade` writes
+  // `defaultProvider: "cursor"` into its config so it keeps doing so
+  // (src/migrations/m007-keep-cursor-provider.ts).
+  defaultProvider: "claude" as ProviderName,
   defaultModels: {
-    cursor: "composer-2.5",
     claude: "claude-sonnet-5-5",
+    cursor: "composer-2.5",
     codex: "gpt-5.4-mini",
   } satisfies Record<ProviderName, string>,
   // Empty on purpose: no effort flag is passed unless a consumer asks for one,

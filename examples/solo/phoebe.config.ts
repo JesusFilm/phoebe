@@ -12,7 +12,8 @@
 //     resolve from the container mount, so a real config must never rely on one —
 //     see docs/configuration.md. (`defineConfig` is the host-only alternative;
 //     the examples model the container-safe form.)
-//   • The five required fields plus one representative optional field (`engine`,
+//   • The five required fields plus two representative optional fields
+//     (`defaultProvider`, which `phoebe init` always writes, and `engine`,
 //     which pins the engine version) are shown here; every other field is
 //     optional and filled from the shipped defaults. See docs/configuration.md
 //     for the full reference.
@@ -27,7 +28,11 @@ const config: PhoebeUserConfig = {
   checkCommand: "npm run check",
   testCommand: "npm test",
 
-  // --- Representative optional field. ---
+  // --- Representative optional fields. ---
+  // The agent that does the work. `claude` is the default; `phoebe init` writes
+  // it out anyway, naming a provider its container/Dockerfile installs.
+  defaultProvider: "claude",
+
   // Pin which engine version `phoebe boot` checks out. Omit ⇒ github/main
   // (bleeding edge); a real deployment should pin a released tag. This is a
   // bootstrapper-only field — the engine never reads it, and resolveConfig

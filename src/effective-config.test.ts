@@ -167,7 +167,7 @@ describe("a kind's leaves", () => {
 
   test("a kind with no block inherits from the tenant leaf, and names the path", () => {
     const leaf = leafAt(compute({}).fields, "pipelines.work.kinds.reviews.model");
-    expect(leaf).toMatchObject({ source: "inherited", via: "model", value: "composer-2.5" });
+    expect(leaf).toMatchObject({ source: "inherited", via: "model", value: "claude-sonnet-5-5" });
   });
 
   test("a kind's own block beats the tenant leaf and shadows it", () => {

@@ -18,7 +18,7 @@
 // them.
 
 import { spawn } from "node:child_process";
-import { accessSync } from "node:fs";
+import { accessSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -99,7 +99,7 @@ import {
 } from "../../../src/deployment-compose.ts";
 import { findTailscaleCli, parseTailscaleStatus } from "../../../src/tailscale-serve.ts";
 import { CHECK_EVERY_MS, createCompanionUpdates, type UpdaterControls } from "./updates.ts";
-import { createDispatchVerb } from "./verb-dispatch.ts";
+import { createDispatchVerb, packageRoot } from "./verb-dispatch.ts";
 import { createVerbRuns } from "./verb-runs.ts";
 import {
   applicationMenuTemplate,
@@ -217,6 +217,10 @@ const harness = createHarness({
     const wsl = wslLocationOf(dir);
     return wsl === null ? defaultCommandRunner : wslRunner(wsl, defaultCommandRunner);
   },
+  // Adding a harness copies its block out of the template `phoebe init` uses,
+  // which a packaged app carries beside its executable.
+  template: () =>
+    readFileSync(path.join(packageRoot(), "templates", "container", "Dockerfile"), "utf8"),
 });
 
 /**
