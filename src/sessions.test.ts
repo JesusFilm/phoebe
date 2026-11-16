@@ -86,7 +86,7 @@ describe("in the container", () => {
         ask: async (_nonce, content) => {
           asks.push(content);
           // The bootstrapper carried it out.
-          store.revoke(row.id);
+          store.revoke(row.id, new Date(T0));
           return { kind: "ok", detail: "1" };
         },
       },

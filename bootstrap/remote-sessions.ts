@@ -89,9 +89,9 @@ export type Sessions = {
   /** One row by id, or null. */
   byId: (id: string) => SessionRow | null;
   /** Revoke by id. True when a row went. */
-  revoke: (id: string) => boolean;
+  revoke: (id: string, now: Date) => boolean;
   /** Revoke every row. How many went. */
-  revokeAll: () => number;
+  revokeAll: (now: Date) => number;
   /** The report's two numbers. */
   counts: (now: Date) => { active: number; expired: number };
   /** The file differs from what this process last wrote. */
@@ -249,18 +249,18 @@ export function createSessions(dataBase: string, deps: SessionsDeps = {}): Sessi
       return record === undefined ? null : publicOf(record);
     },
 
-    revoke(id) {
+    revoke(id, now) {
       const file = read();
       const keep = file.sessions.filter((row) => row.id !== id);
       if (keep.length === file.sessions.length) return false;
-      write({ sessions: keep }, new Date());
+      write({ sessions: keep }, now);
       return true;
     },
 
-    revokeAll() {
+    revokeAll(now) {
       const file = read();
       const count = file.sessions.length;
-      write({ sessions: [] }, new Date());
+      write({ sessions: [] }, now);
       return count;
     },
 
