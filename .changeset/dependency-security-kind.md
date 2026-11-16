@@ -1,5 +1,0 @@
----
-"phoebe-agent": minor
----
-
-Add the `dependency-security` catalog kind, the hourly detector for severe dependency advisories. Declare it with `path: "phoebe-agent/kinds/dependency-security"`. It runs the native and agent sources by default, and its native pass skips deps.dev. It reads the rows, one OSV batch and the package managers' audits. Every advisory at or above `minSeverity` (default `high`) is filed, one issue per package. With a fix released, the issue targets that fix exactly and carries `dependencies`, `security` and the `phoebe:dependencies` routing label. With no fix yet, it is a tracking issue with `dependencies` and `security` only. The pass that finds a fix rewrites the tracking issue and adds the routing label. Each row says whether the package is direct or transitive, and a transitive one is fixed with a parent bump or a package-manager override. Candidates gain an optional `via` field naming the direct dependencies a package is reached through. The pnpm, npm and yarn classic rows fill it from their audits' paths. The `dependencies` prompt now explains how to handle a transitive row.
