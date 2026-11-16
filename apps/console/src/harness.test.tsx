@@ -170,8 +170,8 @@ describe("the rows a page draws", () => {
     const rows = harnessRows(null, event(), users);
 
     // Codex is neither installed nor run by anyone, so it is not a row.
-    expect(rows.map((row) => row.harness)).toEqual(["cursor", "claude"]);
-    expect(rows[1]).toMatchObject({
+    expect(rows.map((row) => row.harness)).toEqual(["claude", "cursor"]);
+    expect(rows[0]).toMatchObject({
       label: "Claude Code",
       pin: { kind: "pinned", version: "2.1.228" },
       running: null,
@@ -182,14 +182,14 @@ describe("the rows a page draws", () => {
   test("a check's facts replace them", () => {
     const rows = harnessRows(report(), event(), users);
 
-    expect(rows[1]).toMatchObject({ running: "2.1.228", latest: "2.1.287", behind: false });
+    expect(rows[0]).toMatchObject({ running: "2.1.228", latest: "2.1.287", behind: false });
   });
 
   test("a harness somebody runs is listed even when nothing installs it", () => {
     const rows = harnessRows(null, event({ kind: "absent" }), users);
 
-    expect(rows[1]).toMatchObject({ harness: "claude", pin: { kind: "absent" } });
-    expect(harnessStanding(rows[1]!)).toEqual({ text: "missing", tone: "fail" });
+    expect(rows[0]).toMatchObject({ harness: "claude", pin: { kind: "absent" } });
+    expect(harnessStanding(rows[0]!)).toEqual({ text: "missing", tone: "fail" });
   });
 
   test("a tenant's page narrows to the one it runs", () => {
@@ -199,7 +199,7 @@ describe("the rows a page draws", () => {
   });
 
   test("says the pin, what the container has, and the latest, leaving out what is unknown", () => {
-    const [cursor, claude] = harnessRows(report(), event(), users);
+    const [claude, cursor] = harnessRows(report(), event(), users);
 
     expect(harnessReading(claude!, true)).toBe(
       "pinned to 2.1.287 · the container has 2.1.228 · latest 2.1.287",
@@ -343,12 +343,12 @@ describe("the section on screen", () => {
   test("the install's page lists every harness there is, so one can be added", () => {
     const all = harnessRows(null, event(), users, null, true);
 
-    expect(all.map((row) => row.harness)).toEqual(["cursor", "claude", "codex"]);
+    expect(all.map((row) => row.harness)).toEqual(["claude", "cursor", "codex"]);
     expect(all[2]).toMatchObject({ pin: { kind: "absent" }, usedBy: [] });
     // Nobody runs Codex and nothing installs it, so without the ask it is not a row.
     expect(harnessRows(null, event(), users).map((row) => row.harness)).toEqual([
-      "cursor",
       "claude",
+      "cursor",
     ]);
   });
 

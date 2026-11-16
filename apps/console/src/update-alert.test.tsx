@@ -112,6 +112,8 @@ const LAUNCHER: AvailableUpdate = { kind: "launcher", from: "0.13.2", to: "0.14.
 describe("what an install could move to", () => {
   test("is each installed harness the newest version has passed, from where it is now", () => {
     expect(availableUpdates(solo, event(), report())).toEqual([
+      // Nothing pinned, so where it is now is what the container has.
+      CLAUDE,
       {
         kind: "harness",
         harness: "cursor",
@@ -119,8 +121,6 @@ describe("what an install could move to", () => {
         from: "2026.07.23-e383d2b",
         to: "2026.10.01-e373342",
       },
-      // Nothing pinned, so where it is now is what the container has.
-      CLAUDE,
     ]);
   });
 
@@ -161,8 +161,8 @@ describe("what an install could move to", () => {
     expect(updateArrow(CLAUDE)).toBe("Claude Code 2.1.269 → 2.1.288");
     expect(updateArrow({ ...CLAUDE, from: null })).toBe("Claude Code 2.1.288");
     expect(updateArrow(LAUNCHER)).toBe("Phoebe launcher 0.13.2 → 0.14.1");
-    expect(updatesReading(updates)).toBe("Cursor agent 2026.10.01-e373342 and Claude Code 2.1.288");
-    expect(updatesSignature(updates)).toBe("cursor@2026.10.01-e373342,claude@2.1.288");
+    expect(updatesReading(updates)).toBe("Claude Code 2.1.288 and Cursor agent 2026.10.01-e373342");
+    expect(updatesSignature(updates)).toBe("claude@2.1.288,cursor@2026.10.01-e373342");
   });
 });
 
@@ -372,20 +372,20 @@ describe("taking the updates", () => {
     );
 
     expect(harnessUpdates.map((call) => call.update)).toEqual([
-      { harness: "cursor", version: "2026.10.01-e373342" },
       { harness: "claude", version: "2.1.288" },
+      { harness: "cursor", version: "2026.10.01-e373342" },
     ]);
-    expect(harnessApplies.map((call) => call.harness)).toEqual(["cursor", "claude"]);
+    expect(harnessApplies.map((call) => call.harness)).toEqual(["claude", "cursor"]);
     expect(stages).toEqual([
-      "pinning Cursor agent 2026.10.01-e373342",
-      "putting Cursor agent 2026.10.01-e373342 into the running container",
       "pinning Claude Code 2.1.288",
       "putting Claude Code 2.1.288 into the running container",
+      "pinning Cursor agent 2026.10.01-e373342",
+      "putting Cursor agent 2026.10.01-e373342 into the running container",
     ]);
     // It ends on a fresh check, without asking the network again.
     expect(harnessChecks).toEqual([{ dir: "/repos/one", lookUp: false }]);
     expect(takenReading(results, true)).toBe(
-      "Cursor agent 2026.10.01-e373342 and Claude Code 2.1.288 are pinned in the Dockerfile and in the running container. " +
+      "Claude Code 2.1.288 and Cursor agent 2026.10.01-e373342 are pinned in the Dockerfile and in the running container. " +
         "A unit in flight finishes on the version it started with, and the next one starts on the new.",
     );
   });
