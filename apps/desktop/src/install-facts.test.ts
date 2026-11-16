@@ -327,8 +327,8 @@ describe("what the folder says with no container", () => {
     });
 
     expect(facts.harnessPins).toEqual([
-      { harness: "cursor", pin: { kind: "absent" } },
       { harness: "claude", pin: { kind: "pinned", version: "2.1.228" } },
+      { harness: "cursor", pin: { kind: "absent" } },
       { harness: "codex", pin: { kind: "absent" } },
     ]);
     // No Dockerfile is no field, which is how a page knows not to draw the section.
