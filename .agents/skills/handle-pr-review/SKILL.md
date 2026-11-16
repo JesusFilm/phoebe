@@ -18,7 +18,7 @@ Fetch PR review comments, triage them (fix, challenge, or skip), apply holistic 
 
 ## Repository
 
-Default owner/repo is **`JesusFilm/youtube-studio`**. Infer from `git remote -v` when run inside a clone (`gh` does this automatically for most commands). Use the base repo's `owner`/`name` in GraphQL and REST API calls (works across forks).
+Infer owner/repo from `git remote -v` (`gh` does this automatically for most commands). Use the base repo's `owner`/`name` in GraphQL and REST API calls (works across forks).
 
 ---
 
@@ -84,7 +84,7 @@ gh api graphql -f query='
         }
       }
     }
-  }' -f owner=JesusFilm -f repo=youtube-studio -F pr=NUMBER
+  }' -f owner=OWNER -f repo=REPO -F pr=NUMBER
 ```
 
 **Post-fetch processing:**
@@ -156,7 +156,7 @@ the autonomous cycle completes.
 
 ## 4. Analyse holistically before changing code
 
-**Critical: do not fix comments one-by-one in isolation.**
+Plan the fixes as one set before changing any code.
 
 - Read all files touched by "Fix" threads. Understand the broader context.
 - Identify dependencies between comments (e.g. a rename in file A affects an import in file B).
@@ -177,9 +177,7 @@ vp run -r test    # tests in all packages (dependency order)
 vp run ready      # full gate before considering work done
 ```
 
-Target a single package when appropriate: `vp run resonance#test`, `vp test path/to/file.test.ts`.
-
-If changes touch YouTube Data API v3 or Analytics/Reporting code, invoke `/youtube-compliance` and confirm the diff honours `.github/instructions/*.instructions.md`.
+Target a single test file when appropriate: `vp test path/to/file.test.ts`.
 
 ### Commit discipline
 
@@ -236,14 +234,14 @@ If `viewerCanResolve` was `false` for a thread, note it in the summary and move 
 For each "Challenge" thread, reply inline using the **numeric database ID** (`databaseId` from step 2):
 
 ```bash
-gh api repos/JesusFilm/youtube-studio/pulls/PR/comments/DATABASE_ID/replies \
+gh api repos/OWNER/REPO/pulls/PR/comments/DATABASE_ID/replies \
   -f body="Your reply here"
 ```
 
 If the thread is a top-level review comment (not an inline diff comment), fall back to:
 
 ```bash
-gh api repos/JesusFilm/youtube-studio/issues/PR/comments -f body="Your reply here"
+gh api repos/OWNER/REPO/issues/PR/comments -f body="Your reply here"
 ```
 
 ## 10. Post summary comment
