@@ -15,7 +15,7 @@
 # What ships in this image:
 #   * Node.js 24 + git + GitHub CLI (`gh`) — the runtime the engine drives.
 #   * A globally installed `{{CLI_BIN}}` (the bootstrapper).
-#   * Your agent provider's CLI.
+#   * The CLI of each agent provider chosen at `phoebe init`, each pinned.
 #   * A pinned `renovate`, which the dependency kinds run in dry-run as one of
 #     their sources. It is built in the stage below.
 #
@@ -110,45 +110,57 @@ RUN npm install -g {{CLI_BIN}}@${PHOEBE_AGENT_VERSION}
 COPY --from=renovate-build /usr/local/lib/node_modules/renovate /usr/local/lib/node_modules/renovate
 RUN ln -s ../lib/node_modules/renovate/dist/renovate.js /usr/local/bin/renovate
 
-# Provider agent CLI. The engine spawns the selected provider's CLI as a child
-# (`agent` for cursor, `claude`, or `codex`), so the one matching your
-# `defaultProvider` / `PHOEBE_AGENT` must be on PATH — otherwise the run dies
-# with `spawn <cli> ENOENT`. Default below installs Cursor. Swap or add the
-# commented lines for the provider you actually run.
+# Provider agent CLIs. The engine spawns the selected provider's CLI as a child
+# (`claude`, `agent` for cursor, or `codex`), so the one matching your
+# `defaultProvider` / `PHOEBE_AGENT` must be on PATH, or the run dies with
+# `spawn <cli> ENOENT`. `phoebe init` wrote a block below for each provider you
+# chose (`--providers`, or its question on a terminal) and none for the rest.
+# To add one later, copy its block from the shipped template; see
+# docs/configuration.md → "Adding a provider after init".
+#
+# The `# phoebe:provider` and `# phoebe:end-provider` lines mark each block for
+# `phoebe init` and the companion, which add and remove whole blocks between
+# them. Keep them if you want those tools to manage the block.
+#
+# Every block pins its version. An unpinned `npm install -g`, or a vendor's
+# `curl … | bash` installer, bakes whatever was newest at build time into the
+# image, so two builds of the same Dockerfile can differ and neither records
+# which agent it got.
+#
+# Each lands in /usr/local, which is already on PATH for every user, so the
+# agent child resolves its command after the privilege drop with no PATH edit,
+# and no root-owned home directory leaks into its env (src/agent-env.ts
+# forwards PATH and HOME to the agent verbatim).
+
+# phoebe:provider claude
+# Claude Code, which the "claude" provider spawns as `claude`. npm resolves the
+# tarball through the registry with an integrity hash from the lock metadata,
+# so there is no separate digest to carry here: the version pin is the whole
+# control. It runs on the image's own node, which the `chmod` further down
+# makes execute-only.
+#
+# The pin is also a floor set by the model: the CLI refuses a model released
+# after it ("Claude Code <v> does not support this model"). Move it in the
+# same change as a model bump in phoebe.config.ts.
+ARG CLAUDE_CODE_VERSION=2.1.287
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+# phoebe:end-provider claude
+
+# phoebe:provider cursor
+# Cursor's agent CLI, which the "cursor" provider spawns as `agent`.
 #
 # This is deliberately NOT the `curl https://cursor.com/install | bash` one-liner
-# Cursor documents. That pipes whatever the vendor serves at build time straight
-# into a shell, so two builds of the same Dockerfile can produce different
-# images and neither records which agent it got. Cursor publishes no checksums
-# and no `latest` indirection, but its installer does resolve to a plain
-# versioned artifact, which is what we pin to. The digests below are ours,
-# computed on 2026-11-15 by fetching both architectures' tarballs from the URL
-# below — they pin the build, they are not a vendor attestation.
+# Cursor documents. Cursor publishes no checksums and no `latest` indirection,
+# but its installer does resolve to a plain versioned artifact, which is what we
+# pin to. The digests below are ours, computed on 2026-11-15 by fetching both
+# architectures' tarballs from the URL below — they pin the build, they are not
+# a vendor attestation.
 #
 # To bump: run the vendor installer once and read the version out of the
 # DOWNLOAD_URL it echoes, then `sha256sum` the linux/x64 *and* linux/arm64
 # tarballs. Both, even if you only build one — an unchecked digest for the other
 # arch turns into a hard build failure the day someone builds on it.
-ARG CURSOR_AGENT_VERSION=2026.11.13-eacade1
-ARG CURSOR_AGENT_SHA256_X64=c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f
-ARG CURSOR_AGENT_SHA256_ARM64=e4ba0611045a24d1cf78f021d34c19461680fc7234c19c1f981f1cc169f70cdc
-# Set by BuildKit; the fallback keeps the classic builder working.
-ARG TARGETARCH
-RUN set -eux; \
-    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-      amd64) cursor_arch=x64;   cursor_sha="${CURSOR_AGENT_SHA256_X64}" ;; \
-      arm64) cursor_arch=arm64; cursor_sha="${CURSOR_AGENT_SHA256_ARM64}" ;; \
-      *) echo "cursor-agent publishes no build for ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/cursor-agent.tar.gz \
-      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz"; \
-    echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
-    mkdir -p /opt/cursor-agent; \
-    tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
-    chmod 0711 /opt/cursor-agent/node; \
-    rm /tmp/cursor-agent.tar.gz; \
-    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
-    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
+#
 # Both symlink names on purpose: the engine spawns `agent`, but the vendor
 # installer we replaced also created `cursor-agent`, and Cursor's own docs use
 # that name. Dropping it would make this a silent behaviour regression for
@@ -169,29 +181,53 @@ RUN set -eux; \
 # /proc/<pid>/environ and lift the keyring. One chmod covers all three entry
 # points, since they funnel through this same `node`. Execute-only ELFs run
 # fine (the loader maps the image; the readable .node addons load normally).
-#
-# The installer would have put these in ~/.local/bin and needed a PATH entry
-# pointing into a home directory. /usr/local/bin is already on PATH for every
-# user, so the agent child resolves `agent` after the privilege drop with no
-# PATH edit — and no root-owned home directory leaks into its env
-# (src/agent-env.ts forwards PATH and HOME to the agent verbatim).
-#
-# Swapping providers? Pin these too — an unpinned `npm install -g` has the same
-# problem as the installer pipe above, just with a lockfile-shaped hole instead
-# of a shell-shaped one. Check the registry for the current version:
-# Claude Code:  RUN npm install -g @anthropic-ai/claude-code@<version>
-# Codex:        RUN npm install -g @openai/codex@<version>
+ARG CURSOR_AGENT_VERSION=2026.11.13-eacade1
+ARG CURSOR_AGENT_SHA256_X64=c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f
+ARG CURSOR_AGENT_SHA256_ARM64=e4ba0611045a24d1cf78f021d34c19461680fc7234c19c1f981f1cc169f70cdc
+# Set by BuildKit; the fallback keeps the classic builder working.
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+      amd64) cursor_arch=x64;   cursor_sha="${CURSOR_AGENT_SHA256_X64}" ;; \
+      arm64) cursor_arch=arm64; cursor_sha="${CURSOR_AGENT_SHA256_ARM64}" ;; \
+      *) echo "cursor-agent publishes no build for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/cursor-agent.tar.gz \
+      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz"; \
+    echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/cursor-agent; \
+    tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \
+    chmod 0711 /opt/cursor-agent/node; \
+    rm /tmp/cursor-agent.tar.gz; \
+    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
+    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
+# phoebe:end-provider cursor
 
-# The system node — used by the supervisor (`phoebe boot`) and every engine
-# child — is made execute-only, mirroring `chmod 0711 …/node` in the block
-# above. Cursor ships its own vendored `node` (protected there); the supervisor
-# and engine children run on this image node. Those long-lived processes hold
-# the deployment GH_TOKEN and any provider key. Making this binary non-readable
-# to others (root-owned 0711) causes the kernel to make each exec non-dumpable
+# phoebe:provider codex
+# Codex, which the "codex" provider spawns as `codex`. Pinned like Claude Code;
+# npm's integrity hash covers the tarball. The package is a small node launcher,
+# and the agent itself is a native binary npm pulls in as a platform package.
+# That binary is the long-lived process holding GH_TOKEN and the provider key,
+# so it is made execute-only for the same reason as Cursor's `node` (#61): a
+# same-uid sibling tenant cannot read its /proc/<pid>/environ. The `test` fails
+# the build if a release moves the binary somewhere this `find` misses.
+ARG CODEX_VERSION=0.169.0
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
+ && codex_bin="$(find "$(npm root -g)/@openai/codex" -path '*/vendor/*/bin/codex' -type f)" \
+ && test -n "$codex_bin" \
+ && chmod 0711 $codex_bin
+# phoebe:end-provider codex
+
+# The system node — used by the supervisor (`phoebe boot`), every engine child,
+# and the Claude Code and Codex launchers — is made execute-only, like Cursor's
+# vendored `node` in its block above. Those long-lived processes hold the
+# deployment GH_TOKEN and any provider key. Making this binary non-readable to
+# others (root-owned 0711) causes the kernel to make each exec non-dumpable
 # (the unreadable-binary path in fs/exec.c, not AT_SECURE) — a same-uid sibling
-# cannot read /proc/<pid>/environ to lift those secrets. Execute-only ELFs load fine; the
-# shebang shims (`npm`) are read by the *kernel*, not by node. Together the two
-# chmods cover every Phoebe process in the image.
+# cannot read /proc/<pid>/environ to lift those secrets. Execute-only ELFs load
+# fine; the shebang shims (`npm`, `claude`, `codex`) are read by the *kernel*,
+# not by node. Together with the provider blocks' own chmods this covers every
+# Phoebe process in the image.
 RUN chmod 0711 "$(command -v node)"
 
 # Consumer install command, kept as an ARG so it lands in the image metadata

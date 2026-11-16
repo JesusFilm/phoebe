@@ -133,6 +133,20 @@ describe("renderTenantConfig", () => {
     expect(src).toContain('installCommand: "pnpm i"');
     expect(src).not.toMatch(/\bengine\s*:/); // no engine field — engine source is shared
   });
+
+  test("names claude by default, or the provider it is given (#869)", () => {
+    const fields = {
+      repoSlug: "acme/widget",
+      repoUrl: "https://github.com/acme/widget.git",
+      installCommand: "npm ci",
+      checkCommand: "npm run check",
+      testCommand: "npm test",
+    };
+    expect(renderTenantConfig(fields)).toContain('defaultProvider: "claude",');
+    expect(renderTenantConfig({ ...fields, defaultProvider: "cursor" })).toContain(
+      'defaultProvider: "cursor",',
+    );
+  });
 });
 
 describe("listTenants", () => {

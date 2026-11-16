@@ -1,0 +1,86 @@
+name: provider-images
+
+# Builds the image `phoebe init` scaffolds once per provider, and checks that
+# the provider's command runs in it as the unprivileged user (#869).
+#
+# The template carries an install block per provider, and init keeps only the
+# ones a deployment picks. The dogfood image (dogfood-image.yml) installs
+# Claude Code alone, and src/container-image.test.ts reads the Dockerfiles as
+# text, so this job is the only build the Cursor and Codex blocks get. A pin
+# whose tarball moved, a digest that no longer matches, or a release that put
+# Codex's native binary somewhere else fails here instead of on a consumer's
+# first `phoebe start --build`.
+#
+# Path-filtered to what decides those blocks: the template, the code that
+# picks and writes them, the CLI that runs init, and this workflow.
+
+on:
+  pull_request:
+    paths:
+      - "templates/container/Dockerfile"
+      - "src/init.ts"
+      - "src/provider-install.ts"
+      - "src/cli.ts"
+      - "bootstrap/cli.ts"
+      - ".github/workflows/provider-images.yml"
+
+# Least privilege: this job only reads the repo.
+permissions:
+  contents: read
+
+# A new push to a branch cancels its in-flight run.
+concurrency:
+  group: provider-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      # One provider's broken block should not hide another's.
+      fail-fast: false
+      matrix:
+        include:
+          - provider: claude
+            command: claude
+          - provider: cursor
+            command: agent
+          - provider: codex
+            command: codex
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          cache: true
+
+      - run: vp install --frozen-lockfile --ignore-scripts
+
+      # The scaffold a consumer gets from `phoebe init --providers <one>`, run
+      # from this checkout so the template under review is the one built. The
+      # image installs the bootstrapper this package.json names from npm, which
+      # is the release the PR builds on.
+      - name: Scaffold with ${{ matrix.provider }} alone
+        run: node bootstrap/cli.ts init --providers "${{ matrix.provider }}" "$RUNNER_TEMP/scaffold" </dev/null
+
+      - name: Build the scaffolded image
+        run: docker build --tag "phoebe-${{ matrix.provider }}:ci" "$RUNNER_TEMP/scaffold/container"
+
+      # As the image's own user, after the privilege drop, the way the engine
+      # spawns it. `--entrypoint sh` skips `phoebe boot`, which wants a config.
+      # A command the scaffold left out (any other provider's) must be absent,
+      # so the image carries the chosen provider and no others.
+      - name: Check `${{ matrix.command }}` runs, and the others are absent
+        run: |
+          docker run --rm --entrypoint sh "phoebe-${{ matrix.provider }}:ci" -euc '
+            echo "user: $(id -un) ($(id -u))"
+            command -v "$1"
+            "$1" --version
+            for other in claude agent codex; do
+              [ "$other" = "$1" ] && continue
+              if command -v "$other" >/dev/null 2>&1; then
+                echo "$other is on PATH, but the scaffold installs $1 alone" >&2
+                exit 1
+              fi
+            done
+          ' sh "${{ matrix.command }}"

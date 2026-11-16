@@ -169,6 +169,20 @@ describe("assertNotConfigPointer (#663)", () => {
 });
 
 describe("parseInitArgs", () => {
+  test("--providers answers init's provider question without a terminal (#869)", () => {
+    expect(parseInitArgs(["--providers", "cursor,claude", "./x"]).providers).toEqual([
+      "cursor",
+      "claude",
+    ]);
+    expect(parseInitArgs(["--workspace", "--providers=codex"]).providers).toEqual(["codex"]);
+    expect(parseInitArgs([]).providers).toBeUndefined();
+    expect(() => parseInitArgs(["--providers", "gemini"])).toThrow(/Unknown provider "gemini"/);
+    expect(() => parseInitArgs(["--providers"])).toThrow(/requires a list/);
+    expect(() => parseInitArgs(["--tenant", "--providers", "claude"])).toThrow(
+      /a tenant has no image/,
+    );
+  });
+
   test("defaults to current directory and solo profile when no args given", () => {
     expect(parseInitArgs([])).toEqual({
       targetDir: ".",

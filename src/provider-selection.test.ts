@@ -47,7 +47,7 @@ describe("with no overrides anywhere", () => {
   });
 
   test("a configured default effort is picked up", () => {
-    const config = selectionConfig({ defaultEfforts: { cursor: "high" } });
+    const config = selectionConfig({ defaultEfforts: { claude: "high" } });
     const picked = selectProviderForKind({ kind: "checks", env: {}, config });
     expect(picked.effort).toBe("high");
   });
@@ -373,12 +373,12 @@ describe("definition-level defaults (#303)", () => {
     const config = selectionConfig();
     const picked = selectProviderForKind({
       kind: "my-kind",
-      env: { PHOEBE_AGENT: "claude" },
+      env: { PHOEBE_AGENT: "cursor" },
       config,
-      definitionDefaults: { model: "cursor-specific-model" },
+      definitionDefaults: { model: "claude-specific-model" },
     });
-    expect(picked.provider).toBe("claude");
-    expect(picked.model).toBe(config.defaultModels.claude);
+    expect(picked.provider).toBe("cursor");
+    expect(picked.model).toBe(config.defaultModels.cursor);
   });
 });
 

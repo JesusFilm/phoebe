@@ -109,7 +109,7 @@ export const SETTING_COPY: Readonly<Record<string, SettingCopy>> = {
   // ── the agent
   defaultProvider: {
     label: "Provider",
-    description: "Which agent CLI does the work: cursor, claude or codex.",
+    description: "Which agent CLI does the work: claude (the default), cursor or codex.",
   },
   model: {
     label: "Model",

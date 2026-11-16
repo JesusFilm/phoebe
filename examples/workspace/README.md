@@ -36,6 +36,11 @@ workspace/
     .env.example
 ```
 
+The two children run different agents, so the deployment root's image has to
+install both CLIs: `phoebe init --workspace --providers claude,cursor`. A child
+names its own `defaultProvider`; `claude` is the default for one that names
+none.
+
 The `workspace` block on the root config selects workspace mode. Its `depth`
 field, default 1, is how many levels down the bootstrapper walks looking for a
 child `phoebe.config.ts`. You add or remove a child by placing or removing a

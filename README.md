@@ -148,7 +148,7 @@ export default config;
 | `researchLabel`   | `wayfinder:research`                     | Label marking wayfinder research tickets.       |
 | `prOptOutLabel`   | `ready-for-human`                        | Label that hands a PR back to a human.          |
 | `workOrder`       | conflicts→checks→reviews→issues→research | Order the work kinds are tried.                 |
-| `defaultProvider` | `cursor`                                 | Agent CLI to drive (`cursor`/`claude`/`codex`). |
+| `defaultProvider` | `claude`                                 | Agent CLI to drive (`claude`/`cursor`/`codex`). |
 
 See [`docs/configuration.md`](docs/configuration.md) for the complete field
 reference and the `PHOEBE_*` environment overlay.

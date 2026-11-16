@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { CommandRunner } from "../../../src/deployment-compose.ts";
+import { providerBlock } from "../../../src/provider-install.ts";
 import {
   createHarness,
   cursorDigestsOf,
@@ -25,6 +27,12 @@ import {
   removeHarness,
   rewriteHarnessPin,
 } from "./harness.ts";
+
+/** The shipped template, which an add copies a provider's block out of (#869). */
+const SHIPPED = readFileSync(
+  path.join(import.meta.dirname, "..", "..", "..", "templates", "container", "Dockerfile"),
+  "utf8",
+);
 
 /** The parts of a scaffolded Dockerfile this reads, with Cursor as the template pins it. */
 const TEMPLATE = [
@@ -214,19 +222,20 @@ describe("pinning a harness", () => {
     if (out.ok) expect(out.content).toContain("RUN npm install -g @openai/codex@0.160.0\n");
   });
 
-  test("adds one the Dockerfile lacks beside the global install already there", () => {
-    const out = rewriteHarnessPin(TEMPLATE, "claude", "2.1.287");
+  test("adds one the Dockerfile lacks as the template's block, beside the global install already there", () => {
+    const out = rewriteHarnessPin(TEMPLATE, "claude", "2.1.287", undefined, SHIPPED);
 
     expect(out).toMatchObject({ ok: true, from: null });
     if (!out.ok) return;
     const lines = out.content.split("\n");
     const at = lines.indexOf("RUN npm install -g phoebe-agent@${PHOEBE_AGENT_VERSION}");
-    expect(lines.slice(at + 1, at + 5)).toEqual([
-      "",
-      '# The CLI the "claude" provider spawns. Pinned, so a rebuild gets the same one.',
-      "ARG CLAUDE_CODE_VERSION=2.1.287",
-      'RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"',
-    ]);
+    expect(lines.slice(at + 1, at + 3)).toEqual(["", "# phoebe:provider claude"]);
+    // The block `phoebe init --providers claude` writes, at the version asked for.
+    expect(providerBlock(out.content, "claude")).toEqual(
+      providerBlock(SHIPPED, "claude")!.map((line) =>
+        line.startsWith("ARG CLAUDE_CODE_VERSION=") ? "ARG CLAUDE_CODE_VERSION=2.1.287" : line,
+      ),
+    );
     // Ahead of the point the image takes the unprivileged user's HOME.
     expect(out.content.indexOf("claude-code@$")).toBeLessThan(out.content.indexOf("ENV HOME="));
     expect(readHarnessPins(out.content).claude).toEqual({ kind: "pinned", version: "2.1.287" });
@@ -237,24 +246,34 @@ describe("pinning a harness", () => {
       "FROM node:24\n# Drop privileges.\nUSER phoebe\n",
       "codex",
       "0.160.0",
+      undefined,
+      SHIPPED,
     );
 
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.content.split("\n").slice(1, 6)).toEqual([
-      '# The CLI the "codex" provider spawns. Pinned, so a rebuild gets the same one.',
-      "ARG CODEX_VERSION=0.160.0",
-      'RUN npm install -g "@openai/codex@${CODEX_VERSION}"',
-      "",
-      "# Drop privileges.",
-    ]);
+    const lines = out.content.split("\n");
+    expect(lines[1]).toBe("# phoebe:provider codex");
+    const drop = lines.indexOf("# Drop privileges.");
+    expect(lines.slice(drop - 2, drop)).toEqual(["# phoebe:end-provider codex", ""]);
+    expect(out.content).toContain("ARG CODEX_VERSION=0.160.0\n");
   });
 
-  test("a Dockerfile with nowhere to put it is refused with the lines to add", () => {
-    const out = rewriteHarnessPin("FROM node:24\n", "codex", "0.160.0");
+  test("a Dockerfile with nowhere to put it is refused with where to get the block", () => {
+    const out = rewriteHarnessPin("FROM node:24\n", "codex", "0.160.0", undefined, SHIPPED);
 
     expect(out).toMatchObject({ ok: false });
-    if (!out.ok) expect(out.instruction).toContain("ARG CODEX_VERSION=0.160.0");
+    if (!out.ok) {
+      expect(out.instruction).toContain("phoebe init --providers codex");
+      expect(out.instruction).toContain("CODEX_VERSION=0.160.0");
+    }
+  });
+
+  test("without the template there is no block to add, and the refusal says where to get one", () => {
+    const out = rewriteHarnessPin(TEMPLATE, "claude", "2.1.287");
+
+    expect(out).toMatchObject({ ok: false });
+    if (!out.ok) expect(out.instruction).toContain("phoebe init --providers claude");
   });
 
   test("Cursor's version and both digests move together", () => {
@@ -283,7 +302,7 @@ describe("pinning a harness", () => {
 
   test("keeps the file's line endings", () => {
     const crlf = TEMPLATE.replace(/\n/g, "\r\n");
-    const out = rewriteHarnessPin(crlf, "claude", "2.1.287");
+    const out = rewriteHarnessPin(crlf, "claude", "2.1.287", undefined, SHIPPED);
 
     expect(out.ok && !/[^\r]\n/.test(out.content)).toBe(true);
   });
@@ -301,10 +320,13 @@ describe("adding Cursor where there is none, and taking a harness out", () => {
   ].join("\n");
 
   test("Cursor is added as the scaffold's whole block, digests and all", () => {
-    const out = rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342", {
-      x64: "1111",
-      arm64: "2222",
-    });
+    const out = rewriteHarnessPin(
+      BARE,
+      "cursor",
+      "2026.10.01-e373342",
+      { x64: "1111", arm64: "2222" },
+      SHIPPED,
+    );
 
     expect(out).toMatchObject({ ok: true, from: null });
     if (!out.ok) return;
@@ -321,11 +343,13 @@ describe("adding Cursor where there is none, and taking a harness out", () => {
     // Before the image drops to its user.
     expect(out.content.indexOf("cursor-agent")).toBeLessThan(out.content.indexOf("USER phoebe"));
     // And without its digests it cannot be added at all.
-    expect(rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342")).toMatchObject({ ok: false });
+    expect(
+      rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342", undefined, SHIPPED),
+    ).toMatchObject({ ok: false });
   });
 
   test("an npm harness this file added comes out whole, leaving the file as it was", () => {
-    const added = rewriteHarnessPin(BARE, "claude", "2.1.292");
+    const added = rewriteHarnessPin(BARE, "claude", "2.1.292", undefined, SHIPPED);
     if (!added.ok) throw new Error("not added");
 
     const removed = removeHarness(added.content, "claude");
@@ -334,7 +358,13 @@ describe("adding Cursor where there is none, and taking a harness out", () => {
   });
 
   test("Cursor this file added comes out whole too", () => {
-    const added = rewriteHarnessPin(BARE, "cursor", "2026.10.01-e373342", { x64: "1", arm64: "2" });
+    const added = rewriteHarnessPin(
+      BARE,
+      "cursor",
+      "2026.10.01-e373342",
+      { x64: "1", arm64: "2" },
+      SHIPPED,
+    );
     if (!added.ok) throw new Error("not added");
 
     const removed = removeHarness(added.content, "cursor");
@@ -355,6 +385,16 @@ describe("adding Cursor where there is none, and taking a harness out", () => {
     // Everything else is where it was.
     expect(removed.content).toContain("RUN npm install -g phoebe-agent@${PHOEBE_AGENT_VERSION}");
     expect(removed.content).toContain("USER phoebe");
+  });
+
+  test("a marked block comes out whole, the Codex launcher's chmod with it", () => {
+    const removed = removeHarness(SHIPPED, "codex");
+
+    expect(removed.ok).toBe(true);
+    if (!removed.ok) return;
+    expect(providerBlock(removed.content, "codex")).toBeNull();
+    expect(removed.content).not.toContain("codex_bin");
+    expect(providerBlock(removed.content, "claude")).toEqual(providerBlock(SHIPPED, "claude"));
   });
 
   test("a package on a line with others comes off the line, and the line stays", () => {
@@ -581,16 +621,16 @@ describe("the check and the update", () => {
     });
     expect(report.harnesses).toEqual([
       {
-        harness: "cursor",
-        pin: { kind: "pinned", version: "2026.07.23-e383d2b" },
-        running: "2026.07.23-e383d2b",
+        harness: "claude",
+        pin: { kind: "pinned", version: "2.1.228" },
+        running: "2.1.228",
         latest: null,
         behind: null,
       },
       {
-        harness: "claude",
-        pin: { kind: "pinned", version: "2.1.228" },
-        running: "2.1.228",
+        harness: "cursor",
+        pin: { kind: "pinned", version: "2026.07.23-e383d2b" },
+        running: "2026.07.23-e383d2b",
         latest: null,
         behind: null,
       },
@@ -691,8 +731,8 @@ describe("the check and the update", () => {
     });
     expect(after.launcher.latest).toBe("0.14.1");
     expect(looked.harnesses.map((row) => [row.latest, row.behind])).toEqual([
-      ["2026.10.01-e373342", true],
       ["2.1.287", true],
+      ["2026.10.01-e373342", true],
       // Not installed, so there is nothing to be behind with.
       ["0.160.0", null],
     ]);
@@ -708,7 +748,7 @@ describe("the check and the update", () => {
 
     const report = await harness.check({ dir: DIR, running: true, lookUp: true });
 
-    expect(report.harnesses[1]).toMatchObject({
+    expect(report.harnesses.find((row) => row.harness === "claude")).toMatchObject({
       pin: { kind: "unpinned" },
       running: "2.1.228",
       behind: true,

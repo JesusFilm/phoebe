@@ -24,21 +24,27 @@ loop, work-kind logic, git model, and providers.
 ## `phoebe init`, scaffold a consumer-owned runtime
 
 ```
-npx --yes phoebe-agent init            # into the current directory
-npx --yes phoebe-agent init ./phoebe   # into a subdirectory
+npx --yes phoebe-agent init                            # into the current directory
+npx --yes phoebe-agent init ./phoebe                   # into a subdirectory
+npx --yes phoebe-agent init --providers claude,cursor  # install both agent CLIs
 ```
+
+On a terminal `init` asks two questions: whether Phoebe's own crash reports go
+to the maintainers, and which agent CLIs the image installs (any of `claude`,
+`cursor`, `codex`; `claude` if you just press Enter). `--providers` answers
+the second without a terminal, and with neither `init` installs `claude`.
 
 It writes these files. All of them are consumer-owned, so commit them:
 
-| File                          | Purpose                                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `phoebe.config.ts`            | Consumer config starter. Edit the five required fields.                                                       |
-| `prompts/`                    | Copies of the shipped agent prompts. Edit to override; leave as-is to use defaults.                           |
-| `.env.example`                | Documented env vars. Copy to `.env` and fill secrets.                                                         |
-| `.gitignore`                  | Phoebe entries **appended additively** (existing content untouched).                                          |
-| `container/Dockerfile`        | Runtime image: Node 24 + git + `gh` + the `phoebe-agent` bootstrapper, run as the unprivileged `phoebe` user. |
-| `container/compose.yml`       | The long-lived `phoebe boot` container + named volumes.                                                       |
-| `container/compose.local.yml` | Dev-only overlay: run an engine checkout from your own machine.                                               |
+| File                          | Purpose                                                                                                         |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `phoebe.config.ts`            | Consumer config starter. Edit the five required fields. `defaultProvider` names a provider the image installs.  |
+| `prompts/`                    | Copies of the shipped agent prompts. Edit to override; leave as-is to use defaults.                             |
+| `.env.example`                | Documented env vars. Copy to `.env` and fill secrets.                                                           |
+| `.gitignore`                  | Phoebe entries **appended additively** (existing content untouched).                                            |
+| `container/Dockerfile`        | Runtime image: Node 24 + git + `gh` + the `phoebe-agent` bootstrapper + the chosen agent CLIs, run as `phoebe`. |
+| `container/compose.yml`       | The long-lived `phoebe boot` container + named volumes.                                                         |
+| `container/compose.local.yml` | Dev-only overlay: run an engine checkout from your own machine.                                                 |
 
 **Existing files are left untouched**, so re-running `init` is safe and only
 fills gaps. To regenerate one scaffolded file, delete it and re-run. Placeholder
@@ -518,6 +524,25 @@ last, only if they passed. Migrating by hand is the same work in the same order
 — run `phoebe migrate` from the new checkout, not from the engine you are
 leaving — and if you roll the pin back afterwards, roll the config back with it.
 
+#### Keeping Cursor when the default became Claude
+
+From 0.17.0 the built-in `defaultProvider` is `claude`; before, it was
+`cursor`. A config that never named a provider has been running Cursor, and its
+image installs Cursor's CLI and no other. Left alone, the new engine would spawn
+`claude` in that image and every unit would die on `spawn claude ENOENT`.
+
+So the migration writes `defaultProvider: "cursor"` into a solo or tenant config
+that names no provider, and the report says so. A config that names one, any
+one, is not touched. A config the migration cannot edit (a `...spread`, a
+computed object) is reported `manual` with the line to add by hand.
+
+To move such a deployment to Claude instead, add Claude Code's block to
+`container/Dockerfile`
+([configuration.md](configuration.md#adding-a-provider-after-init)), set
+`defaultProvider: "claude"`, and rebuild. Deleting the field is not the same
+thing: the next upgrade reads that as a config that never named a provider and
+writes `cursor` back.
+
 The end-to-end ritual for advancing a workspace deployment to a new engine version:
 
 Start from a clean workspace: stage or stash each child's pending work first, or
@@ -649,11 +674,13 @@ A few properties the templates rely on. Keep them intact when you customise:
     (`/home/phoebe`, set explicitly because the engine forwards `HOME` to the
     agent child). Bind-mounted files must be readable by _other_, because a git
     checkout's default `0644` is; a `0600` config is not.
-- **The provider CLI is pinned, not piped.** The scaffold installs Cursor's
-  agent from a pinned, `sha256`-verified tarball rather than the
-  `curl https://cursor.com/install | bash` one-liner Cursor documents, and
-  symlinks it to `/usr/local/bin/agent`, which is on `PATH` for every user, so it still
-  resolves after the privilege drop.
+- **The provider CLIs are pinned, not piped.** The scaffold has one install
+  block per provider you chose. Claude Code and Codex are npm packages pinned
+  with an `ARG`. Cursor's agent comes from a pinned, `sha256`-verified
+  tarball rather than the `curl https://cursor.com/install | bash` one-liner
+  Cursor documents, symlinked to `/usr/local/bin/agent`. Everything lands in
+  `/usr/local`, which is on `PATH` for every user, so it still resolves after
+  the privilege drop.
 
   The trade-off, since this is your file to change: piping the vendor installer
   into a shell means two builds of the same Dockerfile can produce different
@@ -663,9 +690,9 @@ A few properties the templates rely on. Keep them intact when you customise:
   **ours**, recorded from the artifact its installer fetched, and pin the
   build rather than attesting anything about the vendor. To bump: run the vendor
   installer once, read the version out of the download URL it prints, and
-  `sha256sum` the `linux/x64` and `linux/arm64` tarballs. If you switch to Claude
-  Code or Codex (the commented lines), both are npm packages, so pin with
-  `@version` there instead.
+  `sha256sum` the `linux/x64` and `linux/arm64` tarballs. Claude Code and Codex
+  move by their `ARG` alone. To add a provider after `init`, see
+  [configuration.md](configuration.md#adding-a-provider-after-init).
 
 - **`.gitignore` edits are additive.** `init` only appends; it never rewrites
   your existing ignore rules.

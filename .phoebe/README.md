@@ -65,15 +65,13 @@ one edit, made here. See
   `claude-opus-5-5` at `low` effort, authenticating with `CLAUDE_CODE_OAUTH_TOKEN`
   (a Pro/Max subscription token) rather than `ANTHROPIC_API_KEY` — see
   [`docs/claude-subscription-auth.md`](../docs/claude-subscription-auth.md).
-  The image therefore also carries a pinned `@anthropic-ai/claude-code`, and
-  makes its own `node` execute-only so the process holding that token is
-  non-dumpable — the same `#61` property the pinned Cursor block gets from
-  `chmod 0711` on Cursor's vendored `node`. The Cursor CLI stays installed, so
-  `PHOEBE_AGENT=cursor` still works without a rebuild.
+  The image installs the scaffold's pinned Claude Code block and no other
+  provider (#869), so `PHOEBE_AGENT=cursor` here needs Cursor's block added
+  and a rebuild first.
 
 **What is _not_ different:** the image hardening. The unprivileged `phoebe`
-user, the pre-owned `/data` mount points, and the pinned + checksum-verified
-provider CLI are identical to the shipped scaffold, and
+user, the pre-owned `/data` mount points, the execute-only `node`, and the
+pinned Claude Code block are identical to the shipped scaffold, and
 `src/container-image.test.ts` fails if the two Dockerfiles drift on any of them
 — a security fix that lands in only one of these files is not a fix.
 

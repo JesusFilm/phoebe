@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "../bootstrap/supervise-fleet.ts";
-import { DEFAULT_PROMPT_FILE_BY_KIND } from "./config-schema.ts";
+import {
+  DEFAULT_PROMPT_FILE_BY_KIND,
+  resolveConfig,
+  type PhoebeUserConfig,
+  type ProviderName,
+} from "./config-schema.ts";
 import {
   DEFAULT_TEMPLATE_PARAMS,
   formatInitReport,
@@ -23,6 +28,7 @@ import {
   renderTemplate,
   runInit,
 } from "./init.ts";
+import { providerBlocksIn, providerForImage } from "./provider-install.ts";
 import {
   slugFromRemoteUrl,
   TENANT_ENV_EXAMPLE,
@@ -398,6 +404,111 @@ describe("runInit", () => {
     for (const promptPath of Object.values(DEFAULT_PROMPT_FILE_BY_KIND)) {
       expect(statSync(join(target, promptPath)).isFile()).toBe(true);
     }
+  });
+});
+
+describe("runInit — the providers the image installs (#869)", () => {
+  /** The scaffold's Dockerfile and config for one choice of providers. */
+  function scaffold(providers?: readonly ProviderName[], profile: "solo" | "workspace" = "solo") {
+    const target = makeTempDir();
+    runInit({ targetDir: target, profile, ...(providers !== undefined ? { providers } : {}) });
+    return {
+      dockerfile: readFileSync(join(target, "container/Dockerfile"), "utf8"),
+      config: readFileSync(join(target, "phoebe.config.ts"), "utf8"),
+    };
+  }
+
+  /** Comment lines out: the notes name every provider, the instructions only the chosen. */
+  const instructions = (dockerfile: string) =>
+    dockerfile
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+
+  const PINS: Record<ProviderName, RegExp> = {
+    claude: /^ARG CLAUDE_CODE_VERSION=\d+\.\d+\.\d+$/m,
+    cursor: /^ARG CURSOR_AGENT_VERSION=\S+$/m,
+    codex: /^ARG CODEX_VERSION=\d+\.\d+\.\d+$/m,
+  };
+
+  test("installs claude alone by default, and the config names it", () => {
+    const { dockerfile, config } = scaffold();
+    expect(providerBlocksIn(dockerfile)).toEqual(["claude"]);
+    expect(instructions(dockerfile)).toMatch(PINS.claude);
+    expect(instructions(dockerfile)).not.toMatch(/CURSOR_AGENT|CODEX_VERSION|@openai\/codex/);
+    expect(config).toContain('defaultProvider: "claude",');
+  });
+
+  test("cursor alone: the image puts `agent` on PATH from the checksummed tarball, and the config names cursor", () => {
+    const { dockerfile, config } = scaffold(["cursor"]);
+    expect(providerBlocksIn(dockerfile)).toEqual(["cursor"]);
+    const live = instructions(dockerfile);
+    expect(live).toMatch(PINS.cursor);
+    expect(live).toMatch(/^ARG CURSOR_AGENT_SHA256_X64=[0-9a-f]{64}$/m);
+    expect(live).toMatch(/^ARG CURSOR_AGENT_SHA256_ARM64=[0-9a-f]{64}$/m);
+    expect(live).toContain("sha256sum -c");
+    expect(live).toMatch(/ln -s \S+ \/usr\/local\/bin\/agent\b/);
+    expect(live).not.toMatch(/claude-code|@openai\/codex/);
+    expect(config).toContain('defaultProvider: "cursor",');
+    expect(config).not.toContain('defaultProvider: "claude"');
+  });
+
+  test("without claude, the config names the first one chosen", () => {
+    const { dockerfile, config } = scaffold(["codex", "cursor"]);
+    expect(providerBlocksIn(dockerfile)).toEqual(["cursor", "codex"]);
+    expect(config).toContain('defaultProvider: "codex",');
+  });
+
+  test("with claude among them, the config names claude wherever it was listed", () => {
+    const { dockerfile, config } = scaffold(["cursor", "claude"]);
+    expect(providerBlocksIn(dockerfile)).toEqual(["claude", "cursor"]);
+    expect(config).toContain('defaultProvider: "claude",');
+  });
+
+  test("every block it writes pins its version", () => {
+    const { dockerfile } = scaffold(["claude", "cursor", "codex"]);
+    const live = instructions(dockerfile);
+    for (const provider of ["claude", "cursor", "codex"] as const) {
+      expect(live, provider).toMatch(PINS[provider]);
+    }
+    // No install reads a version the file does not pin.
+    expect(live).not.toMatch(
+      /npm install -g "?@(anthropic-ai\/claude-code|openai\/codex)"?(\s|$)/m,
+    );
+    expect(live).not.toMatch(/curl[^\n]*\|\s*(bash|sh)\b/);
+  });
+
+  test("the scaffolded config resolves to the provider the image installs", async () => {
+    for (const providers of [["claude"], ["cursor"], ["codex"]] as const) {
+      const target = makeTempDir();
+      runInit({ targetDir: target, providers });
+      const { default: user } = (await import(join(target, "phoebe.config.ts"))) as {
+        default: PhoebeUserConfig;
+      };
+      expect(resolveConfig(user).defaultProvider).toBe(providers[0]);
+    }
+  });
+
+  test("a workspace tenant names the provider the root's image runs", () => {
+    const root = makeTempDir();
+    runInit({ targetDir: root, profile: "workspace", providers: ["cursor"] });
+    const dockerfile = readFileSync(join(root, "container/Dockerfile"), "utf8");
+    const tenant = join(root, "widget");
+    runInit({
+      targetDir: tenant,
+      profile: "tenant",
+      tenant: { repoSlug: "acme/widget", defaultProvider: providerForImage(dockerfile)! },
+      deps: { git: () => "" },
+    });
+    expect(readFileSync(join(tenant, "phoebe.config.ts"), "utf8")).toContain(
+      'defaultProvider: "cursor",',
+    );
+  });
+
+  test("a workspace root's image is fitted too, and its config names no provider", () => {
+    const { dockerfile, config } = scaffold(["cursor"], "workspace");
+    expect(providerBlocksIn(dockerfile)).toEqual(["cursor"]);
+    expect(config).not.toContain("defaultProvider");
   });
 });
 

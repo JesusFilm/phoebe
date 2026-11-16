@@ -16,6 +16,12 @@
 // the vendor publishes no checksums. Moving that pin means computing both
 // digests, which means fetching both tarballs. That is what the template's own
 // comment tells an operator to do by hand, done here.
+//
+// Adding a harness the Dockerfile lacks copies its block out of the shipped
+// template (templates/container/Dockerfile), the same block `phoebe init`
+// keeps for a provider it was asked to install (src/provider-install.ts), with
+// its pin moved to the version asked for. Taking one out removes that block
+// whole, between its `# phoebe:provider` markers.
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -37,20 +43,21 @@ import {
   runCompose,
   type CommandRunner,
 } from "../../../src/deployment-compose.ts";
+import { providerBlock, removeProviderBlock } from "../../../src/provider-install.ts";
 import { readClaudeAuth } from "./claude-auth.ts";
 import { PHOEBE_SERVICE } from "./container-read.ts";
 import { deploymentDirOf } from "./deployment-dir.ts";
 
-/** Every harness, in the order a page lists them. */
-export const HARNESS_NAMES: readonly HarnessName[] = ["cursor", "claude", "codex"];
+/** Every harness, in the order a page lists them: claude, the default, first. */
+export const HARNESS_NAMES: readonly HarnessName[] = ["claude", "cursor", "codex"];
 
 /** What each is on disk: the command the engine spawns, and its npm package if it has one. */
 export const HARNESSES: Record<
   HarnessName,
   { command: string; package: string | null; arg: string }
 > = {
-  cursor: { command: "agent", package: null, arg: "CURSOR_AGENT_VERSION" },
   claude: { command: "claude", package: "@anthropic-ai/claude-code", arg: "CLAUDE_CODE_VERSION" },
+  cursor: { command: "agent", package: null, arg: "CURSOR_AGENT_VERSION" },
   codex: { command: "codex", package: "@openai/codex", arg: "CODEX_VERSION" },
 };
 
@@ -207,17 +214,18 @@ function insertionPoint(lines: readonly string[]): { index: number; after: boole
  * The Dockerfile with one harness pinned to `version`.
  *
  * An npm harness is rewritten where it is installed: the ARG its spec names, or
- * the spec itself, and a bare package name gains one. One the Dockerfile does
- * not install at all is added beside the global installs already there
- * ({@link insertionPoint}). Cursor's three ARGs move
- * together, and without its block there is nothing here to add: that block is
- * forty lines of the template, not a line.
+ * the spec itself, and a bare package name gains one. Cursor's three ARGs move
+ * together. One the Dockerfile does not install at all is added as its block
+ * from `template`, the shipped templates/container/Dockerfile, pinned to
+ * `version` and put beside the global installs already there
+ * ({@link insertionPoint}).
  */
 export function rewriteHarnessPin(
   content: string,
   harness: HarnessName,
   version: string,
   digests?: { x64: string; arm64: string },
+  template?: string,
 ): PinRewrite {
   const newline = content.includes("\r\n") ? "\r\n" : "\n";
   const lines = content.split(/\r?\n/);
@@ -225,26 +233,49 @@ export function rewriteHarnessPin(
   const from = before.kind === "pinned" ? before.version : null;
   const { package: pkg, arg } = HARNESSES[harness];
 
-  if (pkg === null) {
-    if (before.kind === "absent") {
-      // Not a line but the scaffold's whole block: the tarball, the digest
-      // check, the vendored node made execute-only, both command names.
-      if (digests === undefined) {
-        return { ok: false, why: "the tarball digests were not computed", instruction: null };
-      }
-      const at = insertionPoint(lines);
-      if (at === null) {
-        return {
-          ok: false,
-          why: "this Dockerfile has no global npm install or USER line to put the install beside",
-          instruction:
-            "Copy the Cursor agent block from a freshly scaffolded container/Dockerfile.",
-        };
-      }
-      const block = cursorBlock(version, digests);
-      lines.splice(at.index, 0, ...(at.after ? ["", ...block] : [...block, ""]));
-      return { ok: true, content: lines.join(newline), from };
+  if (before.kind === "absent") {
+    // Not a line but the template's whole block: for Cursor the tarball, the
+    // digest check, the vendored node made execute-only, both command names.
+    if (pkg === null && digests === undefined) {
+      return { ok: false, why: "the tarball digests were not computed", instruction: null };
     }
+    const scaffold = `Copy the ${harness} block from a container/Dockerfile scaffolded with \`phoebe init --providers ${harness}\``;
+    const block = template === undefined ? null : providerBlock(template, harness);
+    if (block === null) {
+      return {
+        ok: false,
+        why: "the shipped Dockerfile template could not be read for its block",
+        instruction: `${scaffold}, and set ${arg}=${version}.`,
+      };
+    }
+    // A template block that no longer declares the ARGs this moves would be
+    // added at the template's own version, so it is refused instead.
+    const pinned =
+      setArg(block, arg, version) &&
+      (pkg !== null ||
+        (digests !== undefined &&
+          setArg(block, CURSOR_SHA_ARGS.x64, digests.x64) &&
+          setArg(block, CURSOR_SHA_ARGS.arm64, digests.arm64)));
+    if (!pinned) {
+      return {
+        ok: false,
+        why: `the template's ${harness} block declares no ${arg} to pin`,
+        instruction: `${scaffold}, and set ${arg}=${version}.`,
+      };
+    }
+    const at = insertionPoint(lines);
+    if (at === null) {
+      return {
+        ok: false,
+        why: "this Dockerfile has no global npm install or USER line to put the install beside",
+        instruction: `${scaffold} to where the image still runs as root, and set ${arg}=${version}.`,
+      };
+    }
+    lines.splice(at.index, 0, ...(at.after ? ["", ...block] : [...block, ""]));
+    return { ok: true, content: lines.join(newline), from };
+  }
+
+  if (pkg === null) {
     if (!setArg(lines, arg, version)) {
       return {
         ok: false,
@@ -260,24 +291,6 @@ export function rewriteHarnessPin(
       setArg(lines, CURSOR_SHA_ARGS.x64, digests.x64);
       setArg(lines, CURSOR_SHA_ARGS.arm64, digests.arm64);
     }
-    return { ok: true, content: lines.join(newline), from };
-  }
-
-  if (before.kind === "absent") {
-    const install = [
-      `# The CLI the "${harness}" provider spawns. Pinned, so a rebuild gets the same one.`,
-      `ARG ${arg}=${version}`,
-      `RUN npm install -g "${pkg}@\${${arg}}"`,
-    ];
-    const at = insertionPoint(lines);
-    if (at === null) {
-      return {
-        ok: false,
-        why: "this Dockerfile has no global npm install or USER line to put the install beside",
-        instruction: `Add these two lines where the image still runs as root: ${install.slice(1).join(" / ")}`,
-      };
-    }
-    lines.splice(at.index, 0, ...(at.after ? ["", ...install] : [...install, ""]));
     return { ok: true, content: lines.join(newline), from };
   }
 
@@ -300,39 +313,6 @@ export function rewriteHarnessPin(
   return { ok: true, content: lines.join(newline), from };
 }
 
-/**
- * The scaffold's Cursor block (templates/container/Dockerfile), for a Dockerfile
- * that lacks one. The same lines, so a Dockerfile this writes reads like one
- * `phoebe init` wrote.
- */
-function cursorBlock(version: string, digests: { x64: string; arm64: string }): string[] {
-  return [
-    '# Cursor\'s agent CLI, which the "cursor" provider spawns as `agent`. A versioned',
-    "# tarball checked against a digest per architecture, as the scaffold installs it;",
-    "# the vendored node is made execute-only so a sibling tenant cannot read its",
-    "# environment. Pinned, so a rebuild gets the same one.",
-    `ARG ${HARNESSES.cursor.arg}=${version}`,
-    `ARG ${CURSOR_SHA_ARGS.x64}=${digests.x64}`,
-    `ARG ${CURSOR_SHA_ARGS.arm64}=${digests.arm64}`,
-    "ARG TARGETARCH",
-    "RUN set -eux; \\",
-    '    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \\',
-    `      amd64) cursor_arch=x64;   cursor_sha="\${${CURSOR_SHA_ARGS.x64}}" ;; \\`,
-    `      arm64) cursor_arch=arm64; cursor_sha="\${${CURSOR_SHA_ARGS.arm64}}" ;; \\`,
-    '      *) echo "cursor-agent publishes no build for ${TARGETARCH}" >&2; exit 1 ;; \\',
-    "    esac; \\",
-    "    curl -fsSL -o /tmp/cursor-agent.tar.gz \\",
-    `      "https://${CURSOR_DOWNLOADS}/lab/\${${HARNESSES.cursor.arg}}/linux/\${cursor_arch}/agent-cli-package.tar.gz"; \\`,
-    '    echo "${cursor_sha}  /tmp/cursor-agent.tar.gz" | sha256sum -c -; \\',
-    "    mkdir -p /opt/cursor-agent; \\",
-    "    tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent; \\",
-    "    chmod 0711 /opt/cursor-agent/node; \\",
-    "    rm /tmp/cursor-agent.tar.gz; \\",
-    "    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \\",
-    "    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent",
-  ];
-}
-
 /** Whether a line continues onto the next: a trailing backslash. */
 const continues = (line: string): boolean => /\\\s*$/.test(line);
 
@@ -348,7 +328,9 @@ export type Removal = { ok: true; content: string } | { ok: false; why: string }
 /**
  * The Dockerfile without one harness.
  *
- * An npm harness comes off the line that installs it. A line left installing
+ * A block between `# phoebe:provider` markers, as `phoebe init` and an add
+ * here write it, goes whole. A Dockerfile from before the markers is read line
+ * by line: an npm harness comes off the line that installs it. A line left installing
  * nothing goes, and so does the ARG only it used and the comment this file
  * wrote above it. Cursor's block goes whole: its ARGs and the RUN that fetches
  * the tarball, through its continuations. The scaffold's own comments stay;
@@ -359,6 +341,8 @@ export function removeHarness(content: string, harness: HarnessName): Removal {
   const lines = content.split(/\r?\n/);
   const before = readHarnessPins(content)[harness];
   if (before.kind === "absent") return { ok: false, why: "the Dockerfile does not install it" };
+  const marked = removeProviderBlock(content, harness);
+  if (marked !== null) return { ok: true, content: marked };
   const { package: pkg } = HARNESSES[harness];
   const gone = new Set<number>();
   // An instruction goes with the comment this file wrote above it, and with no
@@ -615,7 +599,7 @@ export function chownArgv(user: string): readonly string[] {
  * on a network before printing its version should not hold the page.
  */
 const VERSIONS_SCRIPT =
-  'for c in agent claude codex; do if command -v "$c" >/dev/null 2>&1; then ' +
+  'for c in claude agent codex; do if command -v "$c" >/dev/null 2>&1; then ' +
   'printf "%s|%s\\n" "$c" "$(timeout 20 "$c" --version 2>/dev/null | head -n 1)"; ' +
   'else printf "%s|\\n" "$c"; fi; done; ' +
   // The launcher has no flag to ask; its installed package.json says.
@@ -635,7 +619,7 @@ export const VERSIONS_ARGV: readonly string[] = [
 
 /** What the script printed, by harness. A line with no version in it is null. */
 export function parseVersions(stdout: string): Record<HarnessName, string | null> {
-  const versions: Record<HarnessName, string | null> = { cursor: null, claude: null, codex: null };
+  const versions: Record<HarnessName, string | null> = { claude: null, cursor: null, codex: null };
   for (const line of stdout.split("\n")) {
     const [command, said] = line.trim().split("|");
     const harness = HARNESS_NAMES.find((name) => HARNESSES[name].command === command);
@@ -894,7 +878,21 @@ export type HarnessDeps = {
   fetchText?: TextFetcher;
   digest?: Digester;
   now?: () => Date;
+  /**
+   * The shipped templates/container/Dockerfile, which an add copies a block
+   * out of. Main reads it from the packaged app's resources; the default reads
+   * it from this checkout.
+   */
+  template?: () => string;
 };
+
+/** The template beside this source, for a run out of a checkout. */
+function checkoutTemplate(): string {
+  return readFileSync(
+    path.join(import.meta.dirname, "..", "..", "..", "templates", "container", "Dockerfile"),
+    "utf8",
+  );
+}
 
 /** The Dockerfile of the install at `dir`, whether or not it is there. */
 export function dockerfileOf(dir: string, exists: (file: string) => boolean = existsSync): string {
@@ -917,6 +915,7 @@ export function createHarness(deps: HarnessDeps = {}) {
   const fetchText = deps.fetchText ?? defaultFetchText;
   const digest = deps.digest ?? defaultDigest;
   const now = deps.now ?? (() => new Date());
+  const template = deps.template ?? checkoutTemplate;
 
   const latest = new Map<HarnessName, string>();
   let latestLauncher: string | null = null;
@@ -1257,7 +1256,15 @@ export function createHarness(deps: HarnessDeps = {}) {
         }
       }
 
-      const rewritten = rewriteHarnessPin(content, harness, version, digests);
+      let shipped: string | undefined;
+      if (before.kind === "absent") {
+        try {
+          shipped = template();
+        } catch {
+          shipped = undefined;
+        }
+      }
+      const rewritten = rewriteHarnessPin(content, harness, version, digests, shipped);
       if (!rewritten.ok) return refused(rewritten.why, rewritten.instruction);
       try {
         write(file, rewritten.content);
