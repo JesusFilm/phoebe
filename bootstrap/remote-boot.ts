@@ -255,8 +255,8 @@ export function prepareRemote(options: PrepareRemoteOptions): PreparedRemote {
             const ask = parseRevokeAsk(content);
             if (ask === null) throw new Error("the drop file is not a revoke request");
             let count: number;
-            if (ask.all) count = store.revokeAll();
-            else count = store.revoke(ask.id) ? 1 : 0;
+            if (ask.all) count = store.revokeAll(new Date(now()));
+            else count = store.revoke(ask.id, new Date(now())) ? 1 : 0;
             if (ask.all) api?.close().catch(() => {});
             else if (count > 0) api?.closeStreams(ask.id);
             log(`[phoebe] boot: ${count} session(s) revoked by phoebe sessions (shell).`);
