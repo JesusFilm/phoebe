@@ -50,6 +50,11 @@ jobs:
       # `.ts` via Node 24 type-stripping, so `tsc` here is typecheck-only.
       - run: vp check
 
+      # Vendored skills under .agents/skills must match the computedHash that
+      # skills-lock.json pins each one to (#876). Root-only, so no `-r`.
+      - run: vp run verify-skills
+        if: ${{ !cancelled() }}
+
       - run: vp run -r lint
         if: ${{ !cancelled() }}
 

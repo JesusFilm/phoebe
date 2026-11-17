@@ -35,7 +35,9 @@ The skills under [`.agents/skills/`](.agents/skills) are vendored, not authored
 here, with one exception: `skills-lock.json` pins each vendored skill to an
 upstream ref and a content hash, and `.claude/skills` is a symlink onto that
 folder. Never edit a vendored `SKILL.md` in place — the edit fails the integrity
-check and the next bump overwrites it. Repo-local rules about how the vendored
+check (`vp run verify-skills`, part of `vp run ready`; see
+[`scripts/verify-skills.ts`](scripts/verify-skills.ts)) and the next bump
+overwrites it. Repo-local rules about how the vendored
 skills behave belong in this file instead. That is what the next section is.
 
 The exception is [`handle-pr-review`](.agents/skills/handle-pr-review/SKILL.md),
