@@ -793,7 +793,9 @@ groups the entries by `source` and works out each source's next ref:
 - **A SHA-pinned source** (no tag `ref`) moves to the newest commit on its
   branch, the default one unless the entries name another, that is at least
   `minAge` old. While every newer commit is younger, it proposes nothing. The
-  scan reads the branch's history from a treeless clone.
+  scan reads the branch's history from a treeless clone. A `ref` that is a full
+  commit SHA names no branch. The source follows the default branch, and the
+  sync moves that `ref` along with `commit`.
 
 Then it reads the PRs on the source's branch, `<branchPrefix>skill-updates/<source>`:
 

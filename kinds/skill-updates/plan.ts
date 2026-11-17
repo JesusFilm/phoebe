@@ -41,6 +41,13 @@ export function parseTag(tag: string): Semver | null {
   return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
 }
 
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i;
+
+/** Whether `ref` is a full commit SHA, which pins a source to one commit rather than naming a branch. */
+export function isCommitSha(ref: string): boolean {
+  return COMMIT_SHA_RE.test(ref);
+}
+
 export function compareSemver(a: Semver, b: Semver): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
@@ -51,7 +58,8 @@ export function compareSemver(a: Semver, b: Semver): number {
  * them: an entry the last sync could not move (removed or ambiguous upstream)
  * keeps its old ref, and must not pull the source back to a ref already merged.
  * Otherwise it follows the branch its entries name, or the default one, from
- * the commits its entries are on. A source whose every skill is ignored is
+ * the commits its entries are on. A `ref` that is a commit SHA names no branch:
+ * it is the pin itself. A source whose every skill is ignored is
  * left out.
  */
 export function groupSources(lock: SkillLock, ignore: readonly string[]): SkillSource[] {
@@ -69,7 +77,8 @@ export function groupSources(lock: SkillLock, ignore: readonly string[]): SkillS
       .map(([, e]) => e.ref)
       .filter((ref): ref is string => ref !== undefined && parseTag(ref) !== null)
       .sort((a, b) => compareSemver(parseTag(a)!, parseTag(b)!));
-    const branch = synced.map(([, e]) => e.ref).find((ref) => ref !== undefined) ?? null;
+    const branch =
+      synced.map(([, e]) => e.ref).find((ref) => ref !== undefined && !isCommitSha(ref)) ?? null;
     const pin: SourcePin =
       tags.length > 0
         ? { kind: "tag", ref: tags.at(-1)! }

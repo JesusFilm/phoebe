@@ -127,7 +127,7 @@ const V1_4_0: Record<string, string | null> = {
  * `gamma` and `delta` from it, pinned by tag or (with `pin: "commit"`) by SHA.
  */
 function fixture(
-  opts: { pin?: "tag" | "commit"; version?: number; at?: Date; localEdit?: boolean } = {},
+  opts: { pin?: "tag" | "commit" | "sha"; version?: number; at?: Date; localEdit?: boolean } = {},
 ): Fixture {
   const base = mkdtempSync(join(root, "fx-"));
   const upstream = join(base, "upstream");
@@ -146,7 +146,8 @@ function fixture(
     if (tag !== undefined) git(upstream, ["tag", tag]);
     return sha;
   };
-  const first = release(V1_3_2, opts.pin === "commit" ? undefined : "v1.3.2", opts.at);
+  const tagged = opts.pin === undefined || opts.pin === "tag";
+  const first = release(V1_3_2, tagged ? "v1.3.2" : undefined, opts.at);
 
   const seed = join(base, "seed");
   mkdirSync(seed);
@@ -161,7 +162,7 @@ function fixture(
     cpSync(join(upstream, "skills/eng", name), vendored, { recursive: true });
     skills[name] = {
       source: SOURCE,
-      ...(opts.pin === "commit" ? {} : { ref: "v1.3.2" }),
+      ...(tagged ? { ref: "v1.3.2" } : opts.pin === "sha" ? { ref: first } : {}),
       sourceType: "github",
       skillPath: `skills/eng/${name}/SKILL.md`,
       computedHash: hashSkillFolder(vendored),
@@ -586,6 +587,23 @@ describe("a SHA-pinned source", () => {
     );
     expect(lockAt(co)["alpha"]).toMatchObject({ commit: mature });
     expect(lockAt(co)["alpha"]!.ref).toBeUndefined();
+    expect(verifySkills(co).every((r) => r.status === "matching")).toBe(true);
+  });
+
+  test("a commit SHA in `ref` follows the default branch, and the ref moves with the commit", async () => {
+    const fx = fixture({ pin: "sha", at: ago(30) });
+    const mature = fx.release(
+      { "skills/eng/alpha/SKILL.md": "# alpha\nmature\n" },
+      undefined,
+      ago(5),
+    );
+    const h = harness(fx);
+
+    const ran = await h.cycle();
+    expect(h.logged.filter((l) => l.includes("scan failed"))).toEqual([]);
+    expect(ran.map((u) => [u.tag, u.to])).toEqual([[false, mature]]);
+    const co = fx.checkout(`origin/${BRANCH}`);
+    expect(lockAt(co)["alpha"]).toMatchObject({ ref: mature, commit: mature });
     expect(verifySkills(co).every((r) => r.status === "matching")).toBe(true);
   });
 
