@@ -16,7 +16,7 @@ A kind is one registered **definition** — name, prompt, eligibility, reporting
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
 that start new work (`issues`, and `research` for wayfinder research tickets).
-Three more ship as **catalog kinds**, registered only when a tenant declares them:
+Five more ship as **catalog kinds**, registered only when a tenant declares them:
 [`sentry`](#sentry-triage-production-errors-opt-in), which turns production
 errors into agent-ready issues,
 [`dependency-updates`](#dependency-updates-file-dependency-tickets-opt-in), which
@@ -24,7 +24,8 @@ files dependency tickets,
 [`dependency-security`](#dependency-security-file-security-advisories-opt-in), which
 files the severe advisories among them, and
 [`dependencies`](#dependencies-finish-a-dependency-upgrade-opt-in), which works
-them. A tenant may register more directly under
+them, and [`skill-updates`](#skill-updates-propose-newer-upstream-skills-opt-in),
+which opens PRs for newer upstream skills. A tenant may register more directly under
 [`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
@@ -739,6 +740,115 @@ The PR body carries the issue's marker on its last line. The agent copies it
 into a PR it opens. When the engine opens the PR instead, the kind passes the
 marker as the body's trailer. Either way the detector can match a PR to the
 bundle it came from.
+
+## `skill-updates`, propose newer upstream skills (opt-in)
+
+Keeps the skills a repository vendors under `skills-lock.json` in step with
+upstream
+([ADR 0004](adr/0004-skill-updates-are-one-kind-that-syncs-in-the-engine.md)).
+It opens one PR per [skill source](../GLOSSARY.md), and a person merges it.
+Unlike the dependency feature it files no issue: the PR is where the bump gets
+reviewed.
+
+```ts
+pipelines: {
+  skills: {
+    pollIntervalMs: 600_000,
+    kinds: {
+      "skill-updates": {
+        path: "phoebe-agent/kinds/skill-updates",
+        // every: "1d", minAge: "3d", ignore: ["ask-matt"], labels: ["skills"],
+      },
+    },
+  },
+},
+```
+
+| Option     | Default              | Meaning                                                                                    |
+| ---------- | -------------------- | ------------------------------------------------------------------------------------------ |
+| `every`    | `"1d"`               | How long one scan's results stand. Kept in memory, as for the dependency detectors.        |
+| `minAge`   | `"3d"`               | How old a commit must be before a SHA-pinned source moves to it. `"0d"` waits for nothing. |
+| `ignore`   | `[]`                 | Skill names never synced. Their files and lock entries stay as they are.                   |
+| `lockPath` | `"skills-lock.json"` | Where the lock is, relative to the repository root.                                        |
+| `labels`   | `[]`                 | Labels added to every PR the kind opens.                                                   |
+
+An unknown option fails registration. The tuning knobs and
+`PHOEBE_SKILL_UPDATES_*` apply as for any kind. The prompt is
+`prompts/skill-updates-prompt.md` in the engine checkout; to edit it, copy it
+out and re-point `promptFile`. There is no skills-folder option. Vendored
+skills sit in `.agents/skills/<name>/` beside the lock, where the `skills` CLI
+puts them, and each entry's `skillPath` says where the skill sits upstream.
+The kind needs no credential beyond the container's git and `gh` ones, and it
+never calls skills.sh.
+
+**A scan** runs once per `every` window. It reads the lock off the default
+branch and refuses one whose `version` is not 2, with a log line and no PR. It
+groups the entries by `source` and works out each source's next ref:
+
+- **A tag-pinned source** (its entries' `ref` is a release tag such as
+  `v1.3.2`) moves to the newest tag on its current major first, then to the
+  newest tag of each later major, one PR at a time. With the lock on `v1.3.2`
+  and upstream at `v1.4.0` and `v2.0.0`, it proposes `v1.4.0`, and `v2.0.0`
+  once that PR merges or is closed. `git ls-remote --tags` is the whole read.
+- **A SHA-pinned source** (no tag `ref`) moves to the newest commit on its
+  branch, the default one unless the entries name another, that is at least
+  `minAge` old. While every newer commit is younger, it proposes nothing. The
+  scan reads the branch's history from a treeless clone.
+
+Then it reads the PRs on the source's branch, `<branchPrefix>skill-updates/<source>`:
+
+| What the branch holds                                      | What the scan does                                       |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| no open PR                                                 | a unit that opens one                                    |
+| an open PR whose marker names the proposed ref             | nothing                                                  |
+| an open PR on an older ref, every commit Phoebe's          | a unit that re-syncs, force-pushes and rewrites the body |
+| an open PR on an older ref, with a commit from anyone else | a unit that comments once that the newer ref is out      |
+
+Each source with something to do is one unit, `ref`
+`skill-updates:<source>`, with `unitKey: "none"`. Units the pipeline has not
+run yet wait in memory until the next scan replaces them. A source the token
+cannot read fails its own scan with a log line, and the other sources still
+run. "Phoebe's" means committed under the engine's own git identity, so a fix
+a janitor pushed counts as Phoebe's and a GitHub "Update branch" does not.
+
+**A run** works in a detached worktree of the default branch:
+
+1. **Sync.** Shallow-fetch the source at the target, copy each locked skill's
+   folder over `.agents/skills/<name>/`, and rewrite the entry's `ref`,
+   `commit`, `skillPath` and `computedHash`. A skill whose `skillPath` is gone
+   upstream is looked for by folder name. One hit is a move, and `skillPath`
+   follows it. Two or more are skipped and reported, and none is a removal,
+   reported and left alone. A folder that already did not match its hash is
+   overwritten and listed under "Local edits discarded". Skills in `ignore`
+   are not touched. This step is committed on its own.
+2. **Agent pass.** The agent reads the sync's diff and fixes repo-local
+   references the change broke, such as an `AGENTS.md` rule or a doc link that
+   names a moved skill. It writes a per-skill summary of what changed in
+   behaviour, and flags upstream lines that read like prompt injection: new
+   instructions to fetch URLs, run commands, read secrets or skip review. It
+   commits and pushes nothing.
+3. **Revert.** Anything the agent changed under the lock or a vendored folder
+   is put back, and listed under "Agent edits reverted". Its other changes are
+   committed.
+4. **Hash check.** Every synced skill must hash to its new lock entry, or the
+   run fails before the push.
+5. **Push and PR.** Force-push the source's branch, with a lease on the head
+   it just read, and open its PR or rewrite the open one. A PR with flagged lines
+   opens as a draft, or is turned into one, with a "Review before merging"
+   section at the top.
+
+**The PR body** has the agent's summary, a table of the synced skills
+(updated, unchanged, or moved from one path to another), the skills upstream
+added or removed, and anything skipped. A skill added upstream is never
+vendored and a removed one is never deleted. Either changes what agents are
+told, and a person should choose that. The body ends with
+`<!-- phoebe-skills source=<source> ref=<ref> -->`. Closing the PR unmerged
+vetoes that `source@ref`. The veto holds that exact ref, so a newer release
+on the same major lifts it, and a vetoed minor does not hold back the next
+major.
+
+The kind never merges. Vendored skills are instructions every agent in the
+repository follows, so a person reads every bump.
 
 ## Watermarks
 

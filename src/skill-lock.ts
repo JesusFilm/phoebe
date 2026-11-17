@@ -59,25 +59,32 @@ export type SkillCheck =
 
 /** Read and validate `skills-lock.json` under `repoRoot`. */
 export function readSkillLock(repoRoot: string): SkillLock {
-  const path = join(repoRoot, SKILL_LOCK_FILE);
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  return parseSkillLock(readFileSync(join(repoRoot, SKILL_LOCK_FILE), "utf8"));
+}
+
+/**
+ * Validate a lock's text. `label` names it in errors: a caller reading a lock
+ * somewhere other than the repository root passes its own path.
+ */
+export function parseSkillLock(text: string, label: string = SKILL_LOCK_FILE): SkillLock {
+  const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== "object" || parsed === null) {
-    throw new Error(`${SKILL_LOCK_FILE} is not a JSON object`);
+    throw new Error(`${label} is not a JSON object`);
   }
   const { version, skills } = parsed as { version?: unknown; skills?: unknown };
   if (version !== SKILL_LOCK_VERSION) {
     throw new Error(
-      `${SKILL_LOCK_FILE} is version ${JSON.stringify(version)}, but only version ${SKILL_LOCK_VERSION} can be checked: ` +
+      `${label} is version ${JSON.stringify(version)}, but only version ${SKILL_LOCK_VERSION} can be checked: ` +
         `its hash recipe is the only one implemented, so the skills-lock module needs updating for the new one`,
     );
   }
   if (typeof skills !== "object" || skills === null) {
-    throw new Error(`${SKILL_LOCK_FILE} has no "skills" object`);
+    throw new Error(`${label} has no "skills" object`);
   }
   for (const [name, entry] of Object.entries(skills)) {
     const hash = (entry as { computedHash?: unknown } | null)?.computedHash;
     if (typeof hash !== "string") {
-      throw new Error(`${SKILL_LOCK_FILE} entry "${name}" has no computedHash`);
+      throw new Error(`${label} entry "${name}" has no computedHash`);
     }
   }
   return { version, skills: skills as Record<string, SkillLockEntry> };
