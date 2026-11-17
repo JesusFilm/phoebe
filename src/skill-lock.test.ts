@@ -46,6 +46,16 @@ describe("hashSkillFolder", () => {
     );
   });
 
+  test("hashes a backslash in a file name as a slash, as upstream does", () => {
+    // On POSIX `docs\b.md` is one file at the top of the folder, but upstream
+    // turns every backslash into `/` before sorting and hashing.
+    const dir = folder({ "SKILL.md": "a\nb", "docs\\b.md": "x\n" });
+
+    expect(hashSkillFolder(dir)).toBe(
+      "74db92866203e95de5c6b37059af6376fbc4c5c89898e2563d08c0a2191e2f26",
+    );
+  });
+
   test("folds CRLF to LF and hashes the folded length", () => {
     expect(hashSkillFolder(folder({ "SKILL.md": "a\r\nb" }))).toBe(A_NEWLINE_B);
   });

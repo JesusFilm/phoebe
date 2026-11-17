@@ -13,7 +13,7 @@
 //   - Symlinks are followed only when their real path stays inside the skill
 //     folder, and a link back to a directory already being walked is skipped.
 //   - Paths are relative to the skill folder and `/`-separated, sorted by their
-//     UTF-8 bytes rather than by locale.
+//     UTF-8 bytes rather than by locale. A backslash in a name is hashed as `/`.
 //   - CRLF becomes LF unless the file holds a NUL byte. A bare CR is left alone.
 //   - Each file is fed as `path`, NUL, the content length in decimal, NUL, then
 //     the content.
@@ -108,12 +108,17 @@ export function hashSkillFolder(dir: string): string {
   const files: SkillFile[] = [];
   collectFiles(dir, "", root, [root], files);
 
-  files.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
+  // Only the hashed path changes; the file was already read from disk under its real name.
+  const entries = files.map((file) => ({
+    path: Buffer.from(file.path.replaceAll("\\", "/")),
+    content: file.content.includes(0) ? file.content : foldCrlf(file.content),
+  }));
+  entries.sort((a, b) => Buffer.compare(a.path, b.path));
 
   const hash = createHash("sha256");
-  for (const file of files) {
-    const content = file.content.includes(0) ? file.content : foldCrlf(file.content);
-    hash.update(`${file.path}\0${content.length}\0`);
+  for (const { path, content } of entries) {
+    hash.update(path);
+    hash.update(`\0${content.length}\0`);
     hash.update(content);
   }
   return hash.digest("hex");
