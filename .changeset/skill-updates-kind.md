@@ -1,0 +1,5 @@
+---
+"phoebe-agent": minor
+---
+
+New catalog kind `skill-updates` (`path: "phoebe-agent/kinds/skill-updates"`). It opens a PR when a skill source in `skills-lock.json` has a newer ref, one PR per source on a stable branch. A tag-pinned source moves to the newest tag on its major first and takes each later major in its own PR. A SHA-pinned source moves to the newest commit that is at least `minAge` old (3 days by default). The engine does the sync itself with git and the lock's hash recipe, and never runs the `skills` CLI or calls skills.sh. An agent pass then fixes repo-local references the bump broke and writes the summary. Anything it changes under a vendored path is put back before the push. A diff with lines that read like prompt injection opens as a draft with a "Review before merging" section. Skills added or removed upstream are listed in the PR and left for a person to vendor or delete. Closing the PR unmerged vetoes that ref, and a newer one is still proposed. The kind never merges. Options are `every`, `minAge`, `ignore`, `lockPath` and `labels`, and docs/work-kinds.md has the details.

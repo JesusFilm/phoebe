@@ -294,6 +294,20 @@ A hash of a bundle's package-version pairs and advisory ids, carried beside the 
 in the issue's marker. A moved fingerprint refreshes the issue and lifts a person's veto.
 _Avoid_: hash, version key, checksum
 
+### Skills
+
+**Vendored skill**:
+An agent skill copied from an upstream repository into `.agents/skills/` and pinned in
+`skills-lock.json` to a ref, a commit and a content hash. Nobody edits it in place; it
+changes only by moving its pin, which the `skill-updates` kind proposes in a PR.
+_Avoid_: installed skill, local skill (that is one authored here), plugin
+
+**Skill source**:
+The upstream repository a vendored skill comes from, as a lock entry's `source` names it
+(`mattpocock/skills`). Its skills move together, one PR per source, because they link to
+one another.
+_Avoid_: pack, registry, Source (that is a dependency detector's input or a setting's origin)
+
 ### Running
 
 **Origin hub**:
