@@ -17,7 +17,7 @@ import {
   SKILLS_DIR,
   type SkillLock,
 } from "../../src/skill-lock.ts";
-import { parseTag } from "./plan.ts";
+import { isCommitSha, parseTag } from "./plan.ts";
 import type { Upstream } from "./upstream.ts";
 
 /** One synced skill: where it sat upstream before and after, and whether its files changed. */
@@ -83,7 +83,8 @@ function locate(
  * Sync every skill of `source` that `ignore` does not name, in the checkout at
  * `repoDir`, from `upstream`, and write the lock back. `tag` is the release the
  * source moves to; a SHA-pinned source passes null and keeps its entries'
- * `ref` as it is.
+ * `ref` as it is, except a `ref` that is a commit SHA, which moves with
+ * `commit`.
  */
 export function syncSource(opts: {
   repoDir: string;
@@ -144,7 +145,9 @@ export function syncSource(opts: {
       to: found.path,
       changed: hash !== entry.computedHash,
     });
-    if (opts.tag !== null && (entry.ref === undefined || parseTag(entry.ref) !== null)) {
+    if (entry.ref !== undefined && isCommitSha(entry.ref)) {
+      entry.ref = upstream.commit;
+    } else if (opts.tag !== null && (entry.ref === undefined || parseTag(entry.ref) !== null)) {
       entry.ref = opts.tag;
     }
     entry.commit = upstream.commit;

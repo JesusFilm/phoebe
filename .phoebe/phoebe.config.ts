@@ -51,9 +51,10 @@ export const config = defineConfig({
   //
   // Baseline: opus-5.5 at low effort, because this is a long-running loop
   // paying against subscription usage limits rather than metered API billing.
-  // Low is the floor a kind with no `effort` of its own runs at; every built-in
-  // kind below names its own level, so the floor reaches only tenant-authored
-  // kinds and a PHOEBE_MODEL override that names a model with no kind block.
+  // Low is the floor a kind with no `effort` of its own runs at. Most kinds
+  // below name their own level; `skill-updates` runs at the floor, as do
+  // tenant-authored kinds and a PHOEBE_MODEL override that names a model with
+  // no kind block.
   defaultProvider: "claude",
   defaultModels: { claude: "claude-opus-5-5" },
   defaultEfforts: { claude: "low" },
@@ -164,6 +165,16 @@ export const config = defineConfig({
   // The Renovate source needs a container limit of at least 4 GiB on a repo
   // core's size; this one sets none.
   //
+  // Dogfood for the skill-updates kind (ADR 0004, #878): it keeps the skills
+  // vendored under skills-lock.json current, one PR per source, so a bump like
+  // #875 no longer waits for someone to run the skills CLI. A skill bump
+  // changes nothing a consumer of phoebe-agent sees, and AGENTS.md says such a
+  // PR takes `skip-changeset`. The `labels` option puts that label on every PR
+  // the kind opens, so it doesn't depend on the agent pass reading AGENTS.md.
+  // Every other option, and the pipeline's poll, stays at its default. It has a
+  // pipeline of its own, like the dependency kinds, so a scan never waits
+  // behind `work`'s slot.
+  //
   pipelines: {
     dependencies: {
       pollIntervalMs: 600_000,
@@ -183,6 +194,14 @@ export const config = defineConfig({
         // The bump is specified, but a red test means reading a changelog and
         // fixing code someone else's release broke: the `issues` kind's level.
         dependencies: { path: "phoebe-agent/kinds/dependencies-work", effort: "high" },
+      },
+    },
+    skills: {
+      kinds: {
+        "skill-updates": {
+          path: "phoebe-agent/kinds/skill-updates",
+          labels: ["skip-changeset"],
+        },
       },
     },
     intake: {
