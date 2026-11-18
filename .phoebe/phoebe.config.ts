@@ -76,15 +76,21 @@ export const config = defineConfig({
 
   // The `claude` provider above talks to a self-hosted gateway (CLIProxyAPI
   // fronting a Pro/Max subscription), not to Anthropic directly. The gateway's
-  // URL reaches the CLI through container/claude-home/settings.json; its key
-  // is the shipped `ANTHROPIC_API_KEY` default, spelled out here because it is
-  // load-bearing: `buildAgentEnv` (src/agent-env.ts) forwards exactly the one
-  // var named here, so a `.env` holding a different key hands the CLI nothing
-  // and every unit dies on "Not logged in · Please run /login". To run on the
-  // subscription token directly instead, name CLAUDE_CODE_OAUTH_TOKEN here and
-  // mint one with `node scripts/hoist-claude-login.mjs`; see
-  // docs/claude-subscription-auth.md.
-  providerEnv: { claude: "ANTHROPIC_API_KEY" },
+  // key is `ANTHROPIC_AUTH_TOKEN`, which the CLI sends as `Authorization:
+  // Bearer`, the header the gateway documents. Every other Claude Code that
+  // uses this gateway names the same var, including the other tenants of the
+  // workspace that runs this repo. The URL comes from somewhere else in each
+  // deployment, because the agent never sees it: here
+  // container/claude-home/settings.json sets ANTHROPIC_BASE_URL, and in a
+  // workspace it is that workspace's image.
+  //
+  // This line is load-bearing: `buildAgentEnv` (src/agent-env.ts) forwards
+  // exactly the one var named here, so a `.env` holding a different key hands
+  // the CLI nothing and every unit dies on "Not logged in · Please run
+  // /login". To run on the subscription token directly instead, name
+  // CLAUDE_CODE_OAUTH_TOKEN here and mint one with
+  // `node scripts/hoist-claude-login.mjs`; see docs/claude-subscription-auth.md.
+  providerEnv: { claude: "ANTHROPIC_AUTH_TOKEN" },
 
   // This tenant's pipelines of work (#415/#419). Only the reserved `work` pipeline, which
   // is what an engine child with no `--pipeline` flag runs; `pipelines.work.kinds`

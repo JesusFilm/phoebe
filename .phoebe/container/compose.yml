@@ -51,14 +51,17 @@ services:
       # Secrets — populate via `.env` (see `.env.example`).
       GH_TOKEN: "${GH_TOKEN:?GH_TOKEN is required}"
       CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       # The Claude CLI authenticates against the gateway named in
-      # ../claude-home/settings.json (ANTHROPIC_BASE_URL) with ANTHROPIC_API_KEY
-      # above — the config's `providerEnv.claude` names that var, so it is the
-      # one the agent child inherits (src/agent-env.ts). A gateway with no api
-      # keys configured ignores the value; it still has to be non-empty or the
-      # CLI reports "Not logged in". The OAuth token stays wired for running the
-      # deployment on a Pro/Max subscription directly (docs/claude-subscription-auth.md).
+      # ../claude-home/settings.json (ANTHROPIC_BASE_URL) with the gateway's
+      # access key in ANTHROPIC_AUTH_TOKEN. The config's `providerEnv.claude`
+      # names that var, so it is the one the agent child inherits
+      # (src/agent-env.ts). A gateway with no api keys configured ignores the
+      # value, but it still has to be non-empty or the CLI reports "Not logged
+      # in". ANTHROPIC_API_KEY and the OAuth token stay wired for pointing
+      # `providerEnv.claude` back at API billing or at a Pro/Max subscription
+      # directly (docs/claude-subscription-auth.md).
+      ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
       OPENAI_KEY: "${OPENAI_KEY:-}"
       # The `intake` pipeline's Sentry token (the config's `sentry` kind declares
