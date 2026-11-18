@@ -61,9 +61,12 @@ one edit, made here. See
   inside the working-tree mount, rather than the scaffold's single-file bind
   mount of `phoebe.config.ts`. A file bind mount pins the host _inode_, so an
   editor that saves by rename would be invisible to `boot`'s config watch.
-- **Claude provider on a subscription.** `defaultProvider: "claude"` with
-  `claude-opus-5-5` at `low` effort, authenticating with `CLAUDE_CODE_OAUTH_TOKEN`
-  (a Pro/Max subscription token) rather than `ANTHROPIC_API_KEY` — see
+- **Claude provider through a gateway.** `defaultProvider: "claude"` with
+  `claude-opus-5-5` at `low` effort, talking to a CLIProxyAPI gateway that
+  fronts a Pro/Max subscription rather than to Anthropic directly. The
+  gateway's access key is `ANTHROPIC_AUTH_TOKEN` in `.env`, and its URL is
+  `ANTHROPIC_BASE_URL` in `claude-home/settings.json` (copy
+  `claude-home.example`). To run on a subscription token without a gateway, see
   [`docs/claude-subscription-auth.md`](../docs/claude-subscription-auth.md).
   The image installs the scaffold's pinned Claude Code block and no other
   provider (#869), so `PHOEBE_AGENT=cursor` here needs Cursor's block added
