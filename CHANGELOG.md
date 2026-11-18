@@ -1,5 +1,15 @@
 # phoebe-agent
 
+## 0.18.0
+
+### Minor Changes
+
+- d5ae755: New catalog kind `skill-updates` (`path: "phoebe-agent/kinds/skill-updates"`). It opens a PR when a skill source in `skills-lock.json` has a newer ref, one PR per source on a stable branch. A tag-pinned source moves to the newest tag on its major first and takes each later major in its own PR. A SHA-pinned source moves to the newest commit that is at least `minAge` old (3 days by default). The engine does the sync itself with git and the lock's hash recipe, and never runs the `skills` CLI or calls skills.sh. An agent pass then fixes repo-local references the bump broke and writes the summary. Anything it changes under a vendored path is put back before the push. A diff with lines that read like prompt injection opens as a draft with a "Review before merging" section. Skills added or removed upstream are listed in the PR and left for a person to vendor or delete. Closing the PR unmerged vetoes that ref, and a newer one is still proposed. The kind never merges. Options are `every`, `minAge`, `ignore`, `lockPath` and `labels`, and docs/work-kinds.md has the details.
+
+### Patch Changes
+
+- dc6fa52: `skill-updates`: a lock entry whose `ref` is a commit SHA no longer fails its scan. The kind read that SHA as a branch name and tried to clone a branch that does not exist. It now treats the SHA as the pin, follows the default branch, and moves the `ref` along with `commit` when it syncs.
+
 ## 0.17.0
 
 ### Minor Changes
