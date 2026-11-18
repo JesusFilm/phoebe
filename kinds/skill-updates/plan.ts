@@ -48,6 +48,12 @@ export function isCommitSha(ref: string): boolean {
   return COMMIT_SHA_RE.test(ref);
 }
 
+/** The commit an entry is locked at: its `commit`, else its `ref` when that is a SHA. */
+function lockedAt(entry: SkillLockEntry): string | undefined {
+  if (entry.commit) return entry.commit;
+  return entry.ref !== undefined && isCommitSha(entry.ref) ? entry.ref : undefined;
+}
+
 export function compareSemver(a: Semver, b: Semver): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
@@ -85,14 +91,18 @@ export function groupSources(lock: SkillLock, ignore: readonly string[]): SkillS
         : {
             kind: "commit",
             branch,
-            commits: [...new Set(synced.map(([, e]) => e.commit).filter((c): c is string => !!c))],
+            commits: [
+              ...new Set(
+                synced.map(([, e]) => lockedAt(e)).filter((c): c is string => c !== undefined),
+              ),
+            ],
           };
     const atPin = pin.kind === "tag" ? synced.filter(([, e]) => e.ref === pin.ref) : synced;
     sources.push({
       source,
       sourceType: synced[0]![1].sourceType ?? null,
       pin,
-      lockedCommit: atPin.map(([, e]) => e.commit).find((c) => !!c) ?? null,
+      lockedCommit: atPin.map(([, e]) => lockedAt(e)).find((c) => c !== undefined) ?? null,
       skills: synced.map(([name]) => name).sort(),
       ignored: entries
         .filter(([name]) => ignore.includes(name))

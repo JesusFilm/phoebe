@@ -117,6 +117,17 @@ describe("groupSources", () => {
     });
   });
 
+  test("a SHA `ref` without `commit` still locks the boundary", () => {
+    const sha = "99559f2f52047978602ef365589275831e76af07";
+    const pinned: SkillLock = {
+      version: 2,
+      skills: { u: { source: "o/sha", ref: sha, computedHash: "h" } },
+    };
+    const [source] = groupSources(pinned, []);
+    expect(source!.pin).toEqual({ kind: "commit", branch: null, commits: [sha] });
+    expect(source!.lockedCommit).toBe(sha);
+  });
+
   test("an ignored skill is listed but does not set the pin", () => {
     const [tags] = groupSources(lock, ["b", "d"]).filter((s) => s.source === "o/tags");
     expect(tags!.pin).toEqual({ kind: "tag", ref: "v1.3.2" });
