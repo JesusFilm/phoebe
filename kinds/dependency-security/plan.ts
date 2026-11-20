@@ -14,6 +14,10 @@
 //     among its advisories. policy.ts lets only that release skip the
 //     maturity wait, so a newer target would leave the advisory open while it
 //     aged. With no fix released, the occurrence stays at its version.
+//   - A transitive occurrence with no fix released is dropped unless one of
+//     its advisories is critical (ADR 0005). Nobody can act on it: there is
+//     no version to move to, and no manifest declares the package. Once its
+//     fix ships it has a target and is planned like any other.
 //   - Grouping is `individual`: one bundle per package and manager. The
 //     bundle routes when any occurrence has a fix, and is a tracking issue
 //     otherwise. Its key does not change between the two, so the tracking
@@ -70,6 +74,8 @@ export type SecurityPlan = {
   below: number;
   /** Bootstrapper pins left to `phoebe upgrade`. */
   bootstrapper: number;
+  /** Transitive occurrences with no fix released and no critical advisory. */
+  unfixable: number;
 };
 
 /**
@@ -98,6 +104,18 @@ function securityTarget(c: Candidate, minSeverity: MinSeverity): Candidate | nul
 }
 
 /**
+ * Whether anyone can act on an occurrence. One with a fix can be moved. One
+ * without is worth a tracking issue when a manifest declares it, when its
+ * route is not known, or when an advisory on it is critical. A transitive
+ * high with no fix is none of those.
+ */
+function actionable(c: Candidate): boolean {
+  if (hasFix(c)) return true;
+  const transitive = c.via !== undefined && c.via.length > 0;
+  return !transitive || c.advisories.some((a) => a.severity === "critical");
+}
+
+/**
  * The issues to file: routed ones carrying a critical, then the other routed
  * ones, then the tracking issues. `routingLabel` is the label a routed issue
  * carries beside `dependencies` and `security`; a tracking issue carries
@@ -116,9 +134,10 @@ export function planSecurity(
   const severe = advised
     .map((c) => securityTarget(c, options.minSeverity))
     .filter((c): c is Candidate => c !== null);
+  const filed = severe.filter(actionable);
 
   const bundles = new Map<string, Bundle & { candidates: Candidate[] }>();
-  for (const c of severe) {
+  for (const c of filed) {
     const key = JSON.stringify([c.manager, c.package]);
     const bundle = bundles.get(key) ?? {
       manager: c.manager,
@@ -164,5 +183,6 @@ export function planSecurity(
     ],
     below: advised.length - severe.length,
     bootstrapper: pinless.skipped,
+    unfixable: severe.length - filed.length,
   };
 }

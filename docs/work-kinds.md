@@ -661,16 +661,20 @@ the other managers it says the route is not known.
    usually on the package's current release line, but when that line has no fix
    it can be a later major. Only that release skips the maturity wait, so a
    newer target would leave the advisory open while it aged.
-5. Groups by package: one bundle per manager and package, `individual` style,
+5. Drops a transitive occurrence with no fix released, unless one of its
+   advisories is critical. Nobody can act on it, so it gets no tracking issue
+   and no row in a routed one. The scan's log line counts them.
+6. Groups by package: one bundle per manager and package, `individual` style,
    whatever the workspaces.
-6. Orders the bundles for the cap: routed ones with a critical advisory, then
+7. Orders the bundles for the cap: routed ones with a critical advisory, then
    the other routed ones, then the tracking issues.
 
-| The package's advisories         | What it files                                                                                       |
-| -------------------------------- | --------------------------------------------------------------------------------------------------- |
-| at least one has a fix           | a routed issue labelled `dependencies`, `security` and `label`, which the `dependencies` kind works |
-| none has a fix yet               | a tracking issue labelled `dependencies` and `security` only, which no kind works                   |
-| every one is under the threshold | nothing; `dependency-updates` handles it on a direct dependency                                     |
+| The package's advisories                                                                      | What it files                                                                                       |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| at least one has a fix                                                                        | a routed issue labelled `dependencies`, `security` and `label`, which the `dependencies` kind works |
+| none has a fix yet, on a direct dependency, a critical, or a package whose route is not known | a tracking issue labelled `dependencies` and `security` only, which no kind works                   |
+| none has a fix yet, on a transitive package, and none is critical                             | nothing, until a fix ships                                                                          |
+| every one is under the threshold                                                              | nothing; `dependency-updates` handles it on a direct dependency                                     |
 
 **A high on a dev-only transitive package is filed by neither kind.**
 `dependency-updates` lists direct dependencies only, so an advisory under the
@@ -690,6 +694,12 @@ moves, so the fingerprint does too. That pass rewrites the body, posts the
 refresh comment and adds `label`. Only that pass adds it, so a label a person
 takes off later stays off. Until then, each pass leaves the tracking issue alone
 unless an advisory comes or goes.
+
+**A tracking issue the plan no longer produces is left open.** That is one
+filed for a transitive high before this rule, such as a package reached only
+through a build tool. Phoebe does not close it and no longer refreshes it, so
+close it by hand. The veto that leaves is keyed on the version the row targets,
+and a fix changes that, so the fix is still proposed.
 
 Filing follows the [`dependency-updates` rules](#dependency-updates-file-dependency-tickets-opt-in):
 the same marker, the same two searches, the same veto. Closing a tracking issue
