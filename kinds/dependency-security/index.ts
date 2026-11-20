@@ -8,7 +8,8 @@
 //     `dependencies` kind works;
 //   - with none, a tracking issue labelled `dependencies` and `security` alone.
 //     A pass refreshes it when an advisory comes or goes, and the pass that
-//     finds a fix rewrites it and adds the routing label.
+//     finds a fix rewrites it and adds the routing label. A transitive
+//     package gets one only for a critical.
 //
 // No maturity wait and no failure record: an advisory over the threshold is
 // filed as soon as a pass sees it and the open cap has room. A critical does
@@ -183,7 +184,8 @@ export function createDependencySecurityKind(
       ctx.log(
         `${candidates.length} candidate(s): ${plan.bootstrapper} bootstrapper pin(s) left to ` +
           `\`phoebe upgrade\`, ${plan.below} with every advisory under minSeverity ` +
-          `(${describeMinSeverity(options.minSeverity)}), not filed here; ${routed} package(s) with a fix, ` +
+          `(${describeMinSeverity(options.minSeverity)}), not filed here, ${plan.unfixable} transitive ` +
+          `with no fix released, not tracked; ${routed} package(s) with a fix, ` +
           `${plan.planned.length - routed} awaiting one.`,
       );
 
