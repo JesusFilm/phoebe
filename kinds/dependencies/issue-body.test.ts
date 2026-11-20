@@ -6,7 +6,13 @@ import { describe, expect, test } from "vite-plus/test";
 import type { Candidate } from "./candidate.ts";
 import { bundleKey, fingerprint, parseMarker } from "./fingerprint.ts";
 import type { Bundle } from "./grouping.ts";
-import { readIssueRows, renderIssueBody, renderIssueTitle } from "./issue-body.ts";
+import {
+  hasCriticalAdvisory,
+  readIssueRows,
+  renderAdvisories,
+  renderIssueBody,
+  renderIssueTitle,
+} from "./issue-body.ts";
 import { renderSecurityBody } from "../dependency-security/body.ts";
 
 function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
@@ -282,5 +288,28 @@ describe("readIssueRows", () => {
     expect(
       readIssueRows("Closed by hand.\n\n<!-- phoebe-dependencies bundle=x fingerprint=0 -->"),
     ).toEqual([]);
+  });
+});
+
+describe("hasCriticalAdvisory", () => {
+  const listed = (severity: "high" | "critical") =>
+    renderAdvisories([
+      {
+        manager: "npm",
+        package: "critical",
+        current: "1.0.0",
+        target: "1.0.1",
+        updateType: "patch",
+        depType: "prod",
+        workspace: "package.json",
+        advisories: [{ id: "GHSA-1", severity, fixedIn: "1.0.1" }],
+        peers: [],
+      },
+    ]).join("\n");
+
+  test("reads the severity an advisory line gives, not a package that happens to be named for one", () => {
+    expect(hasCriticalAdvisory(listed("critical"))).toBe(true);
+    expect(hasCriticalAdvisory(listed("high"))).toBe(false);
+    expect(hasCriticalAdvisory("The fix is critical, in my view.")).toBe(false);
   });
 });
