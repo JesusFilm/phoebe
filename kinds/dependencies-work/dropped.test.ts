@@ -67,4 +67,17 @@ describe("parseDropped", () => {
       { package: "lodash", version: "4.17.21", tooNew: false, needsOverride: false },
     ]);
   });
+
+  test("a reason that quotes a scoped package does not reach into the entry", () => {
+    const body = [
+      "## Dropped",
+      "",
+      "- `@graphql-tools/utils@12.0.2` (needs override): `@graphql-tools/merge` 9.1.6 asks for `@graphql-tools/utils` `^10.11.0`",
+      "- `tar@7.5.4`: `@scope/parent` pins it",
+    ].join("\n");
+    expect(parseDropped(body)).toEqual([
+      { package: "@graphql-tools/utils", version: "12.0.2", tooNew: false, needsOverride: true },
+      { package: "tar", version: "7.5.4", tooNew: false, needsOverride: false },
+    ]);
+  });
 });

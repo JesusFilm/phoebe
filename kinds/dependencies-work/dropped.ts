@@ -27,8 +27,10 @@ export const DROPPED_HEADING = "## Dropped";
 // `- \`<package>@<version>\` (too new): <reason>`, the tag only on a
 // release-age refusal, or `(needs override)` on a row the lockfile alone
 // could not fix. The name match is greedy, so the version is whatever follows
-// the last `@`, and a scoped `@scope/name` keeps its leading `@`.
-const ENTRY_RE = /^- `(.+)@([^@\s`]+)`(?:\s*\((too new|needs override)\))?/i;
+// the last `@`, and a scoped `@scope/name` keeps its leading `@`. It stops at
+// the code span's closing backtick, so a reason that quotes another scoped
+// package is never read as part of the entry.
+const ENTRY_RE = /^- `([^`]+)@([^@\s`]+)`(?:\s*\((too new|needs override)\))?/i;
 
 /**
  * Every bump listed under the body's `## Dropped` heading, in order, or an
