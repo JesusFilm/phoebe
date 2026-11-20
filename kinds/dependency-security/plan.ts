@@ -18,14 +18,18 @@
 //     its advisories is critical (ADR 0005). Nobody can act on it: there is
 //     no version to move to, and no manifest declares the package. Once its
 //     fix ships it has a target and is planned like any other.
-//   - Grouping is `individual`: one bundle per package and manager. The
-//     bundle routes when any occurrence has a fix, and is a tracking issue
+//   - A transitive occurrence with a fix and no critical advisory joins the
+//     transitive bundle, one per manager (ADR 0005). Its implementer makes
+//     lockfile fixes only. A row it dropped as needing more is planned per
+//     package from then on, as is every row under `transitive: "individual"`.
+//   - Everything else is one bundle per package and manager. The bundle
+//     routes when any occurrence has a fix, and is a tracking issue
 //     otherwise. Its key does not change between the two, so the tracking
 //     issue is the one refreshed and labelled once a fix ships.
 //   - A routed bundle with a critical advisory is filed past the open cap,
 //     and a tracking issue holds no slot in it (ADR 0005). The plan lists the
-//     criticals first, then the other routed bundles, then the tracking
-//     issues, which is the order the cap fills in.
+//     criticals first, then the transitive bundle and the other routed
+//     bundles, then the tracking issues, which is the order the cap fills in.
 
 import { withoutBootstrapperPin, type BootstrapperPinMode } from "../dependencies/bootstrapper.ts";
 import {
@@ -46,13 +50,38 @@ import { overThreshold, type MinSeverity } from "../dependencies/policy.ts";
 import { managerScheme } from "../dependencies/registry/versions.ts";
 import { fixTarget, moveOf } from "../dependencies/sources/native.ts";
 import type { PhoebeLabel } from "../../src/labels.ts";
-import { hasFix, renderSecurityBody, renderSecurityTitle } from "./body.ts";
+import {
+  hasFix,
+  renderSecurityBody,
+  renderSecurityTitle,
+  renderTransitiveBody,
+  renderTransitiveTitle,
+  transitiveRows,
+} from "./body.ts";
 
 /** A planned security issue, and whether it routes to the `dependencies` kind. */
 export type PlannedSecurityBundle = PlannedBundle & { routed: boolean };
 
-/** What every security bundle's group opens with, after the manager in its key. */
+/** What a per-package security bundle's group opens with, after the manager in its key. */
 const SECURITY_GROUP_PREFIX = "security:";
+
+/**
+ * The transitive bundle's group. A per-package group always opens with
+ * `security:`, so no package, whatever its name, can share this key.
+ */
+export const TRANSITIVE_GROUP = "security-transitive";
+
+/** `bundle` files transitive fixes together; `individual` files each package on its own. */
+export const TRANSITIVE_MODES = ["bundle", "individual"] as const;
+export type TransitiveMode = (typeof TRANSITIVE_MODES)[number];
+
+/** The group of a bundle key: what follows the manager, which holds no colon. */
+const groupOf = (key: string) => key.slice(key.indexOf(":") + 1);
+
+/** Whether a bundle key is a transitive bundle's. */
+export function isTransitiveBundleKey(key: string): boolean {
+  return groupOf(key) === TRANSITIVE_GROUP;
+}
 
 /**
  * Whether a bundle key is one this kind files. The cap counts these alone:
@@ -60,8 +89,26 @@ const SECURITY_GROUP_PREFIX = "security:";
  * leave a security fix waiting behind routine bumps.
  */
 export function isSecurityKey(key: string): boolean {
-  return key.slice(key.indexOf(":") + 1).startsWith(SECURITY_GROUP_PREFIX);
+  return isTransitiveBundleKey(key) || groupOf(key).startsWith(SECURITY_GROUP_PREFIX);
 }
+
+/**
+ * The rows a transitive bundle's implementer dropped as needing more than a
+ * lockfile fix, each under the PR or issue that dropped it. Keyed by
+ * {@link movedKey}.
+ */
+export type Moved = ReadonlyMap<string, number>;
+
+/** A dropped row's identity: the manager, the package and the version it was to reach. */
+export function movedKey(manager: string, pkg: string, target: string): string {
+  return JSON.stringify([manager, pkg, target]);
+}
+
+/**
+ * The longest body a bundle may render. GitHub refuses one over 65,536
+ * characters; the margin is for the refresh a veto can make without growing.
+ */
+export const BODY_LIMIT = 60_000;
 
 /** Whether any row of a bundle carries a critical advisory. */
 function hasCritical(bundle: Bundle): boolean {
@@ -76,6 +123,8 @@ export type SecurityPlan = {
   bootstrapper: number;
   /** Transitive occurrences with no fix released and no critical advisory. */
   unfixable: number;
+  /** Table rows left out of a transitive bundle whose body was full, by bundle key. */
+  overflow: ReadonlyMap<string, number>;
 };
 
 /**
@@ -115,11 +164,49 @@ function actionable(c: Candidate): boolean {
   return !transitive || c.advisories.some((a) => a.severity === "critical");
 }
 
+function isTransitive(c: Candidate): boolean {
+  return c.via !== undefined && c.via.length > 0;
+}
+
 /**
- * The issues to file: routed ones carrying a critical, then the other routed
- * ones, then the tracking issues. `routingLabel` is the label a routed issue
- * carries beside `dependencies` and `security`; a tracking issue carries
- * those two alone.
+ * The bundle cut down to the table rows whose body fits under `limit`, in the
+ * order the table lists them, and how many rows were left out. The rows left
+ * out come in on a later scan, once earlier ones have merged.
+ */
+function fitToBody(
+  bundle: Bundle,
+  render: (bundle: Bundle) => Rendered,
+  limit: number,
+): { bundle: Bundle; leftOut: number } {
+  if (render(bundle).body.length <= limit) return { bundle, leftOut: 0 };
+  const rows = transitiveRows(bundle.candidates);
+  const first = (count: number): Bundle => {
+    const kept = new Set(
+      rows.slice(0, count).map((r) => JSON.stringify([r.package, r.current, r.target])),
+    );
+    return {
+      ...bundle,
+      candidates: bundle.candidates.filter((c) =>
+        kept.has(JSON.stringify([c.package, c.current, c.target])),
+      ),
+    };
+  };
+  let fits = 0;
+  let over = rows.length;
+  while (over - fits > 1) {
+    const middle = Math.floor((fits + over) / 2);
+    if (render(first(middle)).body.length <= limit) fits = middle;
+    else over = middle;
+  }
+  return { bundle: first(fits), leftOut: rows.length - fits };
+}
+
+/**
+ * The issues to file: routed ones carrying a critical, then the transitive
+ * bundle and the other routed ones, then the tracking issues. `routingLabel`
+ * is the label a routed issue carries beside `dependencies` and `security`; a
+ * tracking issue carries those two alone. `moved` names the rows a transitive
+ * bundle's implementer dropped, which are planned per package.
  */
 export function planSecurity(
   candidates: readonly Candidate[],
@@ -127,6 +214,10 @@ export function planSecurity(
     minSeverity: MinSeverity;
     routingLabel: PhoebeLabel;
     bootstrapperPin: BootstrapperPinMode;
+    transitive: TransitiveMode;
+    moved?: Moved;
+    /** The body limit, for a test that cannot afford sixty thousand characters. */
+    bodyLimit?: number;
   },
 ): SecurityPlan {
   const pinless = withoutBootstrapperPin(candidates, options.bootstrapperPin);
@@ -136,8 +227,39 @@ export function planSecurity(
     .filter((c): c is Candidate => c !== null);
   const filed = severe.filter(actionable);
 
+  const moved = options.moved ?? new Map<string, number>();
+  const droppedFrom = (c: Candidate) =>
+    isTransitive(c) ? moved.get(movedKey(c.manager, c.package, c.target)) : undefined;
+  const lockfileOnly = (c: Candidate) =>
+    options.transitive === "bundle" &&
+    isTransitive(c) &&
+    hasFix(c) &&
+    !c.advisories.some((a) => a.severity === "critical") &&
+    droppedFrom(c) === undefined;
+
+  const together = new Map<string, Candidate[]>();
+  for (const c of filed.filter(lockfileOnly)) {
+    together.set(c.manager, [...(together.get(c.manager) ?? []), c]);
+  }
+  const renderTransitive = (bundle: Bundle): Rendered => ({
+    title: renderTransitiveTitle(bundle),
+    body: renderTransitiveBody(bundle, { minSeverity: options.minSeverity }),
+    labels: [DEPENDENCIES_LABEL, SECURITY_LABEL, options.routingLabel],
+  });
+  const overflow = new Map<string, number>();
+  const transitive = [...together].map(([manager, list]): PlannedSecurityBundle => {
+    const whole: Bundle = {
+      manager,
+      group: TRANSITIVE_GROUP,
+      candidates: list.sort(compareCandidates),
+    };
+    const { bundle, leftOut } = fitToBody(whole, renderTransitive, options.bodyLimit ?? BODY_LIMIT);
+    if (leftOut > 0) overflow.set(`${manager}:${TRANSITIVE_GROUP}`, leftOut);
+    return { ...planBundle(bundle, renderTransitive), routed: true };
+  });
+
   const bundles = new Map<string, Bundle & { candidates: Candidate[] }>();
-  for (const c of filed) {
+  for (const c of filed.filter((c) => !lockfileOnly(c))) {
     const key = JSON.stringify([c.manager, c.package]);
     const bundle = bundles.get(key) ?? {
       manager: c.manager,
@@ -151,12 +273,18 @@ export function planSecurity(
   // Rendered from the bundle alone, so a bundle a veto trimmed routes by the rows it kept.
   const render = (bundle: Bundle): Rendered => {
     const routed = bundle.candidates.some(hasFix);
+    // The newest PR or issue that dropped one of these rows from the transitive bundle.
+    const from = bundle.candidates
+      .map(droppedFrom)
+      .filter((n): n is number => n !== undefined)
+      .sort((a, b) => b - a)[0];
     return {
       title: renderSecurityTitle(bundle),
       body: renderSecurityBody(bundle, {
         routed,
         minSeverity: options.minSeverity,
         routingLabel: options.routingLabel.name,
+        ...(from === undefined ? {} : { droppedFrom: from }),
       }),
       labels: routed
         ? [DEPENDENCIES_LABEL, SECURITY_LABEL, options.routingLabel]
@@ -168,13 +296,17 @@ export function planSecurity(
         : { slot: "none" as const }),
     };
   };
-  const planned = [...bundles.values()]
+  const perPackage = [...bundles.values()]
     .map((b) => ({ ...b, candidates: b.candidates.sort(compareCandidates) }))
-    .sort((a, b) => byText(a.manager, b.manager) || byText(a.group, b.group))
     .map((bundle): PlannedSecurityBundle => ({
       ...planBundle(bundle, render),
       routed: bundle.candidates.some(hasFix),
     }));
+  // `security-transitive` sorts ahead of every `security:<package>`, so a
+  // manager's transitive bundle takes its slot before that manager's packages.
+  const planned = [...transitive.filter((p) => p.bundle.candidates.length > 0), ...perPackage].sort(
+    (a, b) => byText(a.bundle.manager, b.bundle.manager) || byText(a.bundle.group, b.bundle.group),
+  );
   return {
     planned: [
       ...planned.filter((p) => p.routed && p.slot === "exempt"),
@@ -184,5 +316,6 @@ export function planSecurity(
     below: advised.length - severe.length,
     bootstrapper: pinless.skipped,
     unfixable: severe.length - filed.length,
+    overflow,
   };
 }

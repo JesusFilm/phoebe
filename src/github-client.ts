@@ -332,6 +332,12 @@ export type GitHubClient = {
   createIssue(opts: { title: string; body: string }): number;
   /** Replace an issue's body wholesale. */
   updateIssueBody(issueNumber: number, body: string): void;
+  /**
+   * Close an issue, as completed or as not planned. Only for an issue a
+   * dependency detector filed and has since emptied or dismissed (ADR 0005);
+   * every other close is a person's.
+   */
+  closeIssue(issueNumber: number, reason: "completed" | "not planned"): void;
   /** An issue's current state and close reason, fetched fresh. */
   issueState(issueNumber: number): IssueStateInfo;
   /**
@@ -1524,6 +1530,10 @@ export function createGitHubClient({
     updateIssueBody: (issueNumber, body) => {
       // Through stdin for the reason `updatePrBody` gives.
       ghWrite(["issue", "edit", String(issueNumber), "--body-file", "-"], { input: body });
+    },
+
+    closeIssue: (issueNumber, reason) => {
+      ghWrite(["issue", "close", String(issueNumber), "--reason", reason]);
     },
 
     issueState: (issueNumber) => {

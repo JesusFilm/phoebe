@@ -7,14 +7,17 @@ import type { Advisory, Candidate } from "../dependencies/candidate.ts";
 import { parseMarker } from "../dependencies/fingerprint.ts";
 import { MIN_SEVERITY_DEFAULT } from "../dependencies/policy.ts";
 import type { PhoebeLabel } from "../../src/labels.ts";
-import { planSecurity } from "./plan.ts";
+import { readIssueRows } from "../dependencies/issue-body.ts";
+import { movedKey, planSecurity } from "./plan.ts";
 
 const routingLabel: PhoebeLabel = { name: "phoebe:dependencies", description: "" };
 const options = {
   minSeverity: MIN_SEVERITY_DEFAULT,
   routingLabel,
   bootstrapperPin: "skip" as const,
+  transitive: "bundle" as const,
 };
+const individual = { ...options, transitive: "individual" as const };
 
 function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -151,7 +154,7 @@ describe("planSecurity", () => {
   describe("with no fix released", () => {
     const high = advisory("GHSA-high", "high", null);
     const groups = (candidates: Candidate[]) => {
-      const plan = planSecurity(candidates, options);
+      const plan = planSecurity(candidates, individual);
       return { planned: plan.planned.map((p) => [p.bundle.group, p.routed]), plan };
     };
 
@@ -264,7 +267,7 @@ describe("planSecurity", () => {
     delete unknown.via;
     const plan = planSecurity(
       [candidate("qs", { current: "6.5.2", via: ["express"], advisories }), unknown],
-      options,
+      individual,
     );
     const body = plan.planned[0]!.body;
     expect(body).toContain("| 6.5.2 | 6.5.3 | transitive, through `express` |");
@@ -328,5 +331,158 @@ describe("planSecurity", () => {
         ["security:a", false, 1],
       ],
     );
+  });
+
+  describe("the transitive bundle", () => {
+    const high = (id: string, fixedIn: string) => advisory(id, "high", fixedIn);
+    const transitive = (pkg: string, overrides: Partial<Candidate> = {}) =>
+      candidate(pkg, { via: ["expo"], advisories: [high(`GHSA-${pkg}`, "1.0.1")], ...overrides });
+    const shape = (plan: ReturnType<typeof planSecurity>) =>
+      plan.planned.map(
+        (p) =>
+          `${p.bundle.manager}:${p.bundle.group}: ${p.bundle.candidates.map((c) => `${c.package}@${c.target}`).join(", ")}`,
+      );
+
+    test("transitive fixes of one manager ride together; a direct fix keeps its own issue", () => {
+      const plan = planSecurity(
+        [
+          transitive("tar"),
+          transitive("undici"),
+          transitive("ws"),
+          candidate("zod", { advisories: [high("GHSA-zod", "1.0.1")] }),
+          transitive("regex", { manager: "cargo", workspace: "Cargo.toml" }),
+        ],
+        options,
+      );
+      expect(shape(plan)).toEqual([
+        "cargo:security-transitive: regex@1.0.1",
+        "npm:security-transitive: tar@1.0.1, undici@1.0.1, ws@1.0.1",
+        "npm:security:zod: zod@1.0.1",
+      ]);
+      const [, bundle] = plan.planned;
+      expect(bundle!.routed).toBe(true);
+      expect(bundle!.slot).toBeUndefined();
+      expect(bundle!.title).toBe("Security fixes for transitive packages (npm)");
+      expect(bundle!.labels?.map((l) => l.name)).toEqual([
+        "dependencies",
+        "security",
+        "phoebe:dependencies",
+      ]);
+      expect(bundle!.body).toContain("Make lockfile fixes only.");
+      expect(bundle!.body).toContain("do not add an override");
+      expect(parseMarker(bundle!.body)?.key).toBe("npm:security-transitive");
+    });
+
+    test("a transitive critical gets its own issue and stays out of the bundle", () => {
+      const plan = planSecurity(
+        [
+          transitive("tar"),
+          transitive("ip", { advisories: [advisory("GHSA-ip", "critical", "1.0.1")] }),
+        ],
+        options,
+      );
+      expect(shape(plan)).toEqual([
+        "npm:security:ip: ip@1.0.1",
+        "npm:security-transitive: tar@1.0.1",
+      ]);
+      expect(plan.planned[0]!.slot).toBe("exempt");
+    });
+
+    test("a package's direct rows go to its own issue and its transitive rows to the bundle", () => {
+      const advisories = [high("GHSA-zod", "1.0.1")];
+      const plan = planSecurity(
+        [
+          candidate("zod", { advisories }),
+          candidate("zod", { workspace: "web/package.json", via: ["next"], advisories }),
+        ],
+        options,
+      );
+      expect(plan.planned.map((p) => [p.bundle.group, p.bundle.candidates[0]!.workspace])).toEqual([
+        ["security-transitive", "web/package.json"],
+        ["security:zod", "package.json"],
+      ]);
+    });
+
+    test('`transitive: "individual"` plans one issue per package, with the per-package body', () => {
+      const plan = planSecurity([transitive("tar"), transitive("ws")], individual);
+      expect(shape(plan)).toEqual(["npm:security:tar: tar@1.0.1", "npm:security:ws: ws@1.0.1"]);
+      expect(plan.planned[0]!.title).toBe("Security advisories in tar (npm)");
+      expect(plan.planned[0]!.body).toMatch(/^Security fix for `tar` under `npm`\./);
+      expect(plan.planned[0]!.body).toContain("| 1.0.0 | 1.0.1 | transitive, through `expo` |");
+    });
+
+    test("one table row per package and version, read back as a row per workspace", () => {
+      const workspaces = ["apps/a/package.json", "apps/b/package.json", "package.json"];
+      const plan = planSecurity(
+        workspaces.map((workspace, i) => transitive("tar", { workspace, via: [`parent-${i}`] })),
+        options,
+      );
+      const body = plan.planned[0]!.body;
+      expect(body).toContain(
+        "| `tar` | `apps/a/package.json`, `apps/b/package.json`, `package.json` | prod | 1.0.0 | 1.0.1 " +
+          "| `parent-0`, `parent-1`, `parent-2` |",
+      );
+      expect(body.split("\n").filter((line) => line.startsWith("| `tar`"))).toHaveLength(1);
+      expect(readIssueRows(body)).toEqual(
+        workspaces.map((workspace) => ({
+          package: "tar",
+          workspace,
+          target: "1.0.1",
+          advisories: ["GHSA-tar"],
+        })),
+      );
+    });
+
+    test("a body over the limit keeps the rows that fit, in order, and counts the rest", () => {
+      const names = Array.from({ length: 40 }, (_, i) => `pkg-${String(i).padStart(2, "0")}`);
+      const whole = planSecurity(
+        names.map((name) => transitive(name)),
+        options,
+      );
+      expect(whole.overflow.size).toBe(0);
+      const limit = Math.floor(whole.planned[0]!.body.length / 2);
+
+      const plan = planSecurity(
+        names.map((name) => transitive(name)),
+        { ...options, bodyLimit: limit },
+      );
+      const [bundle] = plan.planned;
+      const kept = bundle!.bundle.candidates.map((c) => c.package);
+      expect(bundle!.body.length).toBeLessThanOrEqual(limit);
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept).toEqual(names.slice(0, kept.length));
+      expect(plan.overflow).toEqual(new Map([["npm:security-transitive", 40 - kept.length]]));
+    });
+
+    test("a row the bundle's implementer dropped is planned per package, opening with where it came from", () => {
+      const moved = new Map([[movedKey("npm", "tar", "1.0.1"), 41]]);
+      const plan = planSecurity([transitive("tar"), transitive("ws")], { ...options, moved });
+      expect(shape(plan)).toEqual([
+        "npm:security-transitive: ws@1.0.1",
+        "npm:security:tar: tar@1.0.1",
+      ]);
+      const own = plan.planned[1]!;
+      expect(own.body).toMatch(
+        /^Dropped from #41; it needs more than a lockfile fix\.\n\nSecurity fix for `tar` under `npm`\./,
+      );
+      expect(own.body).toContain("override");
+      expect(plan.planned[0]!.body).not.toContain("`tar`");
+    });
+
+    test("a drop names one version; the same package at a new target goes back to the bundle", () => {
+      const moved = new Map([[movedKey("npm", "tar", "1.0.1"), 41]]);
+      const newer = transitive("tar", { advisories: [high("GHSA-tar-2", "1.0.5")] });
+      const plan = planSecurity([newer], { ...options, moved });
+      expect(shape(plan)).toEqual(["npm:security-transitive: tar@1.0.5"]);
+    });
+
+    test("a drop of a direct dependency moves nothing", () => {
+      const moved = new Map([[movedKey("npm", "zod", "1.0.1"), 41]]);
+      const plan = planSecurity([candidate("zod", { advisories: [high("GHSA-zod", "1.0.1")] })], {
+        ...options,
+        moved,
+      });
+      expect(plan.planned[0]!.body).not.toContain("Dropped from");
+    });
   });
 });

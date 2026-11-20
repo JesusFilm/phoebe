@@ -618,6 +618,7 @@ pipelines: {
 | `minSeverity`       | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`, where a side left out keeps its default. Production covers `prod`, `optional` and `peer` dependencies. Advisories under their side's threshold are not filed here. Set the same value on `dependency-updates`. |
 | `label`             | `"phoebe:dependencies"`             | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                                                                                                                                         |
 | `prConcurrentLimit` | `5`                                 | Open routed security bundles allowed at once, an issue and the PR working it counted once. `0` turns the cap off. A bundle with a critical advisory is filed whatever the count.                                                                                                                         |
+| `transitive`        | `"bundle"`                          | `"bundle"` files every transitive fix of a manager as one issue of lockfile fixes. `"individual"` files one issue per package.                                                                                                                                                                           |
 | `bootstrapperPin`   | `"skip"`                            | As on `dependency-updates`: `"skip"` files nothing for the `phoebe-agent` pin in a Dockerfile, `"propose"` files its advisories.                                                                                                                                                                         |
 
 **The open cap counts security bundles alone.** New routed issues stop once
@@ -664,17 +665,20 @@ the other managers it says the route is not known.
 5. Drops a transitive occurrence with no fix released, unless one of its
    advisories is critical. Nobody can act on it, so it gets no tracking issue
    and no row in a routed one. The scan's log line counts them.
-6. Groups by package: one bundle per manager and package, `individual` style,
-   whatever the workspaces.
-7. Orders the bundles for the cap: routed ones with a critical advisory, then
-   the other routed ones, then the tracking issues.
+6. Puts every transitive occurrence with a fix and no critical advisory into
+   the transitive bundle, one per manager, whatever the workspaces. A row that
+   bundle's implementer dropped is left out of it from then on.
+7. Groups the rest by package: one bundle per manager and package.
+8. Orders the bundles for the cap: routed ones with a critical advisory, then
+   the transitive bundle and the other routed ones, then the tracking issues.
 
-| The package's advisories                                                                      | What it files                                                                                       |
-| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| at least one has a fix                                                                        | a routed issue labelled `dependencies`, `security` and `label`, which the `dependencies` kind works |
-| none has a fix yet, on a direct dependency, a critical, or a package whose route is not known | a tracking issue labelled `dependencies` and `security` only, which no kind works                   |
-| none has a fix yet, on a transitive package, and none is critical                             | nothing, until a fix ships                                                                          |
-| every one is under the threshold                                                              | nothing; `dependency-updates` handles it on a direct dependency                                     |
+| The package's advisories                                                                      | What it files                                                                                         |
+| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| a transitive package has a fix and no critical                                                | a row in the transitive bundle, a routed issue the `dependencies` kind works with lockfile fixes only |
+| at least one has a fix                                                                        | a routed issue labelled `dependencies`, `security` and `label`, which the `dependencies` kind works   |
+| none has a fix yet, on a direct dependency, a critical, or a package whose route is not known | a tracking issue labelled `dependencies` and `security` only, which no kind works                     |
+| none has a fix yet, on a transitive package, and none is critical                             | nothing, until a fix ships                                                                            |
+| every one is under the threshold                                                              | nothing; `dependency-updates` handles it on a direct dependency                                       |
 
 **A high on a dev-only transitive package is filed by neither kind.**
 `dependency-updates` lists direct dependencies only, so an advisory under the
@@ -682,7 +686,37 @@ threshold on a transitive package has no second reader. With the defaults that
 is every high on a package reached only through development dependencies. The
 scan's log line counts them. To have them filed, set `minSeverity: { dev: "high" }`.
 
-The routed issue's table gives each occurrence's version, its fixed version,
+**Transitive fixes ride in one bundle per manager.** Its issue is titled
+`Security fixes for transitive packages (<manager>)` and its key is
+`<manager>:security-transitive`. The table has one row per package and version,
+with the workspaces listed in one cell, and a veto still applies per workspace.
+The body tells the implementer to make lockfile fixes only: run the package
+manager's update for each package, keep the rows the lockfile brings to their
+fixed version, and edit no manifest. The detector cannot tell beforehand which
+rows those are, because an audit prints the names on a path and not the ranges.
+
+A row the lockfile cannot fix is dropped under `## Dropped` with the
+`(needs override)` tag. The next scan reads that section from the bundle's PR,
+or from Phoebe's own comment on the issue when every row dropped and there is
+no PR, and files the row as a per-package issue whose body opens
+`Dropped from #N; it needs more than a lockfile fix.` That issue allows a
+manifest fix. A row dropped for failing the gate moves the same way, and one
+dropped as `(too new)` stays in the bundle. A drop names one target version, so
+a package whose fix later moves goes back to the bundle.
+
+When every row has moved, the bundle's issue is parked under `phoebe:blocked`
+with nobody to act on it. The scan rewrites its body to list no rows, comments
+with the packages it moved, and closes it. A parked bundle that still has rows
+after the refresh has `phoebe:blocked` lifted instead.
+
+GitHub refuses a body over 65,536 characters. A bundle that would pass 60,000
+keeps the rows that fit, in table order, and the scan logs how many it left out.
+They come in once earlier rows merge.
+
+`transitive: "individual"` turns the bundle off and files every package on its
+own.
+
+A per-package issue's table gives each occurrence's version, its fixed version,
 and how it is reached: `direct`, `transitive, through` the direct dependencies
 on its path, or `not known`. When a row is not direct, the body tells the
 implementer to bump the dependency that pulls the package in or, failing that,

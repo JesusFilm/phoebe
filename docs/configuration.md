@@ -668,6 +668,7 @@ defaults for the fields it leaves out.
 | `minSeverity`       | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`. Advisories under their side's threshold are not filed here. `dependency-updates` reads them on a direct dependency only. |
 | `label`             | `"phoebe:dependencies"`             | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`.                                                                             |
 | `prConcurrentLimit` | `5`                                 | Open routed security bundles allowed at once, issues and PRs together. `0` is no cap. A bundle with a critical advisory is never capped.                                                                           |
+| `transitive`        | `"bundle"`                          | `"bundle"` files a manager's transitive fixes as one issue; `"individual"` files one issue per package.                                                                                                            |
 | `bootstrapperPin`   | `"skip"`                            | `"skip"` files no advisory on the Dockerfile's `phoebe-agent` pin; `"propose"` files it like any other.                                                                                                            |
 
 Its `prConcurrentLimit` counts this kind's own bundles, not the ones
