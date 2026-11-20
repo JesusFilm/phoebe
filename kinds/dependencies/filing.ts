@@ -13,7 +13,8 @@
 //   - a row an open issue under another key already lists is held back from
 //     a bundle whose own open issue does not list it, so one bump is never
 //     proposed by two open issues (#860);
-//   - anything else is a new issue, unless the open cap is reached.
+//   - anything else is a new issue, unless the open cap is reached. A bundle
+//     may be filed past the cap, or hold no slot in it (ADR 0005).
 //
 // `decideFiling` is the pure half; `applyFiling` makes the GitHub calls.
 
@@ -43,6 +44,13 @@ export type Rendered = {
   body: string;
   /** The labels a new issue gets, when they differ from the detector's own set. */
   labels?: readonly PhoebeLabel[];
+  /**
+   * How a new issue meets the open cap, when not as every bundle does.
+   * `exempt` is filed whatever the count and then holds a slot like any
+   * other; `none` is filed whatever the count and never holds one, because
+   * nothing works it.
+   */
+  slot?: "exempt" | "none";
 };
 
 /** A bundle ready to file, and how to render it again once a veto drops rows from it. */
@@ -81,6 +89,12 @@ export type FilingOptions = {
   routingLabel: string;
   /** Open routed bundles allowed at once; null for no cap. */
   cap: number | null;
+  /**
+   * Which bundle keys hold a slot in the cap; every key when left out. Both
+   * detectors file under one marker and one routing label, so a detector
+   * that caps only its own bundles names them here.
+   */
+  holdsSlot?: (key: string) => boolean;
 };
 
 // GitHub's closing keywords, as a merged PR body names the issue it closes.
@@ -142,13 +156,14 @@ export function decideFiling(
 ): FilingAction[] {
   const mergedPairs = new Set<string>();
   const mergedIssues = new Set<number>();
+  const holdsSlot = options.holdsSlot ?? (() => true);
   const inFlight = new Set<string>();
   for (const pr of prs) {
     const marker = parseMarker(pr.body);
     if (pr.merged) {
       if (marker !== null) mergedPairs.add(pairKey(marker.key, marker.fingerprint));
       for (const n of closedIssues(pr.body)) mergedIssues.add(n);
-    } else if (pr.state === "open" && marker !== null) {
+    } else if (pr.state === "open" && marker !== null && holdsSlot(marker.key)) {
       inFlight.add(marker.key);
     }
   }
@@ -170,7 +185,8 @@ export function decideFiling(
       // A parked ticket is passed over by the implementer, so it holds no slot.
       if (
         issue.labels.includes(options.routingLabel) &&
-        !issue.labels.includes(PHOEBE_BLOCKED_LABEL)
+        !issue.labels.includes(PHOEBE_BLOCKED_LABEL) &&
+        holdsSlot(marker.key)
       ) {
         inFlight.add(marker.key);
       }
@@ -226,10 +242,10 @@ export function decideFiling(
     }
     const vetoedBy = vetoes.get(pairKey(key, print));
     if (vetoedBy !== undefined) return { action: "vetoed", planned: p, issue: vetoedBy, held };
-    if (options.cap !== null && inFlight.size >= options.cap) {
+    if (p.slot === undefined && options.cap !== null && inFlight.size >= options.cap) {
       return { action: "capped", planned: p, held };
     }
-    inFlight.add(key);
+    if (p.slot !== "none") inFlight.add(key);
     return { action: "create", planned: p, held };
   });
 }

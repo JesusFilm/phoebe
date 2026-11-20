@@ -19,6 +19,7 @@ describe("resolveDependencySecurityOptions", () => {
       sources: ["native", "agent"],
       minSeverity: { prod: "high", dev: "critical" },
       label: "phoebe:dependencies",
+      prConcurrentLimit: 5,
       bootstrapperPin: "skip",
     });
   });
@@ -31,6 +32,7 @@ describe("resolveDependencySecurityOptions", () => {
           sources: ["renovate", "native"],
           minSeverity: "critical",
           label: "deps",
+          prConcurrentLimit: 0,
           bootstrapperPin: "propose",
         },
         at,
@@ -40,6 +42,7 @@ describe("resolveDependencySecurityOptions", () => {
       sources: ["renovate", "native"],
       minSeverity: { prod: "critical", dev: "critical" },
       label: "deps",
+      prConcurrentLimit: 0,
       bootstrapperPin: "propose",
     });
   });
@@ -71,7 +74,11 @@ describe("resolveDependencySecurityOptions", () => {
     [{ label: "security" }, 'label must not be "security"'],
     [{ label: "dependencies" }, 'label must not be "dependencies"'],
     [{ bootstrapperPin: "bundle" }, "kinds.dependency-security: `bootstrapperPin` must be one of"],
-    [{ prConcurrentLimit: 5 }, "kinds.dependency-security: unknown option `prConcurrentLimit`"],
+    [
+      { prConcurrentLimit: -1 },
+      "kinds.dependency-security: `prConcurrentLimit` must be a non-negative integer",
+    ],
+    [{ ignore: ["lodash"] }, "kinds.dependency-security: unknown option `ignore`"],
   ])("%j fails", (block, message) => {
     expect(() => resolveDependencySecurityOptions(block, at)).toThrow(message);
   });

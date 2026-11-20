@@ -158,8 +158,8 @@ describe("registration", () => {
         "kinds.dependency-security",
       ),
     ).not.toThrow();
-    expect(() => dependencySecurityKind(config, { prConcurrentLimit: 1 })).toThrow(
-      "kinds.dependency-security: unknown option `prConcurrentLimit`",
+    expect(() => dependencySecurityKind(config, { ignore: ["lodash"] })).toThrow(
+      "kinds.dependency-security: unknown option `ignore`",
     );
   });
 
@@ -234,6 +234,58 @@ describe("run", () => {
         "(prod high, dev critical), not filed here; " +
         "1 package(s) with a fix, 1 awaiting one.",
     );
+  });
+
+  describe("the open cap", () => {
+    const critical = { id: "GHSA-crit", severity: "critical", fixedIn: "1.0.4" } as const;
+    const highs = (count: number) =>
+      Array.from({ length: count }, (_, i) => candidate(`pkg-${i}`, [high]));
+    const created = (writes: string[]) =>
+      writes.filter((w) => w.startsWith("create")).map((w) => w.replace(/^create #\d+ /, ""));
+    const scan = async (block: Record<string, unknown>, native: Candidate[]) => {
+      const { overrides, writes } = gitHub();
+      const logged: string[] = [];
+      await kindWith(block, { native }).run(
+        { ref: SCAN_REF, revision: "0" },
+        ctxFor(overrides, clock, logged),
+      );
+      return { created: created(writes), summary: logged.find((l) => l.startsWith("filing:")) };
+    };
+
+    test("five routed issues by default, the rest held for a later scan", async () => {
+      const { created, summary } = await scan({}, highs(7));
+      expect(created).toHaveLength(5);
+      expect(summary).toContain("5 filed");
+      expect(summary).toContain("2 held by the open cap");
+    });
+
+    test("a critical is filed past a full cap, and a high is not", async () => {
+      const { created } = await scan({ prConcurrentLimit: 2 }, [
+        ...highs(3),
+        candidate("zlib", [critical]),
+      ]);
+      expect(created).toEqual([
+        "Security advisories in zlib (npm)",
+        "Security advisories in pkg-0 (npm)",
+      ]);
+    });
+
+    test("a tracking issue is filed whatever the count and uses no slot", async () => {
+      const { created } = await scan({ prConcurrentLimit: 1 }, [
+        candidate("pkg-0", [high]),
+        candidate("pkg-1", [high]),
+        candidate("waiting", [unfixed]),
+      ]);
+      expect(created).toEqual([
+        "Security advisories in pkg-0 (npm)",
+        "Security advisories in waiting (npm)",
+      ]);
+    });
+
+    test("`prConcurrentLimit: 0` files everything", async () => {
+      const { created } = await scan({ prConcurrentLimit: 0 }, highs(7));
+      expect(created).toHaveLength(7);
+    });
   });
 
   test("a tracking issue is refreshed and routed on the pass its fix appears", async () => {
@@ -333,7 +385,7 @@ describe("run", () => {
     expect(withFix.writes[0]).toBe("create #100 Security advisories in pkg (npm)");
   });
 
-  test("files every routed issue however many dependency issues are open", async () => {
+  test("the cap counts security bundles alone, not what dependency-updates has open", async () => {
     const open: MentioningIssue[] = Array.from({ length: 8 }, (_, i) => ({
       number: i + 1,
       body: `<!-- phoebe-dependencies bundle=npm%3Aprod%3Apackage%3Ax${i} fingerprint=abc -->`,

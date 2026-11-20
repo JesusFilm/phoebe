@@ -612,16 +612,27 @@ pipelines: {
 },
 ```
 
-| Option            | Default                             | Meaning                                                                                                                                                                                                                                                                                                  |
-| ----------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `every`           | `"1h"`                              | How long one scan's results stand.                                                                                                                                                                                                                                                                       |
-| `sources`         | `["native", "agent"]`               | The sources to run, in order of trust. `renovate` is allowed too.                                                                                                                                                                                                                                        |
-| `minSeverity`     | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`, where a side left out keeps its default. Production covers `prod`, `optional` and `peer` dependencies. Advisories under their side's threshold are not filed here. Set the same value on `dependency-updates`. |
-| `label`           | `"phoebe:dependencies"`             | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                                                                                                                                         |
-| `bootstrapperPin` | `"skip"`                            | As on `dependency-updates`: `"skip"` files nothing for the `phoebe-agent` pin in a Dockerfile, `"propose"` files its advisories.                                                                                                                                                                         |
+| Option              | Default                             | Meaning                                                                                                                                                                                                                                                                                                  |
+| ------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`             | `"1h"`                              | How long one scan's results stand.                                                                                                                                                                                                                                                                       |
+| `sources`           | `["native", "agent"]`               | The sources to run, in order of trust. `renovate` is allowed too.                                                                                                                                                                                                                                        |
+| `minSeverity`       | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`, where a side left out keeps its default. Production covers `prod`, `optional` and `peer` dependencies. Advisories under their side's threshold are not filed here. Set the same value on `dependency-updates`. |
+| `label`             | `"phoebe:dependencies"`             | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                                                                                                                                         |
+| `prConcurrentLimit` | `5`                                 | Open routed security bundles allowed at once, an issue and the PR working it counted once. `0` turns the cap off. A bundle with a critical advisory is filed whatever the count.                                                                                                                         |
+| `bootstrapperPin`   | `"skip"`                            | As on `dependency-updates`: `"skip"` files nothing for the `phoebe-agent` pin in a Dockerfile, `"propose"` files its advisories.                                                                                                                                                                         |
 
-There is no `prConcurrentLimit`. A security issue is filed whatever the open
-cap says, and an unknown option fails registration. The window, the unit
+**The open cap counts security bundles alone.** New routed issues stop once
+`prConcurrentLimit` of this kind's bundles are open, so the first scan of a
+repository with a backlog files five and leaves the rest for a later scan,
+which files them as slots free. The bundles `dependency-updates` has open are
+not counted, or a security fix would wait behind routine bumps. A bundle with
+a critical advisory is filed whatever the count, then holds a slot like any
+other, so highs queue behind criticals. A tracking issue is filed whatever the
+count and holds no slot, and a ticket parked under `phoebe:blocked` holds none
+either. Refreshing an open issue is never capped, which includes the pass that
+routes a tracking issue.
+
+An unknown option fails registration. The window, the unit
 (`dependency-security:scan`) and the per-source deadlines work as they do for
 `dependency-updates`.
 
@@ -653,6 +664,8 @@ the other managers it says the route is not known.
    newer target would leave the advisory open while it aged.
 5. Groups by package: one bundle per manager and package, `individual` style,
    whatever the workspaces.
+6. Orders the bundles for the cap: routed ones with a critical advisory, then
+   the other routed ones, then the tracking issues.
 
 | The package's advisories         | What it files                                                                                       |
 | -------------------------------- | --------------------------------------------------------------------------------------------------- |

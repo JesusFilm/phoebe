@@ -231,6 +231,27 @@ describe("planSecurity", () => {
     expect(proposed.bootstrapper).toBe(0);
   });
 
+  test("criticals come first and are exempt from the cap; a tracking issue holds no slot", () => {
+    const plan = planSecurity(
+      [
+        candidate("a-high", { advisories: [advisory("GHSA-a", "high", "1.0.1")] }),
+        candidate("b-tracking", { advisories: [advisory("GHSA-b", "critical", null)] }),
+        candidate("c-critical", {
+          advisories: [
+            advisory("GHSA-c", "critical", "1.0.1"),
+            advisory("GHSA-d", "high", "1.0.2"),
+          ],
+        }),
+      ],
+      options,
+    );
+    expect(plan.planned.map((p) => [p.bundle.group, p.slot])).toEqual([
+      ["security:c-critical", "exempt"],
+      ["security:a-high", undefined],
+      ["security:b-tracking", "none"],
+    ]);
+  });
+
   test("routed issues come before tracking ones, one bundle per package", () => {
     const plan = planSecurity(
       [

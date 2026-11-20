@@ -10,8 +10,9 @@
 //     A pass refreshes it when an advisory comes or goes, and the pass that
 //     finds a fix rewrites it and adds the routing label.
 //
-// No maturity wait, no open cap, no failure record: an advisory over the
-// threshold is filed as soon as a pass sees it. The native source here skips
+// No maturity wait and no failure record: an advisory over the threshold is
+// filed as soon as a pass sees it and the open cap has room. A critical does
+// not wait for room (ADR 0005). The native source here skips
 // deps.dev, so a pass costs the rows, one OSV batch and the audits.
 //
 // It ships in the engine and registers only when a tenant declares it
@@ -49,7 +50,7 @@ import {
   resolveDependencySecurityOptions,
   type DependencySecurityOptions,
 } from "./options.ts";
-import { planSecurity } from "./plan.ts";
+import { isSecurityKey, planSecurity } from "./plan.ts";
 
 export const DEPENDENCY_SECURITY_KIND_NAME = "dependency-security";
 export const SCAN_REF = `${DEPENDENCY_SECURITY_KIND_NAME}:scan`;
@@ -189,7 +190,8 @@ export function createDependencySecurityKind(
       const filed = readFiled(ctx);
       const actions = decideFiling(plan.planned, filed.issues, filed.prs, {
         routingLabel: options.label,
-        cap: null,
+        cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,
+        holdsSlot: isSecurityKey,
       });
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL]);
       routeFixedIssues(
