@@ -430,6 +430,47 @@ describe("decideFiling", () => {
       const actions = decideFiling(others, [], [], { ...options, cap: null });
       expect(actionsOf(actions)).toEqual(["create", "create", "create", "create"]);
     });
+
+    test("an exempt bundle is created past the cap, and then holds a slot", () => {
+      const [first, second, third] = others;
+      const exempt = { ...second!, slot: "exempt" as const };
+      const full = decideFiling([first!, exempt, third!], [], [], { ...options, cap: 1 });
+      expect(actionsOf(full)).toEqual(["create", "create", "capped"]);
+      const ahead = decideFiling([exempt, first!], [], [], { ...options, cap: 1 });
+      expect(actionsOf(ahead)).toEqual(["create", "capped"]);
+    });
+
+    test("only the keys a detector names hold a slot", () => {
+      const open = ["a", "b", "c", "d"].map((name, i) =>
+        issue(30 + i, planned(`other:${name}`, candidate(name)).bundle, "open"),
+      );
+      const openPr = pr(40, markerOf(planned("other:e", candidate("e")).bundle), "open");
+      const mine = {
+        ...options,
+        cap: 2,
+        holdsSlot: (key: string) => key.startsWith("npm:package:"),
+      };
+      expect(actionsOf(decideFiling(others, open, [openPr], mine))).toEqual([
+        "create",
+        "create",
+        "capped",
+        "capped",
+      ]);
+      const everyKey = { ...options, cap: 2 };
+      expect(actionsOf(decideFiling(others, open, [openPr], everyKey))).toEqual([
+        "capped",
+        "capped",
+        "capped",
+        "capped",
+      ]);
+    });
+
+    test("a bundle with no slot is created past the cap and takes no room", () => {
+      const [first, second, third] = others;
+      const unslotted = { ...first!, slot: "none" as const };
+      const actions = decideFiling([unslotted, second!, third!], [], [], { ...options, cap: 1 });
+      expect(actionsOf(actions)).toEqual(["create", "create", "capped"]);
+    });
   });
 });
 

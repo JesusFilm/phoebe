@@ -18,6 +18,10 @@
 //     bundle routes when any occurrence has a fix, and is a tracking issue
 //     otherwise. Its key does not change between the two, so the tracking
 //     issue is the one refreshed and labelled once a fix ships.
+//   - A routed bundle with a critical advisory is filed past the open cap,
+//     and a tracking issue holds no slot in it (ADR 0005). The plan lists the
+//     criticals first, then the other routed bundles, then the tracking
+//     issues, which is the order the cap fills in.
 
 import { withoutBootstrapperPin, type BootstrapperPinMode } from "../dependencies/bootstrapper.ts";
 import {
@@ -42,6 +46,23 @@ import { hasFix, renderSecurityBody, renderSecurityTitle } from "./body.ts";
 
 /** A planned security issue, and whether it routes to the `dependencies` kind. */
 export type PlannedSecurityBundle = PlannedBundle & { routed: boolean };
+
+/** What every security bundle's group opens with, after the manager in its key. */
+const SECURITY_GROUP_PREFIX = "security:";
+
+/**
+ * Whether a bundle key is one this kind files. The cap counts these alone:
+ * `dependency-updates` keeps its own five open, and counting those would
+ * leave a security fix waiting behind routine bumps.
+ */
+export function isSecurityKey(key: string): boolean {
+  return key.slice(key.indexOf(":") + 1).startsWith(SECURITY_GROUP_PREFIX);
+}
+
+/** Whether any row of a bundle carries a critical advisory. */
+function hasCritical(bundle: Bundle): boolean {
+  return bundle.candidates.some((c) => c.advisories.some((a) => a.severity === "critical"));
+}
 
 export type SecurityPlan = {
   planned: PlannedSecurityBundle[];
@@ -77,9 +98,10 @@ function securityTarget(c: Candidate, minSeverity: MinSeverity): Candidate | nul
 }
 
 /**
- * The issues to file, routed ones first. `routingLabel` is the label a routed
- * issue carries beside `dependencies` and `security`; a tracking issue
- * carries those two alone.
+ * The issues to file: routed ones carrying a critical, then the other routed
+ * ones, then the tracking issues. `routingLabel` is the label a routed issue
+ * carries beside `dependencies` and `security`; a tracking issue carries
+ * those two alone.
  */
 export function planSecurity(
   candidates: readonly Candidate[],
@@ -100,7 +122,7 @@ export function planSecurity(
     const key = JSON.stringify([c.manager, c.package]);
     const bundle = bundles.get(key) ?? {
       manager: c.manager,
-      group: `security:${c.package}`,
+      group: `${SECURITY_GROUP_PREFIX}${c.package}`,
       candidates: [],
     };
     bundle.candidates.push(c);
@@ -120,6 +142,11 @@ export function planSecurity(
       labels: routed
         ? [DEPENDENCIES_LABEL, SECURITY_LABEL, options.routingLabel]
         : [DEPENDENCIES_LABEL, SECURITY_LABEL],
+      ...(routed
+        ? hasCritical(bundle)
+          ? { slot: "exempt" as const }
+          : {}
+        : { slot: "none" as const }),
     };
   };
   const planned = [...bundles.values()]
@@ -130,7 +157,11 @@ export function planSecurity(
       routed: bundle.candidates.some(hasFix),
     }));
   return {
-    planned: [...planned.filter((p) => p.routed), ...planned.filter((p) => !p.routed)],
+    planned: [
+      ...planned.filter((p) => p.routed && p.slot === "exempt"),
+      ...planned.filter((p) => p.routed && p.slot !== "exempt"),
+      ...planned.filter((p) => !p.routed),
+    ],
     below: advised.length - severe.length,
     bootstrapper: pinless.skipped,
   };
