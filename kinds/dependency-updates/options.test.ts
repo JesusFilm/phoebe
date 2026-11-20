@@ -18,12 +18,20 @@ describe("resolveDependencyUpdatesOptions", () => {
       every: "1d",
       sources: ["native", "agent", "renovate"],
       maturity: { patch: 3, minor: 7, major: 14, undated: "propose" },
+      minSeverity: { prod: "high", dev: "critical" },
       grouping: { strategy: { prod: "by-relation", dev: "all" }, groups: [] },
       majors: "individual",
       label: "phoebe:dependencies",
       prConcurrentLimit: 5,
       bootstrapperPin: "skip",
     });
+  });
+
+  test("minSeverity takes one severity for both sides, or a side of its own", () => {
+    const min = (value: unknown) => resolve({ minSeverity: value }, at).minSeverity;
+    expect(min("moderate")).toEqual({ prod: "moderate", dev: "moderate" });
+    expect(min({ dev: "high" })).toEqual({ prod: "high", dev: "high" });
+    expect(min({ prod: "low" })).toEqual({ prod: "low", dev: "critical" });
   });
 
   test("every field takes a value of its own", () => {
@@ -48,7 +56,7 @@ describe("resolveDependencyUpdatesOptions", () => {
       sources: ["renovate", "native"],
       ignore: ["@types/*"],
       maturity: { patch: 3, minor: 3, major: 14, undated: "hold" },
-      minSeverity: "critical",
+      minSeverity: { prod: "critical", dev: "critical" },
       grouping: {
         strategy: { prod: "individual", dev: "individual" },
         groups: [{ pattern: "eslint*", group: "lint" }],
@@ -82,6 +90,14 @@ describe("resolveDependencyUpdatesOptions", () => {
     [{ maturity: { weeks: 1 } }, "kinds.dependency-updates.maturity: unknown option `weeks`"],
     [{ maturity: { undated: "wait" } }, "`undated` must be one of propose, hold"],
     [{ minSeverity: "severe" }, "`minSeverity` must be one of low, moderate, high, critical"],
+    [
+      { minSeverity: { prod: "severe" } },
+      "kinds.dependency-updates.minSeverity: `prod` must be one of low, moderate, high, critical",
+    ],
+    [
+      { minSeverity: { test: "high" } },
+      "kinds.dependency-updates.minSeverity: unknown option `test`",
+    ],
     [{ grouping: { strategy: "by-scope" } }, "`strategy` must be one of individual"],
     [{ grouping: { strategy: { test: "all" } } }, "unknown option `test`"],
     [

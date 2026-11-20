@@ -5,11 +5,16 @@
 import { describe, expect, test } from "vite-plus/test";
 import type { Advisory, Candidate } from "../dependencies/candidate.ts";
 import { parseMarker } from "../dependencies/fingerprint.ts";
+import { MIN_SEVERITY_DEFAULT } from "../dependencies/policy.ts";
 import type { PhoebeLabel } from "../../src/labels.ts";
 import { planSecurity } from "./plan.ts";
 
 const routingLabel: PhoebeLabel = { name: "phoebe:dependencies", description: "" };
-const options = { minSeverity: "high" as const, routingLabel, bootstrapperPin: "skip" as const };
+const options = {
+  minSeverity: MIN_SEVERITY_DEFAULT,
+  routingLabel,
+  bootstrapperPin: "skip" as const,
+};
 
 function candidate(pkg: string, overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -98,7 +103,52 @@ describe("planSecurity", () => {
     expect(p!.body).toContain("| `minimist` | `package.json` | prod | 1.0.0 | direct |");
   });
 
-  test("under the threshold: not filed, and counted as left to dependency-updates", () => {
+  test("a development dependency files at critical, and its high is counted under the threshold", () => {
+    const high = advisory("GHSA-high", "high", "1.0.3");
+    const critical = advisory("GHSA-crit", "critical", "1.0.4");
+    const plan = planSecurity(
+      [
+        candidate("prod-high", { advisories: [high] }),
+        candidate("dev-high", { depType: "dev", advisories: [high] }),
+        candidate("dev-critical", { depType: "dev", advisories: [high, critical] }),
+      ],
+      options,
+    );
+    expect(plan.planned.map((p) => p.bundle.group)).toEqual([
+      "security:dev-critical",
+      "security:prod-high",
+    ]);
+    expect(plan.planned[0]!.bundle.candidates[0]!.advisories).toEqual([critical]);
+    expect(plan.below).toBe(1);
+  });
+
+  test("a package in both sections lists only the rows over their own threshold", () => {
+    const high = advisory("GHSA-high", "high", "1.0.3");
+    const plan = planSecurity(
+      [
+        candidate("lodash", { advisories: [high] }),
+        candidate("lodash", { depType: "dev", workspace: "web/package.json", advisories: [high] }),
+      ],
+      options,
+    );
+    expect(plan.planned).toHaveLength(1);
+    expect(plan.planned[0]!.bundle.candidates.map((c) => c.depType)).toEqual(["prod"]);
+    expect(plan.planned[0]!.body).toContain(
+      "at or above the threshold for its dependency type (`high` for production, `critical` for development)",
+    );
+    expect(plan.below).toBe(1);
+  });
+
+  test("one severity for both sides files a development high, and the body names it alone", () => {
+    const plan = planSecurity(
+      [candidate("vitest", { depType: "dev", advisories: [advisory("GHSA-h", "high", "1.0.3")] })],
+      { ...options, minSeverity: { prod: "high", dev: "high" } },
+    );
+    expect(plan.planned.map((p) => p.bundle.group)).toEqual(["security:vitest"]);
+    expect(plan.planned[0]!.body).toContain("for its advisories at or above `high`, though");
+  });
+
+  test("under the threshold: not filed, and counted", () => {
     const plan = planSecurity(
       [
         candidate("a", { advisories: [advisory("GHSA-low", "moderate", "1.0.1")] }),

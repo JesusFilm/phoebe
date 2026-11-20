@@ -637,37 +637,37 @@ The scaffolded `container/compose.yml` sets no limit. If you add one, keep it at
 
 `path: "phoebe-agent/kinds/dependency-updates"`
 
-| Option              | Default                               | Meaning                                                                                                                         |
-| ------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `every`             | `"1d"`                                | How long one scan's results stand: a count and one of `s`, `m`, `h`, `d`, `w`. Zero is refused.                                 |
-| `sources`           | `["native", "agent", "renovate"]`     | The sources to run, in order of trust; an earlier one wins a conflict. Non-empty, each named once.                              |
-| `ignore`            | `[]`                                  | Package names never proposed. `*` matches any run of characters.                                                                |
-| `maturity.patch`    | `3`                                   | Days a patch release ages before it is proposed.                                                                                |
-| `maturity.minor`    | `7`                                   | Days for a minor release.                                                                                                       |
-| `maturity.major`    | `14`                                  | Days for a major release.                                                                                                       |
-| `maturity.undated`  | `"propose"`                           | A release with no publish date: `"propose"` it at once, or `"hold"` it.                                                         |
-| `minSeverity`       | `"high"`                              | `low`, `moderate`, `high` or `critical`. The fix for an advisory under it skips the maturity wait. Match `dependency-security`. |
-| `grouping.strategy` | `{ prod: "by-relation", dev: "all" }` | `individual`, `all`, `by-dependency-type`, `by-workspace` or `by-relation`: one string for both sides, or `{ prod, dev }`.      |
-| `grouping.groups`   | `[]`                                  | `{ pattern, group }` overrides, checked before the strategy. The first match wins.                                              |
-| `majors`            | `"individual"`                        | `"individual"` files every major on its own; `"follow-strategy"` groups it like the rest.                                       |
-| `label`             | `"phoebe:dependencies"`               | The routing label. Must match the `dependencies` kind's `label` and must not be `readyLabel`.                                   |
-| `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once, issues and PRs together. `0` is no cap.                                                    |
-| `bootstrapperPin`   | `"skip"`                              | `"skip"` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `"propose"` files it like any other dependency.        |
+| Option              | Default                               | Meaning                                                                                                                                                                                            |
+| ------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`             | `"1d"`                                | How long one scan's results stand: a count and one of `s`, `m`, `h`, `d`, `w`. Zero is refused.                                                                                                    |
+| `sources`           | `["native", "agent", "renovate"]`     | The sources to run, in order of trust; an earlier one wins a conflict. Non-empty, each named once.                                                                                                 |
+| `ignore`            | `[]`                                  | Package names never proposed. `*` matches any run of characters.                                                                                                                                   |
+| `maturity.patch`    | `3`                                   | Days a patch release ages before it is proposed.                                                                                                                                                   |
+| `maturity.minor`    | `7`                                   | Days for a minor release.                                                                                                                                                                          |
+| `maturity.major`    | `14`                                  | Days for a major release.                                                                                                                                                                          |
+| `maturity.undated`  | `"propose"`                           | A release with no publish date: `"propose"` it at once, or `"hold"` it.                                                                                                                            |
+| `minSeverity`       | `{ prod: "high", dev: "critical" }`   | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`. The fix for an advisory under its side's threshold skips the maturity wait. Match `dependency-security`. |
+| `grouping.strategy` | `{ prod: "by-relation", dev: "all" }` | `individual`, `all`, `by-dependency-type`, `by-workspace` or `by-relation`: one string for both sides, or `{ prod, dev }`.                                                                         |
+| `grouping.groups`   | `[]`                                  | `{ pattern, group }` overrides, checked before the strategy. The first match wins.                                                                                                                 |
+| `majors`            | `"individual"`                        | `"individual"` files every major on its own; `"follow-strategy"` groups it like the rest.                                                                                                          |
+| `label`             | `"phoebe:dependencies"`               | The routing label. Must match the `dependencies` kind's `label` and must not be `readyLabel`.                                                                                                      |
+| `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once, issues and PRs together. `0` is no cap.                                                                                                                       |
+| `bootstrapperPin`   | `"skip"`                              | `"skip"` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `"propose"` files it like any other dependency.                                                                           |
 
-A partial `maturity` or `grouping.strategy` block keeps the defaults for the
-fields it leaves out.
+A partial `maturity`, `minSeverity` or `grouping.strategy` block keeps the
+defaults for the fields it leaves out.
 
 #### `dependency-security`
 
 `path: "phoebe-agent/kinds/dependency-security"`
 
-| Option            | Default                 | Meaning                                                                                                                                |
-| ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `every`           | `"1h"`                  | How long one scan's results stand, in the same form as above.                                                                          |
-| `sources`         | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                                      |
-| `minSeverity`     | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are left to `dependency-updates`.                                         |
-| `label`           | `"phoebe:dependencies"` | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`. |
-| `bootstrapperPin` | `"skip"`                | `"skip"` files no advisory on the Dockerfile's `phoebe-agent` pin; `"propose"` files it like any other.                                |
+| Option            | Default                             | Meaning                                                                                                                                                                                                            |
+| ----------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `every`           | `"1h"`                              | How long one scan's results stand, in the same form as above.                                                                                                                                                      |
+| `sources`         | `["native", "agent"]`               | The sources to run, in order of trust. `renovate` is allowed too.                                                                                                                                                  |
+| `minSeverity`     | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`. Advisories under their side's threshold are not filed here. `dependency-updates` reads them on a direct dependency only. |
+| `label`           | `"phoebe:dependencies"`             | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`.                                                                             |
+| `bootstrapperPin` | `"skip"`                            | `"skip"` files no advisory on the Dockerfile's `phoebe-agent` pin; `"propose"` files it like any other.                                                                                                            |
 
 It has no `prConcurrentLimit`, so a copy of that field from the updates block
 is refused. A `readyLabel` of `dependencies` or `security` fails registration,

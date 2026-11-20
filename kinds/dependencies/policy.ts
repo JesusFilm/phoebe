@@ -1,7 +1,13 @@
 // The selection policy (ADR 0003): how long a release must age before it is
 // proposed, and which advisories are severe enough to file on their own.
 
-import { SEVERITIES, type Advisory, type Candidate, type Severity } from "./candidate.ts";
+import {
+  SEVERITIES,
+  type Advisory,
+  type Candidate,
+  type DepType,
+  type Severity,
+} from "./candidate.ts";
 
 /** Days a release must age, per the size of the version move. */
 export type MaturityDays = { patch: number; minor: number; major: number };
@@ -22,8 +28,20 @@ export const MATURITY_DEFAULTS: Required<MaturityPolicy> = {
   undated: "propose",
 };
 
-/** The `minSeverity` an advisory must reach to file a routed issue of its own. */
-export const MIN_SEVERITY_DEFAULT: Severity = "high";
+/**
+ * A severity threshold for each side of the split `grouping.strategy` uses:
+ * `dev` for development dependencies, `prod` for production, optional and
+ * peer ones.
+ */
+export type MinSeverity = { prod: Severity; dev: Severity };
+
+/**
+ * The `minSeverity` an advisory must reach to file a routed issue of its own
+ * (ADR 0005). A development dependency never ships, so a high against one is
+ * mostly denial of service against the tenant's own build. What matters there
+ * is code execution at install or build time, and that rates critical.
+ */
+export const MIN_SEVERITY_DEFAULT: MinSeverity = { prod: "high", dev: "critical" };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -122,10 +140,27 @@ export function selectionReason(
   return `${wait.move} update past the ${wait.days}-day maturity wait`;
 }
 
-/** Whether an advisory reaches `minSeverity`, ordering low, moderate, high, critical. */
+/** The threshold a dependency type answers to. */
+export function thresholdFor(depType: DepType, minSeverity: MinSeverity): Severity {
+  return depType === "dev" ? minSeverity.dev : minSeverity.prod;
+}
+
+/**
+ * Whether an advisory reaches the `minSeverity` of the dependency type its
+ * occurrence has, ordering low, moderate, high, critical.
+ */
 export function overThreshold(
   advisory: Advisory,
-  minSeverity: Severity = MIN_SEVERITY_DEFAULT,
+  depType: DepType,
+  minSeverity: MinSeverity = MIN_SEVERITY_DEFAULT,
 ): boolean {
-  return SEVERITIES.indexOf(advisory.severity) >= SEVERITIES.indexOf(minSeverity);
+  const threshold = thresholdFor(depType, minSeverity);
+  return SEVERITIES.indexOf(advisory.severity) >= SEVERITIES.indexOf(threshold);
+}
+
+/** A threshold in a log line: `high`, or `prod high, dev critical` when the sides differ. */
+export function describeMinSeverity(minSeverity: MinSeverity): string {
+  return minSeverity.prod === minSeverity.dev
+    ? minSeverity.prod
+    : `prod ${minSeverity.prod}, dev ${minSeverity.dev}`;
 }

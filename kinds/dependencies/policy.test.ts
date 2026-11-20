@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import type { Advisory, Candidate } from "./candidate.ts";
-import { isMature, overThreshold, selectionReason } from "./policy.ts";
+import { describeMinSeverity, isMature, overThreshold, selectionReason } from "./policy.ts";
 
 const NOW = new Date("2026-11-05T12:00:00Z");
 
@@ -142,16 +142,33 @@ describe("selectionReason", () => {
 });
 
 describe("overThreshold", () => {
-  test("defaults to high", () => {
-    expect(overThreshold(advisory({ severity: "moderate" }))).toBe(false);
-    expect(overThreshold(advisory({ severity: "high" }))).toBe(true);
-    expect(overThreshold(advisory({ severity: "critical" }))).toBe(true);
+  const both = (severity: Advisory["severity"]) => ({ prod: severity, dev: severity });
+
+  test("defaults to high for production and critical for development", () => {
+    expect(overThreshold(advisory({ severity: "moderate" }), "prod")).toBe(false);
+    expect(overThreshold(advisory({ severity: "high" }), "prod")).toBe(true);
+    expect(overThreshold(advisory({ severity: "high" }), "dev")).toBe(false);
+    expect(overThreshold(advisory({ severity: "critical" }), "dev")).toBe(true);
+  });
+
+  test("optional and peer dependencies answer to the production threshold", () => {
+    const sides = { prod: "moderate", dev: "critical" } as const;
+    expect(overThreshold(advisory({ severity: "moderate" }), "optional", sides)).toBe(true);
+    expect(overThreshold(advisory({ severity: "moderate" }), "peer", sides)).toBe(true);
+    expect(overThreshold(advisory({ severity: "moderate" }), "dev", sides)).toBe(false);
   });
 
   test("orders low, moderate, high, critical", () => {
-    expect(overThreshold(advisory({ severity: "low" }), "low")).toBe(true);
-    expect(overThreshold(advisory({ severity: "low" }), "moderate")).toBe(false);
-    expect(overThreshold(advisory({ severity: "moderate" }), "moderate")).toBe(true);
-    expect(overThreshold(advisory({ severity: "high" }), "critical")).toBe(false);
+    expect(overThreshold(advisory({ severity: "low" }), "prod", both("low"))).toBe(true);
+    expect(overThreshold(advisory({ severity: "low" }), "prod", both("moderate"))).toBe(false);
+    expect(overThreshold(advisory({ severity: "moderate" }), "prod", both("moderate"))).toBe(true);
+    expect(overThreshold(advisory({ severity: "high" }), "prod", both("critical"))).toBe(false);
+  });
+});
+
+describe("describeMinSeverity", () => {
+  test("one word when the sides match, both when they differ", () => {
+    expect(describeMinSeverity({ prod: "high", dev: "high" })).toBe("high");
+    expect(describeMinSeverity({ prod: "high", dev: "critical" })).toBe("prod high, dev critical");
   });
 });

@@ -99,9 +99,20 @@ describe("planBundles", () => {
     const high: Advisory = { id: "GHSA-high", severity: "high", fixedIn: "1.1.0" };
     const fresh = candidate("pkg", { publishedAt: YESTERDAY, advisories: [high] });
     expect(plan([fresh]).dropped.immature).toBe(1);
-    expect(shape(plan([fresh], { minSeverity: "critical" }))).toEqual([
+    expect(shape(plan([fresh], { minSeverity: { prod: "critical", dev: "critical" } }))).toEqual([
       "npm:prod:relation:pkg: pkg@1.1.0",
     ]);
+  });
+
+  test("a development dependency's high is under its threshold, so its fix skips the wait", () => {
+    const high: Advisory = { id: "GHSA-high", severity: "high", fixedIn: "1.1.0" };
+    const fresh = { publishedAt: YESTERDAY, advisories: [high] };
+    const result = plan([
+      candidate("vitest", { ...fresh, depType: "dev" }),
+      candidate("pkg", fresh),
+    ]);
+    expect(shape(result)).toEqual(["npm:dev:all: vitest@1.1.0"]);
+    expect(result.dropped.immature).toBe(1);
   });
 
   test("the fix ships alone while the newest release ages, and the newest wins once aged", () => {

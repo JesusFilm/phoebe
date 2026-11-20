@@ -82,6 +82,8 @@ results stand.
   transitive package; one with no fix files a tracking issue with the
   `security` label and no routing label; one under it folds into the normal
   bundle and skips the wait for that package alone.
+  [ADR 0005](0005-security-relevance-is-asked-where-the-fix-costs-something.md)
+  amends the threshold, the tracking issues and the grouping.
 - Grouping is a strategy enum (`individual`, `all`, `by-dependency-type`,
   `by-workspace`, `by-relation`) with pattern overrides. Defaults: production
   `by-relation`, development `all`, security `individual`, majors individual

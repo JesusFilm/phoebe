@@ -1,7 +1,7 @@
 // The `dependency-security` catalog kind (ADR 0003): the hourly detector. It
 // shares the sources, the filing and the marker with `dependency-updates` and
-// differs only in policy. Every advisory at or over `minSeverity` is filed,
-// one issue per package:
+// differs only in policy. Every advisory at or over the `minSeverity` of its
+// dependency type is filed (ADR 0005), one issue per package:
 //
 //   - with a fix released, a routed issue targeting that fix, labelled
 //     `dependencies`, `security` and the routing label, which the
@@ -34,6 +34,7 @@ import {
   type FilingAction,
 } from "../dependencies/filing.ts";
 import { everyMs } from "../dependencies/options.ts";
+import { describeMinSeverity } from "../dependencies/policy.ts";
 import { DEPENDENCY_DETECT_PROMPT_FILE } from "../dependencies/sources/agent.ts";
 import {
   realSources,
@@ -180,8 +181,8 @@ export function createDependencySecurityKind(
       const routed = plan.planned.filter((p) => p.routed).length;
       ctx.log(
         `${candidates.length} candidate(s): ${plan.bootstrapper} bootstrapper pin(s) left to ` +
-          `\`phoebe upgrade\`, ${plan.below} with advisories under ` +
-          `${options.minSeverity} left to dependency-updates; ${routed} package(s) with a fix, ` +
+          `\`phoebe upgrade\`, ${plan.below} with every advisory under minSeverity ` +
+          `(${describeMinSeverity(options.minSeverity)}), not filed here; ${routed} package(s) with a fix, ` +
           `${plan.planned.length - routed} awaiting one.`,
       );
 
