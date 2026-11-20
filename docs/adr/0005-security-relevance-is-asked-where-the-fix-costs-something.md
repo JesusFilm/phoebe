@@ -20,7 +20,8 @@ the checkout in front of it.
 both detectors, default `{ prod: "high", dev: "critical" }`. A development
 dependency never ships, so a high against one is mostly denial of service
 against the tenant's own build. Code execution at install or build time is
-what matters there, and it rates critical.
+what matters there. An advisory of that kind rated critical is filed. One
+rated high is under the default, and the Consequences say what becomes of it.
 
 **Transitive fixes ride in one bundle per manager.** The implementer tries a
 lockfile fix for each row. A row that needs more is dropped and filed again on
@@ -58,9 +59,14 @@ dismissal, and parks a critical for a maintainer.
 
 ## Consequences
 
-- A high on a package reached only through development dependencies is filed
-  by neither detector. `dependency-updates` lists direct dependencies only.
-  The scan log counts them, and `dev: "high"` brings them back.
+- With the defaults a high on a development dependency is not a security
+  issue. On a direct dependency the release that fixes it goes out with the
+  daily pass. Two cases are filed by neither detector: a transitive package
+  reached only through development dependencies, because `dependency-updates`
+  lists direct dependencies only, and a direct development dependency with no
+  release that fixes the advisory, because `dependency-updates` files moves to
+  a newer version. The scan log counts both, and `dev: "high"` brings them
+  back.
 - A dismissal has no expiry. It lifts when a new advisory id lands on the
   package or a person reopens the issue. It does not notice the tenant's code
   changing so that the vulnerable path becomes reachable.
