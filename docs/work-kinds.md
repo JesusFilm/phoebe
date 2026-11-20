@@ -592,7 +592,8 @@ It shares the sources, the filing and the marker with
 the policy differs. It files every advisory at or above the `minSeverity` of
 its dependency type, one issue per package
 ([ADR 0005](adr/0005-security-relevance-is-asked-where-the-fix-costs-something.md)).
-The daily pass picks up the rest on direct dependencies only.
+The daily pass acts on the rest where it can: on a direct dependency, once a
+release fixes the advisory.
 
 ```ts
 pipelines: {
@@ -670,13 +671,15 @@ the other managers it says the route is not known.
 | -------------------------------- | --------------------------------------------------------------------------------------------------- |
 | at least one has a fix           | a routed issue labelled `dependencies`, `security` and `label`, which the `dependencies` kind works |
 | none has a fix yet               | a tracking issue labelled `dependencies` and `security` only, which no kind works                   |
-| every one is under the threshold | nothing; `dependency-updates` handles it on a direct dependency                                     |
+| every one is under the threshold | nothing; `dependency-updates` ships the fix on a direct dependency, once one is released            |
 
-**A high on a dev-only transitive package is filed by neither kind.**
-`dependency-updates` lists direct dependencies only, so an advisory under the
-threshold on a transitive package has no second reader. With the defaults that
-is every high on a package reached only through development dependencies. The
-scan's log line counts them. To have them filed, set `minSeverity: { dev: "high" }`.
+**A dev-only high is filed by neither kind in two cases.** `dependency-updates`
+lists direct dependencies only, and it files moves to a newer version. So an
+advisory under the threshold has no second reader on a transitive package, or
+on a direct dependency with no release that fixes it. With the defaults that is
+every high on a package reached only through development dependencies, and
+every high on a direct development dependency until its fix ships. The scan's
+log line counts both. To have them filed, set `minSeverity: { dev: "high" }`.
 
 The routed issue's table gives each occurrence's version, its fixed version,
 and how it is reached: `direct`, `transitive, through` the direct dependencies
