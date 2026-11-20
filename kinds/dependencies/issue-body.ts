@@ -180,14 +180,50 @@ function uncode(text: string): string | null {
   return padded ? inner.slice(1, -1) : inner;
 }
 
-/** The code span `text` opens with, unwrapped, or null. */
-function leadingCode(text: string): string | null {
+/** The code span `text` opens with, unwrapped, and how many characters it took; or null. */
+function leadingSpan(text: string): { value: string; length: number } | null {
   const fence = /^`+/.exec(text)?.[0];
   if (fence === undefined) return null;
   const close = new RegExp(`(?<!\`)${fence}(?!\`)`, "g");
   close.lastIndex = fence.length;
   const match = close.exec(text);
-  return match === null ? null : uncode(text.slice(0, match.index + fence.length));
+  if (match === null) return null;
+  const length = match.index + fence.length;
+  const value = uncode(text.slice(0, length));
+  return value === null ? null : { value, length };
+}
+
+/** The code span `text` opens with, unwrapped, or null. */
+function leadingCode(text: string): string | null {
+  return leadingSpan(text)?.value ?? null;
+}
+
+/** Values as code spans in one cell, the way `codeList` reads them back. */
+export function renderCodeList(values: readonly string[]): string {
+  return values.map(code).join(", ");
+}
+
+/**
+ * Every code span of a cell that holds nothing else but the commas between
+ * them: one for a row's own workspace, several where a row stands for the
+ * same package and version in more than one. Null when the cell is anything
+ * else.
+ */
+function codeList(text: string): string[] | null {
+  const values: string[] = [];
+  let rest = text.trim();
+  while (rest.length > 0) {
+    const span = leadingSpan(rest);
+    if (span === null) return null;
+    values.push(span.value);
+    rest = rest.slice(span.length);
+    if (rest.length === 0) break;
+    const comma = /^,\s*/.exec(rest);
+    if (comma === null) return null;
+    rest = rest.slice(comma[0].length);
+    if (rest.length === 0) return null;
+  }
+  return values.length > 0 ? values : null;
 }
 
 function unplain(text: string): string {
@@ -220,9 +256,11 @@ function advisoriesByPackage(lines: readonly string[]): Map<string, Set<string>>
 /**
  * The rows an issue body lists, as the person who read it saw them: the first
  * table with a Package, a Workspace and a To or Version column, each row with
- * the advisories listed against its package. Reads what `renderIssueBody` and
- * the security bodies write; a row it cannot read is skipped, and a body with
- * no such table gives none.
+ * the advisories listed against its package. A table row naming several
+ * workspaces is one row per workspace here, because a veto and a hold are
+ * keyed on the workspace. Reads what `renderIssueBody` and the security bodies
+ * write; a row it cannot read is skipped, and a body with no such table gives
+ * none.
  */
 export function readIssueRows(body: string): FiledRow[] {
   const lines = body.split("\n");
@@ -240,16 +278,18 @@ export function readIssueRows(body: string): FiledRow[] {
     if (!line.startsWith("|")) break;
     const cells = cellsOf(line);
     const pkg = uncode(cells[0] ?? "");
-    const workspace = uncode(cells[workspaceAt] ?? "");
+    const workspaces = codeList(cells[workspaceAt] ?? "");
     const to = cells[targetAt];
     const target = to === STAYS_CELL && fromAt >= 0 ? cells[fromAt] : to;
-    if (pkg === null || workspace === null || target === undefined) continue;
-    rows.push({
-      package: pkg,
-      workspace,
-      target: unplain(target),
-      advisories: [...(advisories.get(pkg) ?? [])],
-    });
+    if (pkg === null || workspaces === null || target === undefined) continue;
+    for (const workspace of workspaces) {
+      rows.push({
+        package: pkg,
+        workspace,
+        target: unplain(target),
+        advisories: [...(advisories.get(pkg) ?? [])],
+      });
+    }
   }
   return rows;
 }

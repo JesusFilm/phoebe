@@ -1,7 +1,10 @@
 // The `dependency-security` catalog kind (ADR 0003): the hourly detector. It
 // shares the sources, the filing and the marker with `dependency-updates` and
 // differs only in policy. Every advisory at or over the `minSeverity` of its
-// dependency type is filed (ADR 0005), one issue per package:
+// dependency type is filed (ADR 0005). A transitive package with a fix and no
+// critical rides in one bundle per manager, where the implementer makes
+// lockfile fixes only; a row it drops as needing more comes back per package
+// (moved.ts). Everything else is one issue per package:
 //
 //   - with a fix released, a routed issue targeting that fix, labelled
 //     `dependencies`, `security` and the routing label, which the
@@ -35,6 +38,7 @@ import {
   readFiled,
   type FilingAction,
 } from "../dependencies/filing.ts";
+import { bundleKey } from "../dependencies/fingerprint.ts";
 import { everyMs } from "../dependencies/options.ts";
 import { describeMinSeverity } from "../dependencies/policy.ts";
 import { DEPENDENCY_DETECT_PROMPT_FILE } from "../dependencies/sources/agent.ts";
@@ -46,6 +50,8 @@ import {
 import { runNativeSecuritySource } from "../dependencies/sources/native.ts";
 import { isTrackingBody } from "./body.ts";
 import { runSources } from "../dependencies/sources/run.ts";
+import { readParked, releaseParked } from "../dependency-updates/parked.ts";
+import { closeEmptied, commentedBundleIssues, readMoved, transitiveBundleIssues } from "./moved.ts";
 import {
   FIXED_LABELS,
   resolveDependencySecurityOptions,
@@ -175,22 +181,43 @@ export function createDependencySecurityKind(
         throw new Error("every dependency source failed; nothing to file this window.");
       }
 
+      // What a transitive bundle's implementer dropped decides the plan, so
+      // the filed issues and PRs are read before it.
+      const filed = readFiled(ctx);
+      const bundleIssues =
+        options.transitive === "bundle" ? transitiveBundleIssues(filed.issues) : [];
+      const parked = readParked(commentedBundleIssues(bundleIssues), ctx);
+      const moved = readMoved(filed.prs, bundleIssues, parked);
+
       const plan = planSecurity(candidates, {
         minSeverity: options.minSeverity,
         routingLabel,
         bootstrapperPin: options.bootstrapperPin,
+        transitive: options.transitive,
+        moved,
       });
       const routed = plan.planned.filter((p) => p.routed).length;
       ctx.log(
         `${candidates.length} candidate(s): ${plan.bootstrapper} bootstrapper pin(s) left to ` +
           `\`phoebe upgrade\`, ${plan.below} with every advisory under minSeverity ` +
           `(${describeMinSeverity(options.minSeverity)}), not filed here, ${plan.unfixable} transitive ` +
-          `with no fix released, not tracked; ${routed} package(s) with a fix, ` +
+          `with no fix released, not tracked; ${routed} issue(s) with a fix, ` +
           `${plan.planned.length - routed} awaiting one.`,
       );
+      for (const [key, leftOut] of plan.overflow) {
+        ctx.log(
+          `${key}: the issue body is full; ${leftOut} package version(s) left out until ` +
+            "earlier rows merge.",
+        );
+      }
 
-      const filed = readFiled(ctx);
-      const actions = decideFiling(plan.planned, filed.issues, filed.prs, {
+      const issues = closeEmptied(
+        filed.issues,
+        moved,
+        new Set(plan.planned.map((p) => bundleKey(p.bundle))),
+        ctx,
+      );
+      const actions = decideFiling(plan.planned, issues, filed.prs, {
         routingLabel: options.label,
         cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,
         holdsSlot: isSecurityKey,
@@ -198,10 +225,13 @@ export function createDependencySecurityKind(
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL]);
       routeFixedIssues(
         actions,
-        new Map(filed.issues.map((issue) => [issue.number, issue])),
+        new Map(issues.map((issue) => [issue.number, issue])),
         routingLabel,
         ctx,
       );
+      // A parked bundle whose rows changed, or whose drops were only too new,
+      // can pass with nobody acting.
+      releaseParked(actions, parked, ctx);
     },
   });
 }

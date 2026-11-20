@@ -113,8 +113,15 @@ function kindWith(
   );
 }
 
-/** A GitHub that holds `issues` and `prs` and records every write. */
-function gitHub(issues: MentioningIssue[] = [], prs: MentioningPr[] = []) {
+/** One comment on an issue; Phoebe's own unless it names another login. */
+type Comment = { body: string; by?: string };
+
+/** A GitHub that holds `issues`, `prs` and `comments` and records every write. */
+function gitHub(
+  issues: MentioningIssue[] = [],
+  prs: MentioningPr[] = [],
+  comments: Record<number, Comment[]> = {},
+) {
   const writes: string[] = [];
   const bodies = new Map<number, string>();
   let next = 100;
@@ -137,6 +144,22 @@ function gitHub(issues: MentioningIssue[] = [], prs: MentioningPr[] = []) {
     postUnitComment: (target) => {
       writes.push(`comment #${target.id}`);
     },
+    closeIssue: (n, reason) => {
+      writes.push(`close #${n} ${reason}`);
+    },
+    removeIssueLabel: (n, label) => {
+      writes.push(`unlabel #${n} ${label}`);
+    },
+    resolveLogin: () => "phoebe-bot",
+    issueTimeoutInputs: (n) => ({
+      comments: (comments[n] ?? []).map((comment) => ({
+        body: comment.body,
+        createdAt: "2026-11-05T00:00:00Z",
+        authorLogin: comment.by ?? "phoebe-bot",
+      })),
+      extraActivityAt: null,
+      baseline: "body:aa",
+    }),
   };
   return { overrides, writes, bodies };
 }
@@ -232,7 +255,7 @@ describe("run", () => {
     expect(logged).toContain(
       "4 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 1 with every advisory under minSeverity " +
         "(prod high, dev critical), not filed here, 0 transitive with no fix released, not tracked; " +
-        "1 package(s) with a fix, 1 awaiting one.",
+        "1 issue(s) with a fix, 1 awaiting one.",
     );
   });
 
@@ -400,5 +423,234 @@ describe("run", () => {
       ctxFor(overrides, clock),
     );
     expect(writes[0]).toBe("create #100 Security advisories in pkg (npm)");
+  });
+
+  describe("the transitive bundle", () => {
+    const clock: Clock = { now: new Date("2026-11-06T00:00:00Z") };
+    const fix = (pkg: string) =>
+      ({ id: `GHSA-${pkg}`, severity: "high", fixedIn: "1.0.1" }) as const;
+    const transitive = (pkg: string, overrides: Partial<Candidate> = {}) =>
+      candidate(pkg, [fix(pkg)], { via: ["expo"], ...overrides });
+    const KEY = "npm:security-transitive";
+
+    /** Run one scan and hand back what it wrote and the body of each issue it filed. */
+    async function scan(
+      native: Candidate[],
+      held: {
+        issues?: MentioningIssue[];
+        prs?: MentioningPr[];
+        comments?: Record<number, Comment[]>;
+      } = {},
+    ) {
+      const { overrides, writes, bodies } = gitHub(held.issues, held.prs, held.comments);
+      const logged: string[] = [];
+      await kindWith({}, { native }).run(
+        { ref: SCAN_REF, revision: "0" },
+        ctxFor(overrides, clock, logged),
+      );
+      return { writes, bodies, logged };
+    }
+
+    /** The bundle's issue as a first scan of `native` files it, numbered and labelled. */
+    async function filedBundle(
+      number: number,
+      native: Candidate[],
+      overrides: Partial<MentioningIssue> = {},
+    ): Promise<MentioningIssue> {
+      const { bodies } = await scan(native);
+      return {
+        number,
+        body: bodies.get(100)!,
+        state: "open",
+        stateReason: null,
+        closedAt: null,
+        labels: ["dependencies", "security", "phoebe:dependencies"],
+        ...overrides,
+      };
+    }
+
+    const dropped = (...entries: string[]) => ["## Dropped", "", ...entries].join("\n");
+
+    test("three transitive fixes file one issue, and a direct fix its own", async () => {
+      const { writes, bodies } = await scan([
+        transitive("tar"),
+        transitive("undici"),
+        transitive("ws"),
+        candidate("zod", [fix("zod")]),
+      ]);
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security fixes for transitive packages (npm)",
+        "create #101 Security advisories in zod (npm)",
+      ]);
+      expect(bodies.get(100)).toContain(
+        "| `tar` | `package.json` | prod | 1.0.0 | 1.0.1 | `expo` |",
+      );
+    });
+
+    test("closing the bundle's issue unmerged vetoes each row it listed, per workspace", async () => {
+      const both = [transitive("tar"), transitive("tar", { workspace: "web/package.json" })];
+      const closed = await filedBundle(40, both, { state: "closed", stateReason: "not_planned" });
+      const third = transitive("tar", { workspace: "api/package.json" });
+
+      const again = await scan(both, { issues: [closed] });
+      expect(again.writes).toEqual([]);
+
+      const { bodies } = await scan([...both, third], { issues: [closed] });
+      expect(bodies.get(100)).toContain("| `tar` | `api/package.json` | prod |");
+      expect(bodies.get(100)).not.toContain("web/package.json");
+    });
+
+    test("a row a merged PR dropped is filed on its own, and the bundle goes on without it", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const issue = await filedBundle(40, native, { state: "closed", stateReason: "completed" });
+      const pr: MentioningPr = {
+        number: 41,
+        state: "closed",
+        merged: true,
+        body: [
+          "Closes #40",
+          "",
+          dropped("- `tar@1.0.1` (needs override): `expo` 54.0.1 asks for `tar` `^0.9.0`"),
+          "",
+          issue.body.trim().split("\n").at(-1)!,
+        ].join("\n"),
+      };
+      // The PR merged the ws fix, so only tar is still vulnerable.
+      const { writes, bodies } = await scan([transitive("tar")], { issues: [issue], prs: [pr] });
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security advisories in tar (npm)",
+      ]);
+      expect(bodies.get(100)).toMatch(/^Dropped from #41; it needs more than a lockfile fix\./);
+    });
+
+    test("an untagged drop moves a row too; one that was only too new stays in the bundle", async () => {
+      const native = [transitive("tar"), transitive("ws"), transitive("undici")];
+      const issue = await filedBundle(40, native, { state: "closed", stateReason: "completed" });
+      const marker = issue.body.trim().split("\n").at(-1)!;
+      const pr: MentioningPr = {
+        number: 41,
+        state: "closed",
+        merged: true,
+        body: [
+          "Closes #40",
+          "",
+          dropped("- `tar@1.0.1`: the gate failed", "- `ws@1.0.1` (too new): published today"),
+          "",
+          marker,
+        ].join("\n"),
+      };
+      const { writes, bodies } = await scan([transitive("tar"), transitive("ws")], {
+        issues: [issue],
+        prs: [pr],
+      });
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security fixes for transitive packages (npm)",
+        "create #101 Security advisories in tar (npm)",
+      ]);
+      expect(bodies.get(100)).toContain("| `ws` |");
+      expect(bodies.get(100)).not.toContain("| `tar` |");
+    });
+
+    test("a Dropped section in someone else's comment moves nothing", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const issue = await filedBundle(40, native);
+      const comments = {
+        40: [{ body: dropped("- `tar@1.0.1` (needs override): pasted"), by: "passer-by" }],
+      };
+      const { writes } = await scan(native, { issues: [issue], comments });
+      expect(writes).toEqual([]);
+    });
+
+    test("when every row dropped, the bundle's issue is closed and each row is filed on its own", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const parked = await filedBundle(40, native, {
+        labels: ["dependencies", "security", "phoebe:dependencies", "phoebe:blocked"],
+      });
+      const comments = {
+        40: [
+          {
+            body:
+              dropped(
+                "- `tar@1.0.1` (needs override): `expo` asks for `^0.9.0`",
+                "- `ws@1.0.1` (needs override): `expo` asks for `^0.9.0`",
+              ) + "\n\n<!-- phoebe-blocked -->",
+          },
+        ],
+      };
+      const { writes, bodies, logged } = await scan(native, { issues: [parked], comments });
+      expect(writes).toEqual([
+        "update #40",
+        "comment #40",
+        "close #40 completed",
+        "create #100 Security advisories in tar (npm)",
+        "label #100 dependencies",
+        "label #100 security",
+        "label #100 phoebe:dependencies",
+        "create #101 Security advisories in ws (npm)",
+        "label #101 dependencies",
+        "label #101 security",
+        "label #101 phoebe:dependencies",
+      ]);
+      expect(bodies.get(40)).toContain(
+        "Every row this issue listed needed more than a lockfile fix",
+      );
+      expect(bodies.get(40)).not.toContain("| `tar` |");
+      expect(logged).toContain(
+        `${KEY}: every row of #40 has moved to an issue of its own; closed it.`,
+      );
+
+      // A later scan still reads the closed issue's drops, so the rows stay out
+      // of the bundle, and a new transitive fix files a fresh bundle past it.
+      const closed: MentioningIssue = {
+        ...parked,
+        body: bodies.get(40)!,
+        state: "closed",
+        stateReason: "completed",
+      };
+      const later = await scan([...native, transitive("undici")], { issues: [closed], comments });
+      expect(later.writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security fixes for transitive packages (npm)",
+        "create #101 Security advisories in tar (npm)",
+        "create #102 Security advisories in ws (npm)",
+      ]);
+      expect(later.bodies.get(100)).not.toContain("| `tar` |");
+    });
+
+    test("a parked bundle with a row left is refreshed and released, not closed", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const parked = await filedBundle(40, native, {
+        labels: ["dependencies", "security", "phoebe:dependencies", "phoebe:blocked"],
+      });
+      const comments = {
+        40: [
+          {
+            body:
+              dropped("- `tar@1.0.1` (needs override): no", "- `ws@1.0.1` (needs override): no") +
+              "\n\n<!-- phoebe-blocked -->",
+          },
+        ],
+      };
+      const { writes, bodies } = await scan([...native, transitive("undici")], {
+        issues: [parked],
+        comments,
+      });
+      expect(writes).toContain("update #40");
+      expect(writes).toContain("unlabel #40 phoebe:blocked");
+      expect(writes).not.toContain("close #40 completed");
+      expect(bodies.get(40)).toContain("| `undici` |");
+      expect(bodies.get(40)).not.toContain("| `tar` |");
+    });
+
+    test('`transitive: "individual"` ignores what a bundle dropped and files per package', async () => {
+      const { overrides, writes } = gitHub();
+      await kindWith(
+        { transitive: "individual" },
+        { native: [transitive("tar"), transitive("ws")] },
+      ).run({ ref: SCAN_REF, revision: "0" }, ctxFor(overrides, clock));
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security advisories in tar (npm)",
+        "create #101 Security advisories in ws (npm)",
+      ]);
+    });
   });
 });
