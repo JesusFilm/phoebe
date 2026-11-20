@@ -480,19 +480,19 @@ pipelines: {
 
 Every option has a default, so an empty block is a working detector:
 
-| Option              | Default                               | Meaning                                                                                                                                                                                        |
-| ------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `every`             | `"1d"`                                | How long one scan's results stand. `30m`, `12h`, `1d`, `1w`.                                                                                                                                   |
-| `sources`           | `["native", "agent", "renovate"]`     | The sources to run, in order of trust. When two report the same update, the earlier one's fields win.                                                                                          |
-| `ignore`            | `[]`                                  | Package names never proposed. `*` matches any run of characters: `"@types/*"`.                                                                                                                 |
-| `maturity`          | `{ patch: 3, minor: 7, major: 14 }`   | Days a release must age before it is proposed. `undated: "hold"` holds back a release with no publish date instead of proposing it at once.                                                    |
-| `minSeverity`       | `"high"`                              | The severity `dependency-security` files on its own. The release that fixes an advisory under it skips the maturity wait here; an advisory at or over it does not. Keep the two kinds in step. |
-| `grouping.strategy` | `{ prod: "by-relation", dev: "all" }` | `individual`, `all`, `by-dependency-type`, `by-workspace` or `by-relation`, for both sides or each. Production covers `prod`, `optional` and `peer` dependencies.                              |
-| `grouping.groups`   | `[]`                                  | `{ pattern, group }` overrides. A package matching `pattern` goes in the named bundle, production and development alike. The first match wins.                                                 |
-| `majors`            | `"individual"`                        | `"follow-strategy"` groups a major like the rest, unless its package also has a smaller update.                                                                                                |
-| `label`             | `"phoebe:dependencies"`               | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                               |
-| `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once. `0` turns the cap off.                                                                                                                                    |
-| `bootstrapperPin`   | `"skip"`                              | `"skip"` leaves the `phoebe-agent` pin in a Dockerfile to `phoebe upgrade`, which moves it with the engine ref. `"propose"` files it like any other dependency.                                |
+| Option              | Default                               | Meaning                                                                                                                                                                                                                                                           |
+| ------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`             | `"1d"`                                | How long one scan's results stand. `30m`, `12h`, `1d`, `1w`.                                                                                                                                                                                                      |
+| `sources`           | `["native", "agent", "renovate"]`     | The sources to run, in order of trust. When two report the same update, the earlier one's fields win.                                                                                                                                                             |
+| `ignore`            | `[]`                                  | Package names never proposed. `*` matches any run of characters: `"@types/*"`.                                                                                                                                                                                    |
+| `maturity`          | `{ patch: 3, minor: 7, major: 14 }`   | Days a release must age before it is proposed. `undated: "hold"` holds back a release with no publish date instead of proposing it at once.                                                                                                                       |
+| `minSeverity`       | `{ prod: "high", dev: "critical" }`   | The severity `dependency-security` files on its own: one severity for both sides, or `{ prod, dev }`. The release that fixes an advisory under its side's threshold skips the maturity wait here; an advisory at or over it does not. Keep the two kinds in step. |
+| `grouping.strategy` | `{ prod: "by-relation", dev: "all" }` | `individual`, `all`, `by-dependency-type`, `by-workspace` or `by-relation`, for both sides or each. Production covers `prod`, `optional` and `peer` dependencies.                                                                                                 |
+| `grouping.groups`   | `[]`                                  | `{ pattern, group }` overrides. A package matching `pattern` goes in the named bundle, production and development alike. The first match wins.                                                                                                                    |
+| `majors`            | `"individual"`                        | `"follow-strategy"` groups a major like the rest, unless its package also has a smaller update.                                                                                                                                                                   |
+| `label`             | `"phoebe:dependencies"`               | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                                                                                                  |
+| `prConcurrentLimit` | `5`                                   | Open routed bundles allowed at once. `0` turns the cap off.                                                                                                                                                                                                       |
+| `bootstrapperPin`   | `"skip"`                              | `"skip"` leaves the `phoebe-agent` pin in a Dockerfile to `phoebe upgrade`, which moves it with the engine ref. `"propose"` files it like any other dependency.                                                                                                   |
 
 An unknown option fails registration, as for `sentry`. The tuning knobs and
 `PHOEBE_DEPENDENCY_UPDATES_*` apply as for any kind. The kind's prompt is the
@@ -532,8 +532,10 @@ unioned, and then:
    skipped.
 3. Packages matching `ignore` go.
 4. A release still inside its maturity wait goes. The one exception is the
-   release that fixes an advisory under `minSeverity`, which ships at once. A
-   release past the fix waits like any other.
+   release that fixes an advisory under `minSeverity`, which ships at once.
+   With the defaults that covers a high on a development dependency, which
+   `dependency-security` does not file. A release past the fix waits like any
+   other.
 5. Of several targets for one dependency, the highest that survived is kept,
    one for the majors and one for the rest. While the newest release ages, the
    fix release can go out alone.
@@ -587,8 +589,10 @@ The hourly detector of the dependency feature
 ([ADR 0003](adr/0003-dependency-updates-are-three-kinds-over-one-candidate-contract.md)).
 It shares the sources, the filing and the marker with
 [`dependency-updates`](#dependency-updates-file-dependency-tickets-opt-in). Only
-the policy differs. It files every advisory at or above `minSeverity`, one issue
-per package, and leaves the rest to the daily pass.
+the policy differs. It files every advisory at or above the `minSeverity` of
+its dependency type, one issue per package
+([ADR 0005](adr/0005-security-relevance-is-asked-where-the-fix-costs-something.md)).
+The daily pass picks up the rest on direct dependencies only.
 
 ```ts
 pipelines: {
@@ -597,7 +601,8 @@ pipelines: {
     kinds: {
       "dependency-security": {
         path: "phoebe-agent/kinds/dependency-security",
-        // every: "1h", sources: ["native", "agent"], minSeverity: "high",
+        // every: "1h", sources: ["native", "agent"],
+        // minSeverity: { prod: "high", dev: "critical" },
       },
       "dependency-updates": { path: "phoebe-agent/kinds/dependency-updates" },
       dependencies: { path: "phoebe-agent/kinds/dependencies-work" },
@@ -606,13 +611,13 @@ pipelines: {
 },
 ```
 
-| Option            | Default                 | Meaning                                                                                                                          |
-| ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `every`           | `"1h"`                  | How long one scan's results stand.                                                                                               |
-| `sources`         | `["native", "agent"]`   | The sources to run, in order of trust. `renovate` is allowed too.                                                                |
-| `minSeverity`     | `"high"`                | `low`, `moderate`, `high` or `critical`. Advisories under it are not filed here. Set the same value on `dependency-updates`.     |
-| `label`           | `"phoebe:dependencies"` | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                 |
-| `bootstrapperPin` | `"skip"`                | As on `dependency-updates`: `"skip"` files nothing for the `phoebe-agent` pin in a Dockerfile, `"propose"` files its advisories. |
+| Option            | Default                             | Meaning                                                                                                                                                                                                                                                                                                  |
+| ----------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `every`           | `"1h"`                              | How long one scan's results stand.                                                                                                                                                                                                                                                                       |
+| `sources`         | `["native", "agent"]`               | The sources to run, in order of trust. `renovate` is allowed too.                                                                                                                                                                                                                                        |
+| `minSeverity`     | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`, where a side left out keeps its default. Production covers `prod`, `optional` and `peer` dependencies. Advisories under their side's threshold are not filed here. Set the same value on `dependency-updates`. |
+| `label`           | `"phoebe:dependencies"`             | The routing label. It must match the `dependencies` kind's `label`, and it may not be the tenant's `readyLabel`.                                                                                                                                                                                         |
+| `bootstrapperPin` | `"skip"`                            | As on `dependency-updates`: `"skip"` files nothing for the `phoebe-agent` pin in a Dockerfile, `"propose"` files its advisories.                                                                                                                                                                         |
 
 There is no `prConcurrentLimit`. A security issue is filed whatever the open
 cap says, and an unknown option fails registration. The window, the unit
@@ -634,9 +639,12 @@ the other managers it says the route is not known.
 2. Collapses every source's proposals for one occurrence of a package (manager,
    package, current version, dependency type, workspace), unioning the
    advisories by id.
-3. Drops advisories under `minSeverity`. An occurrence left with none is not
-   filed. `dependency-updates` reads those and lets their fix release skip the
-   maturity wait.
+3. Drops advisories under the `minSeverity` of the occurrence's dependency
+   type. An occurrence left with none is not filed. A transitive package takes
+   the type of what pulls it in, and counts as production when any of those is
+   not a development dependency. On a direct dependency `dependency-updates`
+   reads the dropped advisories and lets their fix release skip the maturity
+   wait.
 4. Targets the fix release exactly, the highest `fixedIn` among what is left.
    OSV's `fixedIn` is the first fix above the installed version. It is
    usually on the package's current release line, but when that line has no fix
@@ -649,7 +657,13 @@ the other managers it says the route is not known.
 | -------------------------------- | --------------------------------------------------------------------------------------------------- |
 | at least one has a fix           | a routed issue labelled `dependencies`, `security` and `label`, which the `dependencies` kind works |
 | none has a fix yet               | a tracking issue labelled `dependencies` and `security` only, which no kind works                   |
-| every one is under the threshold | nothing; `dependency-updates` handles it                                                            |
+| every one is under the threshold | nothing; `dependency-updates` handles it on a direct dependency                                     |
+
+**A high on a dev-only transitive package is filed by neither kind.**
+`dependency-updates` lists direct dependencies only, so an advisory under the
+threshold on a transitive package has no second reader. With the defaults that
+is every high on a package reached only through development dependencies. The
+scan's log line counts them. To have them filed, set `minSeverity: { dev: "high" }`.
 
 The routed issue's table gives each occurrence's version, its fixed version,
 and how it is reached: `direct`, `transitive, through` the direct dependencies

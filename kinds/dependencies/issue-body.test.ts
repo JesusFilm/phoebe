@@ -260,7 +260,10 @@ describe("readIssueRows", () => {
         }),
       ],
     };
-    const options = { minSeverity: "high" as const, routingLabel: "phoebe:dependencies" };
+    const options = {
+      minSeverity: { prod: "high", dev: "high" } as const,
+      routingLabel: "phoebe:dependencies",
+    };
     const rows = (routed: boolean) =>
       readIssueRows(renderSecurityBody(security, { ...options, routed })).map(
         (r) => `${r.workspace} ${r.package}@${r.target} ${r.advisories.join(",")}`,

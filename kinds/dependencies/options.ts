@@ -2,6 +2,8 @@
 // validators that turn a bad field into an error naming its config path, and
 // the `every` and `sources` fields both detectors carry.
 
+import { SEVERITIES } from "./candidate.ts";
+import { MIN_SEVERITY_DEFAULT, type MinSeverity } from "./policy.ts";
 import { SOURCE_NAMES, type SourceName } from "./sources/assemble.ts";
 
 /** A count and one of s/m/h/d/w. */
@@ -87,4 +89,20 @@ export function everyPeriod(at: string, value: unknown): string {
     fail(at, `\`every\` must be a period like "1d" or "12h" — got ${JSON.stringify(value)}.`);
   }
   return value;
+}
+
+/**
+ * `minSeverity` as one severity, which both sides take, or `{ prod, dev }`,
+ * where a side left out keeps its default.
+ */
+export function minSeverity(at: string, value: unknown): MinSeverity {
+  if (!isRecord(value)) {
+    const one = oneOf(at, "minSeverity", value, SEVERITIES);
+    return { prod: one, dev: one };
+  }
+  const here = `${at}.minSeverity`;
+  onlyKeys(here, value, ["prod", "dev"]);
+  const side = (key: "prod" | "dev") =>
+    value[key] === undefined ? MIN_SEVERITY_DEFAULT[key] : oneOf(here, key, value[key], SEVERITIES);
+  return { prod: side("prod"), dev: side("dev") };
 }

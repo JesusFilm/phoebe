@@ -7,17 +7,18 @@ import {
   BOOTSTRAPPER_PIN_MODES,
   type BootstrapperPinMode,
 } from "../dependencies/bootstrapper.ts";
-import { SEVERITIES, type Severity } from "../dependencies/candidate.ts";
 import { STRATEGIES, type GroupOverride, type Strategy } from "../dependencies/grouping.ts";
 import {
   MATURITY_DEFAULTS,
   MIN_SEVERITY_DEFAULT,
   type MaturityPolicy,
+  type MinSeverity,
 } from "../dependencies/policy.ts";
 import {
   everyPeriod,
   fail,
   isRecord,
+  minSeverity,
   nonEmptyString,
   nonNegativeInteger,
   oneOf,
@@ -39,11 +40,12 @@ export type DependencyUpdatesOptions = {
   /** Days a release ages per update type, and what an undated one does. */
   maturity: Required<MaturityPolicy>;
   /**
-   * The severity `dependency-security` files on its own. An advisory under it
-   * lets the release that fixes it skip the maturity wait here; one at or over
-   * it is left to that kind's own clock.
+   * The severity `dependency-security` files on its own, for production and
+   * for development dependencies. An advisory under it lets the release that
+   * fixes it skip the maturity wait here; one at or over it is left to that
+   * kind's own clock.
    */
-  minSeverity: Severity;
+  minSeverity: MinSeverity;
   grouping: {
     /** The strategy for production dependencies and for development ones. */
     strategy: { prod: Strategy; dev: Strategy };
@@ -178,9 +180,7 @@ export function resolveDependencyUpdatesOptions(
     ignore: raw["ignore"] === undefined ? defaults.ignore : ignore(at, raw["ignore"]),
     maturity: raw["maturity"] === undefined ? defaults.maturity : maturity(at, raw["maturity"]),
     minSeverity:
-      raw["minSeverity"] === undefined
-        ? defaults.minSeverity
-        : oneOf(at, "minSeverity", raw["minSeverity"], SEVERITIES),
+      raw["minSeverity"] === undefined ? defaults.minSeverity : minSeverity(at, raw["minSeverity"]),
     grouping: raw["grouping"] === undefined ? defaults.grouping : grouping(at, raw["grouping"]),
     majors:
       raw["majors"] === undefined
