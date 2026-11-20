@@ -176,9 +176,10 @@ export function renderTransitiveBody(
       `${thresholdPhrase(options.minSeverity)}.`,
     "",
     "Make lockfile fixes only. For each row, run the package manager's own update for that " +
-      "package and check that the lockfile now resolves the version in its To column. Do not " +
-      "edit a manifest and do not add an override. A row the lockfile cannot bring to that " +
-      "version is dropped with the `(needs override)` tag, and Phoebe files it again on its own.",
+      "package and check that the lockfile now resolves the version in its To column or a " +
+      "newer one. Do not edit a manifest and do not add an override. A row the lockfile cannot " +
+      "bring that far is dropped with the `(needs override)` tag, and Phoebe files it again on " +
+      "its own.",
     "",
     "| Package | Workspace | Type | From | To | Reached through |",
     "| --- | --- | --- | --- | --- | --- |",
