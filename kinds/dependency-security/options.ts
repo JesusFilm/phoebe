@@ -13,6 +13,7 @@ import {
   isRecord,
   minSeverity,
   nonEmptyString,
+  nonNegativeInteger,
   oneOf,
   onlyKeys,
   sources,
@@ -35,6 +36,12 @@ export type DependencySecurityOptions = {
   minSeverity: MinSeverity;
   /** The routing label the `dependencies` kind lists. Never the tenant's ready label. */
   label: string;
+  /**
+   * Open routed security bundles allowed at once, issues and PRs together.
+   * `0` is no cap. The bundles `dependency-updates` has open are not counted,
+   * and an issue carrying a critical advisory is filed whatever the count.
+   */
+  prConcurrentLimit: number;
   /** `skip` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `propose` files it. */
   bootstrapperPin: BootstrapperPinMode;
 };
@@ -44,6 +51,7 @@ export const DEPENDENCY_SECURITY_OPTION_DEFAULTS: DependencySecurityOptions = {
   sources: [NATIVE_SOURCE_NAME, AGENT_SOURCE_NAME],
   minSeverity: MIN_SEVERITY_DEFAULT,
   label: "phoebe:dependencies",
+  prConcurrentLimit: 5,
   bootstrapperPin: BOOTSTRAPPER_PIN_DEFAULT,
 };
 
@@ -52,6 +60,7 @@ const OPTION_KEYS: readonly (keyof DependencySecurityOptions)[] = [
   "sources",
   "minSeverity",
   "label",
+  "prConcurrentLimit",
   "bootstrapperPin",
 ];
 
@@ -71,9 +80,9 @@ function routingLabel(at: string, raw: unknown): string {
 
 /**
  * Validate the block a tenant declared and fill the defaults. `at` is the
- * config path the errors name. An unknown field is refused, so a
- * `prConcurrentLimit` copied from the updates block fails here rather than
- * looking as if it capped anything.
+ * config path the errors name. An unknown field is refused, as the updates
+ * block refuses one, because a typo'd option would otherwise sit inert while
+ * looking configured.
  */
 export function resolveDependencySecurityOptions(
   raw: unknown,
@@ -89,6 +98,10 @@ export function resolveDependencySecurityOptions(
     minSeverity:
       raw["minSeverity"] === undefined ? defaults.minSeverity : minSeverity(at, raw["minSeverity"]),
     label: routingLabel(at, raw["label"] ?? defaults.label),
+    prConcurrentLimit:
+      raw["prConcurrentLimit"] === undefined
+        ? defaults.prConcurrentLimit
+        : nonNegativeInteger(at, "prConcurrentLimit", raw["prConcurrentLimit"]),
     bootstrapperPin:
       raw["bootstrapperPin"] === undefined
         ? defaults.bootstrapperPin

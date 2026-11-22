@@ -661,17 +661,18 @@ defaults for the fields it leaves out.
 
 `path: "phoebe-agent/kinds/dependency-security"`
 
-| Option            | Default                             | Meaning                                                                                                                                                                                                            |
-| ----------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `every`           | `"1h"`                              | How long one scan's results stand, in the same form as above.                                                                                                                                                      |
-| `sources`         | `["native", "agent"]`               | The sources to run, in order of trust. `renovate` is allowed too.                                                                                                                                                  |
-| `minSeverity`     | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`. Advisories under their side's threshold are not filed here. `dependency-updates` reads them on a direct dependency only. |
-| `label`           | `"phoebe:dependencies"`             | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`.                                                                             |
-| `bootstrapperPin` | `"skip"`                            | `"skip"` files no advisory on the Dockerfile's `phoebe-agent` pin; `"propose"` files it like any other.                                                                                                            |
+| Option              | Default                             | Meaning                                                                                                                                                                                                            |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `every`             | `"1h"`                              | How long one scan's results stand, in the same form as above.                                                                                                                                                      |
+| `sources`           | `["native", "agent"]`               | The sources to run, in order of trust. `renovate` is allowed too.                                                                                                                                                  |
+| `minSeverity`       | `{ prod: "high", dev: "critical" }` | `low`, `moderate`, `high` or `critical`: one severity for both sides, or `{ prod, dev }`. Advisories under their side's threshold are not filed here. `dependency-updates` reads them on a direct dependency only. |
+| `label`             | `"phoebe:dependencies"`             | The routing label. Must match the `dependencies` kind's `label`, must not be `readyLabel`, and cannot be `dependencies` or `security`.                                                                             |
+| `prConcurrentLimit` | `5`                                 | Open routed security bundles allowed at once, issues and PRs together. `0` is no cap. A bundle with a critical advisory is never capped.                                                                           |
+| `bootstrapperPin`   | `"skip"`                            | `"skip"` files no advisory on the Dockerfile's `phoebe-agent` pin; `"propose"` files it like any other.                                                                                                            |
 
-It has no `prConcurrentLimit`, so a copy of that field from the updates block
-is refused. A `readyLabel` of `dependencies` or `security` fails registration,
-because every security issue wears both.
+Its `prConcurrentLimit` counts this kind's own bundles, not the ones
+`dependency-updates` has open. A `readyLabel` of `dependencies` or `security`
+fails registration, because every security issue wears both.
 
 #### `dependencies`
 
