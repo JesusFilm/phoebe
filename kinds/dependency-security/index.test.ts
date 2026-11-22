@@ -231,7 +231,7 @@ describe("run", () => {
     expect(bodies.get(101)).toMatch(/^Tracking/);
     expect(logged).toContain(
       "4 candidate(s): 0 bootstrapper pin(s) left to `phoebe upgrade`, 1 with every advisory under minSeverity " +
-        "(prod high, dev critical), not filed here; " +
+        "(prod high, dev critical), not filed here, 0 transitive with no fix released, not tracked; " +
         "1 package(s) with a fix, 1 awaiting one.",
     );
   });

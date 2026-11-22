@@ -148,6 +148,64 @@ describe("planSecurity", () => {
     expect(plan.planned[0]!.body).toContain("for its advisories at or above `high`, though");
   });
 
+  describe("with no fix released", () => {
+    const high = advisory("GHSA-high", "high", null);
+    const groups = (candidates: Candidate[]) => {
+      const plan = planSecurity(candidates, options);
+      return { planned: plan.planned.map((p) => [p.bundle.group, p.routed]), plan };
+    };
+
+    test("a transitive high files nothing and is counted", () => {
+      const { planned, plan } = groups([
+        candidate("picomatch", { depType: "prod", via: ["vite-plus"], advisories: [high] }),
+      ]);
+      expect(planned).toEqual([]);
+      expect(plan.unfixable).toBe(1);
+      expect(plan.below).toBe(0);
+    });
+
+    test("a direct high is tracked", () => {
+      const { planned, plan } = groups([candidate("lodash", { advisories: [high] })]);
+      expect(planned).toEqual([["security:lodash", false]]);
+      expect(plan.unfixable).toBe(0);
+    });
+
+    test("a transitive critical is tracked", () => {
+      const { planned } = groups([
+        candidate("tar", {
+          via: ["expo"],
+          advisories: [advisory("GHSA-crit", "critical", null)],
+        }),
+      ]);
+      expect(planned).toEqual([["security:tar", false]]);
+    });
+
+    test("a high whose route is not known is tracked", () => {
+      const unknown = candidate("qs", { advisories: [high] });
+      delete unknown.via;
+      expect(groups([unknown]).planned).toEqual([["security:qs", false]]);
+    });
+
+    test("a routed issue lists the fixed transitive row and leaves the unfixed one out", () => {
+      const { plan } = groups([
+        candidate("minimatch", {
+          current: "9.0.9",
+          via: ["electron-builder"],
+          advisories: [advisory("GHSA-fixed", "high", "9.0.10")],
+        }),
+        candidate("minimatch", {
+          current: "10.2.6",
+          via: ["electron-builder"],
+          advisories: [high],
+        }),
+      ]);
+      expect(plan.planned.map((p) => p.routed)).toEqual([true]);
+      expect(plan.planned[0]!.bundle.candidates.map((c) => c.current)).toEqual(["9.0.9"]);
+      expect(plan.planned[0]!.body).not.toContain("10.2.6");
+      expect(plan.unfixable).toBe(1);
+    });
+  });
+
   test("under the threshold: not filed, and counted", () => {
     const plan = planSecurity(
       [
