@@ -697,8 +697,8 @@ unless an advisory comes or goes.
 Filing follows the [`dependency-updates` rules](#dependency-updates-file-dependency-tickets-opt-in):
 the same marker, the same two searches, the same veto. Closing a tracking issue
 by hand vetoes its rows, and a fix or a new advisory lifts the veto.
-Routed security issues count toward `dependency-updates`' open cap, though
-nothing caps them.
+Routed security issues also count toward `dependency-updates`' open cap, which
+counts every open routed bundle. Their own cap is `prConcurrentLimit` above.
 
 ## `dependencies`, finish a dependency upgrade (opt-in)
 
