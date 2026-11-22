@@ -294,6 +294,26 @@ A hash of a bundle's package-version pairs and advisory ids, carried beside the 
 in the issue's marker. A moved fingerprint refreshes the issue and lifts a person's veto.
 _Avoid_: hash, version key, checksum
 
+**Lockfile fix**:
+A security fix that moves only the lockfile, because the range of the dependency that
+pulls the package in already allows the fixed version.
+_Avoid_: cheap fix, in-range fix, lockfile maintenance (that is Renovate's word)
+
+**Manifest fix**:
+A security fix that has to change a manifest: a bump of the dependency that pulls the
+package in, or a package manager override.
+_Avoid_: expensive fix, forced fix, override (that is one of its two forms)
+
+**Verdict**:
+The implementer's finding on a security ticket that needs a manifest fix: affected, not
+affected, or can't tell.
+_Avoid_: triage (that is the `sentry` kind's), assessment, reachability analysis
+
+**Dismissal**:
+The detector closing a security ticket on a not-affected verdict. It stands until a new
+advisory lands on the package or a person reopens the issue.
+_Avoid_: veto (that is a person closing the issue), suppression, ignore
+
 ### Skills
 
 **Vendored skill**:

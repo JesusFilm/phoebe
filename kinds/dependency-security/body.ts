@@ -5,15 +5,16 @@
 // Rendered from the bundle alone, reading no clock, so the same bundle always
 // renders the same bytes.
 
-import { compareCandidates, type Candidate, type Severity } from "../dependencies/candidate.ts";
+import { compareCandidates, type Candidate } from "../dependencies/candidate.ts";
 import { bundleKey, fingerprint, renderMarker } from "../dependencies/fingerprint.ts";
 import type { Bundle } from "../dependencies/grouping.ts";
 import { cell, code, plain, renderAdvisories, STAYS_CELL } from "../dependencies/issue-body.ts";
+import type { MinSeverity } from "../dependencies/policy.ts";
 
 export type SecurityBodyOptions = {
   /** Whether a fix exists, so the issue routes to the `dependencies` kind. */
   routed: boolean;
-  minSeverity: Severity;
+  minSeverity: MinSeverity;
   /** The routing label a tracking issue gains once a fix ships. */
   routingLabel: string;
 };
@@ -41,6 +42,17 @@ function reachedThrough(candidate: Candidate): string {
   return `transitive, through ${candidate.via.map(code).join(", ")}`;
 }
 
+/**
+ * The threshold as a body names it: the one severity when both sides share
+ * it, and each side's when a development dependency answers to another.
+ */
+function thresholdPhrase(minSeverity: MinSeverity): string {
+  return minSeverity.prod === minSeverity.dev
+    ? code(minSeverity.prod)
+    : `the threshold for its dependency type (${code(minSeverity.prod)} for production, ` +
+        `${code(minSeverity.dev)} for development)`;
+}
+
 /** The title, the same for a tracking issue and the routed issue it becomes. */
 export function renderSecurityTitle(bundle: Bundle): string {
   const name = bundle.candidates[0]!.package.replace(/[\r\n]+/g, " ");
@@ -52,7 +64,7 @@ export function renderSecurityBody(bundle: Bundle, options: SecurityBodyOptions)
   const candidates = [...bundle.candidates].sort(compareCandidates);
   const pkg = code(candidates[0]!.package);
   const manager = code(bundle.manager);
-  const severity = code(options.minSeverity);
+  const severity = thresholdPhrase(options.minSeverity);
   const lines: string[] = [];
 
   if (options.routed) {

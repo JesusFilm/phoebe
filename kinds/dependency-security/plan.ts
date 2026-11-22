@@ -6,8 +6,10 @@
 //   - Each occurrence of a package (manager, package, current version,
 //     dependency type, workspace) is collapsed across every target the
 //     sources proposed, its advisories unioned by id.
-//   - Advisories under `minSeverity` are dropped; `dependency-updates` reads
-//     them. An occurrence left with none is not filed.
+//   - Advisories under the `minSeverity` of their occurrence's dependency
+//     type are dropped (ADR 0005). `dependency-updates` reads them on a
+//     direct dependency; on a transitive package nothing files them. An
+//     occurrence left with none is not filed.
 //   - What remains targets the fix release exactly, the highest `fixedIn`
 //     among its advisories. policy.ts lets only that release skip the
 //     maturity wait, so a newer target would leave the advisory open while it
@@ -23,7 +25,6 @@ import {
   compareCandidates,
   unionCandidates,
   type Candidate,
-  type Severity,
 } from "../dependencies/candidate.ts";
 import {
   DEPENDENCIES_LABEL,
@@ -33,7 +34,7 @@ import {
   type Rendered,
 } from "../dependencies/filing.ts";
 import type { Bundle } from "../dependencies/grouping.ts";
-import { overThreshold } from "../dependencies/policy.ts";
+import { overThreshold, type MinSeverity } from "../dependencies/policy.ts";
 import { managerScheme } from "../dependencies/registry/versions.ts";
 import { fixTarget, moveOf } from "../dependencies/sources/native.ts";
 import type { PhoebeLabel } from "../../src/labels.ts";
@@ -64,9 +65,9 @@ function collapse(candidates: readonly Candidate[]): Candidate[] {
  * threshold, the target their fix, and no publish date, which belonged to
  * whatever target a source proposed.
  */
-function securityTarget(c: Candidate, minSeverity: Severity): Candidate | null {
+function securityTarget(c: Candidate, minSeverity: MinSeverity): Candidate | null {
   const advisories = c.advisories
-    .filter((a) => overThreshold(a, minSeverity))
+    .filter((a) => overThreshold(a, c.depType, minSeverity))
     .sort((a, b) => byText(a.id, b.id));
   if (advisories.length === 0) return null;
   const target = fixTarget(managerScheme(c.manager), c.current, advisories);
@@ -83,7 +84,7 @@ function securityTarget(c: Candidate, minSeverity: Severity): Candidate | null {
 export function planSecurity(
   candidates: readonly Candidate[],
   options: {
-    minSeverity: Severity;
+    minSeverity: MinSeverity;
     routingLabel: PhoebeLabel;
     bootstrapperPin: BootstrapperPinMode;
   },

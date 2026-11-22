@@ -152,7 +152,10 @@ export function planBundles(
   // at or over it belongs to dependency-security.
   const mature = kept.filter((c) =>
     isMature(
-      { ...c, advisories: c.advisories.filter((a) => !overThreshold(a, options.minSeverity)) },
+      {
+        ...c,
+        advisories: c.advisories.filter((a) => !overThreshold(a, c.depType, options.minSeverity)),
+      },
       now,
       options.maturity,
     ),

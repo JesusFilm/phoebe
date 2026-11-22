@@ -17,7 +17,7 @@ describe("resolveDependencySecurityOptions", () => {
     expect(resolveDependencySecurityOptions({}, at)).toEqual({
       every: "1h",
       sources: ["native", "agent"],
-      minSeverity: "high",
+      minSeverity: { prod: "high", dev: "critical" },
       label: "phoebe:dependencies",
       bootstrapperPin: "skip",
     });
@@ -38,10 +38,19 @@ describe("resolveDependencySecurityOptions", () => {
     ).toEqual({
       every: "30m",
       sources: ["renovate", "native"],
-      minSeverity: "critical",
+      minSeverity: { prod: "critical", dev: "critical" },
       label: "deps",
       bootstrapperPin: "propose",
     });
+  });
+
+  test("minSeverity takes one severity for both sides, or a side of its own", () => {
+    const min = (value: unknown) =>
+      resolveDependencySecurityOptions({ minSeverity: value }, at).minSeverity;
+    expect(min("moderate")).toEqual({ prod: "moderate", dev: "moderate" });
+    expect(min({ dev: "high" })).toEqual({ prod: "high", dev: "high" });
+    expect(min({ prod: "low" })).toEqual({ prod: "low", dev: "critical" });
+    expect(min({})).toEqual({ prod: "high", dev: "critical" });
   });
 
   test.each([
@@ -49,6 +58,15 @@ describe("resolveDependencySecurityOptions", () => {
     [{ every: "hourly" }, "kinds.dependency-security: `every` must be a period"],
     [{ sources: [] }, "kinds.dependency-security: `sources` must be a non-empty array"],
     [{ minSeverity: "severe" }, "kinds.dependency-security: `minSeverity` must be one of"],
+    [{ minSeverity: 3 }, "kinds.dependency-security: `minSeverity` must be one of"],
+    [
+      { minSeverity: { dev: "severe" } },
+      "kinds.dependency-security.minSeverity: `dev` must be one of low, moderate, high, critical",
+    ],
+    [
+      { minSeverity: { test: "high" } },
+      "kinds.dependency-security.minSeverity: unknown option `test`",
+    ],
     [{ label: " " }, "kinds.dependency-security: `label` must be a non-empty string"],
     [{ label: "security" }, 'label must not be "security"'],
     [{ label: "dependencies" }, 'label must not be "dependencies"'],

@@ -7,17 +7,17 @@ import {
   BOOTSTRAPPER_PIN_MODES,
   type BootstrapperPinMode,
 } from "../dependencies/bootstrapper.ts";
-import { SEVERITIES, type Severity } from "../dependencies/candidate.ts";
 import {
   everyPeriod,
   fail,
   isRecord,
+  minSeverity,
   nonEmptyString,
   oneOf,
   onlyKeys,
   sources,
 } from "../dependencies/options.ts";
-import { MIN_SEVERITY_DEFAULT } from "../dependencies/policy.ts";
+import { MIN_SEVERITY_DEFAULT, type MinSeverity } from "../dependencies/policy.ts";
 import { AGENT_SOURCE_NAME } from "../dependencies/sources/agent.ts";
 import type { SourceName } from "../dependencies/sources/assemble.ts";
 import { NATIVE_SOURCE_NAME } from "../dependencies/sources/native.ts";
@@ -27,8 +27,12 @@ export type DependencySecurityOptions = {
   every: string;
   /** The sources to run, in order of trust: an earlier one wins a conflict. */
   sources: readonly SourceName[];
-  /** The lowest severity filed here. Advisories under it are left to `dependency-updates`. */
-  minSeverity: Severity;
+  /**
+   * The lowest severity filed here, for production and for development
+   * dependencies. `dependency-updates` reads the advisories under it, but only
+   * on a direct dependency: one on a transitive package is filed by neither.
+   */
+  minSeverity: MinSeverity;
   /** The routing label the `dependencies` kind lists. Never the tenant's ready label. */
   label: string;
   /** `skip` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `propose` files it. */
@@ -83,9 +87,7 @@ export function resolveDependencySecurityOptions(
     every: everyPeriod(at, raw["every"] ?? defaults.every),
     sources: raw["sources"] === undefined ? defaults.sources : sources(at, raw["sources"]),
     minSeverity:
-      raw["minSeverity"] === undefined
-        ? defaults.minSeverity
-        : oneOf(at, "minSeverity", raw["minSeverity"], SEVERITIES),
+      raw["minSeverity"] === undefined ? defaults.minSeverity : minSeverity(at, raw["minSeverity"]),
     label: routingLabel(at, raw["label"] ?? defaults.label),
     bootstrapperPin:
       raw["bootstrapperPin"] === undefined
