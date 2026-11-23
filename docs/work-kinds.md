@@ -714,10 +714,12 @@ after the refresh has `phoebe:blocked` lifted instead.
 
 GitHub refuses a body over 65,536 characters. A bundle that would pass 60,000
 keeps the rows that fit, in table order, and the scan logs how many it left out.
-They come in once earlier rows merge.
+They come in once earlier rows merge. A row a closed issue vetoes, or an open
+issue already proposes, still takes its room among the rows that fit.
 
 `transitive: "individual"` turns the bundle off and files every package on its
-own.
+own. Switch while no bundle issue is open. One left open keeps its rows out of
+the per-package issues until its PR merges, and closing it by hand vetoes them.
 
 A per-package issue's table gives each occurrence's version, its fixed version,
 and how it is reached: `direct`, `transitive, through` the direct dependencies
@@ -779,8 +781,8 @@ and a fix changes that, so the fix is still proposed.
 Filing follows the [`dependency-updates` rules](#dependency-updates-file-dependency-tickets-opt-in):
 the same marker, the same two searches, the same veto. Closing a tracking issue
 by hand vetoes its rows, and a fix or a new advisory lifts the veto.
-Routed security issues count toward `dependency-updates`' open cap, though
-nothing caps them.
+Routed security issues also count toward `dependency-updates`' open cap, which
+counts every open routed bundle. Their own cap is `prConcurrentLimit` above.
 
 ## `dependencies`, finish a dependency upgrade (opt-in)
 
