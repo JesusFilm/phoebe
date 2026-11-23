@@ -79,6 +79,39 @@ gets a `patch` changeset whose summary is the PR title, anything else gets the
 label. Format, and why empty changesets don't pass:
 [`docs/releasing.md`](docs/releasing.md).
 
+## Gitleaks and fake secrets
+
+The `Scan for exposed secrets` check
+([`.github/workflows/gitleaks.yml`](.github/workflows/gitleaks.yml)) runs the
+pinned Gitleaks CLI over every commit a PR adds. Test fixtures shaped like
+credentials trip it: a `ghp_…` token, a PEM header, a JWT, a long base64 string.
+CI publishes only a count, never the finding, so to see what it flagged, install
+the same version the workflow pins and run it over your own commits with values
+redacted:
+
+    gitleaks git . --log-opts="origin/main..HEAD" --redact=100 --report-format=json --report-path=<outside the repo>
+
+- **A fake you invented for a test:** put a `gitleaks:allow` comment on the
+  line the report names, the line holding the value (`// gitleaks:allow` in
+  TypeScript). Do not add a `.gitleaksignore` entry for new code. Its
+  fingerprints carry the commit SHA, a squash merge changes that SHA, and the
+  scan on `main` then fails after the merge.
+- **Anything that could be real** — copied from an environment, a log, a config,
+  or anything you did not invent: stop. Do not allow-list it, do not push again,
+  and do not put the value in a PR, issue, or comment. Tell a maintainer the
+  check found a possible credential so they can rotate it. Deleting it in a
+  later commit does not help: the scan covers every commit, and history keeps
+  the value.
+- **`.gitleaksignore`** lists findings that were already in history when the
+  check landed, each reviewed and confirmed to be a fixture. Append to it only
+  for a finding in a commit already on `main`, only after confirming the value
+  is fake, using the commit-scoped `Fingerprint` from the report.
+- **Bumping the pinned Gitleaks version:** change the download URL, the SHA-256
+  (from the release's `gitleaks_<version>_checksums.txt`), and the `Version:` line
+  in the summary together. First run a full-history scan
+  (`--log-opts="--remotes=origin --tags"`) with the new version, since new rules
+  can flag old fixtures. Those findings go through `.gitleaksignore` as above.
+
 ## Installing Phoebe into a target repo
 
 If you are here to install Phoebe into another repository, follow the deterministic
