@@ -26,7 +26,6 @@
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
 import { assertProviderKeysPresent, loginFileProbe } from "./provider-key.ts";
@@ -2615,7 +2614,7 @@ export async function runEngine(
       pipeline: pipelineName,
       kinds: workOrder.map((kind) => ({ kind, config })),
       env: process.env,
-      loginFile: loginFileProbe(process.env["HOME"] ?? homedir()),
+      loginFile: loginFileProbe(process.env["HOME"]),
     });
   }
   const pipeline = declaredPipeline(config, pipelineName);

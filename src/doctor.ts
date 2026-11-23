@@ -52,7 +52,7 @@
 
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   CRASH_LOOP_THRESHOLD,
@@ -62,7 +62,7 @@ import {
 } from "../bootstrap/crash-loop.ts";
 import { type CredentialArm, resolveCredentialArm } from "../bootstrap/credential-arm.ts";
 import { deploymentReportPath, readDeploymentReport } from "../bootstrap/deployment-report.ts";
-import { parseDotenv } from "../bootstrap/engine-child-env.ts";
+import { ENGINE_CHILD_DEPLOYMENT_KNOBS, parseDotenv } from "../bootstrap/engine-child-env.ts";
 import { readEngineSource, type ResolvedEngineSource } from "../bootstrap/engine-source.ts";
 import {
   buildAuthenticatedRepoUrl,
@@ -105,6 +105,7 @@ import {
   REMOTE_CONTAINER_PORT,
   resolveConfig,
   resolveRemote,
+  type PhoebeConfig,
   type ResolvedRemote,
 } from "./config-schema.ts";
 import { resolveDataBase } from "./paths.ts";
@@ -112,10 +113,10 @@ import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store
 import { followConfigPointer } from "./config-pointer.ts";
 import { enumerateDeclaredEnv, enumerateScheduledKinds } from "./pipeline-enumerate.ts";
 import {
+  cannotSeeLoginFiles,
   describeMissingKey,
+  loginFileLabel,
   loginFileProbe,
-  PROVIDER_LOGIN_FILES,
-  unseenLoginFiles,
   type LoginFileProbe,
   providerKeyUses,
   type ProviderKeyUse,
@@ -1162,10 +1163,8 @@ export async function scanDeclaredEnv(opts: {
   env: Record<string, string | undefined>;
 }): Promise<DeclaredEnvScan> {
   try {
-    const configPath = await followConfigPointer(opts.configPath);
-    const user = await loadUserConfig(configPath);
-    const config = resolveConfig(user, { dataBase: resolveDataBase(process.env) });
-    const declarations = await enumerateDeclaredEnv(config, dirname(configPath));
+    const { config, configDir } = await loadScannedConfig(opts.configPath);
+    const declarations = await enumerateDeclaredEnv(config, configDir);
     return declarations.flatMap(({ pipeline, kind, keys }) =>
       keys
         .filter((key) => {
@@ -1175,9 +1174,52 @@ export async function scanDeclaredEnv(opts: {
         .map((key) => ({ pipeline, kind, key })),
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { error: message.split("\n")[0]!.trim() };
+    return { error: firstErrorLine(error) };
   }
+}
+
+/**
+ * The config a tenant scan reads: a pointer (#663) followed to the governing
+ * config, which is the file boot runs the tenant on, and the directory its kind
+ * paths resolve against.
+ */
+async function loadScannedConfig(
+  configPath: string,
+): Promise<{ config: PhoebeConfig; configDir: string }> {
+  const governing = await followConfigPointer(configPath);
+  const user = await loadUserConfig(governing);
+  return {
+    config: resolveConfig(user, { dataBase: resolveDataBase(process.env) }),
+    configDir: dirname(governing),
+  };
+}
+
+/**
+ * A workspace tenant's env as its engine child holds it, for the settings it
+ * reads: the deployment-wide `PHOEBE_*` knobs from the container env, under the
+ * tenant's own non-blank values, the way `buildEngineChildEnv` layers them. A
+ * container-wide `PHOEBE_AGENT` moves every tenant's provider, so the
+ * provider-key scan has to see it.
+ */
+export function tenantKnobEnv(
+  deploymentEnv: Readonly<Record<string, string | undefined>>,
+  tenantEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ENGINE_CHILD_DEPLOYMENT_KNOBS) {
+    const value = deploymentEnv[key];
+    if (value !== undefined && value !== "") out[key] = value;
+  }
+  for (const [key, value] of Object.entries(tenantEnv)) {
+    if (value !== "") out[key] = value;
+  }
+  return out;
+}
+
+/** A scan's error as one line, for a check's detail. */
+function firstErrorLine(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split("\n")[0]!.trim();
 }
 
 /**
@@ -1229,10 +1271,8 @@ export async function scanProviderKeys(opts: {
   loginFile: LoginFileProbe;
 }): Promise<ProviderKeyScan> {
   try {
-    const configPath = await followConfigPointer(opts.configPath);
-    const user = await loadUserConfig(configPath);
-    const config = resolveConfig(user, { dataBase: resolveDataBase(process.env) });
-    const kinds = await enumerateScheduledKinds(config, dirname(configPath));
+    const { config, configDir } = await loadScannedConfig(opts.configPath);
+    const kinds = await enumerateScheduledKinds(config, configDir);
     return providerKeyUses({
       kinds: kinds.map(({ pipeline, kind, config: rowConfig }) => ({
         kind,
@@ -1243,8 +1283,7 @@ export async function scanProviderKeys(opts: {
       loginFile: opts.loginFile,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { error: message.split("\n")[0]!.trim() };
+    return { error: firstErrorLine(error) };
   }
 }
 
@@ -1290,7 +1329,7 @@ export function providerKeyCheck(scan: ProviderKeyScan | null, envLabel: string)
           .map(
             (use) =>
               `${describeMissingKey(use, envLabel)}, so the agent signs in only if the ` +
-              `container holds ~/${PROVIDER_LOGIN_FILES[use.provider] ?? "?"}`,
+              `container holds ${loginFileLabel(use.provider)}`,
           )
           .join("; ")}. ` + `Doctor cannot see that file from outside the container.`,
     };
@@ -1305,7 +1344,7 @@ export function providerKeyCheck(scan: ProviderKeyScan | null, envLabel: string)
       .map((use) =>
         use.state === "set"
           ? `${use.provider}: ${use.key} set`
-          : `${use.provider}: signs in from ~/${PROVIDER_LOGIN_FILES[use.provider] ?? "?"}`,
+          : `${use.provider}: signs in from ${loginFileLabel(use.provider)}`,
       )
       .join("; "),
   };
@@ -2142,6 +2181,10 @@ export async function runDoctor(
   // solo probes the root itself (the deployment root IS the tenant there).
   const tenants: TenantDoctorRow[] = [];
   const inContainer = isInsideContainer();
+  // Every tenant's agent runs under this container's HOME, so a provider's
+  // login file is looked for there, and only from inside the container: the
+  // host's HOME says nothing about it.
+  const loginFile = inContainer ? loginFileProbe(env["HOME"]) : cannotSeeLoginFiles;
   const enumeration = await enumerateWorkspaceTenants({ configDir: opts.configDir });
   if (enumeration !== null) {
     // Bounded, order-preserving: each probe can wait out its 30s timeout, so a
@@ -2158,10 +2201,6 @@ export async function runDoctor(
     const storeByTenant = new Map<string, TenantSecretStore>();
     const declaredEnvByTenant = new Map<string, DeclaredEnvScan | null>();
     const providerKeysByTenant = new Map<string, ProviderKeyScan | null>();
-    // Every tenant's agent runs under this container's HOME, so a provider's
-    // login file is looked for there — and only from inside the container,
-    // since the host's HOME says nothing about it.
-    const loginFile = inContainer ? loginFileProbe(env["HOME"] ?? homedir()) : unseenLoginFiles;
     for (const tenant of enumeration.tenants) {
       // The store over the file, exactly as the supervisor builds the child's
       // env (#504): every check below asks what the child would hold, and after
@@ -2185,7 +2224,11 @@ export async function runDoctor(
         tenant.id,
         deadline.expired()
           ? null
-          : await scanProviderKeys({ configPath: tenant.configPath, env: tenantEnv, loginFile }),
+          : await scanProviderKeys({
+              configPath: tenant.configPath,
+              env: tenantKnobEnv(env, tenantEnv),
+              loginFile,
+            }),
       );
     }
     tenants.push(
@@ -2249,7 +2292,7 @@ export async function runDoctor(
           : await scanProviderKeys({
               configPath,
               env: soloEnv,
-              loginFile: inContainer ? loginFileProbe(env["HOME"] ?? homedir()) : unseenLoginFiles,
+              loginFile,
             }),
         // Solo: the root is the tenant, so one env answers both halves.
         arm: resolveCredentialArm(soloEnv),

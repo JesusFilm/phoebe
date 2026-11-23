@@ -31,6 +31,7 @@ import {
   scanDeclaredEnv,
   providerKeyCheck,
   scanProviderKeys,
+  tenantKnobEnv,
 } from "./doctor.ts";
 import { createDeadline, DEADLINE_DETAIL } from "./doctor-deadline.ts";
 
@@ -974,6 +975,24 @@ ${extra}};
     writeFileSync(path, `export default { repoSlug: "acme/widget" };\n`);
     const scan = await scanProviderKeys({ configPath: path, env: {}, loginFile: () => false });
     expect((scan as { error: string }).error).toMatch(/missing required field\(s\)/);
+  });
+});
+
+describe("tenantKnobEnv", () => {
+  test("a container-wide provider flip reaches the tenant, under its own value", () => {
+    expect(tenantKnobEnv({ PHOEBE_AGENT: "cursor" }, {})["PHOEBE_AGENT"]).toBe("cursor");
+    expect(tenantKnobEnv({ PHOEBE_AGENT: "cursor" }, { PHOEBE_AGENT: "codex" })).toMatchObject({
+      PHOEBE_AGENT: "codex",
+    });
+  });
+
+  test("a blank tenant value overrides nothing, and the container's secrets stay out", () => {
+    const env = tenantKnobEnv(
+      { PHOEBE_AGENT: "cursor", ANTHROPIC_API_KEY: "container-key" },
+      { PHOEBE_AGENT: "", ANTHROPIC_API_KEY: "" },
+    );
+    expect(env["PHOEBE_AGENT"]).toBe("cursor");
+    expect(env["ANTHROPIC_API_KEY"]).toBeUndefined();
   });
 });
 

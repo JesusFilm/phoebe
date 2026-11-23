@@ -17,6 +17,7 @@
 // beside it is not a fault.
 
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PhoebeConfig, ProviderName } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
@@ -37,12 +38,16 @@ export const PROVIDER_LOGIN_FILES: Partial<Record<ProviderName, string>> = {
  */
 export type LoginFileProbe = (provider: ProviderName) => boolean | null;
 
-/** Look for each provider's login file under `home`, the agent child's `HOME`. */
+/**
+ * Look for each provider's login file under `home`, the agent child's `HOME`.
+ * An unset `HOME` falls back to the user's home directory, which is where the
+ * provider CLI would look in that case too.
+ */
 export function loginFileProbe(home: string | undefined): LoginFileProbe {
+  const dir = home !== undefined && home.length > 0 ? home : homedir();
   return (provider) => {
     const file = PROVIDER_LOGIN_FILES[provider];
-    if (file === undefined || home === undefined || home.length === 0) return false;
-    return existsSync(join(home, file));
+    return file !== undefined && existsSync(join(dir, file));
   };
 }
 
@@ -50,8 +55,14 @@ export function loginFileProbe(home: string | undefined): LoginFileProbe {
  * For a caller that cannot see the agent child's `HOME`: a provider with a login
  * file might have one, and one without cannot.
  */
-export const unseenLoginFiles: LoginFileProbe = (provider) =>
+export const cannotSeeLoginFiles: LoginFileProbe = (provider) =>
   PROVIDER_LOGIN_FILES[provider] === undefined ? false : null;
+
+/** Where a provider's login file lives, as a person would write it: `~/.claude/…`. */
+export function loginFileLabel(provider: ProviderName): string {
+  const file = PROVIDER_LOGIN_FILES[provider];
+  return file === undefined ? "(none)" : `~/${file}`;
+}
 
 /** The config fields provider selection and the key lookup read. */
 export type ProviderKeyConfig = Pick<

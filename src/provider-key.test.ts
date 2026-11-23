@@ -5,6 +5,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { CONFIG_DEFAULTS } from "./config-schema.ts";
 import {
   assertProviderKeysPresent,
+  cannotSeeLoginFiles,
   loginFileProbe,
   providerKeyUses,
   type ProviderKeyConfig,
@@ -138,8 +139,9 @@ describe("loginFileProbe", () => {
     expect(loginFileProbe(home)("cursor")).toBe(false);
   });
 
-  test("no HOME, no login file", () => {
-    expect(loginFileProbe(undefined)("claude")).toBe(false);
+  test("a host that cannot look knows only which providers have no login file", () => {
+    expect(cannotSeeLoginFiles("claude")).toBeNull();
+    expect(cannotSeeLoginFiles("codex")).toBe(false);
   });
 });
 
