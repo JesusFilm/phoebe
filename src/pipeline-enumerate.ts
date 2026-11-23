@@ -135,14 +135,25 @@ export function pipelineFingerprint(name: string, pipeline: ResolvedPipeline): s
 async function mapPipelines<T>(
   config: PhoebeConfig,
   configDir: string,
-  visit: (ctx: { name: string; pipeline: ResolvedPipeline; registry: WorkKindRegistry }) => T,
+  visit: (ctx: {
+    name: string;
+    pipeline: ResolvedPipeline;
+    registry: WorkKindRegistry;
+    /** The tenant config flattened onto this pipeline, as its engine child holds it. */
+    rowConfig: PhoebeConfig;
+  }) => T,
 ): Promise<T[]> {
   const out: T[] = [];
   for (const [name, pipeline] of Object.entries(config.pipelines)) {
     const rowConfig = selectPipeline(config, name);
     setResolvedConfig(rowConfig);
     out.push(
-      visit({ name, pipeline, registry: await createWorkKindRegistry(rowConfig, configDir) }),
+      visit({
+        name,
+        pipeline,
+        registry: await createWorkKindRegistry(rowConfig, configDir),
+        rowConfig,
+      }),
     );
   }
   return out;
@@ -183,6 +194,31 @@ export async function enumerateDeclaredEnv(
     })),
   );
   return perPipeline.flat().filter((declaration) => declaration.keys.length > 0);
+}
+
+/** One scheduled kind under the config its pipeline's engine child runs it with. */
+export type PipelineScheduledKind = { pipeline: string; kind: string; config: PhoebeConfig };
+
+/**
+ * Every scheduled kind, pipeline by pipeline, paired with its pipeline's config —
+ * what a caller needs to resolve the provider each kind runs on (#886). Doctor's
+ * tenant sweep is the caller.
+ */
+export async function enumerateScheduledKinds(
+  config: PhoebeConfig,
+  configDir: string,
+): Promise<PipelineScheduledKind[]> {
+  const perPipeline = await mapPipelines(
+    config,
+    configDir,
+    ({ name, pipeline, registry, rowConfig }) =>
+      scheduledKindsOf(config, name, pipeline, registry).map((kind) => ({
+        pipeline: name,
+        kind: kind.name,
+        config: rowConfig,
+      })),
+  );
+  return perPipeline.flat();
 }
 
 export async function enumeratePipelines(

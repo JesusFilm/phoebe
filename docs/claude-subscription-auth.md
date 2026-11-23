@@ -153,6 +153,12 @@ If you accept those, the delivery shapes are:
 Because refresh-in-place makes this fragile for a long-lived deployment, prefer
 Approach A for anything you're not actively babysitting.
 
+With Approach B you can leave `ANTHROPIC_API_KEY` (or whichever var
+`providerEnv.claude` names) unset. The engine refuses to boot a pipeline with no
+provider key, and `phoebe doctor` fails the tenant's `provider-key` check, but
+both accept this file under the container's `$HOME` in place of the key. Put
+the file there before the engine starts.
+
 ---
 
 ## Security notes

@@ -250,7 +250,7 @@ supervises with, checking each tenant's `GH_TOKEN` is present the way its
 engine child reads it, and that its repo answers to that token. Held tenants
 surface as failures with their hold reason. `--json` for scripts.
 
-The other four run per tenant:
+The other five run per tenant:
 
 - **labels.** The five workflow labels — `readyLabel`, `processingLabel`,
   `mergedLabel`, `prOptOutLabel` and `phoebe:quarantined` — exist in the
@@ -286,6 +286,17 @@ The other four run per tenant:
   its own warn, because every delivery path reads it fail-closed and nothing else
   would ever mention it. **Warn, never fail**: shadowing is a state you may have
   meant. Never a value, in any state.
+- **provider-key.** Works out which provider each scheduled kind runs on, the
+  way the engine does: its block's `provider`, then `defaultProvider`, with an
+  env override such as `PHOEBE_AGENT` beating both. For each provider it looks
+  up the env var `providerEnv` names and checks that the tenant's `.env` sets it.
+  An unset or blank key fails. The agent would start with no key and die on
+  `Not logged in` on its first unit, so the engine refuses to boot that pipeline
+  too. A Claude login at `~/.claude/.credentials.json` counts as a key; that is
+  [Approach B](claude-subscription-auth.md#approach-b-hoist-your-existing-on-disk-login)
+  of the subscription setup. Doctor run from the host cannot see that file, so
+  there a missing Claude key is a warn. Doctor never tests whether a key works,
+  and never prints one.
 
 **You are not the only one who runs it.** The bootstrapper runs doctor itself:
 once the fleet comes up, again after a reconcile lands, on request, and every six
