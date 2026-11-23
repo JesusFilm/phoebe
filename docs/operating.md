@@ -89,6 +89,12 @@ The agent leaves the line out when a retry could get through without anyone
 acting, such as a flaky test or a service that is down. Those runs are re-armed
 and counted as usual.
 
+The agent also uses the line when the work is already on the default branch,
+which happens when someone fixes a ticket by hand and the PR never says
+`Fixes #N`. Its comment names the commit or PR that did the work and what it
+checked. Close the issue if you agree. If you don't, say what is still missing
+and remove `phoebe:blocked`.
+
 ## Blocking one issue on another: `blockedByPattern`
 
 Write a blocker reference in the issue body, by default `Blocked by #123`

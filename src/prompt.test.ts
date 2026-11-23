@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
+import { BLOCKED_MARKER } from "./blocked.ts";
 import { resolveConfig, type PhoebeUserConfig } from "./config-schema.ts";
 import { buildRegistry } from "./work-kinds/registry.ts";
 import {
@@ -141,6 +142,22 @@ describe("shipped default prompts", () => {
     // The PR base is per-callsite, not the default branch literal: stacked work
     // targets the blocker's branch (#311).
     expect(template).toContain("{{PR_BASE}}");
+  });
+
+  test("issues-prompt.md parks a ticket whose work is already on the default branch", () => {
+    // A ticket fixed by hand without `Fixes #N` stays ready; a run that finds
+    // nothing to do and says nothing reads as a crash and repeats until
+    // quarantine (#906). The agent names the fix and parks the ticket instead.
+    const template = readFileSync(join(promptsDir, "issues-prompt.md"), "utf8");
+    const rule = template
+      .split("\n")
+      .find((line) => /already (done|on|resolved)/i.test(line) && line.includes(BLOCKED_MARKER));
+    expect(rule, "no already-resolved rule carrying the blocked marker").toBeDefined();
+    expect(rule).toContain("{{DEFAULT_BRANCH}}");
+    // Naming the fix and the evidence is what lets a human close it in one look.
+    expect(rule).toMatch(/commit or PR/i);
+    // The engine never closes the ticket; the person reading the comment does.
+    expect(rule).toMatch(/do not close/i);
   });
 
   test("checks + conflict prompts document the baseline-breakage branch", () => {
