@@ -72,7 +72,7 @@ export function realSources(clients: RegistryClients, native: NativePass): Creat
     });
     const detection = names.includes(NATIVE_SOURCE_NAME)
       ? await detectNative(rows, ctx.workspace.dir, log)
-      : { projects: [], claimed: [] };
+      : { projects: [], claimed: [], partial: false };
 
     return names.map((name): SourceRun => {
       const timeoutMs = SOURCE_TIMEOUT_MS[name];
@@ -81,9 +81,11 @@ export function realSources(clients: RegistryClients, native: NativePass): Creat
           return {
             name,
             timeoutMs,
-            run: (signal) => {
+            run: async (signal) => {
               signal.addEventListener("abort", () => nativeDeadline.abort(), { once: true });
-              return native(detection.projects, { ...clients, log });
+              const result = await native(detection.projects, { ...clients, log });
+              // A row that could not detect its projects left them out of the pass.
+              return result.ok && detection.partial ? { ...result, partial: true } : result;
             },
           };
         case AGENT_SOURCE_NAME:

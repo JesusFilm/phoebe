@@ -708,9 +708,9 @@ dropped as `(too new)` stays in the bundle. A drop names one target version, so
 a package whose fix later moves goes back to the bundle.
 
 When every row has moved, the bundle's issue is parked under `phoebe:blocked`
-with nobody to act on it. The scan rewrites its body to list no rows, comments
-with the packages it moved, and closes it. A parked bundle that still has rows
-after the refresh has `phoebe:blocked` lifted instead.
+with nobody to act on it. The scan retires it, as described under
+[retirement](#retirement) below. A parked bundle that still has rows after the
+refresh has `phoebe:blocked` lifted instead.
 
 GitHub refuses a body over 65,536 characters. A bundle that would pass 60,000
 keeps the rows that fit, in table order, and the scan logs how many it left out.
@@ -718,8 +718,10 @@ They come in once earlier rows merge. A row a closed issue vetoes, or an open
 issue already proposes, still takes its room among the rows that fit.
 
 `transitive: "individual"` turns the bundle off and files every package on its
-own. Switch while no bundle issue is open. One left open keeps its rows out of
-the per-package issues until its PR merges, and closing it by hand vetoes them.
+own. A bundle issue left open across the switch is retired by the next scan,
+and its rows are filed per package on that scan. One with a run or a PR in
+flight stays until that ends. Do not close it by hand: a hand close vetoes its
+rows. If you already did, reopen it and the scan retires it.
 
 A per-package issue's table gives each occurrence's version, its fixed version,
 and how it is reached: `direct`, `transitive, through` the direct dependencies
@@ -778,6 +780,39 @@ filed for a transitive high before this rule, such as a package reached only
 through a build tool. Phoebe does not close it and no longer refreshes it, so
 close it by hand. The veto that leaves is keyed on the version the row targets,
 and a fix changes that, so the fix is still proposed.
+
+<a id="retirement"></a>
+
+**A routed issue the plan no longer covers is retired.** Filing reaches an
+open issue only through the bundle planned under its key. When that key is no
+longer planned, the scan rewrites the body to list no rows, comments with the
+reason for each package, and closes the issue. That is a **retirement**. A body
+with no rows vetoes nothing, so a row that needs a fix again gets a new issue.
+The issue's slot in `prConcurrentLimit` is free on the same scan.
+
+| Why the key is no longer planned                                              | When it is retired                        | Closed as   |
+| ----------------------------------------------------------------------------- | ----------------------------------------- | ----------- |
+| every row of the transitive bundle moved to an issue of its own               | the scan that sees it                     | completed   |
+| the tenant set `transitive: "individual"`                                     | the scan that sees it                     | not planned |
+| the fix landed outside the issue's own PR, or the package is gone             | the second scan in a row that finds it so | completed   |
+| every advisory is under `minSeverity` now, after the tenant raised it         | the second scan in a row that finds it so | not planned |
+| what is left is a transitive package with no fix released, which is not filed | the second scan in a row that finds it so | not planned |
+
+The last three are read from what the sources did not report, so they count
+only on a scan where every source finished and answered in full. A failed
+source, a failed audit, a failed OSV call or a project that would not list
+each put retirement off, and the scan logs how many issues are waiting. The
+count of scans is held in memory, so the first scan after a restart retires
+none of these.
+
+Three kinds of issue are never retired: one wearing `processingLabel` or with
+an open PR, because a run is in flight; one without the routing label, which
+is a tracking issue or one a person took out of Phoebe's hands; and a
+per-package issue with a row the plan now files in the transitive bundle. That
+last one was filed before the bundle existed. It keeps its row, the bundle
+holds that row back, and the `dependencies` kind still works it.
+
+Lowering `minSeverity` again files a retired issue's rows as a new issue.
 
 Filing follows the [`dependency-updates` rules](#dependency-updates-file-dependency-tickets-opt-in):
 the same marker, the same two searches, the same veto. Closing a tracking issue

@@ -104,6 +104,11 @@ export function movedKey(manager: string, pkg: string, target: string): string {
   return JSON.stringify([manager, pkg, target]);
 }
 
+/** A package under one manager, whatever its version or workspace. */
+export function packageKey(manager: string, pkg: string): string {
+  return JSON.stringify([manager, pkg]);
+}
+
 /**
  * The longest body a bundle may render. GitHub refuses one over 65,536
  * characters; the margin is for the refresh a veto can make without growing.
@@ -123,6 +128,10 @@ export type SecurityPlan = {
   bootstrapper: number;
   /** Transitive occurrences with no fix released and no critical advisory. */
   unfixable: number;
+  /** The packages behind `below`, by {@link packageKey}. */
+  belowPackages: ReadonlySet<string>;
+  /** The packages behind `unfixable`, by {@link packageKey}. */
+  unfixablePackages: ReadonlySet<string>;
   /** Table rows left out of a transitive bundle whose body was full, by bundle key. */
   overflow: ReadonlyMap<string, number>;
 };
@@ -222,10 +231,17 @@ export function planSecurity(
 ): SecurityPlan {
   const pinless = withoutBootstrapperPin(candidates, options.bootstrapperPin);
   const advised = collapse(pinless.kept).filter((c) => c.advisories.length > 0);
-  const severe = advised
-    .map((c) => securityTarget(c, options.minSeverity))
-    .filter((c): c is Candidate => c !== null);
+  const severe: Candidate[] = [];
+  const belowPackages = new Set<string>();
+  for (const c of advised) {
+    const targeted = securityTarget(c, options.minSeverity);
+    if (targeted === null) belowPackages.add(packageKey(c.manager, c.package));
+    else severe.push(targeted);
+  }
   const filed = severe.filter(actionable);
+  const unfixablePackages = new Set(
+    severe.filter((c) => !actionable(c)).map((c) => packageKey(c.manager, c.package)),
+  );
 
   const moved = options.moved ?? new Map<string, number>();
   const droppedFrom = (c: Candidate) =>
@@ -316,6 +332,8 @@ export function planSecurity(
     below: advised.length - severe.length,
     bootstrapper: pinless.skipped,
     unfixable: severe.length - filed.length,
+    belowPackages,
+    unfixablePackages,
     overflow,
   };
 }

@@ -314,6 +314,11 @@ The detector closing a security ticket on a not-affected verdict. It stands unti
 advisory lands on the package or a person reopens the issue.
 _Avoid_: veto (that is a person closing the issue), suppression, ignore
 
+**Retirement**:
+The detector closing an open routed security ticket whose bundle it no longer plans,
+with the body rewritten to list no rows so the close vetoes none of them.
+_Avoid_: dismissal (that follows a verdict), veto, cleanup
+
 ### Skills
 
 **Vendored skill**:

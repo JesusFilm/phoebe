@@ -4,4 +4,16 @@
 
 import type { Candidate } from "../candidate.ts";
 
-export type SourceResult = { ok: true; candidates: Candidate[] } | { ok: false; problem: string };
+export type SourceResult =
+  | {
+      ok: true;
+      candidates: Candidate[];
+      /**
+       * Set when the source answered without seeing everything it reads: a
+       * project that would not list, a failed audit, a registry that did not
+       * answer. What it found stands. What it did not find proves nothing, so
+       * a detector must not read a missing candidate as a fixed one.
+       */
+      partial?: true;
+    }
+  | { ok: false; problem: string };
