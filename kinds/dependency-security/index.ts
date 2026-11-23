@@ -51,7 +51,7 @@ import {
   type CreateSources,
 } from "../dependencies/sources/assemble.ts";
 import { runNativeSecuritySource } from "../dependencies/sources/native.ts";
-import { isTrackingBody } from "./body.ts";
+import { isTrackingBody, transitiveRows } from "./body.ts";
 import { runSources } from "../dependencies/sources/run.ts";
 import { readParked, releaseParked } from "../dependency-updates/parked.ts";
 import { commentedBundleIssues, readMoved, transitiveBundleIssues } from "./moved.ts";
@@ -216,12 +216,6 @@ export function createDependencySecurityKind(
           `with no fix released, not tracked; ${routed} issue(s) with a fix, ` +
           `${plan.planned.length - routed} awaiting one.`,
       );
-      for (const [key, leftOut] of plan.overflow) {
-        ctx.log(
-          `${key}: the issue body is full; ${leftOut} package version(s) left out until ` +
-            "earlier rows merge.",
-        );
-      }
 
       // A not-affected verdict is carried out before filing, so the rows of a
       // ticket dismissed this scan are vetoed by it and not left as proposed.
@@ -262,11 +256,26 @@ export function createDependencySecurityKind(
       );
       uncovered = retired.uncovered;
       const issues = retired.issues;
-      const actions = decideFiling(plan.planned, issues, filed.prs, {
+      const decided = decideFiling(plan.planned, issues, filed.prs, {
         routingLabel: options.label,
         cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,
         holdsSlot: isSecurityKey,
       });
+      // A parked bundle whose rows changed, or whose drops were only too new,
+      // can pass with nobody acting. It is released before its refresh is
+      // saved, and one whose label would not come off is left out, for the
+      // next scan to refresh.
+      const { actions } = releaseParked(decided, parked, ctx);
+      // Counted after filing's holds: a held row takes no room in the body.
+      for (const a of actions) {
+        if (a.action !== "create" && a.action !== "update" && a.action !== "leave") continue;
+        const leftOut = transitiveRows(a.planned.leftOut ?? []).length;
+        if (leftOut === 0) continue;
+        ctx.log(
+          `${bundleKey(a.planned.bundle)}: the issue body is full; ${leftOut} package version(s) ` +
+            "left out until earlier rows merge.",
+        );
+      }
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL]);
       routeFixedIssues(
         actions,
@@ -274,9 +283,6 @@ export function createDependencySecurityKind(
         routingLabel,
         ctx,
       );
-      // A parked bundle whose rows changed, or whose drops were only too new,
-      // can pass with nobody acting.
-      releaseParked(actions, parked, ctx);
     },
   });
 }

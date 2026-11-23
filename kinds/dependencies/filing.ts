@@ -23,6 +23,7 @@ import type { MentioningIssue, MentioningPr } from "../../src/github-client.ts";
 import { addLabelCreatingIfMissing, type PhoebeLabel } from "../../src/labels.ts";
 import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { bundleKey, fingerprint, MARKER_TEXT, parseMarker } from "./fingerprint.ts";
+import type { Candidate } from "./candidate.ts";
 import type { Bundle } from "./grouping.ts";
 import { readIssueRows } from "./issue-body.ts";
 
@@ -57,11 +58,31 @@ export type Rendered = {
 export type PlannedBundle = Rendered & {
   bundle: Bundle;
   render: (bundle: Bundle) => Rendered;
+  /**
+   * Cuts a bundle to the rows its body has room for, for a detector whose
+   * body can pass GitHub's limit. The bundle it returns holds some of the
+   * candidates it was given, as the same objects.
+   */
+  fit?: (bundle: Bundle) => Bundle;
+  /** The rows `fit` cut from `bundle`. They come in as earlier rows leave. */
+  leftOut?: readonly Candidate[];
 };
 
-/** A bundle rendered by `render`, which filing calls again on whatever rows a veto leaves. */
-export function planBundle(bundle: Bundle, render: (bundle: Bundle) => Rendered): PlannedBundle {
-  return { bundle, ...render(bundle), render };
+/**
+ * A bundle rendered by `render`, which filing calls again on whatever rows a
+ * veto leaves. With `fit`, the bundle is cut to the rows that fit first, and
+ * filing cuts it again after a hold, so a held row takes no room (#901).
+ */
+export function planBundle(
+  bundle: Bundle,
+  render: (bundle: Bundle) => Rendered,
+  fit?: (bundle: Bundle) => Bundle,
+): PlannedBundle {
+  if (fit === undefined) return { bundle, ...render(bundle), render };
+  const fitted = fit(bundle);
+  const kept = new Set(fitted.candidates);
+  const leftOut = bundle.candidates.filter((c) => !kept.has(c));
+  return { bundle: fitted, ...render(fitted), render, fit, leftOut };
 }
 
 /**
@@ -147,7 +168,9 @@ function pushTo<T>(map: Map<string, T[]>, key: string, value: T): void {
  *
  * Held rows are dropped before a bundle is filed or refreshed and the bundle
  * is rendered again without them. A bundle left with none is vetoed whole when
- * a closed issue held any of its rows, and is left as proposed otherwise.
+ * a closed issue held any of its rows, and is left as proposed otherwise. A
+ * bundle cut to fit its body is cut again from every row it has, those left
+ * out included, so the room a held row gives up goes to the next row.
  */
 export function decideFiling(
   planned: readonly PlannedBundle[],
@@ -210,7 +233,7 @@ export function decideFiling(
   return planned.map((given): FilingAction => {
     const own = bundleKey(given.bundle);
     const held: HeldRow[] = [];
-    const kept = given.bundle.candidates.filter((c) => {
+    const kept = [...given.bundle.candidates, ...(given.leftOut ?? [])].filter((c) => {
       const row = rowKey(given.bundle.manager, c.package, c.workspace, c.target);
       const covers = (v: RowVeto) => c.advisories.every((a) => v.advisories.has(a.id));
       const veto = rowVetoes.get(row)?.find(covers);
@@ -224,14 +247,17 @@ export function decideFiling(
       held.push({ package: c.package, target: c.target, issue: elsewhere.issue, by: "proposed" });
       return false;
     });
-    if (kept.length === 0 && held.length > 0) {
+    const p =
+      held.length === 0 || kept.length === 0
+        ? given
+        : planBundle({ ...given.bundle, candidates: kept }, given.render, given.fit);
+    // Nothing left to file: every row is held, or no row left fits a body.
+    if (held.length > 0 && (kept.length === 0 || p.bundle.candidates.length === 0)) {
       const veto = held.find((r) => r.by === "vetoed");
       return veto !== undefined
         ? { action: "vetoed", planned: given, issue: veto.issue, held }
         : { action: "proposed", planned: given, issue: held[0]!.issue, held };
     }
-    const p =
-      held.length === 0 ? given : planBundle({ ...given.bundle, candidates: kept }, given.render);
 
     const key = bundleKey(p.bundle);
     const print = fingerprint(p.bundle);

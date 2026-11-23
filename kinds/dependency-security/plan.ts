@@ -132,8 +132,6 @@ export type SecurityPlan = {
   belowPackages: ReadonlySet<string>;
   /** The packages behind `unfixable`, by {@link packageKey}. */
   unfixablePackages: ReadonlySet<string>;
-  /** Table rows left out of a transitive bundle whose body was full, by bundle key. */
-  overflow: ReadonlyMap<string, number>;
 };
 
 /**
@@ -179,15 +177,12 @@ function isTransitive(c: Candidate): boolean {
 
 /**
  * The bundle cut down to the table rows whose body fits under `limit`, in the
- * order the table lists them, and how many rows were left out. The rows left
- * out come in on a later scan, once earlier ones have merged.
+ * order the table lists them. The rows left out come in on a later scan, once
+ * earlier ones have merged, or on this one when filing holds an earlier row
+ * back (filing.ts).
  */
-function fitToBody(
-  bundle: Bundle,
-  render: (bundle: Bundle) => Rendered,
-  limit: number,
-): { bundle: Bundle; leftOut: number } {
-  if (render(bundle).body.length <= limit) return { bundle, leftOut: 0 };
+function fitToBody(bundle: Bundle, render: (bundle: Bundle) => Rendered, limit: number): Bundle {
+  if (render(bundle).body.length <= limit) return bundle;
   const rows = transitiveRows(bundle.candidates);
   const first = (count: number): Bundle => {
     const kept = new Set(
@@ -207,7 +202,7 @@ function fitToBody(
     if (render(first(middle)).body.length <= limit) fits = middle;
     else over = middle;
   }
-  return { bundle: first(fits), leftOut: rows.length - fits };
+  return first(fits);
 }
 
 /**
@@ -262,16 +257,15 @@ export function planSecurity(
     body: renderTransitiveBody(bundle, { minSeverity: options.minSeverity }),
     labels: [DEPENDENCIES_LABEL, SECURITY_LABEL, options.routingLabel],
   });
-  const overflow = new Map<string, number>();
+  const fit = (bundle: Bundle) =>
+    fitToBody(bundle, renderTransitive, options.bodyLimit ?? BODY_LIMIT);
   const transitive = [...together].map(([manager, list]): PlannedSecurityBundle => {
     const whole: Bundle = {
       manager,
       group: TRANSITIVE_GROUP,
       candidates: list.sort(compareCandidates),
     };
-    const { bundle, leftOut } = fitToBody(whole, renderTransitive, options.bodyLimit ?? BODY_LIMIT);
-    if (leftOut > 0) overflow.set(`${manager}:${TRANSITIVE_GROUP}`, leftOut);
-    return { ...planBundle(bundle, renderTransitive), routed: true };
+    return { ...planBundle(whole, renderTransitive, fit), routed: true };
   });
 
   const bundles = new Map<string, Bundle & { candidates: Candidate[] }>();
@@ -334,6 +328,5 @@ export function planSecurity(
     unfixable: severe.length - filed.length,
     belowPackages,
     unfixablePackages,
-    overflow,
   };
 }

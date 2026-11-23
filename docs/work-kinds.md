@@ -715,7 +715,7 @@ refresh has `phoebe:blocked` lifted instead.
 GitHub refuses a body over 65,536 characters. A bundle that would pass 60,000
 keeps the rows that fit, in table order, and the scan logs how many it left out.
 They come in once earlier rows merge. A row a closed issue vetoes, or an open
-issue already proposes, still takes its room among the rows that fit.
+issue already proposes, takes no room: the rows after it move up.
 
 `transitive: "individual"` turns the bundle off and files every package on its
 own. A bundle issue left open across the switch is retired by the next scan,
@@ -889,7 +889,9 @@ refused only because the release is younger than its minimum release age (pnpm's
 A later `dependency-updates` scan lifts the label without a person when it
 still plans the bundle and every drop on the ticket was too new, or when it
 refreshes the bundle. That is at most one more run per scan. A ticket parked
-for a real failure keeps the label until someone removes it.
+for a real failure keeps the label until someone removes it. The scan lifts
+the label before it saves a refresh. If the label will not come off, it leaves
+the refresh for the next scan, which tries both again.
 
 The PR body carries the issue's marker on its last line. The agent copies it
 into a PR it opens. When the engine opens the PR instead, the kind passes the

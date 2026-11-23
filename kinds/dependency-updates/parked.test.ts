@@ -74,7 +74,7 @@ describe("readParked", () => {
     expect(readParked([], ctxFor({}))).toEqual([]);
   });
 
-  test("an issue whose comments cannot be read is logged and left out", () => {
+  test("an issue whose comments cannot be read is logged and kept with none, marked unread", () => {
     const logged: string[] = [];
     const ctx = ctxFor(
       {
@@ -85,7 +85,9 @@ describe("readParked", () => {
       },
       logged,
     );
-    expect(readParked([issue(4, [PHOEBE_BLOCKED_LABEL])], ctx)).toEqual([]);
+    const parked = readParked([issue(4, [PHOEBE_BLOCKED_LABEL])], ctx);
+    expect(parked).toEqual([{ number: 4, open: true, blocked: true, comments: [], unread: true }]);
+    expect(parkedRecords(parked)).toEqual([]);
     expect(logged.join("\n")).toContain("Could not read the comments on #4");
   });
 });
@@ -135,7 +137,7 @@ describe("releaseParked", () => {
       },
       logged,
     );
-    return { released: releaseParked(actions, issues, ctx), removed, logged };
+    return { ...releaseParked(actions, issues, ctx), removed, logged };
   }
 
   test("a ticket the scan still plans, parked only because its bumps were too new, is lifted", () => {
@@ -199,13 +201,58 @@ describe("releaseParked", () => {
     expect(removed).toEqual([]);
   });
 
-  test("a refreshed bundle is lifted whatever parked it, since the bumps it failed are gone", () => {
-    const { removed, logged } = release(
+  test("a bundle about to be refreshed is lifted whatever parked it, since the bumps it failed are gone", () => {
+    const { removed, logged, actions } = release(
       [update(860)],
       [parked(860, [dropped("- `jsdom@31.0.1`: the tests fail")])],
     );
     expect(removed).toEqual([`860 ${PHOEBE_BLOCKED_LABEL}`]);
     expect(logged[0]).toContain("the bundle it was parked on has moved");
+    expect(actions).toEqual([update(860)]);
+  });
+
+  // Once the body is saved the next scan decides `leave`, which lifts nothing
+  // for a real failure. So the refresh waits until the label is off (#900).
+  test("a refresh of a ticket whose label cannot be lifted waits for the next scan", () => {
+    const logged: string[] = [];
+    const ctx = ctxFor(
+      {
+        removeIssueLabel: () => {
+          throw new Error("gh exploded");
+        },
+      },
+      logged,
+    );
+    const create: FilingAction = { action: "create", planned, held: [] };
+    const result = releaseParked(
+      [update(860), leave(861), create],
+      [parked(860, [dropped("- `jsdom@31.0.1`: the tests fail")])],
+      ctx,
+    );
+    expect(result.released).toEqual([]);
+    expect(result.actions).toEqual([leave(861), create]);
+    expect(logged).toEqual([
+      `npm:retry:electron: could not lift ${PHOEBE_BLOCKED_LABEL} from #860, so its refresh ` +
+        "waits for the next scan. gh exploded",
+    ]);
+  });
+
+  // Saving the body with the label still on is the state #900 is about, and a
+  // failed comment read gives no way to tell whether the label should lift.
+  test("a refresh of a parked ticket whose comments could not be read waits for the next scan", () => {
+    const unread: ParkedIssue = { ...parked(860, []), unread: true };
+    const { actions, removed, logged } = release([update(860), leave(861)], [unread]);
+    expect(actions).toEqual([leave(861)]);
+    expect(removed).toEqual([]);
+    expect(logged).toEqual([
+      "npm:retry:electron: the comments on #860 could not be read, so its refresh waits for " +
+        "the next scan.",
+    ]);
+
+    // Left alone when nothing is to be saved, and when the ticket is not parked.
+    expect(release([leave(860)], [unread]).actions).toEqual([leave(860)]);
+    const free: ParkedIssue = { ...unread, blocked: false };
+    expect(release([update(860)], [free]).actions).toEqual([update(860)]);
   });
 
   test("leaves a closed ticket, one parked with no dropped list, and one the scan does not plan", () => {
@@ -230,12 +277,13 @@ describe("releaseParked", () => {
       },
       logged,
     );
-    const released = releaseParked(
+    const { released, actions } = releaseParked(
       [leave(858)],
       [parked(858, [dropped("- `electron@45.3.2` (too new): today")])],
       ctx,
     );
     expect(released).toEqual([]);
+    expect(actions).toEqual([leave(858)]);
     expect(logged[0]).toContain(`could not lift ${PHOEBE_BLOCKED_LABEL} from #858`);
   });
 });

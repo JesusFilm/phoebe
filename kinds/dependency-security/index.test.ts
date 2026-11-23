@@ -504,6 +504,33 @@ describe("run", () => {
       expect(bodies.get(100)).not.toContain("web/package.json");
     });
 
+    test("a full body: rows a closed issue vetoes take no room, so the rows after them file (#901)", async () => {
+      const all = Array.from({ length: 900 }, (_, i) =>
+        transitive(`pkg-${String(i).padStart(3, "0")}`),
+      );
+      const first = await scan(all);
+      const fitted = readIssueRows(first.bodies.get(100)!).map((row) => row.package);
+      expect(fitted.length).toBeGreaterThan(0);
+      expect(fitted.length).toBeLessThan(450);
+      expect(first.logged).toContain(
+        `${KEY}: the issue body is full; ${900 - fitted.length} package version(s) left out ` +
+          "until earlier rows merge.",
+      );
+
+      const closed = await filedBundle(40, all, { state: "closed", stateReason: "not_planned" });
+      const { writes, bodies, logged } = await scan(all, { issues: [closed] });
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security fixes for transitive packages (npm)",
+      ]);
+      const next = readIssueRows(bodies.get(100)!).map((row) => row.package);
+      expect(next[0]).toBe(all[fitted.length]!.package);
+      expect(next.some((name) => fitted.includes(name))).toBe(false);
+      expect(logged).toContain(
+        `${KEY}: the issue body is full; ${900 - fitted.length - next.length} package ` +
+          "version(s) left out until earlier rows merge.",
+      );
+    });
+
     test("a row a merged PR dropped is filed on its own, and the bundle goes on without it", async () => {
       const native = [transitive("tar"), transitive("ws")];
       const issue = await filedBundle(40, native, { state: "closed", stateReason: "completed" });
@@ -660,11 +687,48 @@ describe("run", () => {
         issues: [parked],
         comments,
       });
-      expect(writes).toContain("update #40");
-      expect(writes).toContain("unlabel #40 phoebe:blocked");
-      expect(writes).not.toContain("close #40 completed");
+      // Released first: a refresh that lands on a ticket still parked is never retried (#900).
+      expect(writes).toEqual(["unlabel #40 phoebe:blocked", "update #40", "comment #40"]);
       expect(bodies.get(40)).toContain("| `undici` |");
       expect(bodies.get(40)).not.toContain("| `tar` |");
+    });
+
+    test("a parked bundle whose label cannot be lifted is not refreshed until it can be", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const parked = await filedBundle(40, native, {
+        labels: ["dependencies", "security", "phoebe:dependencies", "phoebe:blocked"],
+      });
+      const comments = {
+        40: [
+          {
+            body:
+              dropped("- `tar@1.0.1` (needs override): no", "- `ws@1.0.1` (needs override): no") +
+              "\n\n<!-- phoebe-blocked -->",
+          },
+        ],
+      };
+      const now = [...native, transitive("undici")];
+      const { overrides, writes } = gitHub([parked], [], comments);
+      const logged: string[] = [];
+      const failing = {
+        ...overrides,
+        removeIssueLabel: () => {
+          throw new Error("gh exploded");
+        },
+      };
+      await kindWith({}, { native: now }).run(
+        { ref: SCAN_REF, revision: "0" },
+        ctxFor(failing, clock, logged),
+      );
+      expect(writes).toEqual([]);
+      expect(logged).toContain(
+        `${KEY}: could not lift phoebe:blocked from #40, so its refresh waits for the next scan. ` +
+          "gh exploded",
+      );
+
+      // Nothing was saved, so the next scan decides the same refresh and carries it out.
+      const again = await scan(now, { issues: [parked], comments });
+      expect(again.writes).toEqual(["unlabel #40 phoebe:blocked", "update #40", "comment #40"]);
     });
 
     test('`transitive: "individual"` ignores what a bundle dropped and files per package', async () => {

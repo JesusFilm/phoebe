@@ -147,6 +147,33 @@ describe("retireUncovered", () => {
     expect(closed).toEqual(["#40 completed"]);
   });
 
+  // The bundle's body was full, so the row waits for room. It is still planned.
+  test("an issue holding a row the full bundle left out is kept", () => {
+    const own = open(
+      41,
+      planSecurity([transitive("tar")], { ...options, transitive: "individual" }).planned[0]!.body,
+    );
+    const now = planSecurity([transitive("other"), transitive("tar")], options);
+    const bundle = now.planned[0]!;
+    const rows = bundle.bundle.candidates;
+    const full = {
+      ...now,
+      planned: [
+        {
+          ...bundle,
+          bundle: { ...bundle.bundle, candidates: rows.filter((c) => c.package !== "tar") },
+          leftOut: rows.filter((c) => c.package === "tar"),
+        },
+      ],
+    };
+    expect(full.planned[0]!.leftOut).toHaveLength(1);
+
+    const { closed, result } = retire(own, { plan: full });
+    expect(closed).toEqual([]);
+    expect(result.issues).toEqual([own]);
+    expect(result.uncovered.size).toBe(0);
+  });
+
   test("an issue that cannot be closed is returned as it was and checked again next scan", () => {
     const bundle = open(40, planSecurity([transitive("fixed")], options).planned[0]!.body);
     const logged: string[] = [];

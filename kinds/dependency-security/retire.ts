@@ -206,7 +206,8 @@ export function retireUncovered(
   ctx: Pick<WorkKindRunCtx, "github" | "log" | "clock">,
 ): Retired {
   const plannedKeys = new Set(input.plan.planned.map((p) => bundleKey(p.bundle)));
-  const planned = input.plan.planned.flatMap((p) => p.bundle.candidates);
+  // A row left out of a full body is still planned: it waits for room.
+  const planned = input.plan.planned.flatMap((p) => [...p.bundle.candidates, ...(p.leftOut ?? [])]);
   const plannedRows = new Set(planned.map((c) => movedKey(c.manager, c.package, c.target)));
   // The advisories the plan lists on each row, by filing's identity for a row.
   const heldKey = (manager: string, pkg: string, workspace: string, target: string) =>
