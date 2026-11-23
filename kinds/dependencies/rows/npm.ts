@@ -86,8 +86,10 @@ export function npmRow(deps: RowDeps): Row {
       const error = reportedError(listed.value);
       const top = child(listed.value, "dependencies");
       if (top === undefined && error !== null) return { ok: false, problem: error };
-      if (error !== null)
+      if (error !== null) {
+        deps.incomplete?.();
         deps.log(`npm row: npm ls reported tree problems (${error}); listing what resolved.`);
+      }
       return listDeclared(
         manifest,
         (workspace, name) => {

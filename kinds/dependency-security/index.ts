@@ -182,6 +182,10 @@ export function createDependencySecurityKind(
       // Stamped before the sources start, as in dependency-updates: a failed
       // scan waits for the next window too.
       lastScanAt = ctx.clock.now().getTime();
+      // Taken out at the start, so a scan that fails before it retires
+      // anything breaks the run of two that retirement asks for.
+      const uncoveredBefore = uncovered;
+      uncovered = new Set();
 
       const sources = await createSources(ctx, options.sources);
       const { candidates, finished, complete } = await runSources(sources, ctx);
@@ -252,7 +256,7 @@ export function createDependencySecurityKind(
           transitive: options.transitive,
           minSeverity: options.minSeverity,
           complete,
-          uncovered,
+          uncovered: uncoveredBefore,
         },
         ctx,
       );

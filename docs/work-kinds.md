@@ -800,17 +800,22 @@ The issue's slot in `prConcurrentLimit` is free on the same scan.
 
 The last three are read from what the sources did not report, so they count
 only on a scan where every source finished and answered in full. A failed
-source, a failed audit, a failed OSV call or a project that would not list
-each put retirement off, and the scan logs how many issues are waiting. The
-count of scans is held in memory, so the first scan after a restart retires
-none of these.
+source, a failed audit, a failed OSV call, a project that would not list, a
+package manager or audit tool that is not installed, and an agent record that
+failed its check each put retirement off, and the scan logs how many issues
+are waiting. Such a scan also breaks the run of two, so the count starts
+again. It is held in memory, so the first scan after a restart retires none
+of these. A tenant whose container lacks an audit tool, `pip-audit` or
+`cargo-audit`, never has a full answer, so none of these three is retired
+there.
 
 Three kinds of issue are never retired: one wearing `processingLabel` or with
-an open PR, because a run is in flight; one without the routing label, which
-is a tracking issue or one a person took out of Phoebe's hands; and a
-per-package issue with a row the plan now files in the transitive bundle. That
-last one was filed before the bundle existed. It keeps its row, the bundle
-holds that row back, and the `dependencies` kind still works it.
+an open PR that carries its marker, because a run is in flight; one without
+the routing label, which is a tracking issue or one a person took out of
+Phoebe's hands; and a per-package issue that still holds a row the plan now
+files in the transitive bundle. That last one was filed before the bundle
+existed. It keeps its row, the bundle holds that row back, and the
+`dependencies` kind still works it.
 
 Lowering `minSeverity` again files a retired issue's rows as a new issue.
 

@@ -335,6 +335,7 @@ export function pipAuditor(
     if (!output.ok && output.missing) {
       if (!missingLogged) deps.log(`${rowName} row: pip-audit is not installed; OSV alone.`);
       missingLogged = true;
+      deps.incomplete?.();
       return { ok: true, value: [] };
     }
     const audited = parseJson(output, "pip-audit");
@@ -348,6 +349,7 @@ export function pipAuditor(
       deps.log(`${rowName} row: dropped ${set.dropped} pip-audit record(s) with no id or version.`);
     }
     if (skipped.length > 0) {
+      deps.incomplete?.();
       deps.log(
         `${rowName} row: pip-audit skipped ${skipped.length} package(s): ${skipped.join("; ")}.`,
       );

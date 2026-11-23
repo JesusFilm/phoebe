@@ -125,7 +125,7 @@ describe("retireUncovered", () => {
         "Nothing this issue listed is left for Phoebe to fix, so Phoebe closed it.",
         "",
         "- `dropped`: it needed more than a lockfile fix, so Phoebe files it on its own.",
-        "- `rerated`: Phoebe files it in an issue of its own now.",
+        "- `rerated`: Phoebe files it in another issue now.",
         "- `fixed`: the scan no longer reports it. The fix landed outside this issue, or the " +
           "package is no longer installed.",
         "- `lower`: its advisories are under `minSeverity` now (prod high, dev critical), so " +
@@ -180,7 +180,8 @@ describe("retireUncovered", () => {
     expect(logged[0]).toContain("#40 has nothing left to do but could not be closed");
   });
 
-  test("a scan that could not see everything keeps what the last scan found, and adds nothing", () => {
+  // "Two scans in a row": a scan that could not see everything breaks the run.
+  test("a scan that could not see everything closes nothing and carries nothing over", () => {
     const seen = open(40, planSecurity([transitive("fixed")], options).planned[0]!.body);
     const fresh = { ...seen, number: 41 };
     const logged: string[] = [];
@@ -207,7 +208,7 @@ describe("retireUncovered", () => {
       ctx,
     );
     expect(result.issues).toEqual([seen, fresh]);
-    expect([...result.uncovered]).toEqual([40]);
+    expect([...result.uncovered]).toEqual([]);
     expect(logged).toEqual([
       "2 open issue(s) may have nothing left to fix, but a source failed or answered in part " +
         "this scan, so Phoebe leaves them as they are.",

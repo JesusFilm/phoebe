@@ -109,7 +109,8 @@ describe("runAgentSource", () => {
     };
     const h = harness({ writes: JSON.stringify([noTarget, gradle, badSeverity, docker]) });
     const result = await runAgentSource(h.ctx, { claimed: [] });
-    expect(result).toEqual({ ok: true, candidates: [gradle, docker] });
+    // A dropped record may have been a finding, so the answer is partial (#898).
+    expect(result).toEqual({ ok: true, candidates: [gradle, docker], partial: true });
     expect(h.logged).toEqual([
       "agent source: kept 2 record(s), dropped 2 (record 0: target must be a non-empty string; " +
         "record 2: advisory severity must be one of low, moderate, high, critical).",
@@ -156,6 +157,7 @@ describe("parseAgentCandidates", () => {
       ok: true,
       candidates: [{ ...docker, advisories: [{ ...docker.advisories[0], fixedIn: null }] }],
       dropped: [],
+      malformed: 0,
     });
   });
 
@@ -165,6 +167,15 @@ describe("parseAgentCandidates", () => {
       ok: true,
       candidates: [gradle],
       dropped: ["record 1: Dockerfile is claimed by a native row"],
+      malformed: 0,
+    });
+  });
+
+  test("a record left to the native row that claims its manifest does not make the answer partial", async () => {
+    const h = harness({ writes: JSON.stringify([gradle, docker]) });
+    expect(await runAgentSource(h.ctx, { claimed: ["Dockerfile"] })).toEqual({
+      ok: true,
+      candidates: [gradle],
     });
   });
 
@@ -176,6 +187,7 @@ describe("parseAgentCandidates", () => {
       ok: true,
       candidates: [],
       dropped: ["record 0: workspace must be relative to the checkout"],
+      malformed: 1,
     });
   });
 

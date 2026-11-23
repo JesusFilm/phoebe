@@ -127,6 +127,7 @@ export async function detectRoots(
     const rest = workspaces.value.filter((w) => w !== path).sort();
     manifests.push({ checkout, path, workspaces: [path, ...new Set(rest)] });
   }
+  if (unavailable.length > 0 || failed.length > 0) deps.incomplete?.();
   if (unavailable.length > 0) {
     const missing = unavailable.find((u) => u.missing);
     const left = roots.length - manifests.length - failed.length - skipped;

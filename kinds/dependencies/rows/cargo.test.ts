@@ -201,10 +201,14 @@ describe("finding Cargo projects", () => {
       missing: true,
       problem: `${command} is not installed`,
     });
-    expect(await cargoRow({ run, log: (l) => logged.push(l) }).detect(checkout)).toEqual([]);
+    let incomplete = 0;
+    const deps = { run, log: (l: string) => logged.push(l), incomplete: () => incomplete++ };
+    expect(await cargoRow(deps).detect(checkout)).toEqual([]);
     expect(logged).toEqual([
       "cargo row: cargo is not installed; 2 project(s) left to the agent fallback.",
     ]);
+    // The source marks its answer partial on this, so nothing is retired off it (#898).
+    expect(incomplete).toBe(1);
   });
 
   test("a lockfile behind its manifests fails the listing rather than being rewritten", async () => {
@@ -234,10 +238,12 @@ describe("finding Cargo projects", () => {
       missing: true,
       problem: `${command} is not installed`,
     });
-    const row = cargoRow({ run, log: (l) => logged.push(l) });
+    let incomplete = 0;
+    const row = cargoRow({ run, log: (l) => logged.push(l), incomplete: () => incomplete++ });
     const manifest = { checkout: tmpdir(), path: "Cargo.toml", workspaces: ["Cargo.toml"] };
     expect(await row.audit!(manifest)).toEqual({ ok: true, value: [] });
     expect(await row.audit!(manifest)).toEqual({ ok: true, value: [] });
     expect(logged).toEqual(["cargo row: cargo-audit is not installed; OSV alone."]);
+    expect(incomplete).toBe(2);
   });
 });

@@ -19,13 +19,19 @@
 // records, and the issue is retired on the scan that sees them. The third is
 // read from what the sources did not report, which is weaker evidence. It
 // counts only on a scan where every source saw everything it reads, and only
-// when the scan before agreed.
+// when the scan before agreed. A scan that could not see everything, or that
+// never got this far, breaks that run of two.
+//
+// The reason for each package goes into the body as well as the comment. The
+// body is saved first, so a comment or a close that fails leaves an issue the
+// next scan can still close with its explanation intact.
 //
 // An issue with a run or a PR in flight is never retired, and its labels are
-// read again just before the close in case a run claimed it mid-scan. Neither is a
-// per-package issue with a row the plan files under another key, which is a
-// transitive package filed before the bundle existed: that issue still holds
-// the row and is still worked.
+// read again just before the close in case a run claimed it mid-scan. Neither
+// is a per-package issue that still holds a row the plan files under another
+// key, which is a transitive package filed before the bundle existed. "Holds"
+// is filing's own test (filing.ts): the same package, workspace and target,
+// with every advisory the plan lists on it already on the issue.
 
 import type { MentioningIssue, MentioningPr } from "../../src/github-client.ts";
 import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
@@ -83,9 +89,8 @@ type Why =
   | { kind: "nothing-left" };
 
 type Wording = {
-  /** The sentence the retired body carries after naming what the issue was. */
-  body: string;
-  comment: string;
+  /** Why it closed, package by package. The body and the comment both carry it. */
+  explanation: string;
   reason: "completed" | "not planned";
   log: string;
 };
@@ -100,10 +105,7 @@ function wording(
   const packages = names(rows.map((row) => row.package));
   if (why.kind === "moved") {
     return {
-      body:
-        "Every row this issue listed needed more than a lockfile fix, so Phoebe filed each on " +
-        "its own.",
-      comment:
+      explanation:
         "Every row this issue listed needed more than a lockfile fix. Phoebe is filing each " +
         `package on its own: ${packages.join(", ")}. Nothing is left to do here, so Phoebe ` +
         "closed it.",
@@ -113,10 +115,7 @@ function wording(
   }
   if (why.kind === "individual") {
     return {
-      body:
-        'This repository now files each transitive package on its own (`transitive: "individual"`), ' +
-        "so Phoebe closed this bundle.",
-      comment:
+      explanation:
         'This repository now files each transitive package on its own (`transitive: "individual"`), ' +
         "so Phoebe closed this bundle. Each row that still needs a fix gets an issue of its own: " +
         `${packages.join(", ")}.`,
@@ -148,7 +147,7 @@ function wording(
   }
   const elsewhere = of(isElsewhere);
   if (elsewhere.length > 0) {
-    lines.push(`- ${elsewhere.join(", ")}: Phoebe files it in an issue of its own now.`);
+    lines.push(`- ${elsewhere.join(", ")}: Phoebe files it in another issue now.`);
   }
   const gone = of(isGone);
   if (gone.length > 0) {
@@ -172,8 +171,7 @@ function wording(
     );
   }
   return {
-    body: "Nothing it listed is left for Phoebe to fix, so Phoebe closed it. Its comment says why.",
-    comment: [
+    explanation: [
       "Nothing this issue listed is left for Phoebe to fix, so Phoebe closed it.",
       "",
       ...lines,
@@ -208,11 +206,24 @@ export function retireUncovered(
   ctx: Pick<WorkKindRunCtx, "github" | "log" | "clock">,
 ): Retired {
   const plannedKeys = new Set(input.plan.planned.map((p) => bundleKey(p.bundle)));
-  const plannedRows = new Set(
-    input.plan.planned.flatMap((p) =>
-      p.bundle.candidates.map((c) => movedKey(c.manager, c.package, c.target)),
-    ),
-  );
+  const planned = input.plan.planned.flatMap((p) => p.bundle.candidates);
+  const plannedRows = new Set(planned.map((c) => movedKey(c.manager, c.package, c.target)));
+  // The advisories the plan lists on each row, by filing's identity for a row.
+  const heldKey = (manager: string, pkg: string, workspace: string, target: string) =>
+    JSON.stringify([manager, pkg, workspace, target]);
+  const plannedAdvisories = new Map<string, string[][]>();
+  for (const c of planned) {
+    const key = heldKey(c.manager, c.package, c.workspace, c.target);
+    plannedAdvisories.set(key, [
+      ...(plannedAdvisories.get(key) ?? []),
+      c.advisories.map((a) => a.id),
+    ]);
+  }
+  /** Whether the issue's row keeps a planned row out of the bundle that plans it. */
+  const holds = (manager: string, row: FiledRow) =>
+    (plannedAdvisories.get(heldKey(manager, row.package, row.workspace, row.target)) ?? []).some(
+      (ids) => ids.every((id) => row.advisories.includes(id)),
+    );
   const prKeys = new Set<string>();
   const prCloses = new Set<number>();
   for (const pr of input.prs) {
@@ -246,17 +257,15 @@ export function retireUncovered(
         why = { kind: "moved" };
       } else why = { kind: "nothing-left" };
     } else {
-      // A row the plan files under another key is still this issue's to fix.
-      if (rows.some((row) => plannedRows.has(movedKey(manager, row.package, row.target)))) {
-        return issue;
-      }
+      // A row the plan files under another key, and this issue holds, is still its to fix.
+      if (rows.some((row) => holds(manager, row))) return issue;
       why = { kind: "nothing-left" };
     }
 
     if (why.kind === "nothing-left") {
+      // Not counted, and what the scan before found is not carried over.
       if (!input.complete) {
         waiting += 1;
-        if (input.uncovered.has(issue.number)) uncovered.add(issue.number);
         return issue;
       }
       uncovered.add(issue.number);
@@ -273,7 +282,7 @@ export function retireUncovered(
     const body =
       words === null
         ? issue.body
-        : renderRetiredBody({ manager, group }, `${lead(key, rows)} ${words.body}`);
+        : renderRetiredBody({ manager, group }, `${lead(key, rows)}\n\n${words.explanation}`);
     const reason = words?.reason ?? "completed";
     try {
       // Read fresh: a run may have claimed the issue since the scan listed it.
@@ -283,7 +292,7 @@ export function retireUncovered(
       }
       if (words !== null) {
         ctx.github.updateIssueBody(issue.number, body);
-        ctx.github.postUnitComment({ objectType: "issue", id: issue.number }, words.comment);
+        ctx.github.postUnitComment({ objectType: "issue", id: issue.number }, words.explanation);
       }
       ctx.github.closeIssue(issue.number, reason);
     } catch (error) {

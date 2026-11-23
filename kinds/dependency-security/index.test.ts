@@ -742,14 +742,55 @@ describe("an open routed issue the plan no longer covers", () => {
       "npm:security:lodash: nothing #40 lists is left to fix; Phoebe closes it if the next scan agrees.",
     );
     expect(second.writes).toEqual(["update #40", "comment #40", "close #40 completed"]);
+    // The reason is in the body too, so a comment that fails to post loses nothing.
     expect(second.bodies.get(40)).toMatch(
-      /^Security advisories in `lodash` under `npm`\. Nothing it listed is left/,
+      /^Security advisories in `lodash` under `npm`\.\n\nNothing this issue listed is left/,
     );
+    expect(second.bodies.get(40)).toContain("- `lodash`: the scan no longer reports it.");
     expect(readIssueRows(second.bodies.get(40)!)).toEqual([]);
     expect(parseMarker(second.bodies.get(40)!)?.key).toBe("npm:security:lodash");
     expect(second.logged).toContain(
       "npm:security:lodash: closed #40; nothing it listed is left to fix.",
     );
+  });
+
+  test("one whose body was emptied but never closed is closed by the next scan, whatever the sources", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const [, second] = await twice(whole, [], { issues: [lodash] });
+    // The body was saved, then the comment or the close failed.
+    const halfClosed: MentioningIssue = { ...lodash, body: second.bodies.get(40)! };
+    const [first] = await twice({}, [], { issues: [halfClosed] });
+    expect(first.writes).toEqual(["close #40 completed"]);
+  });
+
+  test("a scan that answers in part, or fails, between two that agree starts the count again", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const answers: Partial<Record<SourceName, Candidate[]>> = { native: [], agent: [] };
+    const kind = kindWith({}, answers);
+    const pass = async () => {
+      const { overrides, writes } = gitHub([lodash]);
+      await kind.run(unit, ctxFor(overrides, clock)).catch(() => {});
+      return writes;
+    };
+    const closes = ["update #40", "comment #40", "close #40 completed"];
+
+    expect(await pass()).toEqual([]);
+    delete answers.agent;
+    expect(await pass()).toEqual([]);
+    answers.agent = [];
+    expect(await pass()).toEqual([]);
+    expect(await pass()).toEqual(closes);
+
+    // The stub still lists #40 open, so the count starts over. A scan where
+    // every source fails throws before it retires anything.
+    expect(await pass()).toEqual([]);
+    delete answers.native;
+    delete answers.agent;
+    expect(await pass()).toEqual([]);
+    answers.native = [];
+    answers.agent = [];
+    expect(await pass()).toEqual([]);
+    expect(await pass()).toEqual(closes);
   });
 
   test("its slot in the cap is free on the scan that closes it", async () => {
@@ -854,6 +895,26 @@ describe("an open routed issue the plan no longer covers", () => {
     expect(second.logged).toContain(
       "npm:security-transitive: held back tar@1.0.1 (already proposed in #40).",
     );
+  });
+
+  // Filing holds a row by package, workspace and target. An issue that lists
+  // the package in another workspace holds nothing, so it must not be kept.
+  test("a per-package issue for another workspace than the bundle's row is retired", async () => {
+    const tar = await filed(40, [transitive("tar", { workspace: "apps/a/package.json" })], {
+      ...whole,
+      transitive: "individual",
+    });
+    const elsewhere = [transitive("tar", { workspace: "apps/b/package.json" })];
+    const [first, second] = await twice(whole, elsewhere, { issues: [tar] });
+    expect(first.writes.filter((w) => w.startsWith("create"))).toEqual([
+      "create #100 Security fixes for transitive packages (npm)",
+    ]);
+    expect(first.writes.filter((w) => w.includes("#40"))).toEqual([]);
+    expect(second.writes.filter((w) => w.includes("#40"))).toEqual([
+      "update #40",
+      "comment #40",
+      "close #40 completed",
+    ]);
   });
 
   describe('a bundle left open across a switch to `transitive: "individual"`', () => {
