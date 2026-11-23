@@ -439,7 +439,7 @@ describe("planSecurity", () => {
         names.map((name) => transitive(name)),
         options,
       );
-      expect(whole.overflow.size).toBe(0);
+      expect(whole.planned[0]!.leftOut).toEqual([]);
       const limit = Math.floor(whole.planned[0]!.body.length / 2);
 
       const plan = planSecurity(
@@ -451,7 +451,7 @@ describe("planSecurity", () => {
       expect(bundle!.body.length).toBeLessThanOrEqual(limit);
       expect(kept.length).toBeGreaterThan(0);
       expect(kept).toEqual(names.slice(0, kept.length));
-      expect(plan.overflow).toEqual(new Map([["npm:security-transitive", 40 - kept.length]]));
+      expect(bundle!.leftOut!.map((c) => c.package)).toEqual(names.slice(kept.length));
     });
 
     test("a row the bundle's implementer dropped is planned per package, opening with where it came from", () => {
