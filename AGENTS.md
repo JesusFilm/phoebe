@@ -46,12 +46,13 @@ which is authored here and absent from `skills-lock.json`. Edit it in place.
 ## User-facing prose runs through unslop
 
 [`unslop`](.agents/skills/unslop/SKILL.md) strips the tells that mark writing as
-machine-made. Its own frontmatter says it "must always apply", and in this repo it
-does: any skill that hands a person something to read runs the text through unslop
-before showing or committing it. That covers review reports, diagnoses, specs and
-ticket bodies, research write-ups, handoffs, teaching prose, changesets, commit
-messages, PR and issue bodies, and plain chat replies. Read the skill and run its
-four steps — scan, rewrite, add soul, self-audit. It is a pass over the draft, not
+machine-made. Its frontmatter sets `disable-model-invocation: true`, so it never
+loads on its own, but in this repo it always applies: any skill that hands a person
+something to read runs the text through unslop before showing or committing it.
+That covers review reports, diagnoses, specs and ticket bodies, research write-ups,
+handoffs, teaching prose, changesets, commit messages, PR and issue bodies, and
+plain chat replies. Read the skill, scan the draft against its numbered rules, and
+rewrite. It is a pass over the draft, not
 a box to tick once the draft looks fine.
 
 Three things it does not touch:

@@ -179,11 +179,11 @@
     },
     "unslop": {
       "source": "cursor/plugins",
-      "ref": "99559f2f52047978602ef365589275831e76af07",
+      "ref": "aaeb0ea3a0584995aa8f55ce44c6c5259414b896",
       "sourceType": "github",
       "skillPath": "pstack/skills/unslop/SKILL.md",
-      "computedHash": "41e6144b38608880c06090a10f0d6ed922d670d5f7661df40af75f2e39628fc4",
-      "commit": "99559f2f52047978602ef365589275831e76af07"
+      "computedHash": "4bbcb6719a8f0f6f7fb46752e1c360791d7758a837708e300a06fc7d6907938c",
+      "commit": "aaeb0ea3a0584995aa8f55ce44c6c5259414b896"
     },
     "wayfinder": {
       "source": "mattpocock/skills",
