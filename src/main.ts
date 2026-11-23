@@ -26,8 +26,10 @@
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
 import { selectProviderForKind } from "./provider-selection.ts";
+import { assertProviderKeysPresent, loginFileProbe } from "./provider-key.ts";
 import { parsePipelineName, declaredPipeline, resolvePollIntervalMs } from "./pipeline.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
 import { asBranchRef, asPrNumber, type BranchRef, type PrNumber } from "./branded.ts";
@@ -2603,6 +2605,19 @@ export async function runEngine(
     })),
     env: process.env,
   });
+  // The provider key (#886), the one credential every scheduled kind needs: a
+  // pipeline whose agents would all die on "Not logged in" does not boot. Not
+  // for a dry run, which selects and never runs an agent. The agent child holds
+  // this process's HOME, so a login file found under it signs the agent in.
+  if (!dryRun) {
+    assertProviderKeysPresent({
+      repoSlug: config.repoSlug,
+      pipeline: pipelineName,
+      kinds: workOrder.map((kind) => ({ kind, config })),
+      env: process.env,
+      loginFile: loginFileProbe(process.env["HOME"] ?? homedir()),
+    });
+  }
   const pipeline = declaredPipeline(config, pipelineName);
   const pollIntervalMs = resolvePollIntervalMs(pipeline, process.env);
   const concurrency = pipeline.concurrency;

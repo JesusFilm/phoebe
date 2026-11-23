@@ -52,7 +52,7 @@
 
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   CRASH_LOOP_THRESHOLD,
@@ -110,7 +110,16 @@ import {
 import { resolveDataBase } from "./paths.ts";
 import { readSecretStore, secretStorePath, tenantStateDir } from "./secret-store.ts";
 import { followConfigPointer } from "./config-pointer.ts";
-import { enumerateDeclaredEnv } from "./pipeline-enumerate.ts";
+import { enumerateDeclaredEnv, enumerateScheduledKinds } from "./pipeline-enumerate.ts";
+import {
+  describeMissingKey,
+  loginFileProbe,
+  PROVIDER_LOGIN_FILES,
+  unseenLoginFiles,
+  type LoginFileProbe,
+  providerKeyUses,
+  type ProviderKeyUse,
+} from "./provider-key.ts";
 import {
   createWorktreeInspector,
   hasTenantData,
@@ -154,6 +163,13 @@ export type { CheckState, DoctorCheck, DoctorReport, MissingDeclaredEnvKey, Tena
  * kinds cannot read, or the first line of the error that stopped the scan.
  */
 export type DeclaredEnvScan = MissingDeclaredEnvKey[] | { error: string };
+
+/**
+ * What {@link scanProviderKeys} answers: every provider a tenant's scheduled
+ * kinds run on and whether it can sign in, or the first line of the error that
+ * stopped the scan.
+ */
+export type ProviderKeyScan = ProviderKeyUse[] | { error: string };
 
 /** One check a run did not get to before {@link DOCTOR_DEADLINE_MS} (#507 §7). */
 function deadlineCheck(id: string): DoctorCheck {
@@ -1202,6 +1218,100 @@ export function declaredEnvCheck(missing: DeclaredEnvScan | null, envLabel: stri
 }
 
 /**
+ * Which providers a tenant's scheduled kinds run on, and whether each one's
+ * `providerEnv` key is set (#886). The provider is resolved per kind the way
+ * the engine resolves it, against the env its child holds. Loads kind modules
+ * like {@link scanDeclaredEnv}, so it is awaited one tenant at a time too.
+ */
+export async function scanProviderKeys(opts: {
+  configPath: string;
+  env: Record<string, string | undefined>;
+  loginFile: LoginFileProbe;
+}): Promise<ProviderKeyScan> {
+  try {
+    const configPath = await followConfigPointer(opts.configPath);
+    const user = await loadUserConfig(configPath);
+    const config = resolveConfig(user, { dataBase: resolveDataBase(process.env) });
+    const kinds = await enumerateScheduledKinds(config, dirname(configPath));
+    return providerKeyUses({
+      kinds: kinds.map(({ pipeline, kind, config: rowConfig }) => ({
+        kind,
+        label: `${pipeline}/${kind}`,
+        config: rowConfig,
+      })),
+      env: opts.env,
+      loginFile: opts.loginFile,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { error: message.split("\n")[0]!.trim() };
+  }
+}
+
+/**
+ * The tenant finding for a provider that cannot sign in (#886). `buildAgentEnv`
+ * forwards an unset key as nothing, so the child boots and every unit dies on
+ * the CLI's "Not logged in"; doctor says so before the first one does. Presence
+ * only, and the value is never printed.
+ */
+export function providerKeyCheck(scan: ProviderKeyScan | null, envLabel: string): DoctorCheck {
+  if (scan === null) {
+    return {
+      id: "provider-key",
+      state: "unknown",
+      detail: "not evaluated (config or work-kind modules failed to load)",
+    };
+  }
+  if (!Array.isArray(scan)) {
+    return {
+      id: "provider-key",
+      state: "unknown",
+      detail: `not evaluated (config or work-kind modules failed to load: ${scan.error})`,
+    };
+  }
+  const missing = scan.filter((use) => use.state === "missing");
+  if (missing.length > 0) {
+    return {
+      id: "provider-key",
+      state: "fail",
+      detail:
+        `${missing.map((use) => describeMissingKey(use, envLabel)).join("; ")}. ` +
+        `Its agent will fail on "Not logged in", and the pipeline refuses to boot until the ` +
+        `key is set.`,
+    };
+  }
+  const unverifiable = scan.filter((use) => use.state === "unverifiable");
+  if (unverifiable.length > 0) {
+    return {
+      id: "provider-key",
+      state: "warn",
+      detail:
+        `${unverifiable
+          .map(
+            (use) =>
+              `${describeMissingKey(use, envLabel)}, so the agent signs in only if the ` +
+              `container holds ~/${PROVIDER_LOGIN_FILES[use.provider] ?? "?"}`,
+          )
+          .join("; ")}. ` + `Doctor cannot see that file from outside the container.`,
+    };
+  }
+  if (scan.length === 0) {
+    return { id: "provider-key", state: "ok", detail: "no scheduled kind runs an agent" };
+  }
+  return {
+    id: "provider-key",
+    state: "ok",
+    detail: scan
+      .map((use) =>
+        use.state === "set"
+          ? `${use.provider}: ${use.key} set`
+          : `${use.provider}: signs in from ~/${PROVIDER_LOGIN_FILES[use.provider] ?? "?"}`,
+      )
+      .join("; "),
+  };
+}
+
+/**
  * The `secret-store` check (#504) — the loud half of "the store wins over the
  * `.env`".
  *
@@ -1469,6 +1579,11 @@ export async function tenantRow(fields: {
    * modules is not safe to interleave.
    */
   declaredEnv?: DeclaredEnvScan | null;
+  /**
+   * What {@link scanProviderKeys} found, or undefined when the caller did not
+   * ask. Run by the sweep for the same reason as {@link tenantRow.declaredEnv}.
+   */
+  providerKeys?: ProviderKeyScan | null;
   /** Where tenant data lives, for the `stale-state` check (#426). */
   dataBase?: string;
   /**
@@ -1567,6 +1682,10 @@ export async function tenantRow(fields: {
 
   if (fields.declaredEnv !== undefined) {
     checks.push(declaredEnvCheck(fields.declaredEnv, fields.envLabel));
+  }
+
+  if (fields.providerKeys !== undefined) {
+    checks.push(providerKeyCheck(fields.providerKeys, fields.envLabel));
   }
 
   // The store, and what it shadows. Before the token check, because when the
@@ -2038,6 +2157,11 @@ export async function runDoctor(
     const dotenvByTenant = new Map<string, Record<string, string>>();
     const storeByTenant = new Map<string, TenantSecretStore>();
     const declaredEnvByTenant = new Map<string, DeclaredEnvScan | null>();
+    const providerKeysByTenant = new Map<string, ProviderKeyScan | null>();
+    // Every tenant's agent runs under this container's HOME, so a provider's
+    // login file is looked for there — and only from inside the container,
+    // since the host's HOME says nothing about it.
+    const loginFile = inContainer ? loginFileProbe(env["HOME"] ?? homedir()) : unseenLoginFiles;
     for (const tenant of enumeration.tenants) {
       // The store over the file, exactly as the supervisor builds the child's
       // env (#504): every check below asks what the child would hold, and after
@@ -2057,6 +2181,12 @@ export async function runDoctor(
           ? null
           : await scanDeclaredEnv({ configPath: tenant.configPath, env: tenantEnv }),
       );
+      providerKeysByTenant.set(
+        tenant.id,
+        deadline.expired()
+          ? null
+          : await scanProviderKeys({ configPath: tenant.configPath, env: tenantEnv, loginFile }),
+      );
     }
     tenants.push(
       ...(await mapBounded(enumeration.tenants, TENANT_PROBE_CONCURRENCY, (tenant) => {
@@ -2065,6 +2195,7 @@ export async function runDoctor(
         const credential = tenantCredential({ own, slug: tenant.slug, leases });
         return tenantRow({
           declaredEnv: declaredEnvByTenant.get(tenant.id) ?? null,
+          providerKeys: providerKeysByTenant.get(tenant.id) ?? null,
           path: tenant.dir,
           slug: tenant.slug,
           // Per tenant, not per deployment: a fleet mixes arms whenever one
@@ -2113,6 +2244,13 @@ export async function runDoctor(
         declaredEnv: deadline.expired()
           ? null
           : await scanDeclaredEnv({ configPath, env: soloEnv }),
+        providerKeys: deadline.expired()
+          ? null
+          : await scanProviderKeys({
+              configPath,
+              env: soloEnv,
+              loginFile: inContainer ? loginFileProbe(env["HOME"] ?? homedir()) : unseenLoginFiles,
+            }),
         // Solo: the root is the tenant, so one env answers both halves.
         arm: resolveCredentialArm(soloEnv),
         token: credential.token,
@@ -2174,8 +2312,9 @@ liveness (in-container only); launcher version vs the engine's minBootstrap floo
 In workspace mode every tenant is swept — token present the way its child reads
 it, repo reachable with that token, the four workflow labels present in the
 repo, no open member of a retired feature left wearing one, every env key a
-scheduled work kind declares set in that tenant's .env, and (when the issues
-prompt is overridden) that it includes the blocker-recording rule.
+scheduled work kind declares set in that tenant's .env, the provider key each
+scheduled kind's agent signs in with (the var providerEnv names) set, and (when
+the issues prompt is overridden) that it includes the blocker-recording rule.
 
 A run answers within five minutes; a check that does not finish by then reports
 \`?\` (deadline passed) rather than holding the whole report open. The

@@ -153,6 +153,11 @@ If you accept those, the delivery shapes are:
 Because refresh-in-place makes this fragile for a long-lived deployment, prefer
 Approach A for anything you're not actively babysitting.
 
+With Approach B the var `providerEnv.claude` names can stay unset. The engine
+refuses to boot a pipeline whose provider key is missing, and `phoebe doctor`
+fails the tenant's `provider-key` check, unless this file is present under the
+container's `$HOME`. So the file has to be in place before the engine starts.
+
 ---
 
 ## Security notes

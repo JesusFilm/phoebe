@@ -29,6 +29,8 @@ import {
   tenantTokenCheck,
   remoteCheck,
   scanDeclaredEnv,
+  providerKeyCheck,
+  scanProviderKeys,
 } from "./doctor.ts";
 import { createDeadline, DEADLINE_DETAIL } from "./doctor-deadline.ts";
 
@@ -845,6 +847,133 @@ describe("scanDeclaredEnv", () => {
     const { error } = scan as { error: string };
     expect(error).toMatch(/missing required field\(s\)/);
     expect(error).not.toContain("\n");
+  });
+});
+
+describe("providerKeyCheck", () => {
+  const envLabel = "/etc/phoebe/repos/acme/widget/.env";
+
+  test("a provider whose key is unset fails, naming the key and the env file (#886)", () => {
+    const check = providerKeyCheck(
+      [
+        {
+          provider: "claude",
+          key: "ANTHROPIC_API_KEY",
+          kinds: ["default/issues", "default/reviews"],
+          state: "missing",
+        },
+      ],
+      envLabel,
+    );
+    expect(check.id).toBe("provider-key");
+    expect(check.state).toBe("fail");
+    expect(check.detail).toContain(
+      `providerEnv.claude names ANTHROPIC_API_KEY, which is unset in ${envLabel}`,
+    );
+    expect(check.detail).toContain("default/issues, default/reviews");
+    expect(check.detail).toMatch(/Not logged in/);
+  });
+
+  test("a set key passes and never prints the value", () => {
+    const check = providerKeyCheck(
+      [{ provider: "claude", key: "ANTHROPIC_API_KEY", kinds: ["default/issues"], state: "set" }],
+      envLabel,
+    );
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("ANTHROPIC_API_KEY");
+  });
+
+  test("a login file passes", () => {
+    const check = providerKeyCheck(
+      [
+        {
+          provider: "claude",
+          key: "ANTHROPIC_API_KEY",
+          kinds: ["default/issues"],
+          state: "login-file",
+        },
+      ],
+      envLabel,
+    );
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/\.credentials\.json/);
+  });
+
+  test("a login file doctor cannot look for warns", () => {
+    const check = providerKeyCheck(
+      [
+        {
+          provider: "claude",
+          key: "ANTHROPIC_API_KEY",
+          kinds: ["default/issues"],
+          state: "unverifiable",
+        },
+      ],
+      envLabel,
+    );
+    expect(check.state).toBe("warn");
+    expect(check.detail).toMatch(/outside the container/);
+  });
+
+  test("a scan that did not run is unknown", () => {
+    expect(providerKeyCheck(null, envLabel).state).toBe("unknown");
+    const check = providerKeyCheck({ error: "boom" }, envLabel);
+    expect(check.state).toBe("unknown");
+    expect(check.detail).toContain("boom");
+  });
+});
+
+describe("scanProviderKeys", () => {
+  const config = (extra: string) => `export default {
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+${extra}};
+`;
+
+  const write = (extra: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-provider-key-"));
+    const path = join(dir, "phoebe.config.ts");
+    writeFileSync(path, config(extra));
+    return path;
+  };
+
+  test("the default provider's key, unset, is missing on every scheduled kind", async () => {
+    const scan = await scanProviderKeys({
+      configPath: write(""),
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-test" },
+      loginFile: () => false,
+    });
+    expect(Array.isArray(scan)).toBe(true);
+    const uses = scan as Exclude<typeof scan, { error: string }>;
+    expect(uses).toHaveLength(1);
+    expect(uses[0]).toMatchObject({
+      provider: "claude",
+      key: "ANTHROPIC_API_KEY",
+      state: "missing",
+    });
+    expect(uses[0]?.kinds).toContain("work/issues");
+  });
+
+  test("providerEnv decides the key", async () => {
+    const scan = await scanProviderKeys({
+      configPath: write(`  providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" },\n`),
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-test" },
+      loginFile: () => false,
+    });
+    expect(scan).toEqual([
+      expect.objectContaining({ key: "CLAUDE_CODE_OAUTH_TOKEN", state: "set" }),
+    ]);
+  });
+
+  test("a config that will not resolve answers with its error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "phoebe-doctor-provider-key-"));
+    const path = join(dir, "phoebe.config.ts");
+    writeFileSync(path, `export default { repoSlug: "acme/widget" };\n`);
+    const scan = await scanProviderKeys({ configPath: path, env: {}, loginFile: () => false });
+    expect((scan as { error: string }).error).toMatch(/missing required field\(s\)/);
   });
 });
 
