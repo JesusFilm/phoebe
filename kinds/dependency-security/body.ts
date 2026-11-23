@@ -4,11 +4,22 @@
 // because a transitive package is in no manifest and is fixed another way.
 // Rendered from the bundle alone, reading no clock, so the same bundle always
 // renders the same bytes.
+//
+// The transitive bundle (ADR 0005) has a body of its own: one row per package
+// and version, whatever the workspaces, and the instruction to make lockfile
+// fixes only.
 
-import { compareCandidates, type Candidate } from "../dependencies/candidate.ts";
+import { byText, compareCandidates, type Candidate } from "../dependencies/candidate.ts";
 import { bundleKey, fingerprint, renderMarker } from "../dependencies/fingerprint.ts";
 import type { Bundle } from "../dependencies/grouping.ts";
-import { cell, code, plain, renderAdvisories, STAYS_CELL } from "../dependencies/issue-body.ts";
+import {
+  cell,
+  code,
+  plain,
+  renderAdvisories,
+  renderCodeList,
+  STAYS_CELL,
+} from "../dependencies/issue-body.ts";
 import type { MinSeverity } from "../dependencies/policy.ts";
 
 export type SecurityBodyOptions = {
@@ -17,6 +28,11 @@ export type SecurityBodyOptions = {
   minSeverity: MinSeverity;
   /** The routing label a tracking issue gains once a fix ships. */
   routingLabel: string;
+  /**
+   * The PR or issue whose implementer dropped a row of this package from the
+   * transitive bundle, when one did: the row needs a manifest fix.
+   */
+  droppedFrom?: number;
 };
 
 /** Whether a candidate is a fix to apply, as opposed to an occurrence still waiting on one. */
@@ -68,6 +84,9 @@ export function renderSecurityBody(bundle: Bundle, options: SecurityBodyOptions)
   const lines: string[] = [];
 
   if (options.routed) {
+    if (options.droppedFrom !== undefined) {
+      lines.push(`Dropped from #${options.droppedFrom}; it needs more than a lockfile fix.`, "");
+    }
     lines.push(
       `Security fix for ${pkg} under ${manager}. A fix is released for its advisories at or ` +
         `above ${severity}, though it may not cover every one. Move each row to the version in its ` +
@@ -118,4 +137,89 @@ export function renderSecurityBody(bundle: Bundle, options: SecurityBodyOptions)
   lines.push("", ...renderAdvisories(candidates));
   lines.push("", renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) }), "");
   return lines.join("\n");
+}
+
+/** The transitive bundle's title, the same whatever rows it holds. */
+export function renderTransitiveTitle(bundle: Bundle): string {
+  return `Security fixes for transitive packages (${bundle.manager})`;
+}
+
+/** One table row of the transitive bundle: a package at one version moving to one fix. */
+export type TransitiveRow = { package: string; current: string; target: string };
+
+/** The rows the transitive bundle's table has, in the order it lists them. */
+export function transitiveRows(candidates: readonly Candidate[]): TransitiveRow[] {
+  const rows = new Map<string, TransitiveRow>();
+  for (const c of [...candidates].sort(compareCandidates)) {
+    const key = JSON.stringify([c.package, c.current, c.target]);
+    if (!rows.has(key)) rows.set(key, { package: c.package, current: c.current, target: c.target });
+  }
+  return [...rows.values()];
+}
+
+/**
+ * The body of the transitive bundle: every transitive package of one manager
+ * with a fix released. One table row stands for a package at one version in
+ * every workspace that has it, and `readIssueRows` reads it back as a row per
+ * workspace. The implementer makes lockfile fixes only; a row that needs more
+ * comes back as a per-package issue.
+ */
+export function renderTransitiveBody(
+  bundle: Bundle,
+  options: Pick<SecurityBodyOptions, "minSeverity">,
+): string {
+  const candidates = [...bundle.candidates].sort(compareCandidates);
+  const sorted = (values: Iterable<string>) => [...new Set(values)].sort(byText);
+  const lines: string[] = [
+    `Security fixes for transitive packages under ${code(bundle.manager)}. No manifest declares ` +
+      "these packages, and each has a fix released for its advisories at or above " +
+      `${thresholdPhrase(options.minSeverity)}.`,
+    "",
+    "Make lockfile fixes only. For each row, run the package manager's own update for that " +
+      "package and check that the lockfile now resolves the version in its To column or a " +
+      "newer one. Do not edit a manifest and do not add an override. A row the lockfile cannot " +
+      "bring that far is dropped with the `(needs override)` tag, and Phoebe files it again on " +
+      "its own.",
+    "",
+    "| Package | Workspace | Type | From | To | Reached through |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...transitiveRows(candidates).map((row) => {
+      const occurrences = candidates.filter(
+        (c) => c.package === row.package && c.current === row.current && c.target === row.target,
+      );
+      return [
+        "",
+        cell(code(row.package)),
+        cell(renderCodeList(sorted(occurrences.map((c) => c.workspace)))),
+        sorted(occurrences.map((c) => c.depType)).join(", "),
+        cell(plain(row.current)),
+        cell(plain(row.target)),
+        cell(renderCodeList(sorted(occurrences.flatMap((c) => c.via ?? [])))),
+        "",
+      ]
+        .join(" | ")
+        .trim();
+    }),
+    "",
+    ...renderAdvisories(candidates),
+    "",
+    renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) }),
+    "",
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * What the transitive bundle's issue says once every row it listed has moved
+ * to an issue of its own. It lists no rows, so closing it vetoes none of them.
+ */
+export function renderEmptiedTransitiveBody(manager: string, group: string): string {
+  const bundle: Bundle = { manager, group, candidates: [] };
+  return [
+    `Security fixes for transitive packages under ${code(manager)}. Every row this issue listed ` +
+      "needed more than a lockfile fix, so Phoebe filed each on its own.",
+    "",
+    renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) }),
+    "",
+  ].join("\n");
 }

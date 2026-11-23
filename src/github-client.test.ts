@@ -1366,6 +1366,18 @@ describe("updateIssueBody", () => {
   });
 });
 
+describe("closeIssue", () => {
+  test("closes with the reason given", () => {
+    const { github, calls } = clientWith(["", ""]);
+    github.closeIssue(42, "completed");
+    github.closeIssue(43, "not planned");
+    expect(calls.map((c) => c.args)).toEqual([
+      ["issue", "close", "42", "--reason", "completed", "-R", "acme/widget"],
+      ["issue", "close", "43", "--reason", "not planned", "-R", "acme/widget"],
+    ]);
+  });
+});
+
 describe("createGhExecutor", () => {
   const posix = test.skipIf(process.platform === "win32");
   const tempDirs: string[] = [];

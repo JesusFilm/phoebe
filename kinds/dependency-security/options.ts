@@ -22,6 +22,7 @@ import { MIN_SEVERITY_DEFAULT, type MinSeverity } from "../dependencies/policy.t
 import { AGENT_SOURCE_NAME } from "../dependencies/sources/agent.ts";
 import type { SourceName } from "../dependencies/sources/assemble.ts";
 import { NATIVE_SOURCE_NAME } from "../dependencies/sources/native.ts";
+import { TRANSITIVE_MODES, type TransitiveMode } from "./plan.ts";
 
 export type DependencySecurityOptions = {
   /** How long one scan's results stand before the next: `1h`, `30m`. */
@@ -42,6 +43,11 @@ export type DependencySecurityOptions = {
    * and an issue carrying a critical advisory is filed whatever the count.
    */
   prConcurrentLimit: number;
+  /**
+   * `bundle` files every transitive fix of a manager as one issue of lockfile
+   * fixes; `individual` files one issue per package.
+   */
+  transitive: TransitiveMode;
   /** `skip` leaves the Dockerfile's `phoebe-agent` pin to `phoebe upgrade`; `propose` files it. */
   bootstrapperPin: BootstrapperPinMode;
 };
@@ -52,6 +58,7 @@ export const DEPENDENCY_SECURITY_OPTION_DEFAULTS: DependencySecurityOptions = {
   minSeverity: MIN_SEVERITY_DEFAULT,
   label: "phoebe:dependencies",
   prConcurrentLimit: 5,
+  transitive: "bundle",
   bootstrapperPin: BOOTSTRAPPER_PIN_DEFAULT,
 };
 
@@ -61,6 +68,7 @@ const OPTION_KEYS: readonly (keyof DependencySecurityOptions)[] = [
   "minSeverity",
   "label",
   "prConcurrentLimit",
+  "transitive",
   "bootstrapperPin",
 ];
 
@@ -102,6 +110,10 @@ export function resolveDependencySecurityOptions(
       raw["prConcurrentLimit"] === undefined
         ? defaults.prConcurrentLimit
         : nonNegativeInteger(at, "prConcurrentLimit", raw["prConcurrentLimit"]),
+    transitive:
+      raw["transitive"] === undefined
+        ? defaults.transitive
+        : oneOf(at, "transitive", raw["transitive"], TRANSITIVE_MODES),
     bootstrapperPin:
       raw["bootstrapperPin"] === undefined
         ? defaults.bootstrapperPin

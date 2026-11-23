@@ -10,16 +10,27 @@
  * `tooNew` marks a bump the package manager refused only because the release
  * is younger than its minimum release age. Nothing is wrong with that version
  * and it passes once the release ages, so it is not a failure.
+ * `needsOverride` marks a row of a transitive security bundle the lockfile
+ * could not bring to its fixed version (ADR 0005): it needs a manifest fix,
+ * so the security detector files it again on its own.
  */
-export type DroppedBump = { package: string; version: string; tooNew: boolean };
+export type DroppedBump = {
+  package: string;
+  version: string;
+  tooNew: boolean;
+  needsOverride: boolean;
+};
 
 /** The heading the section opens with. */
 export const DROPPED_HEADING = "## Dropped";
 
 // `- \`<package>@<version>\` (too new): <reason>`, the tag only on a
-// release-age refusal. The name match is greedy, so the version is whatever
-// follows the last `@`, and a scoped `@scope/name` keeps its leading `@`.
-const ENTRY_RE = /^- `(.+)@([^@\s`]+)`(\s*\(too new\))?/i;
+// release-age refusal, or `(needs override)` on a row the lockfile alone
+// could not fix. The name match is greedy, so the version is whatever follows
+// the last `@`, and a scoped `@scope/name` keeps its leading `@`. It stops at
+// the code span's closing backtick, so a reason that quotes another scoped
+// package is never read as part of the entry.
+const ENTRY_RE = /^- `([^`]+)@([^@\s`]+)`(?:\s*\((too new|needs override)\))?/i;
 
 /**
  * Every bump listed under the body's `## Dropped` heading, in order, or an
@@ -44,7 +55,13 @@ export function parseDropped(body: string): DroppedBump[] {
     if (!inSection) continue;
     const match = ENTRY_RE.exec(line);
     if (match !== null) {
-      dropped.push({ package: match[1]!, version: match[2]!, tooNew: match[3] !== undefined });
+      const tag = match[3]?.toLowerCase();
+      dropped.push({
+        package: match[1]!,
+        version: match[2]!,
+        tooNew: tag === "too new",
+        needsOverride: tag === "needs override",
+      });
     }
   }
   return dropped;

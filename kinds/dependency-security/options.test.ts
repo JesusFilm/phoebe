@@ -20,6 +20,7 @@ describe("resolveDependencySecurityOptions", () => {
       minSeverity: { prod: "high", dev: "critical" },
       label: "phoebe:dependencies",
       prConcurrentLimit: 5,
+      transitive: "bundle",
       bootstrapperPin: "skip",
     });
   });
@@ -33,6 +34,7 @@ describe("resolveDependencySecurityOptions", () => {
           minSeverity: "critical",
           label: "deps",
           prConcurrentLimit: 0,
+          transitive: "individual",
           bootstrapperPin: "propose",
         },
         at,
@@ -43,6 +45,7 @@ describe("resolveDependencySecurityOptions", () => {
       minSeverity: { prod: "critical", dev: "critical" },
       label: "deps",
       prConcurrentLimit: 0,
+      transitive: "individual",
       bootstrapperPin: "propose",
     });
   });
@@ -77,6 +80,10 @@ describe("resolveDependencySecurityOptions", () => {
     [
       { prConcurrentLimit: -1 },
       "kinds.dependency-security: `prConcurrentLimit` must be a non-negative integer",
+    ],
+    [
+      { transitive: "all" },
+      "kinds.dependency-security: `transitive` must be one of bundle, individual",
     ],
     [{ ignore: ["lodash"] }, "kinds.dependency-security: unknown option `ignore`"],
   ])("%j fails", (block, message) => {

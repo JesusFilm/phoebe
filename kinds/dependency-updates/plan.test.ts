@@ -219,6 +219,11 @@ describe("readFailures", () => {
     expect(failures.size).toBe(2);
   });
 
+  test("a bump tagged `(needs override)` counts like an untagged one", () => {
+    const body = "## Dropped\n\n- `tar@7.5.4` (needs override): the range forbids it";
+    expect(readFailures([pr(20, body)]).get("tar@7.5.4")).toEqual([20]);
+  });
+
   // #862: when every bump drops there is no PR, so the implementer's comment
   // on the issue is the record, counted once per issue however many runs wrote one.
   test("an issue comment counts like a PR body, once per issue", () => {
