@@ -678,3 +678,152 @@ describe("run", () => {
     });
   });
 });
+
+describe("a not-affected verdict", () => {
+  const clock: Clock = { now: new Date("2026-11-06T00:00:00Z") };
+  const high = { id: "GHSA-high", severity: "high", fixedIn: "1.0.3" } as const;
+  const critical = { id: "GHSA-crit", severity: "critical", fixedIn: "1.0.4" } as const;
+  const verdict = "## Verdict\n\nNot affected.\n\n<!-- phoebe-verdict not-affected -->";
+  const blocked = "\n<!-- phoebe-blocked -->";
+  const parkedLabels = ["dependencies", "security", "phoebe:dependencies", "phoebe:blocked"];
+
+  async function scan(
+    native: Candidate[],
+    held: { issues?: MentioningIssue[]; comments?: Record<number, Comment[]> } = {},
+  ) {
+    const { overrides, writes, bodies } = gitHub(held.issues, [], held.comments);
+    const logged: string[] = [];
+    await kindWith({}, { native }).run(
+      { ref: SCAN_REF, revision: "0" },
+      ctxFor(overrides, clock, logged),
+    );
+    return { writes, bodies, logged };
+  }
+
+  /** The issue a first scan of `native` files, as the implementer's run left it. */
+  async function ticket(
+    native: Candidate[],
+    overrides: Partial<MentioningIssue> = {},
+  ): Promise<MentioningIssue> {
+    const { bodies } = await scan(native);
+    return {
+      number: 40,
+      body: bodies.get(100)!,
+      state: "open",
+      stateReason: null,
+      closedAt: null,
+      labels: parkedLabels,
+      ...overrides,
+    };
+  }
+
+  test("on a ticket of highs: acknowledged, closed as not planned, and unparked", async () => {
+    const native = [candidate("tar", [high])];
+    const issue = await ticket(native);
+    const { writes, logged } = await scan(native, {
+      issues: [issue],
+      comments: {
+        40: [{ body: verdict + blocked }, { body: "⏸️ parked\n\n<!-- phoebe-blocked-ack -->" }],
+      },
+    });
+    expect(writes).toEqual(["comment #40", "close #40 not planned", "unlabel #40 phoebe:blocked"]);
+    expect(logged).toContain("#40: not-affected verdict; dismissed it as not planned.");
+  });
+
+  test("on a ticket with a critical: left open and parked, the routing label taken off", async () => {
+    const native = [candidate("tar", [high, critical])];
+    const issue = await ticket(native);
+    const { writes } = await scan(native, {
+      issues: [issue],
+      comments: { 40: [{ body: verdict + blocked }] },
+    });
+    expect(writes).toEqual(["comment #40", "unlabel #40 phoebe:dependencies"]);
+  });
+
+  test("on a high re-rated critical since the ticket was filed: left for a maintainer", async () => {
+    const issue = await ticket([candidate("tar", [high])]);
+    expect(issue.body).toContain("GHSA-high");
+    expect(issue.body).not.toContain("critical, in");
+    const rerated = { ...high, severity: "critical" } as const;
+    const { writes } = await scan([candidate("tar", [rerated])], {
+      issues: [issue],
+      comments: { 40: [{ body: verdict + blocked }] },
+    });
+    expect(writes).toEqual(["comment #40", "unlabel #40 phoebe:dependencies"]);
+  });
+
+  test("from any other login it does nothing", async () => {
+    const native = [candidate("tar", [high])];
+    const issue = await ticket(native);
+    const { writes } = await scan(native, {
+      issues: [issue],
+      comments: { 40: [{ body: verdict + blocked, by: "passer-by" }] },
+    });
+    expect(writes).toEqual([]);
+  });
+
+  test("without the blocked marker it is still acted on", async () => {
+    const native = [candidate("tar", [high])];
+    const issue = await ticket(native, {
+      labels: ["dependencies", "security", "phoebe:dependencies"],
+    });
+    const { writes } = await scan(native, {
+      issues: [issue],
+      comments: { 40: [{ body: verdict }] },
+    });
+    expect(writes).toEqual(["comment #40", "close #40 not planned"]);
+  });
+
+  test("a dismissal holds for the same rows and lifts on a new advisory", async () => {
+    const native = [candidate("tar", [high])];
+    const dismissed = await ticket(native, {
+      state: "closed",
+      stateReason: "not_planned",
+      labels: ["dependencies", "security", "phoebe:dependencies"],
+    });
+    const comments = {
+      40: [{ body: verdict + blocked }, { body: "closed\n\n<!-- phoebe-verdict-ack -->" }],
+    };
+    expect((await scan(native, { issues: [dismissed], comments })).writes).toEqual([]);
+
+    const another = { id: "GHSA-new", severity: "high", fixedIn: "1.0.3" } as const;
+    const { writes } = await scan([candidate("tar", [high, another])], {
+      issues: [dismissed],
+      comments,
+    });
+    expect(writes[0]).toBe("create #100 Security advisories in tar (npm)");
+  });
+
+  test("a dismissed issue a person reopened is left open for the implementer", async () => {
+    const native = [candidate("tar", [high])];
+    const reopened = await ticket(native, {
+      stateReason: "reopened",
+      labels: ["dependencies", "security", "phoebe:dependencies"],
+    });
+    const { writes } = await scan(native, {
+      issues: [reopened],
+      comments: {
+        40: [{ body: verdict + blocked }, { body: "closed\n\n<!-- phoebe-verdict-ack -->" }],
+      },
+    });
+    expect(writes).toEqual([]);
+  });
+
+  test("a verdict on the transitive bundle or on a tracking issue is not read", async () => {
+    const bundle = [candidate("tar", [high], { via: ["expo"] })];
+    const { bodies } = await scan(bundle);
+    const issue: MentioningIssue = {
+      number: 40,
+      body: bodies.get(100)!,
+      state: "open",
+      stateReason: null,
+      closedAt: null,
+      labels: parkedLabels,
+    };
+    const { writes } = await scan(bundle, {
+      issues: [issue],
+      comments: { 40: [{ body: verdict + blocked }] },
+    });
+    expect(writes).toEqual([]);
+  });
+});

@@ -727,6 +727,45 @@ on its path, or `not known`. When a row is not direct, the body tells the
 implementer to bump the dependency that pulls the package in or, failing that,
 to pin it with the package manager's override.
 
+**A ticket that needs a manifest fix ends in a verdict.** The implementer
+reaches one on a per-package ticket whose body opens `Dropped from #N`, before
+it attempts the fix. On any other per-package security ticket it tries the
+lockfile fix and then the manifest fix, and reaches a verdict only if the fix
+still fails the gate. The transitive bundle never gets one. A verdict covers
+the whole ticket, because an override applies to the package everywhere.
+
+| Verdict      | What it takes                                                                                                                                                                      | What happens                                                                 |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| affected     | any row is exposed                                                                                                                                                                 | the manifest fix, with the reasoning under `## Verdict` in the PR body       |
+| not affected | the vulnerable function or input the advisory names, the dependency that reaches the package, and why that path never sees attacker-controlled input or never runs outside a build | a comment with that evidence, and no commit                                  |
+| can't tell   | any of the three is missing                                                                                                                                                        | the fix, as for affected; if it fails the gate the ticket is parked as usual |
+
+**A not-affected verdict is carried out by the scan, not the implementer.** The
+implementer's comment ends with `<!-- phoebe-verdict not-affected -->` and
+`<!-- phoebe-blocked -->`, so the ticket is parked at once. The next scan reads
+Phoebe's own comments on its open, routed, per-package issues. A comment from
+any other login is ignored, so nobody can dismiss an advisory by pasting the
+marker.
+
+- No advisory on the ticket is critical: the scan closes the issue as not
+  planned and takes `phoebe:blocked` off. This is a **dismissal**.
+- One is critical: the scan takes the routing label off and leaves the ticket
+  parked. A maintainer closes it, or puts the label back and removes
+  `phoebe:blocked` to have it fixed. An advisory the ticket lists as high
+  counts as critical here once the scan's sources rate it so.
+
+The scan's comment carries `<!-- phoebe-verdict-ack -->`, and a verdict older
+than the newest one is spent. Reopening a dismissed issue therefore puts it
+back in the queue, and the implementer treats the reopen as a person overruling
+the verdict and applies the fix.
+
+**A dismissal has no expiry and nothing re-checks it.** It stands until a new
+advisory lands on the package, which is how a closed issue's veto already
+lifts, or until a person reopens the issue. If the repository's code later
+starts using the vulnerable path, Phoebe will not notice. An agent's wrong
+"not affected" on a high closes the ticket with nobody looking, so read the
+`## Verdict` comments on closed security issues from time to time.
+
 **A tracking issue turns into a routed one in place.** Its bundle key
 (`<manager>:security:<package>`) stays the same when a fix ships, but the target
 moves, so the fingerprint does too. That pass rewrites the body, posts the

@@ -4,7 +4,9 @@
 // dependency type is filed (ADR 0005). A transitive package with a fix and no
 // critical rides in one bundle per manager, where the implementer makes
 // lockfile fixes only; a row it drops as needing more comes back per package
-// (moved.ts). Everything else is one issue per package:
+// (moved.ts). A per-package ticket the implementer finds the tenant is not
+// affected by is dismissed, or parked when it is critical (verdict.ts).
+// Everything else is one issue per package:
 //
 //   - with a fix released, a routed issue targeting that fix, labelled
 //     `dependencies`, `security` and the routing label, which the
@@ -58,6 +60,7 @@ import {
   type DependencySecurityOptions,
 } from "./options.ts";
 import { isSecurityKey, planSecurity } from "./plan.ts";
+import { actOnVerdicts, verdictIssues } from "./verdict.ts";
 
 export const DEPENDENCY_SECURITY_KIND_NAME = "dependency-security";
 export const SCAN_REF = `${DEPENDENCY_SECURITY_KIND_NAME}:scan`;
@@ -211,8 +214,28 @@ export function createDependencySecurityKind(
         );
       }
 
-      const issues = closeEmptied(
+      // A not-affected verdict is carried out before filing, so the rows of a
+      // ticket dismissed this scan are vetoed by it and not left as proposed.
+      const criticalNow = new Map(
+        plan.planned.map((p) => [
+          bundleKey(p.bundle),
+          new Set(
+            p.bundle.candidates
+              .flatMap((c) => c.advisories)
+              .filter((a) => a.severity === "critical")
+              .map((a) => a.id),
+          ),
+        ]),
+      );
+      const judged = actOnVerdicts(
         filed.issues,
+        readParked(verdictIssues(filed.issues, options.label), ctx),
+        options.label,
+        ctx,
+        criticalNow,
+      );
+      const issues = closeEmptied(
+        judged,
         moved,
         new Set(plan.planned.map((p) => bundleKey(p.bundle))),
         ctx,

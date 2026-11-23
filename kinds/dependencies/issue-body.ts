@@ -232,6 +232,13 @@ function unplain(text: string): string {
 
 const ADVISORY_LINE_RE = /^- \[.*\]\(https:\/\/osv\.dev\/vulnerability\/(\S+?)\): [a-z]+, in (.+)$/;
 
+/** Whether a body's `## Advisories` section lists a critical advisory. */
+export function hasCriticalAdvisory(body: string): boolean {
+  return body
+    .split("\n")
+    .some((line) => ADVISORY_LINE_RE.test(line) && /\): critical, in /.test(line));
+}
+
 /** Advisory ids by package, from the `## Advisories` lines `renderAdvisories` wrote. */
 function advisoriesByPackage(lines: readonly string[]): Map<string, Set<string>> {
   const byPackage = new Map<string, Set<string>>();
