@@ -90,7 +90,9 @@ export function readMoved(
  * Close each open, parked bundle issue this scan plans no bundle for and
  * whose rows have all moved, and return the issue list as GitHub now holds
  * it. An issue that could not be rewritten and closed is logged and returned
- * as it was, so the next scan tries again.
+ * as it was, so the next scan tries again. That includes one whose body was
+ * saved before the comment or the close failed: it lists no rows by then, and
+ * the next scan closes it.
  */
 export function closeEmptied(
   issues: readonly MentioningIssue[],
@@ -104,19 +106,27 @@ export function closeEmptied(
     if (!issue.labels.includes(PHOEBE_BLOCKED_LABEL)) return issue;
     const manager = managerOf(key);
     const rows = readIssueRows(issue.body);
-    if (rows.length === 0) return issue;
-    if (!rows.every((row) => moved.has(movedKey(manager, row.package, row.target)))) return issue;
-
     const body = renderEmptiedTransitiveBody(manager, TRANSITIVE_GROUP);
+    // An earlier scan saved the emptied body and failed before the close. The
+    // body already says where the rows went, so only the close is left.
+    const halfClosed =
+      rows.length === 0 && parseMarker(issue.body)?.fingerprint === parseMarker(body)?.fingerprint;
+    if (!halfClosed) {
+      if (rows.length === 0) return issue;
+      if (!rows.every((row) => moved.has(movedKey(manager, row.package, row.target)))) return issue;
+    }
+
     const packages = [...new Set(rows.map((row) => row.package))].sort(byText);
     try {
-      ctx.github.updateIssueBody(issue.number, body);
-      ctx.github.postUnitComment(
-        { objectType: "issue", id: issue.number },
-        "Every row this issue listed needed more than a lockfile fix. Phoebe is filing each " +
-          `package on its own: ${packages.map(code).join(", ")}. Nothing is left to do here, so ` +
-          "Phoebe closed it.",
-      );
+      if (!halfClosed) {
+        ctx.github.updateIssueBody(issue.number, body);
+        ctx.github.postUnitComment(
+          { objectType: "issue", id: issue.number },
+          "Every row this issue listed needed more than a lockfile fix. Phoebe is filing each " +
+            `package on its own: ${packages.map(code).join(", ")}. Nothing is left to do here, so ` +
+            "Phoebe closed it.",
+        );
+      }
       ctx.github.closeIssue(issue.number, "completed");
     } catch (error) {
       ctx.log(

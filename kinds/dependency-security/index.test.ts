@@ -616,6 +616,30 @@ describe("run", () => {
       expect(later.bodies.get(100)).not.toContain("| `tar` |");
     });
 
+    test("a bundle whose body was emptied but never closed is closed by the next scan", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const parked = await filedBundle(40, native, {
+        labels: ["dependencies", "security", "phoebe:dependencies", "phoebe:blocked"],
+      });
+      const comments = {
+        40: [
+          {
+            body:
+              dropped("- `tar@1.0.1` (needs override): no", "- `ws@1.0.1` (needs override): no") +
+              "\n\n<!-- phoebe-blocked -->",
+          },
+        ],
+      };
+      const first = await scan(native, { issues: [parked], comments });
+      // The body was saved, then the comment or the close failed.
+      const halfClosed: MentioningIssue = { ...parked, body: first.bodies.get(40)! };
+      const { writes, logged } = await scan(native, { issues: [halfClosed], comments });
+      expect(writes.filter((w) => w.includes("#40"))).toEqual(["close #40 completed"]);
+      expect(logged).toContain(
+        `${KEY}: every row of #40 has moved to an issue of its own; closed it.`,
+      );
+    });
+
     test("a parked bundle with a row left is refreshed and released, not closed", async () => {
       const native = [transitive("tar"), transitive("ws")];
       const parked = await filedBundle(40, native, {
