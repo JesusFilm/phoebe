@@ -715,7 +715,7 @@ after the refresh has `phoebe:blocked` lifted instead.
 GitHub refuses a body over 65,536 characters. A bundle that would pass 60,000
 keeps the rows that fit, in table order, and the scan logs how many it left out.
 They come in once earlier rows merge. A row a closed issue vetoes, or an open
-issue already proposes, still takes its room among the rows that fit.
+issue already proposes, takes no room: the rows after it move up.
 
 `transitive: "individual"` turns the bundle off and files every package on its
 own. Switch while no bundle issue is open. One left open keeps its rows out of

@@ -378,6 +378,65 @@ describe("decideFiling", () => {
     });
   });
 
+  // A body over GitHub's limit keeps the rows that fit. Rows a hold drops
+  // must not count toward that room (#901).
+  describe("a bundle cut to fit its body", () => {
+    const rows = ["a", "b", "c", "d"].map((name) => candidate(name));
+    const firstTwo = (bundle: Bundle): Bundle => ({
+      ...bundle,
+      candidates: bundle.candidates.slice(0, 2),
+    });
+    const cut = (...candidates: Candidate[]): PlannedBundle =>
+      planBundle(
+        { manager: "npm", group: "all", candidates },
+        (bundle) => ({ title: renderIssueTitle(bundle), body: renderIssueBody(bundle) }),
+        firstTwo,
+      );
+    const closed = (number: number, ...candidates: Candidate[]): MentioningIssue => ({
+      ...issue(number, null, "closed"),
+      body: rendered("other", ...candidates).body,
+    });
+    const names = (candidates: readonly Candidate[] | undefined) =>
+      candidates?.map((c) => c.package);
+
+    test("is planned with the rows that fit, and names the rest as left out", () => {
+      const p = cut(...rows);
+      expect(names(p.bundle.candidates)).toEqual(["a", "b"]);
+      expect(names(p.leftOut)).toEqual(["c", "d"]);
+      expect(p.body).toContain(markerOf({ ...p.bundle, candidates: rows.slice(0, 2) }));
+    });
+
+    test("a held row gives its room to the next row left out", () => {
+      const [action] = decideFiling([cut(...rows)], [closed(7, rows[0]!)], [], options);
+      expect(action).toMatchObject({ action: "create", held: [{ package: "a", issue: 7 }] });
+      expect(names(action!.planned.bundle.candidates)).toEqual(["b", "c"]);
+      expect(names(action!.planned.leftOut)).toEqual(["d"]);
+      expect(action!.planned.body).toContain(
+        markerOf({ ...action!.planned.bundle, candidates: [rows[1]!, rows[2]!] }),
+      );
+    });
+
+    test("when every row that fits is held, the rows left out are filed", () => {
+      const [action] = decideFiling([cut(...rows)], [closed(7, rows[0]!, rows[1]!)], [], options);
+      expect(action!.action).toBe("create");
+      expect(names(action!.planned.bundle.candidates)).toEqual(["c", "d"]);
+      expect(names(action!.planned.leftOut)).toEqual([]);
+    });
+
+    test("a held row among those left out is named, and takes no room later", () => {
+      const [action] = decideFiling([cut(...rows)], [closed(7, rows[2]!)], [], options);
+      expect(action).toMatchObject({ action: "create", held: [{ package: "c", issue: 7 }] });
+      expect(names(action!.planned.bundle.candidates)).toEqual(["a", "b"]);
+      expect(names(action!.planned.leftOut)).toEqual(["d"]);
+    });
+
+    test("with every row held, in the body or left out, it files nothing", () => {
+      const actions = decideFiling([cut(...rows)], [closed(7, ...rows)], [], options);
+      expect(actionsOf(actions)).toEqual(["vetoed #7"]);
+      expect(actions[0]!.held).toHaveLength(4);
+    });
+  });
+
   describe("the open cap", () => {
     const others = Array.from({ length: 4 }, (_, i) =>
       planned(`package:p${i}`, candidate(`p${i}`)),

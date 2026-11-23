@@ -13,6 +13,7 @@ import { createWorkKindRegistry } from "../../src/work-kinds/load-custom.ts";
 import { validateWorkKindDefinition } from "../../src/work-kinds/validate.ts";
 import type { Advisory, Candidate } from "../dependencies/candidate.ts";
 import { parseMarker } from "../dependencies/fingerprint.ts";
+import { readIssueRows } from "../dependencies/issue-body.ts";
 import type { SourceName } from "../dependencies/sources/assemble.ts";
 import type { SourceRun } from "../dependencies/sources/run.ts";
 import dependencySecurityKind, { createDependencySecurityKind, SCAN_REF } from "./index.ts";
@@ -498,6 +499,33 @@ describe("run", () => {
       const { bodies } = await scan([...both, third], { issues: [closed] });
       expect(bodies.get(100)).toContain("| `tar` | `api/package.json` | prod |");
       expect(bodies.get(100)).not.toContain("web/package.json");
+    });
+
+    test("a full body: rows a closed issue vetoes take no room, so the rows after them file (#901)", async () => {
+      const all = Array.from({ length: 900 }, (_, i) =>
+        transitive(`pkg-${String(i).padStart(3, "0")}`),
+      );
+      const first = await scan(all);
+      const fitted = readIssueRows(first.bodies.get(100)!).map((row) => row.package);
+      expect(fitted.length).toBeGreaterThan(0);
+      expect(fitted.length).toBeLessThan(450);
+      expect(first.logged).toContain(
+        `${KEY}: the issue body is full; ${900 - fitted.length} package version(s) left out ` +
+          "until earlier rows merge.",
+      );
+
+      const closed = await filedBundle(40, all, { state: "closed", stateReason: "not_planned" });
+      const { writes, bodies, logged } = await scan(all, { issues: [closed] });
+      expect(writes.filter((w) => w.startsWith("create"))).toEqual([
+        "create #100 Security fixes for transitive packages (npm)",
+      ]);
+      const next = readIssueRows(bodies.get(100)!).map((row) => row.package);
+      expect(next[0]).toBe(all[fitted.length]!.package);
+      expect(next.some((name) => fitted.includes(name))).toBe(false);
+      expect(logged).toContain(
+        `${KEY}: the issue body is full; ${900 - fitted.length - next.length} package ` +
+          "version(s) left out until earlier rows merge.",
+      );
     });
 
     test("a row a merged PR dropped is filed on its own, and the bundle goes on without it", async () => {
