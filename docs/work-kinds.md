@@ -849,7 +849,9 @@ refused only because the release is younger than its minimum release age (pnpm's
 A later `dependency-updates` scan lifts the label without a person when it
 still plans the bundle and every drop on the ticket was too new, or when it
 refreshes the bundle. That is at most one more run per scan. A ticket parked
-for a real failure keeps the label until someone removes it.
+for a real failure keeps the label until someone removes it. The scan lifts
+the label before it saves a refresh. If the label will not come off, it leaves
+the refresh for the next scan, which tries both again.
 
 The PR body carries the issue's marker on its last line. The agent copies it
 into a PR it opens. When the engine opens the PR instead, the kind passes the
