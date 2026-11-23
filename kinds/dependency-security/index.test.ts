@@ -740,6 +740,18 @@ describe("a not-affected verdict", () => {
     expect(writes).toEqual(["comment #40", "unlabel #40 phoebe:dependencies"]);
   });
 
+  test("on a high re-rated critical since the ticket was filed: left for a maintainer", async () => {
+    const issue = await ticket([candidate("tar", [high])]);
+    expect(issue.body).toContain("GHSA-high");
+    expect(issue.body).not.toContain("critical, in");
+    const rerated = { ...high, severity: "critical" } as const;
+    const { writes } = await scan([candidate("tar", [rerated])], {
+      issues: [issue],
+      comments: { 40: [{ body: verdict + blocked }] },
+    });
+    expect(writes).toEqual(["comment #40", "unlabel #40 phoebe:dependencies"]);
+  });
+
   test("from any other login it does nothing", async () => {
     const native = [candidate("tar", [high])];
     const issue = await ticket(native);
@@ -812,6 +824,6 @@ describe("a not-affected verdict", () => {
       issues: [issue],
       comments: { 40: [{ body: verdict + blocked }] },
     });
-    expect(writes.filter((w) => w.startsWith("close"))).toEqual([]);
+    expect(writes).toEqual([]);
   });
 });

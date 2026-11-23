@@ -751,7 +751,8 @@ marker.
   planned and takes `phoebe:blocked` off. This is a **dismissal**.
 - One is critical: the scan takes the routing label off and leaves the ticket
   parked. A maintainer closes it, or puts the label back and removes
-  `phoebe:blocked` to have it fixed.
+  `phoebe:blocked` to have it fixed. An advisory the ticket lists as high
+  counts as critical here once the scan's sources rate it so.
 
 The scan's comment carries `<!-- phoebe-verdict-ack -->`, and a verdict older
 than the newest one is spent. Reopening a dismissed issue therefore puts it

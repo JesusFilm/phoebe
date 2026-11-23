@@ -216,11 +216,23 @@ export function createDependencySecurityKind(
 
       // A not-affected verdict is carried out before filing, so the rows of a
       // ticket dismissed this scan are vetoed by it and not left as proposed.
+      const criticalNow = new Map(
+        plan.planned.map((p) => [
+          bundleKey(p.bundle),
+          new Set(
+            p.bundle.candidates
+              .flatMap((c) => c.advisories)
+              .filter((a) => a.severity === "critical")
+              .map((a) => a.id),
+          ),
+        ]),
+      );
       const judged = actOnVerdicts(
         filed.issues,
         readParked(verdictIssues(filed.issues, options.label), ctx),
         options.label,
         ctx,
+        criticalNow,
       );
       const issues = closeEmptied(
         judged,

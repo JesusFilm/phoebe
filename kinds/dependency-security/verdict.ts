@@ -11,7 +11,10 @@
 //     issue vetoes its rows like any other, so it stands until a new advisory
 //     lands on the package or a person reopens it;
 //   - one is critical: the scan takes the routing label off and leaves the
-//     ticket parked. A maintainer decides.
+//     ticket parked. A maintainer decides. An advisory counts as critical when
+//     the ticket's body says so or when this scan's sources do: one re-rated
+//     from high since the ticket was filed keeps its id, so the body still
+//     reads high and the closed issue would veto the row that is now critical.
 //
 // Either way the scan's own comment carries an acknowledgement marker, and a
 // verdict older than the newest acknowledgement is spent. A person who reopens
@@ -27,7 +30,7 @@ import { PHOEBE_BLOCKED_LABEL } from "../../src/blocked.ts";
 import type { MentioningIssue } from "../../src/github-client.ts";
 import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { parseMarker } from "../dependencies/fingerprint.ts";
-import { hasCriticalAdvisory } from "../dependencies/issue-body.ts";
+import { hasCriticalAdvisory, readIssueRows } from "../dependencies/issue-body.ts";
 import type { ParkedIssue } from "../dependency-updates/parked.ts";
 import { isSecurityKey, isTransitiveBundleKey } from "./plan.ts";
 
@@ -98,13 +101,15 @@ const criticalComment = (routingLabel: string) =>
  * {@link verdictIssues} with Phoebe's comments, and return the issue list as
  * GitHub now holds it. A step that fails is logged for a person to finish by
  * hand; the acknowledgement is already written by then, so no later scan
- * repeats the half that worked.
+ * repeats the half that worked. `criticalNow` holds, by bundle key, the ids
+ * of the advisories this scan's plan rates critical.
  */
 export function actOnVerdicts(
   issues: readonly MentioningIssue[],
   read: readonly ParkedIssue[],
   routingLabel: string,
   ctx: Pick<WorkKindRunCtx, "github" | "log" | "clock">,
+  criticalNow: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): MentioningIssue[] {
   const live = new Set(
     read.filter((issue) => hasLiveVerdict(issue.comments)).map((issue) => issue.number),
@@ -118,7 +123,11 @@ export function actOnVerdicts(
           `${error instanceof Error ? error.message : String(error)}`,
       );
 
-    if (hasCriticalAdvisory(issue.body)) {
+    const nowCritical = criticalNow.get(parseMarker(issue.body)?.key ?? "");
+    const rerated =
+      nowCritical !== undefined &&
+      readIssueRows(issue.body).some((row) => row.advisories.some((id) => nowCritical.has(id)));
+    if (hasCriticalAdvisory(issue.body) || rerated) {
       try {
         ctx.github.postUnitComment(target, criticalComment(routingLabel));
       } catch (error) {
