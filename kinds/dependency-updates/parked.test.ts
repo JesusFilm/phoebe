@@ -74,7 +74,7 @@ describe("readParked", () => {
     expect(readParked([], ctxFor({}))).toEqual([]);
   });
 
-  test("an issue whose comments cannot be read is logged and left out", () => {
+  test("an issue whose comments cannot be read is logged and kept with none, marked unread", () => {
     const logged: string[] = [];
     const ctx = ctxFor(
       {
@@ -85,7 +85,9 @@ describe("readParked", () => {
       },
       logged,
     );
-    expect(readParked([issue(4, [PHOEBE_BLOCKED_LABEL])], ctx)).toEqual([]);
+    const parked = readParked([issue(4, [PHOEBE_BLOCKED_LABEL])], ctx);
+    expect(parked).toEqual([{ number: 4, open: true, blocked: true, comments: [], unread: true }]);
+    expect(parkedRecords(parked)).toEqual([]);
     expect(logged.join("\n")).toContain("Could not read the comments on #4");
   });
 });
@@ -233,6 +235,24 @@ describe("releaseParked", () => {
       `npm:retry:electron: could not lift ${PHOEBE_BLOCKED_LABEL} from #860, so its refresh ` +
         "waits for the next scan. gh exploded",
     ]);
+  });
+
+  // Saving the body with the label still on is the state #900 is about, and a
+  // failed comment read gives no way to tell whether the label should lift.
+  test("a refresh of a parked ticket whose comments could not be read waits for the next scan", () => {
+    const unread: ParkedIssue = { ...parked(860, []), unread: true };
+    const { actions, removed, logged } = release([update(860), leave(861)], [unread]);
+    expect(actions).toEqual([leave(861)]);
+    expect(removed).toEqual([]);
+    expect(logged).toEqual([
+      "npm:retry:electron: the comments on #860 could not be read, so its refresh waits for " +
+        "the next scan.",
+    ]);
+
+    // Left alone when nothing is to be saved, and when the ticket is not parked.
+    expect(release([leave(860)], [unread]).actions).toEqual([leave(860)]);
+    const free: ParkedIssue = { ...unread, blocked: false };
+    expect(release([update(860)], [free]).actions).toEqual([update(860)]);
   });
 
   test("leaves a closed ticket, one parked with no dropped list, and one the scan does not plan", () => {

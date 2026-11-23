@@ -34,6 +34,8 @@ export type ParkedIssue = {
   open: boolean;
   blocked: boolean;
   comments: readonly string[];
+  /** Set when the comments could not be read this scan; `comments` is empty then. */
+  unread?: true;
 };
 
 /**
@@ -42,7 +44,9 @@ export type ParkedIssue = {
  * `phoebe:blocked`: a bundle that dropped everything opened no PR, so lifting
  * the label must not erase the only record of its failures. Only Phoebe's count, so a passer-by on a
  * public repo cannot pad a failure count or lift a label by pasting a section.
- * An issue whose comments cannot be read is logged and left out.
+ * An issue whose comments cannot be read is logged and kept with none, marked
+ * `unread`: its drops count for nothing this scan, and a refresh of it waits
+ * (see {@link releaseParked}).
  */
 export function readParked(
   issues: readonly MentioningIssue[],
@@ -61,6 +65,13 @@ export function readParked(
         comments: comments.filter((c) => c.authorLogin === login).map((c) => c.body),
       });
     } catch (error) {
+      read.push({
+        number: issue.number,
+        open: issue.state === "open",
+        blocked: issue.labels.includes(PHOEBE_BLOCKED_LABEL),
+        comments: [],
+        unread: true,
+      });
       ctx.log(
         `Could not read the comments on #${issue.number}; its drops are not counted ` +
           `this scan. ${error instanceof Error ? error.message : String(error)}`,
@@ -106,7 +117,9 @@ export type Released = {
  * label that cannot be removed is logged and the next scan tries again. For a
  * ticket that was only too new that needs nothing more. A refresh is taken
  * out of the decisions: its body stays as it was, so the next scan decides
- * the same refresh and lifts the label then.
+ * the same refresh and lifts the label then. So is the refresh of a parked
+ * ticket whose comments could not be read, because nothing says whether the
+ * label should come off with it.
  */
 export function releaseParked(
   actions: readonly FilingAction[],
@@ -119,6 +132,14 @@ export function releaseParked(
     if (a.action !== "leave" && a.action !== "update") return true;
     const issue = byNumber.get(a.issue);
     if (issue === undefined || !issue.open || !issue.blocked) return true;
+    if (issue.unread === true) {
+      if (a.action !== "update") return true;
+      ctx.log(
+        `${bundleKey(a.planned.bundle)}: the comments on #${issue.number} could not be read, so ` +
+          "its refresh waits for the next scan.",
+      );
+      return false;
+    }
     const dropped = lastDropped(issue);
     if (dropped.length === 0) return true;
     const tooNew = dropped.every((bump) => bump.tooNew);
