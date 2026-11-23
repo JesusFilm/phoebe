@@ -1,0 +1,11 @@
+# Test fixtures, not credentials. Reviewed 2026-11-23 for #905.
+c0b1f22a74cd1892f3cbfa540f600c936e374e2f:bootstrap/redact-output.test.ts:private-key:17
+c0b1f22a74cd1892f3cbfa540f600c936e374e2f:bootstrap/redact-output.test.ts:generic-api-key:12
+c0b1f22a74cd1892f3cbfa540f600c936e374e2f:bootstrap/redact-output.test.ts:jwt:92
+b965caba7fb889994ba44399e697d04ff4125962:apps/console/src/test-fixture.ts:generic-api-key:55
+b965caba7fb889994ba44399e697d04ff4125962:src/dotenv-edit.test.ts:generic-api-key:61
+638d9c46368e99260325ed6e19f8f10a5300d32c:src/dotenv-edit.test.ts:generic-api-key:61
+58cbb2f6e0b4646ce0cb61e41275e185c8ea8c2e:apps/console/src/test-fixture.ts:generic-api-key:39
+5c53108be31bace92bbfc86d1e1c4d55b9eb7a2b:src/dotenv-edit.test.ts:generic-api-key:61
+bc5fe713b135a29c215e30ed849e617a104d7bd8:apps/console/src/test-fixture.ts:generic-api-key:36
+74b18c17bd147235ffbfbd9488a91a6ed4d8ae2c:src/gh-app.test.ts:private-key:16
