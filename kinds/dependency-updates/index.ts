@@ -129,12 +129,14 @@ export function createDependencyUpdatesKind(
           `${failedTwice} failed ${MAX_FAILURES} times; ${plan.planned.length} bundle(s).`,
       );
 
-      const actions = decideFiling(plan.planned, filed.issues, filed.prs, {
+      const decided = decideFiling(plan.planned, filed.issues, filed.prs, {
         routingLabel: options.label,
         cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,
       });
+      // A parked ticket is released before its refresh is saved. One whose
+      // label would not come off is left out, for the next scan to refresh.
+      const { actions } = releaseParked(decided, parked, ctx);
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL, routingLabel]);
-      releaseParked(actions, parked, ctx);
     },
   });
 }

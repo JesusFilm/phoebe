@@ -12,7 +12,10 @@
 //     needs nobody: the bumps pass once they age. A later scan that still
 //     plans the bundle lifts the label, which bounds the retries to one per
 //     scan. So does a scan that refreshes the bundle, because the run that
-//     parked it worked a set of bumps the ticket no longer holds.
+//     parked it worked a set of bumps the ticket no longer holds. That scan
+//     lifts the label before it saves the new body (#900). Nothing but the
+//     body's fingerprint says a refresh is owed, so a body saved on a ticket
+//     that then stayed parked would never be released.
 
 import { PHOEBE_BLOCKED_LABEL, hasBlockedMarker } from "../../src/blocked.ts";
 import type { MentioningIssue } from "../../src/github-client.ts";
@@ -84,44 +87,62 @@ function lastDropped(issue: ParkedIssue) {
   return [];
 }
 
+/** What {@link releaseParked} did, and the decisions left to carry out. */
+export type Released = {
+  /** The tickets whose label was lifted. */
+  released: number[];
+  /** Every decision but the refresh of a ticket whose label could not be lifted. */
+  actions: FilingAction[];
+};
+
 /**
  * Lift `phoebe:blocked` from each open parked ticket this scan still plans,
  * when the run that parked it dropped every bump and the ticket can pass with
- * nobody acting: either every drop was only too new, or the scan refreshed
- * the bundle. A ticket parked for any other reason keeps its label for a
- * person. A label that cannot be removed is logged; the next scan tries again.
+ * nobody acting: either every drop was only too new, or the scan is about to
+ * refresh the bundle. A ticket parked for any other reason keeps its label for
+ * a person.
+ *
+ * Call it before the decisions are applied and apply the ones it returns. A
+ * label that cannot be removed is logged and the next scan tries again. For a
+ * ticket that was only too new that needs nothing more. A refresh is taken
+ * out of the decisions: its body stays as it was, so the next scan decides
+ * the same refresh and lifts the label then.
  */
 export function releaseParked(
   actions: readonly FilingAction[],
   parked: readonly ParkedIssue[],
   ctx: Pick<WorkKindCtx, "github" | "log">,
-): number[] {
+): Released {
   const byNumber = new Map(parked.map((issue) => [issue.number, issue]));
   const released: number[] = [];
-  for (const a of actions) {
-    if (a.action !== "leave" && a.action !== "update") continue;
+  const kept = actions.filter((a) => {
+    if (a.action !== "leave" && a.action !== "update") return true;
     const issue = byNumber.get(a.issue);
-    if (issue === undefined || !issue.open || !issue.blocked) continue;
+    if (issue === undefined || !issue.open || !issue.blocked) return true;
     const dropped = lastDropped(issue);
-    if (dropped.length === 0) continue;
+    if (dropped.length === 0) return true;
     const tooNew = dropped.every((bump) => bump.tooNew);
-    if (a.action === "leave" && !tooNew) continue;
+    if (a.action === "leave" && !tooNew) return true;
     const key = bundleKey(a.planned.bundle);
     try {
       ctx.github.removeIssueLabel(issue.number, PHOEBE_BLOCKED_LABEL);
-      released.push(issue.number);
-      ctx.log(
-        `${key}: lifted ${PHOEBE_BLOCKED_LABEL} from #${issue.number}; ` +
-          (a.action === "update"
-            ? "the bundle it was parked on has moved."
-            : "its bumps were only too new."),
-      );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       ctx.log(
-        `${key}: could not lift ${PHOEBE_BLOCKED_LABEL} from #${issue.number}. ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+        `${key}: could not lift ${PHOEBE_BLOCKED_LABEL} from #${issue.number}` +
+          (a.action === "update" ? ", so its refresh waits for the next scan. " : ". ") +
+          message,
       );
+      return a.action !== "update";
     }
-  }
-  return released;
+    released.push(issue.number);
+    ctx.log(
+      `${key}: lifted ${PHOEBE_BLOCKED_LABEL} from #${issue.number}; ` +
+        (a.action === "update"
+          ? "the bundle it was parked on has moved."
+          : "its bumps were only too new."),
+    );
+    return true;
+  });
+  return { released, actions: kept };
 }

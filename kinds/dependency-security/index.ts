@@ -240,11 +240,16 @@ export function createDependencySecurityKind(
         new Set(plan.planned.map((p) => bundleKey(p.bundle))),
         ctx,
       );
-      const actions = decideFiling(plan.planned, issues, filed.prs, {
+      const decided = decideFiling(plan.planned, issues, filed.prs, {
         routingLabel: options.label,
         cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,
         holdsSlot: isSecurityKey,
       });
+      // A parked bundle whose rows changed, or whose drops were only too new,
+      // can pass with nobody acting. It is released before its refresh is
+      // saved, and one whose label would not come off is left out, for the
+      // next scan to refresh.
+      const { actions } = releaseParked(decided, parked, ctx);
       applyFiling(actions, ctx, [DEPENDENCIES_LABEL]);
       routeFixedIssues(
         actions,
@@ -252,9 +257,6 @@ export function createDependencySecurityKind(
         routingLabel,
         ctx,
       );
-      // A parked bundle whose rows changed, or whose drops were only too new,
-      // can pass with nobody acting.
-      releaseParked(actions, parked, ctx);
     },
   });
 }

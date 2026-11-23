@@ -658,11 +658,48 @@ describe("run", () => {
         issues: [parked],
         comments,
       });
-      expect(writes).toContain("update #40");
-      expect(writes).toContain("unlabel #40 phoebe:blocked");
-      expect(writes).not.toContain("close #40 completed");
+      // Released first: a refresh that lands on a ticket still parked is never retried (#900).
+      expect(writes).toEqual(["unlabel #40 phoebe:blocked", "update #40", "comment #40"]);
       expect(bodies.get(40)).toContain("| `undici` |");
       expect(bodies.get(40)).not.toContain("| `tar` |");
+    });
+
+    test("a parked bundle whose label cannot be lifted is not refreshed until it can be", async () => {
+      const native = [transitive("tar"), transitive("ws")];
+      const parked = await filedBundle(40, native, {
+        labels: ["dependencies", "security", "phoebe:dependencies", "phoebe:blocked"],
+      });
+      const comments = {
+        40: [
+          {
+            body:
+              dropped("- `tar@1.0.1` (needs override): no", "- `ws@1.0.1` (needs override): no") +
+              "\n\n<!-- phoebe-blocked -->",
+          },
+        ],
+      };
+      const now = [...native, transitive("undici")];
+      const { overrides, writes } = gitHub([parked], [], comments);
+      const logged: string[] = [];
+      const failing = {
+        ...overrides,
+        removeIssueLabel: () => {
+          throw new Error("gh exploded");
+        },
+      };
+      await kindWith({}, { native: now }).run(
+        { ref: SCAN_REF, revision: "0" },
+        ctxFor(failing, clock, logged),
+      );
+      expect(writes).toEqual([]);
+      expect(logged).toContain(
+        `${KEY}: could not lift phoebe:blocked from #40, so its refresh waits for the next scan. ` +
+          "gh exploded",
+      );
+
+      // Nothing was saved, so the next scan decides the same refresh and carries it out.
+      const again = await scan(now, { issues: [parked], comments });
+      expect(again.writes).toEqual(["unlabel #40 phoebe:blocked", "update #40", "comment #40"]);
     });
 
     test('`transitive: "individual"` ignores what a bundle dropped and files per package', async () => {
