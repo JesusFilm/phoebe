@@ -97,6 +97,13 @@ export type CandidateRow = {
 export type RowDeps = {
   run: RunTool;
   log: (line: string) => void;
+  /**
+   * Called when the row could not see something it reads: a tool that will
+   * not run, a project whose workspaces it could not read, an audit tool that
+   * is not installed, a tree that resolved only in part. The row still hands
+   * back what it found, and the source marks its answer partial.
+   */
+  incomplete?: () => void;
 };
 
 /**

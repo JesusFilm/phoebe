@@ -173,6 +173,7 @@ export function cargoRow(deps: RowDeps): Row {
       if (!output.ok && output.missing) {
         if (!auditMissing) deps.log("cargo row: cargo-audit is not installed; OSV alone.");
         auditMissing = true;
+        deps.incomplete?.();
         return { ok: true, value: [] };
       }
       const audited = parseJson(output, "cargo audit");

@@ -210,16 +210,19 @@ export function renderTransitiveBody(
 }
 
 /**
- * What the transitive bundle's issue says once every row it listed has moved
- * to an issue of its own. It lists no rows, so closing it vetoes none of them.
+ * What an issue says once the scan has retired it (retire.ts): `lead` names
+ * what it was and why it closed. It lists no rows, so closing it vetoes none
+ * of them and whatever still needs a fix is filed again.
  */
-export function renderEmptiedTransitiveBody(manager: string, group: string): string {
-  const bundle: Bundle = { manager, group, candidates: [] };
+export function renderRetiredBody(bundle: Pick<Bundle, "manager" | "group">, lead: string): string {
+  const empty: Bundle = { ...bundle, candidates: [] };
   return [
-    `Security fixes for transitive packages under ${code(manager)}. Every row this issue listed ` +
-      "needed more than a lockfile fix, so Phoebe filed each on its own.",
+    lead,
     "",
-    renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) }),
+    renderMarker({ key: bundleKey(empty), fingerprint: fingerprint(empty) }),
     "",
   ].join("\n");
 }
+
+/** The fingerprint a retired body carries: that of a bundle with no rows. */
+export const RETIRED_FINGERPRINT = fingerprint({ candidates: [] });

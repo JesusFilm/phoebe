@@ -58,7 +58,13 @@ const REASONS_LOGGED = 3;
 export type AgentSourceCtx = Pick<WorkKindRunCtx, "agent" | "workspace" | "log">;
 
 export type ParsedCandidates =
-  | { ok: true; candidates: Candidate[]; dropped: string[] }
+  | {
+      ok: true;
+      candidates: Candidate[];
+      dropped: string[];
+      /** How many of `dropped` failed the check, as opposed to being left to a native row. */
+      malformed: number;
+    }
   | { ok: false; problem: string };
 
 type Checked<T> = { ok: true; value: T } | { ok: false; problem: string };
@@ -235,9 +241,11 @@ export function parseAgentCandidates(
   const claimedSet = new Set(claimed);
   const candidates: Candidate[] = [];
   const dropped: string[] = [];
+  let malformed = 0;
   parsed.forEach((record, index) => {
     const checked = checkCandidate(record);
     if (!checked.ok) {
+      malformed += 1;
       dropped.push(`record ${index}: ${checked.problem}`);
     } else if (claimedSet.has(checked.value.workspace)) {
       dropped.push(`record ${index}: ${checked.value.workspace} is claimed by a native row`);
@@ -245,7 +253,7 @@ export function parseAgentCandidates(
       candidates.push(checked.value);
     }
   });
-  return { ok: true, candidates, dropped };
+  return { ok: true, candidates, dropped, malformed };
 }
 
 /**
@@ -292,5 +300,9 @@ export async function runAgentSource(
         `(${shown}${more > 0 ? `; ${more} more` : ""}).`,
     );
   }
-  return { ok: true, candidates: parsed.candidates };
+  // A record that failed the check may have been a finding, so the answer is
+  // partial. One left to the native row that claims its manifest is not.
+  return parsed.malformed > 0
+    ? { ok: true, candidates: parsed.candidates, partial: true }
+    : { ok: true, candidates: parsed.candidates };
 }

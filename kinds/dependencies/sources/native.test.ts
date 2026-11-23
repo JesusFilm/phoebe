@@ -126,6 +126,8 @@ describe("detectNative", () => {
     const found = await detectNative([row(), broken], "/c", (l) => logged.push(l));
     expect(found.projects).toHaveLength(1);
     expect(found.claimed).toEqual(["package.json", "web/package.json"]);
+    expect(found.partial).toBe(true);
+    expect((await detectNative([row()], "/c", () => {})).partial).toBe(false);
     expect(logged).toEqual(["yarn row: detection failed (boom); left to the agent fallback."]);
   });
 });
@@ -185,6 +187,7 @@ describe("runNativeSource", () => {
       log: (l) => logged.push(l),
     });
     expect(result.ok && result.candidates.map((x) => x.package)).toEqual(["a"]);
+    expect(result.ok && result.partial).toBe(true);
     expect(logged).toEqual([
       "native source: OSV failed (down); advisories come from the audits alone.",
       "native source: deps.dev could not answer for 1 package(s) (b); they are skipped this pass.",
@@ -308,6 +311,30 @@ describe("runNativeSecuritySource", () => {
       ["qs", "package.json", []],
       ["qs", "web/package.json", ["express"]],
     ]);
+  });
+
+  // What a degraded pass did not find proves nothing, so the scan must be
+  // able to tell (#898).
+  test("a failed audit, a failed OSV call and a project that will not list each mark the answer partial", async () => {
+    const run = async (r: Row, osv?: Error, extra: Row[] = []) => {
+      const result = await runNativeSecuritySource(
+        [r, ...extra].map((each) => ({ row: each, manifest })),
+        { ...clients({}, osv ?? { "a@1.0.0": [high] }), log: () => {} },
+      );
+      return result.ok ? (result.partial ?? false) : "failed";
+    };
+    const listed = [dep("a", "1.0.0")];
+    const audits = async () => ({ ok: true as const, value: [] });
+    expect(await run(row({ listed, audit: audits }))).toBe(false);
+    expect(
+      await run(row({ listed, audit: async () => ({ ok: false, problem: "registry down" }) })),
+    ).toBe(true);
+    expect(await run(row({ listed, audit: audits }), new Error("down"))).toBe(true);
+    expect(
+      await run(row({ listed, audit: audits }), undefined, [
+        row({ list: async () => ({ ok: false, problem: "no lockfile" }) }),
+      ]),
+    ).toBe(true);
   });
 
   test("an audit finding on a listed version joins that dependency's advisories", async () => {

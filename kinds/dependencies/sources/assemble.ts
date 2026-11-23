@@ -66,13 +66,18 @@ export function realSources(clients: RegistryClients, native: NativePass): Creat
     // Detection and listing share the rows, so the native deadline reaches
     // the tools through a controller made before either runs.
     const nativeDeadline = new AbortController();
+    // Set by a row that could not see something it reads, in detection or in the pass.
+    let unseen = false;
     const rows = nativeRows({
       run: createToolRunner({ env, signal: AbortSignal.any([ctx.signal, nativeDeadline.signal]) }),
       log,
+      incomplete: () => {
+        unseen = true;
+      },
     });
     const detection = names.includes(NATIVE_SOURCE_NAME)
       ? await detectNative(rows, ctx.workspace.dir, log)
-      : { projects: [], claimed: [] };
+      : { projects: [], claimed: [], partial: false };
 
     return names.map((name): SourceRun => {
       const timeoutMs = SOURCE_TIMEOUT_MS[name];
@@ -81,9 +86,13 @@ export function realSources(clients: RegistryClients, native: NativePass): Creat
           return {
             name,
             timeoutMs,
-            run: (signal) => {
+            run: async (signal) => {
               signal.addEventListener("abort", () => nativeDeadline.abort(), { once: true });
-              return native(detection.projects, { ...clients, log });
+              const result = await native(detection.projects, { ...clients, log });
+              // A row that could not detect a project left it out of the pass.
+              return result.ok && (detection.partial || unseen)
+                ? { ...result, partial: true }
+                : result;
             },
           };
         case AGENT_SOURCE_NAME:

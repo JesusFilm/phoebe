@@ -35,6 +35,8 @@ export type NativeDetection = {
   projects: NativeProject[];
   /** Every manifest the rows list, for the agent fallback to skip. */
   claimed: string[];
+  /** Whether a row's detection threw, so its projects are missing from the list. */
+  partial: boolean;
 };
 
 export type NativeSourceDeps = {
@@ -64,15 +66,17 @@ export async function detectNative(
   log: (line: string) => void,
 ): Promise<NativeDetection> {
   const projects: NativeProject[] = [];
+  let partial = false;
   for (const row of rows) {
     try {
       for (const manifest of await row.detect(checkout)) projects.push({ row, manifest });
     } catch (error) {
+      partial = true;
       log(`${row.name} row: detection failed (${errorText(error)}); left to the agent fallback.`);
     }
   }
   const claimed = [...new Set(projects.flatMap((p) => p.manifest.workspaces))];
-  return { projects, claimed };
+  return { projects, claimed, partial };
 }
 
 /** A pre-release under the scheme: a SemVer `-tag`, or a PEP 440 a/b/rc/dev segment. */
@@ -152,6 +156,8 @@ type Listed = { row: Row; manifest: Manifest; dependency: ListedDependency };
 type Listing = {
   listed: Listed[];
   audits: { project: NativeProject; findings: AuditFinding[] }[];
+  /** Whether a project would not list or an audit failed. */
+  partial: boolean;
 };
 
 /**
@@ -163,7 +169,7 @@ async function listProjects(
   projects: readonly NativeProject[],
   log: (line: string) => void,
 ): Promise<RowResult<Listing>> {
-  const listing: Listing = { listed: [], audits: [] };
+  const listing: Listing = { listed: [], audits: [], partial: false };
   let listedProjects = 0;
   for (const project of projects) {
     const { row, manifest } = project;
@@ -172,12 +178,17 @@ async function listProjects(
       listedProjects += 1;
       listing.listed.push(...result.value.map((dependency) => ({ row, manifest, dependency })));
     } else {
+      listing.partial = true;
       log(`${row.name} row: could not list ${manifest.path} (${result.problem}).`);
     }
     if (row.audit === undefined) continue;
     const audit = await row.audit(manifest);
-    if (audit.ok) listing.audits.push({ project, findings: audit.value });
-    else log(`${row.name} row: audit of ${manifest.path} failed (${audit.problem}).`);
+    if (audit.ok) {
+      listing.audits.push({ project, findings: audit.value });
+    } else {
+      listing.partial = true;
+      log(`${row.name} row: audit of ${manifest.path} failed (${audit.problem}).`);
+    }
   }
   if (projects.length > 0 && listedProjects === 0) {
     return { ok: false, problem: "no project the rows claimed could be listed" };
@@ -225,12 +236,17 @@ async function lookupAdvisories(
   return { advisoriesOf, osvFailed: osv !== null && !osv.ok };
 }
 
+/** What a pass found, marked partial when it could not see everything it reads. */
+function answered(candidates: Candidate[], partial: boolean): SourceResult {
+  return partial ? { ok: true, candidates, partial: true } : { ok: true, candidates };
+}
+
 /**
  * List every claimed project, ask deps.dev and OSV about what was listed, and
  * return a candidate per proposed version. A project that will not list, a
  * package deps.dev cannot answer for and a failed OSV call each cost a log
- * line and leave the rest standing. The source fails only when there were
- * projects and none of them listed.
+ * line and leave the rest standing, and the result is marked partial. The
+ * source fails only when there were projects and none of them listed.
  */
 export async function runNativeSource(
   projects: readonly NativeProject[],
@@ -246,7 +262,7 @@ export async function runNativeSource(
   await eachLimited(packages, DEPS_DEV_CONCURRENCY, async (l) => {
     versions.set(packageKey(l), await deps.depsDev.versions(l.row.system, l.dependency.package));
   });
-  const { advisoriesOf } = await lookupAdvisories(listing.value, deps);
+  const { advisoriesOf, osvFailed } = await lookupAdvisories(listing.value, deps);
 
   const candidates: Candidate[] = [];
   const unanswered = new Set<string>();
@@ -288,7 +304,7 @@ export async function runNativeSource(
         `(${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""}); they are skipped this pass.`,
     );
   }
-  return { ok: true, candidates };
+  return answered(candidates, listing.value.partial || osvFailed || unanswered.size > 0);
 }
 
 /**
@@ -411,5 +427,5 @@ export async function runNativeSecuritySource(
       }
     }
   }
-  return { ok: true, candidates };
+  return answered(candidates, listing.value.partial || osvFailed);
 }

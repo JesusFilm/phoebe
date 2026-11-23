@@ -1,27 +1,20 @@
 // The way out of the transitive bundle (ADR 0005). Its implementer makes
 // lockfile fixes only and drops every row that needs more, under `## Dropped`
 // in the PR body or, when every row dropped and there is no PR, in a comment
-// on the issue. The detector reads those back for two things:
+// on the issue. The detector reads those back for the rows to plan per
+// package from now on, where a manifest fix is allowed. Any drop counts but
+// one that was only too new.
 //
-//   - the rows to plan per package from now on, where a manifest fix is
-//     allowed. Any drop counts but one that was only too new;
-//   - the bundle issues with nothing left. One whose rows have all moved is
-//     parked under `phoebe:blocked` with nobody to act on it, and while it
-//     stays open it holds those rows out of the issues they moved to. The
-//     scan rewrites its body to list no rows and closes it. A body with no
-//     rows vetoes only its own key and fingerprint, so the close holds none
-//     of the moved rows back and a later bundle is still filed.
+// A bundle issue whose rows have all moved is parked under `phoebe:blocked`
+// with nobody to act on it, and while it stays open it holds those rows out
+// of the issues they moved to. The scan retires it (retire.ts).
 
 import { PHOEBE_BLOCKED_LABEL } from "../../src/blocked.ts";
 import type { MentioningIssue, MentioningPr } from "../../src/github-client.ts";
-import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { parseDropped } from "../dependencies-work/dropped.ts";
-import { byText } from "../dependencies/candidate.ts";
 import { parseMarker } from "../dependencies/fingerprint.ts";
-import { code, readIssueRows } from "../dependencies/issue-body.ts";
 import type { ParkedIssue } from "../dependency-updates/parked.ts";
-import { renderEmptiedTransitiveBody } from "./body.ts";
-import { isTransitiveBundleKey, movedKey, TRANSITIVE_GROUP, type Moved } from "./plan.ts";
+import { isTransitiveBundleKey, movedKey, type Moved } from "./plan.ts";
 
 /** The manager a bundle key opens with; no manager name holds a colon. */
 const managerOf = (key: string) => key.slice(0, key.indexOf(":"));
@@ -84,64 +77,4 @@ export function readMoved(
     }
   }
   return moved;
-}
-
-/**
- * Close each open, parked bundle issue this scan plans no bundle for and
- * whose rows have all moved, and return the issue list as GitHub now holds
- * it. An issue that could not be rewritten and closed is logged and returned
- * as it was, so the next scan tries again. That includes one whose body was
- * saved before the comment or the close failed: it lists no rows by then, and
- * the next scan closes it.
- */
-export function closeEmptied(
-  issues: readonly MentioningIssue[],
-  moved: Moved,
-  plannedKeys: ReadonlySet<string>,
-  ctx: Pick<WorkKindRunCtx, "github" | "log" | "clock">,
-): MentioningIssue[] {
-  return issues.map((issue) => {
-    const key = transitiveKey(issue.body);
-    if (key === null || issue.state !== "open" || plannedKeys.has(key)) return issue;
-    if (!issue.labels.includes(PHOEBE_BLOCKED_LABEL)) return issue;
-    const manager = managerOf(key);
-    const rows = readIssueRows(issue.body);
-    const body = renderEmptiedTransitiveBody(manager, TRANSITIVE_GROUP);
-    // An earlier scan saved the emptied body and failed before the close. The
-    // body already says where the rows went, so only the close is left.
-    const halfClosed =
-      rows.length === 0 && parseMarker(issue.body)?.fingerprint === parseMarker(body)?.fingerprint;
-    if (!halfClosed) {
-      if (rows.length === 0) return issue;
-      if (!rows.every((row) => moved.has(movedKey(manager, row.package, row.target)))) return issue;
-    }
-
-    const packages = [...new Set(rows.map((row) => row.package))].sort(byText);
-    try {
-      if (!halfClosed) {
-        ctx.github.updateIssueBody(issue.number, body);
-        ctx.github.postUnitComment(
-          { objectType: "issue", id: issue.number },
-          "Every row this issue listed needed more than a lockfile fix. Phoebe is filing each " +
-            `package on its own: ${packages.map(code).join(", ")}. Nothing is left to do here, so ` +
-            "Phoebe closed it.",
-        );
-      }
-      ctx.github.closeIssue(issue.number, "completed");
-    } catch (error) {
-      ctx.log(
-        `${key}: every row of #${issue.number} has moved but it could not be closed; ` +
-          `its rows stay held this scan. ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return issue;
-    }
-    ctx.log(`${key}: every row of #${issue.number} has moved to an issue of its own; closed it.`);
-    return {
-      ...issue,
-      body,
-      state: "closed" as const,
-      stateReason: "completed" as const,
-      closedAt: ctx.clock.now().toISOString(),
-    };
-  });
 }

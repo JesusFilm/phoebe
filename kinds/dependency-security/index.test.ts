@@ -122,6 +122,8 @@ function gitHub(
   issues: MentioningIssue[] = [],
   prs: MentioningPr[] = [],
   comments: Record<number, Comment[]> = {},
+  /** Labels an issue gained since the listing, as a fresh read returns them. */
+  fresh: Record<number, string[]> = {},
 ) {
   const writes: string[] = [];
   const bodies = new Map<number, string>();
@@ -152,6 +154,7 @@ function gitHub(
       writes.push(`unlabel #${n} ${label}`);
     },
     resolveLogin: () => "phoebe-bot",
+    issueLabels: (n) => fresh[n] ?? issues.find((issue) => issue.number === n)?.labels ?? [],
     issueTimeoutInputs: (n) => ({
       comments: (comments[n] ?? []).map((comment) => ({
         body: comment.body,
@@ -623,9 +626,7 @@ describe("run", () => {
         "Every row this issue listed needed more than a lockfile fix",
       );
       expect(bodies.get(40)).not.toContain("| `tar` |");
-      expect(logged).toContain(
-        `${KEY}: every row of #40 has moved to an issue of its own; closed it.`,
-      );
+      expect(logged).toContain(`${KEY}: closed #40; every row has moved to an issue of its own.`);
 
       // A later scan still reads the closed issue's drops, so the rows stay out
       // of the bundle, and a new transitive fix files a fresh bundle past it.
@@ -664,7 +665,7 @@ describe("run", () => {
       const { writes, logged } = await scan(native, { issues: [halfClosed], comments });
       expect(writes.filter((w) => w.includes("#40"))).toEqual(["close #40 completed"]);
       expect(logged).toContain(
-        `${KEY}: every row of #40 has moved to an issue of its own; closed it.`,
+        `${KEY}: closed #40; an earlier scan emptied it and could not close it.`,
       );
     });
 
@@ -740,6 +741,282 @@ describe("run", () => {
         "create #100 Security advisories in tar (npm)",
         "create #101 Security advisories in ws (npm)",
       ]);
+    });
+  });
+});
+
+// Filing reaches an open issue only through the bundle planned under its key,
+// so one whose key is no longer planned kept its label and its slot (#898),
+// and a bundle left open across a switch to `transitive: "individual"` held
+// its rows for good (#899).
+describe("an open routed issue the plan no longer covers", () => {
+  const clock: Clock = { now: new Date("2026-11-06T00:00:00Z") };
+  const unit = { ref: SCAN_REF, revision: "0" };
+  const fix = (pkg: string) => ({ id: `GHSA-${pkg}`, severity: "high", fixedIn: "1.0.1" }) as const;
+  const direct = (pkg: string, overrides: Partial<Candidate> = {}) =>
+    candidate(pkg, [fix(pkg)], overrides);
+  const transitive = (pkg: string, overrides: Partial<Candidate> = {}) =>
+    candidate(pkg, [fix(pkg)], { via: ["expo"], ...overrides });
+  const routed = ["dependencies", "security", "phoebe:dependencies"];
+  // Every source finishes, which is what lets a scan read "not reported" as "nothing left".
+  const whole = { sources: ["native"] };
+  type Held = {
+    issues?: MentioningIssue[];
+    prs?: MentioningPr[];
+    fresh?: Record<number, string[]>;
+  };
+
+  /** The issue a first scan of `native` files, numbered and labelled. */
+  async function filed(
+    number: number,
+    native: Candidate[],
+    block: Record<string, unknown> = whole,
+    overrides: Partial<MentioningIssue> = {},
+  ): Promise<MentioningIssue> {
+    const { overrides: github, bodies } = gitHub();
+    await kindWith(block, { native }).run(unit, ctxFor(github, clock));
+    return {
+      number,
+      body: bodies.get(100)!,
+      state: "open",
+      stateReason: null,
+      closedAt: null,
+      labels: routed,
+      ...overrides,
+    };
+  }
+
+  /** Two passes of one process over the same sources and the same GitHub. */
+  async function twice(block: Record<string, unknown>, native: Candidate[], held: Held) {
+    const kind = kindWith(block, { native });
+    const pass = async () => {
+      const { overrides, writes, bodies } = gitHub(held.issues, held.prs, {}, held.fresh);
+      const logged: string[] = [];
+      await kind.run(unit, ctxFor(overrides, clock, logged));
+      return { writes, bodies, logged };
+    };
+    return [await pass(), await pass()] as const;
+  }
+
+  test("fixed outside its own PR: closed on the second scan that finds nothing left", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const [first, second] = await twice(whole, [], { issues: [lodash] });
+    expect(first.writes).toEqual([]);
+    expect(first.logged).toContain(
+      "npm:security:lodash: nothing #40 lists is left to fix; Phoebe closes it if the next scan agrees.",
+    );
+    expect(second.writes).toEqual(["update #40", "comment #40", "close #40 completed"]);
+    // The reason is in the body too, so a comment that fails to post loses nothing.
+    expect(second.bodies.get(40)).toMatch(
+      /^Security advisories in `lodash` under `npm`\.\n\nNothing this issue listed is left/,
+    );
+    expect(second.bodies.get(40)).toContain("- `lodash`: the scan no longer reports it.");
+    expect(readIssueRows(second.bodies.get(40)!)).toEqual([]);
+    expect(parseMarker(second.bodies.get(40)!)?.key).toBe("npm:security:lodash");
+    expect(second.logged).toContain(
+      "npm:security:lodash: closed #40; nothing it listed is left to fix.",
+    );
+  });
+
+  test("one whose body was emptied but never closed is closed by the next scan, whatever the sources", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const [, second] = await twice(whole, [], { issues: [lodash] });
+    // The body was saved, then the comment or the close failed.
+    const halfClosed: MentioningIssue = { ...lodash, body: second.bodies.get(40)! };
+    const [first] = await twice({}, [], { issues: [halfClosed] });
+    expect(first.writes).toEqual(["close #40 completed"]);
+  });
+
+  test("a scan that answers in part, or fails, between two that agree starts the count again", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const answers: Partial<Record<SourceName, Candidate[]>> = { native: [], agent: [] };
+    const kind = kindWith({}, answers);
+    const pass = async () => {
+      const { overrides, writes } = gitHub([lodash]);
+      await kind.run(unit, ctxFor(overrides, clock)).catch(() => {});
+      return writes;
+    };
+    const closes = ["update #40", "comment #40", "close #40 completed"];
+
+    expect(await pass()).toEqual([]);
+    delete answers.agent;
+    expect(await pass()).toEqual([]);
+    answers.agent = [];
+    expect(await pass()).toEqual([]);
+    expect(await pass()).toEqual(closes);
+
+    // The stub still lists #40 open, so the count starts over. A scan where
+    // every source fails throws before it retires anything.
+    expect(await pass()).toEqual([]);
+    delete answers.native;
+    delete answers.agent;
+    expect(await pass()).toEqual([]);
+    answers.native = [];
+    answers.agent = [];
+    expect(await pass()).toEqual([]);
+    expect(await pass()).toEqual(closes);
+  });
+
+  test("its slot in the cap is free on the scan that closes it", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const block = { ...whole, prConcurrentLimit: 1 };
+    const [first, second] = await twice(block, [direct("zod")], { issues: [lodash] });
+    expect(first.writes).toEqual([]);
+    expect(second.writes.filter((w) => !w.startsWith("label"))).toEqual([
+      "update #40",
+      "comment #40",
+      "close #40 completed",
+      "create #100 Security advisories in zod (npm)",
+    ]);
+  });
+
+  test("a closed issue holds none of its rows back, so a row that returns is filed again", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const [, second] = await twice(whole, [], { issues: [lodash] });
+    const closed: MentioningIssue = {
+      ...lodash,
+      body: second.bodies.get(40)!,
+      state: "closed",
+      stateReason: "completed",
+    };
+    const [again] = await twice(whole, [direct("lodash")], { issues: [closed] });
+    expect(again.writes.filter((w) => w.startsWith("create"))).toEqual([
+      "create #100 Security advisories in lodash (npm)",
+    ]);
+  });
+
+  test("a scan with a failed source closes nothing, however many times it runs", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const [first, second] = await twice({}, [], { issues: [lodash] });
+    expect([...first.writes, ...second.writes]).toEqual([]);
+    expect(second.logged).toContain(
+      "1 open issue(s) may have nothing left to fix, but a source failed or answered in part " +
+        "this scan, so Phoebe leaves them as they are.",
+    );
+  });
+
+  test("under the threshold now: closed as not planned", async () => {
+    const dev = direct("vitest", { depType: "dev" });
+    const vitest = await filed(40, [dev], { ...whole, minSeverity: { dev: "high" } });
+    const [first, second] = await twice(whole, [dev], { issues: [vitest] });
+    expect(first.writes).toEqual([]);
+    expect(second.writes).toEqual(["update #40", "comment #40", "close #40 not planned"]);
+  });
+
+  test("only a row nobody can act on is left: closed as not planned", async () => {
+    const individual = { ...whole, transitive: "individual" };
+    const tar = await filed(40, [transitive("tar")], individual);
+    const unfixed = candidate("tar", [{ id: "GHSA-tar-2", severity: "high", fixedIn: null }], {
+      via: ["expo"],
+    });
+    const [, second] = await twice(individual, [unfixed], { issues: [tar] });
+    expect(second.writes).toEqual(["update #40", "comment #40", "close #40 not planned"]);
+  });
+
+  test("a run or a PR in flight keeps the issue open", async () => {
+    const claimed = await filed(40, [direct("lodash")], whole, {
+      labels: [...routed, "processing"],
+    });
+    const [, second] = await twice(whole, [], { issues: [claimed] });
+    expect(second.writes).toEqual([]);
+
+    const lodash = await filed(41, [direct("lodash")]);
+    const pr = (body: string): MentioningPr => ({ number: 42, body, state: "open", merged: false });
+    const marker = lodash.body.trim().split("\n").at(-1)!;
+    for (const body of [`Bumps lodash.\n\n${marker}`, "Closes #41"]) {
+      const [, again] = await twice(whole, [], { issues: [lodash], prs: [pr(body)] });
+      expect(again.writes).toEqual([]);
+    }
+  });
+
+  test("an issue a run claimed after the scan listed it is left for that run", async () => {
+    const lodash = await filed(40, [direct("lodash")]);
+    const [, second] = await twice(whole, [], {
+      issues: [lodash],
+      fresh: { 40: [...routed, "processing"] },
+    });
+    expect(second.writes).toEqual([]);
+    expect(second.logged).toContain(
+      "npm:security:lodash: #40 was claimed during the scan; left for its run.",
+    );
+  });
+
+  test("an unrouted tracking issue is left open", async () => {
+    const tracking = await filed(
+      40,
+      [candidate("lodash", [{ id: "GHSA-lodash", severity: "high", fixedIn: null }])],
+      whole,
+      { labels: ["dependencies", "security"] },
+    );
+    const [, second] = await twice(whole, [], { issues: [tracking] });
+    expect(second.writes).toEqual([]);
+  });
+
+  test("a per-package issue whose row the bundle now plans keeps it, and the bundle holds it back", async () => {
+    const tar = await filed(40, [transitive("tar")], { ...whole, transitive: "individual" });
+    const [, second] = await twice(whole, [transitive("tar")], { issues: [tar] });
+    expect(second.writes).toEqual([]);
+    expect(second.logged).toContain(
+      "npm:security-transitive: held back tar@1.0.1 (already proposed in #40).",
+    );
+  });
+
+  // Filing holds a row by package, workspace and target. An issue that lists
+  // the package in another workspace holds nothing, so it must not be kept.
+  test("a per-package issue for another workspace than the bundle's row is retired", async () => {
+    const tar = await filed(40, [transitive("tar", { workspace: "apps/a/package.json" })], {
+      ...whole,
+      transitive: "individual",
+    });
+    const elsewhere = [transitive("tar", { workspace: "apps/b/package.json" })];
+    const [first, second] = await twice(whole, elsewhere, { issues: [tar] });
+    expect(first.writes.filter((w) => w.startsWith("create"))).toEqual([
+      "create #100 Security fixes for transitive packages (npm)",
+    ]);
+    expect(first.writes.filter((w) => w.includes("#40"))).toEqual([]);
+    expect(second.writes.filter((w) => w.includes("#40"))).toEqual([
+      "update #40",
+      "comment #40",
+      "close #40 completed",
+    ]);
+  });
+
+  describe('a bundle left open across a switch to `transitive: "individual"`', () => {
+    const native = [transitive("tar"), transitive("ws")];
+
+    test("is closed on the first scan, and its rows are filed per package on that scan", async () => {
+      const bundle = await filed(40, native);
+      // A failed source changes nothing here: the mode is the tenant's own setting.
+      const [first] = await twice({ transitive: "individual" }, native, { issues: [bundle] });
+      expect(first.writes.filter((w) => !w.startsWith("label"))).toEqual([
+        "update #40",
+        "comment #40",
+        "close #40 not planned",
+        "create #100 Security advisories in tar (npm)",
+        "create #101 Security advisories in ws (npm)",
+      ]);
+      expect(first.bodies.get(40)).toContain('`transitive: "individual"`');
+      expect(readIssueRows(first.bodies.get(40)!)).toEqual([]);
+    });
+
+    test("parked under phoebe:blocked, it is closed the same way", async () => {
+      const parked = await filed(40, native, whole, { labels: [...routed, "phoebe:blocked"] });
+      const [first] = await twice({ transitive: "individual" }, native, { issues: [parked] });
+      expect(first.writes.slice(0, 3)).toEqual([
+        "update #40",
+        "comment #40",
+        "close #40 not planned",
+      ]);
+    });
+
+    test("with its PR still open it stays, and holds the rows the PR is fixing", async () => {
+      const bundle = await filed(40, native, whole, { labels: [...routed, "processing"] });
+      const pr: MentioningPr = { number: 41, body: "Closes #40", state: "open", merged: false };
+      const [first, second] = await twice({ transitive: "individual" }, native, {
+        issues: [bundle],
+        prs: [pr],
+      });
+      expect([...first.writes, ...second.writes]).toEqual([]);
     });
   });
 });

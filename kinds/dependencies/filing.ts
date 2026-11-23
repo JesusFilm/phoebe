@@ -121,7 +121,8 @@ export type FilingOptions = {
 // GitHub's closing keywords, as a merged PR body names the issue it closes.
 const CLOSES_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b/gi;
 
-function closedIssues(body: string): number[] {
+/** The issues a PR body names in a closing keyword. */
+export function closedIssues(body: string): number[] {
   return [...body.matchAll(CLOSES_RE)].map((m) => Number(m[1]));
 }
 

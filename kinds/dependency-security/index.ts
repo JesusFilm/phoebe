@@ -5,7 +5,8 @@
 // critical rides in one bundle per manager, where the implementer makes
 // lockfile fixes only; a row it drops as needing more comes back per package
 // (moved.ts). A per-package ticket the implementer finds the tenant is not
-// affected by is dismissed, or parked when it is critical (verdict.ts).
+// affected by is dismissed, or parked when it is critical (verdict.ts). An
+// open routed issue the plan no longer covers is retired (retire.ts).
 // Everything else is one issue per package:
 //
 //   - with a fix released, a routed issue targeting that fix, labelled
@@ -53,13 +54,14 @@ import { runNativeSecuritySource } from "../dependencies/sources/native.ts";
 import { isTrackingBody, transitiveRows } from "./body.ts";
 import { runSources } from "../dependencies/sources/run.ts";
 import { readParked, releaseParked } from "../dependency-updates/parked.ts";
-import { closeEmptied, commentedBundleIssues, readMoved, transitiveBundleIssues } from "./moved.ts";
+import { commentedBundleIssues, readMoved, transitiveBundleIssues } from "./moved.ts";
 import {
   FIXED_LABELS,
   resolveDependencySecurityOptions,
   type DependencySecurityOptions,
 } from "./options.ts";
 import { isSecurityKey, planSecurity } from "./plan.ts";
+import { retireUncovered } from "./retire.ts";
 import { actOnVerdicts, verdictIssues } from "./verdict.ts";
 
 export const DEPENDENCY_SECURITY_KIND_NAME = "dependency-security";
@@ -143,6 +145,9 @@ export function createDependencySecurityKind(
     description: "A dependency bundle for Phoebe to update",
   };
   let lastScanAt: number | null = null;
+  // The issues the last scan found with nothing left to fix. Held in memory:
+  // after a restart the first scan retires none of them and the second does.
+  let uncovered: ReadonlySet<number> = new Set();
 
   return defineWorkKind<DependencySecurityGathered, ScanUnit>({
     name: DEPENDENCY_SECURITY_KIND_NAME,
@@ -177,9 +182,13 @@ export function createDependencySecurityKind(
       // Stamped before the sources start, as in dependency-updates: a failed
       // scan waits for the next window too.
       lastScanAt = ctx.clock.now().getTime();
+      // Taken out at the start, so a scan that fails before it retires
+      // anything breaks the run of two that retirement asks for.
+      const uncoveredBefore = uncovered;
+      uncovered = new Set();
 
       const sources = await createSources(ctx, options.sources);
-      const { candidates, finished } = await runSources(sources, ctx);
+      const { candidates, finished, complete } = await runSources(sources, ctx);
       if (finished.length === 0) {
         throw new Error("every dependency source failed; nothing to file this window.");
       }
@@ -228,12 +237,25 @@ export function createDependencySecurityKind(
         ctx,
         criticalNow,
       );
-      const issues = closeEmptied(
+      // An issue the plan no longer covers is closed before filing, so its
+      // slot is free and its rows are not held on this scan.
+      const retired = retireUncovered(
         judged,
-        moved,
-        new Set(plan.planned.map((p) => bundleKey(p.bundle))),
+        {
+          plan,
+          moved,
+          prs: filed.prs,
+          routingLabel: options.label,
+          processingLabel: config.processingLabel,
+          transitive: options.transitive,
+          minSeverity: options.minSeverity,
+          complete,
+          uncovered: uncoveredBefore,
+        },
         ctx,
       );
+      uncovered = retired.uncovered;
+      const issues = retired.issues;
       const decided = decideFiling(plan.planned, issues, filed.prs, {
         routingLabel: options.label,
         cap: options.prConcurrentLimit === 0 ? null : options.prConcurrentLimit,

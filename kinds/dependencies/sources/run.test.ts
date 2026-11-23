@@ -48,6 +48,7 @@ describe("runSources", () => {
       { signal: new AbortController().signal, log: (l) => logged.push(l) },
     );
     expect(outcome.finished).toEqual(["native", "late"]);
+    expect(outcome.complete).toBe(false);
     expect(outcome.candidates.map((c) => c.package)).toEqual(["a", "b"]);
     expect(outcome.candidates[0]).toMatchObject({
       publishedAt: "2026-10-01T00:00:00Z",
@@ -56,6 +57,14 @@ describe("runSources", () => {
     expect(logged).toEqual([
       "sources: native 1 candidate(s), agent failed (no file), renovate failed (spawn failed), late 2 candidate(s).",
     ]);
+  });
+
+  test("complete only when every source finished and none answered in part", async () => {
+    const ctx = { signal: new AbortController().signal, log: () => {} };
+    const whole = source("native", async () => ({ ok: true, candidates: [candidate("a")] }));
+    const part = source("agent", async () => ({ ok: true, candidates: [], partial: true }));
+    expect((await runSources([whole], ctx)).complete).toBe(true);
+    expect((await runSources([whole, part], ctx)).complete).toBe(false);
   });
 
   test("a source past its deadline is aborted and counted failed while the rest stand", async () => {

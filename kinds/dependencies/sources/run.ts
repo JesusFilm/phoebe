@@ -19,6 +19,8 @@ export type SourcesOutcome = {
   candidates: Candidate[];
   /** The names of the sources that finished. */
   finished: string[];
+  /** Whether every source finished and none of them answered in part. */
+  complete: boolean;
 };
 
 function minutes(ms: number): string {
@@ -60,16 +62,19 @@ export async function runSources(
   const lists: Candidate[][] = [];
   const finished: string[] = [];
   const parts: string[] = [];
+  let complete = true;
   sources.forEach((source, i) => {
     const result = results[i]!;
     if (result.ok) {
       lists.push(result.candidates);
       finished.push(source.name);
       parts.push(`${source.name} ${result.candidates.length} candidate(s)`);
+      if (result.partial === true) complete = false;
     } else {
       parts.push(`${source.name} failed (${result.problem})`);
+      complete = false;
     }
   });
   if (parts.length > 0) ctx.log(`sources: ${parts.join(", ")}.`);
-  return { candidates: unionCandidates(lists), finished };
+  return { candidates: unionCandidates(lists), finished, complete };
 }
