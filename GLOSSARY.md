@@ -346,6 +346,11 @@ The rule that only selection and dry runs happen on the host — a real work uni
 inside the container.
 _Avoid_: guard, host check
 
+**Agent run**:
+One spawn of a provider CLI inside a work unit. A unit has zero or more: a clean merge
+spawns none, and a kind may spawn several.
+_Avoid_: invocation, session, turn (a provider's model round trip), agent call
+
 **Drain**:
 Finishing every work unit in flight, admitting no new one, and exiting cleanly. How a
 pipeline answers a shutdown or a relaunch.
@@ -418,6 +423,24 @@ One of Phoebe's own install or upgrade faults, sent to a Sentry project under th
 crash-loop quarantine, an operator command throwing. Never a tenant's failure and never
 anything from the work loop.
 _Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics
+
+**Abandoned unit**:
+A work unit a pipeline process started and never settled, because the process ended
+mid-unit. The next process for that pipeline finds it at boot.
+_Avoid_: stranded (that is a claim with no pull request), orphaned, crashed
+
+### History
+
+**Unit record**:
+The history row for one work unit that settled or was abandoned: what ran, on which
+provider and model, how it ended, and the usage and cost its agent runs reported.
+_Avoid_: run record ("run" already names the run budget, a kind's `run`, a doctor run and a
+verb run), log entry, trace, event (that is the rail)
+
+**Unit history**:
+One pipeline's bounded collection of unit records, oldest dropped first. Structured records,
+never logs: the container keeps no logs.
+_Avoid_: run log, log, audit trail
 
 ### Console
 
