@@ -89,6 +89,8 @@ import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
 import { UpdateAlerts } from "./update-alert.tsx";
 import { exitOf } from "./verb-run.ts";
+// PROTOTYPE (#919): variant D's fleet stats page. Remove with the prototype.
+import { FleetStatsPage, STATS_HASH, useStatsOpen } from "./prototype-history/variants.tsx";
 
 export function App({
   surface,
@@ -102,6 +104,14 @@ export function App({
   const [installs, setInstalls] = useState<LocalInstall[]>([]);
   const [reports, setReports] = useState<Record<string, LocalReportEvent>>({});
   const [openInstall, setOpenInstall] = useState<string | null>(null);
+  const statsOpen = useStatsOpen();
+  // PROTOTYPE (#919): picking an install on the rail leaves the stats page.
+  useEffect(() => {
+    if (openInstall !== null && location.hash === STATS_HASH) location.hash = "#/";
+  }, [openInstall]);
+  useEffect(() => {
+    if (statsOpen) setOpenInstall(null);
+  }, [statsOpen]);
   // Which of an install's two views is up: the console the rail opens
   // (console-view.tsx), or the tabbed page behind its gear (install-page.tsx).
   // A workspace child opens the console on its own lines.
@@ -853,7 +863,9 @@ export function App({
             }}
           />
         )}
-        {open !== null && bridge !== null && openView === "console" ? (
+        {statsOpen ? (
+          <FleetStatsPage />
+        ) : open !== null && bridge !== null && openView === "console" ? (
           <ConsoleView
             key={`${open.dir}#${openTenant ?? ""}#${openChannel ?? ""}`}
             bridge={bridge}

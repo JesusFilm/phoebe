@@ -78,6 +78,14 @@ import { hostnameOf } from "./reachability.ts";
 import { LocalDevices, RemoteStep } from "./remote-step.tsx";
 import { setupApplies, SetupSteps } from "./setup-steps.tsx";
 import { receiptOfRun, useInstallRun } from "./verb-run.ts";
+// PROTOTYPE (#919): unit history variants. Remove with the prototype.
+import { useVariant } from "./prototype-history/switcher.tsx";
+import {
+  PipelinesExpandable,
+  VariantA,
+  VariantB,
+  VariantC,
+} from "./prototype-history/variants.tsx";
 
 export function InstallPage({
   install,
@@ -117,7 +125,12 @@ export function InstallPage({
   onUpdate: (dir: string, patch: InstallPatch) => Promise<void>;
   onForget: (dir: string) => void;
 }) {
-  const [tab, setTab] = useState<DeploymentTab | "install">(() => landingTab(install));
+  const [chosenTab, setTab] = useState<DeploymentTab | "install" | "history">(() =>
+    landingTab(install),
+  );
+  const variant = useVariant();
+  const historyTab = variant === "A" || variant === "D";
+  const tab = chosenTab === "history" && !historyTab ? "overview" : chosenTab;
   const [environment, setEnvironment] = useState<CompanionEnvironment | null>(null);
   const { run, running, trouble, start, rebuild } = useInstallRun(bridge, install.dir);
 
@@ -215,6 +228,15 @@ export function InstallPage({
               </button>
             );
           })}
+          {historyTab ? (
+            <button
+              type="button"
+              className={`tab${tab === "history" ? " current" : ""}`}
+              onClick={() => setTab("history")}
+            >
+              history
+            </button>
+          ) : null}
         </nav>
 
         {tab === "install" ? (
@@ -271,8 +293,18 @@ export function InstallPage({
               )
             }
           />
+        ) : tab === "history" ? (
+          <VariantA drawer={variant === "D"} />
+        ) : variant === "B" && tab === "pipelines" ? (
+          <VariantB />
+        ) : variant === "D" && tab === "pipelines" ? (
+          <PipelinesExpandable />
         ) : (
           <>
+            {variant === "C" && tab === "overview" ? <VariantC /> : null}
+            {variant === "D" && tab === "overview" ? (
+              <VariantC onAll={() => setTab("history")} />
+            ) : null}
             <DeploymentTabPanel
               tab={tab}
               reading={reading}

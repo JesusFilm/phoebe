@@ -61,6 +61,9 @@ import {
 } from "./remote-routes.ts";
 import { HOME_HREF, remoteConsoleHref, SETTINGS_HREF } from "./route.ts";
 import phoebeMark from "./assets/phoebe-mark.svg";
+// PROTOTYPE (#919): unit history variants. Remove with the prototype.
+import { useVariant } from "./prototype-history/switcher.tsx";
+import { RailHistoryLine, RailStats } from "./prototype-history/variants.tsx";
 
 export function Rail({
   surface,
@@ -597,11 +600,17 @@ function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void 
  * those are behind the gear on the install's own entry.
  */
 function RailFoot() {
+  const footVariant = useVariant();
   return (
-    <footer className="rail-foot">
+    <footer
+      className="rail-foot"
+      style={footVariant === "D" ? { display: "flex", alignItems: "center", gap: 4 } : undefined}
+    >
       <a className="rail-settings" href={SETTINGS_HREF} aria-label="Settings" title="Settings">
         <Settings size={16} aria-hidden="true" />
       </a>
+      {/* PROTOTYPE (#919): variant D's stats button. */}
+      {footVariant === "D" ? <RailStats /> : null}
     </footer>
   );
 }
@@ -713,6 +722,7 @@ function InstallEntry({
   /** The shortcuts: start on a stopped install; pause, stop and restart on a running one. */
   onAction?: (dir: string, action: InstallAction) => void;
 }) {
+  const railVariant = useVariant();
   const reading = installReading(install);
   const actions = onAction === undefined ? [] : installActions(install);
   const workspace = install.workspace !== undefined;
@@ -845,6 +855,8 @@ function InstallEntry({
           </button>
         </div>
       )}
+      {/* PROTOTYPE (#919): variant B's spend and failure line. */}
+      {railVariant === "B" ? <RailHistoryLine /> : null}
       {summary === null ? null : (
         // A line of its own under the entry, the width of the rail: beside the
         // name it has the shortcuts for neighbours and is cut to nothing.

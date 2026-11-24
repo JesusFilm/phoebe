@@ -11,6 +11,10 @@ import { createRoot } from "react-dom/client";
 import { App } from "./app.tsx";
 import { desktopBridge } from "./companion.ts";
 import { followSystemTheme } from "./theme.ts";
+// PROTOTYPE (#919): a fake bridge and the variant bar. Remove with the prototype.
+import { prototypeBridge } from "./prototype-history/bridge.ts";
+import { PrototypeSwitcher, prototypeOn } from "./prototype-history/switcher.tsx";
+import { PrototypeStyle } from "./prototype-history/variants.tsx";
 // Tailwind and the Coss UI theme first, the console's own sheet after, so the
 // console's rules win where the two say different things about one element.
 import "./index.css";
@@ -20,10 +24,16 @@ const root = document.getElementById("root");
 if (root === null) throw new Error("the console's mount point is missing from index.html");
 
 followSystemTheme();
-const bridge = desktopBridge();
+const bridge = prototypeOn() ? prototypeBridge() : desktopBridge();
 
 createRoot(root).render(
   <StrictMode>
     {bridge === null ? <App surface="browser" /> : <App surface="companion" bridge={bridge} />}
+    {prototypeOn() ? (
+      <>
+        <PrototypeStyle />
+        <PrototypeSwitcher />
+      </>
+    ) : null}
   </StrictMode>,
 );
