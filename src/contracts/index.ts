@@ -72,13 +72,7 @@ export type {
 } from "./doctor.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
-export type {
-  HistoryCost,
-  HistorySummary,
-  HistoryTokens,
-  HistoryWindow,
-  UnitRecordOutcome,
-} from "./unit-record.ts";
+export type { HistoryCost, HistorySummary, HistoryTokens, HistoryWindow } from "./unit-record.ts";
 export {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
