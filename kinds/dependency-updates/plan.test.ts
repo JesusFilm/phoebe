@@ -206,6 +206,7 @@ describe("readFailures", () => {
     body,
     state: "closed",
     merged,
+    closedAt: "2026-10-01T00:00:00Z",
   });
 
   test("counts each PR that dropped a package-version, newest first, whatever its state", () => {

@@ -124,13 +124,12 @@ describe("registration", () => {
     expect(definition.requiredEnv).toBeUndefined();
   });
 
-  test("an unknown option, or PR mode, fails registration", () => {
+  test("an unknown option fails registration; either mode registers", () => {
     expect(() => observerKind(config(), { every: "7d", lookbak: "30d" })).toThrow(
       "kinds.observer: unknown option `lookbak`",
     );
-    expect(() => observerKind(config(), { mode: "pr" })).toThrow(
-      '`mode: "pr"` is not available yet',
-    );
+    expect(() => observerKind(config(), { mode: "pr" })).not.toThrow();
+    expect(() => observerKind(config(), { mode: "issues" })).not.toThrow();
   });
 
   test("a pipeline that runs anything else is refused", () => {
@@ -192,7 +191,7 @@ describe("the schedule", () => {
   });
 });
 
-describe("a run", () => {
+describe("a run in issue mode", () => {
   type Created = { number: number; title: string; body: string };
 
   function harness(opts: {
@@ -213,6 +212,7 @@ describe("a run", () => {
     const base = baseCtx(
       {
         listIssuesMentioning: () => opts.proposals ?? [],
+        listPrsMentioning: () => [],
         issueCommentBodies: (n) => opts.comments?.[n] ?? [],
         createIssue: (issue) => {
           const number = nextIssue++;
@@ -254,7 +254,10 @@ describe("a run", () => {
     };
     const kind = createObserverKind(
       config(),
-      resolveObserverOptions(opts.options ?? { every: "7d" }, "kinds.observer"),
+      resolveObserverOptions(
+        { mode: "issues", ...(opts.options ?? { every: "7d" }) },
+        "kinds.observer",
+      ),
       { readHistory: history.readHistory },
     );
     const unit: ObserverUnit = { ref: "observer", revision: "never" };

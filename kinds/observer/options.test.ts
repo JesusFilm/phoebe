@@ -4,12 +4,12 @@ import { OBSERVER_OPTION_DEFAULTS, resolveObserverOptions } from "./options.ts";
 const at = "pipelines.observe.kinds.observer";
 
 describe("resolveObserverOptions", () => {
-  test("no block, or an empty one, is the defaults: no schedule, 14d, issues, 3", () => {
+  test("no block, or an empty one, is the defaults: no schedule, 14d, PR mode, 3", () => {
     expect(resolveObserverOptions(undefined, at)).toEqual(OBSERVER_OPTION_DEFAULTS);
     expect(resolveObserverOptions({}, at)).toEqual({
       every: null,
       lookback: "14d",
-      mode: "issues",
+      mode: "pr",
       maxProposals: 3,
     });
   });
@@ -26,13 +26,11 @@ describe("resolveObserverOptions", () => {
     );
   });
 
-  test('`mode: "pr"` is refused with what to do instead', () => {
-    expect(() => resolveObserverOptions({ mode: "pr" }, at)).toThrow(
-      `${at}: \`mode: "pr"\` is not available yet`,
-    );
-    expect(() => resolveObserverOptions({ mode: "pr" }, at)).toThrow('Set `mode: "issues"`');
+  test("`mode` takes pr or issues and nothing else", () => {
+    expect(resolveObserverOptions({ mode: "pr" }, at).mode).toBe("pr");
+    expect(resolveObserverOptions({ mode: "issues" }, at).mode).toBe("issues");
     expect(() => resolveObserverOptions({ mode: "both" }, at)).toThrow(
-      '`mode` must be "issues" — got "both".',
+      '`mode` must be "pr" or "issues" — got "both".',
     );
   });
 

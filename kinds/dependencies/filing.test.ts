@@ -79,7 +79,13 @@ function issue(
 }
 
 function pr(number: number, body: string, state: "open" | "closed", merged = false): MentioningPr {
-  return { number, body, state, merged };
+  return {
+    number,
+    body,
+    state,
+    merged,
+    closedAt: state === "closed" ? "2026-10-01T00:00:00Z" : null,
+  };
 }
 
 const options = { routingLabel: "phoebe:dependencies", cap: 5 };

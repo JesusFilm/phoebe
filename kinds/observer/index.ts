@@ -16,10 +16,14 @@
 //   - `run` reads every other pipeline's history, read-only, and flags units
 //     from their records alone. The agent sees only those units and the
 //     proposals already filed, and writes its findings to scratch;
-//   - code files from the findings. Each is an issue labelled
-//     `phoebe:observer`, never the ready label, carrying
-//     `<!-- phoebe-observer finding=<category>:<target> -->`. GitHub is the
-//     record: one search across every state reads the markers back, and the
+//   - code files from the findings, each labelled `phoebe:observer`, never
+//     the ready label, and carrying
+//     `<!-- phoebe-observer finding=<category>:<target> -->`. In PR mode (the
+//     default, #936) a convention or factory finding gets one edit run in a
+//     fresh worktree, and code opens a PR from it when every path it changed
+//     is on the allowlist (edit.ts, pr-proposal.ts); every other finding, and
+//     an edit that strays, is an issue. GitHub is the record: one issue search
+//     and one PR search across every state read the markers back, and the
 //     rules in proposals.ts decide file, fold or skip;
 //   - the run's summary becomes its unit record's `detail`.
 
@@ -28,21 +32,30 @@ import { join } from "node:path";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
 import type { PhoebeConfig } from "../../src/config-schema.ts";
 import { readUnitHistory } from "../../src/history.ts";
-import { addLabelCreatingIfMissing, type PhoebeLabel } from "../../src/labels.ts";
+import { asPrNumber } from "../../src/branded.ts";
+import {
+  addLabelCreatingIfMissing,
+  addUnitLabelCreatingIfMissing,
+  type PhoebeLabel,
+} from "../../src/labels.ts";
 import { pipelineOwnedKinds } from "../../src/pipeline.ts";
 import {
   defineWorkKind,
   type WorkKindCtx,
   type WorkKindDefinition,
+  type WorkKindRunCtx,
   type WorkKindRunResult,
 } from "../../src/work-kinds/definition.ts";
 import {
+  evidenceLine,
   renderBody,
   renderFoldComment,
   renderSummary,
   renderTitle,
+  type EditAttemptNote,
   type RunTally,
 } from "./body.ts";
+import { proposalBranch } from "./edit.ts";
 import {
   coverageOf,
   flagUnits,
@@ -51,7 +64,7 @@ import {
   type FlaggedUnit,
   type PipelineHistory,
 } from "./evidence.ts";
-import { FINDINGS_FILE, parseFindings, type Finding } from "./findings.ts";
+import { FINDINGS_FILE, parseFindings, type Category, type Finding } from "./findings.ts";
 import { everyMs, resolveObserverOptions, type ObserverOptions } from "./options.ts";
 import {
   decideFinding,
@@ -60,6 +73,7 @@ import {
   parseFindingMarker,
   type Proposal,
 } from "./proposals.ts";
+import { proposeByPr } from "./pr-proposal.ts";
 
 export const OBSERVER_KIND_NAME = "observer";
 
@@ -77,9 +91,24 @@ export type ObserverUnit = { ref: string; revision: string };
 
 export type ObserverGathered = { unit: ObserverUnit | null };
 
-/** Test seam: where unit history is read from. */
+/** Test seams: where unit history is read from, and the runtime root. */
 export type ObserverKindDeps = {
   readHistory?: (dir: string) => UnitRecord[];
+  /**
+   * Where the governing config and `prompts/` live: the process cwd, as for
+   * every prompt the engine loads.
+   */
+  runtimeRoot?: string;
+};
+
+/** The categories PR mode proposes as a PR. The rest are always issues. */
+const PR_CATEGORIES: ReadonlySet<Category> = new Set(["convention", "factory"]);
+
+/** How each fallback reads in the run's log. */
+const ATTEMPT_LOG: Record<EditAttemptNote["reason"], string> = {
+  empty: "the edit run changed nothing",
+  outside: "the edit run changed paths outside the allowlist",
+  untracked: "the fix edits files this repository does not track",
 };
 
 /**
@@ -106,6 +135,7 @@ export function observerPipelineOf(config: PhoebeConfig, at: string): string {
   throw new Error(`${at}: no pipeline declares the observer kind.`);
 }
 
+/** Every proposal filed before, issues and PRs alike. */
 function proposalsOf(ctx: WorkKindCtx): Proposal[] {
   const proposals: Proposal[] = [];
   for (const hit of ctx.github.listIssuesMentioning(MARKER_TEXT)) {
@@ -113,10 +143,24 @@ function proposalsOf(ctx: WorkKindCtx): Proposal[] {
     if (key === null) continue;
     proposals.push({
       number: hit.number,
+      pr: false,
       key,
       body: hit.body,
       state: hit.state,
       stateReason: hit.stateReason,
+      closedAt: hit.closedAt,
+    });
+  }
+  for (const hit of ctx.github.listPrsMentioning(MARKER_TEXT)) {
+    const key = parseFindingMarker(hit.body);
+    if (key === null) continue;
+    proposals.push({
+      number: hit.number,
+      pr: true,
+      key,
+      body: hit.body,
+      state: hit.state,
+      stateReason: hit.state === "open" ? null : hit.merged ? "completed" : "not_planned",
       closedAt: hit.closedAt,
     });
   }
@@ -135,6 +179,7 @@ export function createObserverKind(
   const at = `kinds.${OBSERVER_KIND_NAME}`;
   const ownPipeline = observerPipelineOf(config, at);
   const readHistory = deps.readHistory ?? ((dir: string) => readUnitHistory(dir));
+  const runtimeRoot = deps.runtimeRoot ?? process.cwd();
   const historyDir = (pipeline: string): string => join(config.paths.stateDir, pipeline);
   const lookbackMs = everyMs(options.lookback);
 
@@ -171,8 +216,9 @@ export function createObserverKind(
   }
 
   function writeProposals(path: string, proposals: readonly Proposal[]): void {
-    const rows = proposals.map(({ number, key, state, stateReason, closedAt }) => ({
+    const rows = proposals.map(({ number, pr, key, state, stateReason, closedAt }) => ({
       number,
+      pr,
       key,
       state,
       stateReason,
@@ -181,28 +227,84 @@ export function createObserverKind(
     writeFileSync(path, `${JSON.stringify(rows, null, 2)}\n`);
   }
 
-  function fileProposal(
-    ctx: WorkKindCtx,
-    finding: Finding,
-    units: readonly FlaggedUnit[],
-    regressionOf: number | null,
-  ): number {
-    const number = ctx.github.createIssue({
-      title: renderTitle(finding),
-      body: renderBody({ finding, units, lookback: options.lookback, regressionOf }),
-    });
-    // The issue exists and carries the marker, so the finding is filed whatever
-    // happens next. A throw here would leave the run failed with the issue up;
-    // the label is attempted and a failure logged for a person to repair.
+  /** Add the label to a filed proposal; a failure is logged, never thrown. */
+  function label(ctx: WorkKindCtx, finding: Finding, number: number, pr: boolean): void {
+    // The proposal exists and carries the marker, so the finding is filed
+    // whatever happens next. A throw here would leave the run failed with the
+    // proposal up; the label is attempted and a failure logged for a person.
+    const log = (line: string) => ctx.log(line);
     try {
-      addLabelCreatingIfMissing(ctx.github, number, OBSERVER_LABEL, (line) => ctx.log(line));
+      if (pr) {
+        addUnitLabelCreatingIfMissing(
+          ctx.github,
+          { objectType: "pr", id: number },
+          OBSERVER_LABEL,
+          log,
+        );
+      } else {
+        addLabelCreatingIfMissing(ctx.github, number, OBSERVER_LABEL, log);
+      }
     } catch (error) {
       ctx.log(
         `${finding.key}: filed #${number} but could not add "${OBSERVER_LABEL.name}" — ` +
           `add it by hand. ${message(error)}`,
       );
     }
+  }
+
+  function fileIssue(
+    ctx: WorkKindCtx,
+    finding: Finding,
+    units: readonly FlaggedUnit[],
+    regressionOf: number | null,
+    attempt?: EditAttemptNote,
+  ): number {
+    const number = ctx.github.createIssue({
+      title: renderTitle(finding),
+      body: renderBody({
+        finding,
+        units,
+        lookback: options.lookback,
+        regressionOf,
+        ...(attempt !== undefined ? { attempt } : {}),
+      }),
+    });
+    label(ctx, finding, number, false);
     return number;
+  }
+
+  /**
+   * File one proposal: in PR mode a convention or factory finding is an edit
+   * run and, when the edit stays on the allowlist, a PR. Everything else, and
+   * an edit that does not, is an issue.
+   */
+  async function fileProposal(
+    ctx: WorkKindRunCtx,
+    finding: Finding,
+    units: readonly FlaggedUnit[],
+    regressionOf: number | null,
+    slot: number,
+  ): Promise<{ number: number; pr: boolean; note: string }> {
+    if (options.mode !== "pr" || !PR_CATEGORIES.has(finding.category)) {
+      return { number: fileIssue(ctx, finding, units, regressionOf), pr: false, note: "" };
+    }
+    const title = renderTitle(finding);
+    const outcome = await proposeByPr({
+      ctx,
+      finding,
+      slot,
+      branch: proposalBranch(ctx.config.branchPrefix, finding.key),
+      title,
+      body: renderBody({ finding, units, lookback: options.lookback, regressionOf, as: "pr" }),
+      runtimeRoot,
+      evidence: units.map(evidenceLine).join("\n"),
+    });
+    if (outcome.action === "pr") {
+      label(ctx, finding, outcome.number, true);
+      return { number: outcome.number, pr: true, note: ` as a PR on ${outcome.branch}` };
+    }
+    const number = fileIssue(ctx, finding, units, regressionOf, outcome.attempt);
+    return { number, pr: false, note: ` as an issue: ${ATTEMPT_LOG[outcome.attempt.reason]}` };
   }
 
   return defineWorkKind<ObserverGathered, ObserverUnit>({
@@ -299,7 +401,10 @@ export function createObserverKind(
 
         if (decision.action === "fold") {
           const { into } = decision;
-          const listed = listedUnitKeys([into.body, ...ctx.github.issueCommentBodies(into.number)]);
+          const comments = into.pr
+            ? ctx.github.prCommentBodies(asPrNumber(into.number))
+            : ctx.github.issueCommentBodies(into.number);
+          const listed = listedUnitKeys([into.body, ...comments]);
           const fresh = units.filter((unit) => !listed.has(unit.key));
           if (fresh.length === 0) {
             tally.skipped += 1;
@@ -307,7 +412,7 @@ export function createObserverKind(
             continue;
           }
           ctx.github.postUnitComment(
-            { objectType: "issue", id: into.number },
+            { objectType: into.pr ? "pr" : "issue", id: into.number },
             renderFoldComment(fresh),
           );
           tally.foldedInto.push(into.number);
@@ -338,11 +443,17 @@ export function createObserverKind(
           );
           continue;
         }
-        const number = fileProposal(ctx, finding, evidence, regression?.number ?? null);
-        tally.filed.push(number);
+        const filed = await fileProposal(
+          ctx,
+          finding,
+          evidence,
+          regression?.number ?? null,
+          tally.filed.length + 1,
+        );
+        tally.filed.push(filed.number);
         ctx.log(
-          `${finding.key}: filed #${number}` +
-            (regression === null ? "." : ` as a regression of #${regression.number}.`),
+          `${finding.key}: filed #${filed.number}${filed.note}` +
+            (regression === null ? "." : `, a regression of #${regression.number}.`),
         );
       }
 

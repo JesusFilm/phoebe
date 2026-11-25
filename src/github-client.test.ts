@@ -1436,6 +1436,37 @@ describe("issue filing surface (sentry kind)", () => {
     );
   });
 
+  test("createPullRequest streams the body on stdin and reads the number off the printed URL", () => {
+    const { github, calls } = clientWith(["https://github.com/acme/widget/pull/57\n"]);
+    expect(
+      github.createPullRequest({
+        head: "phoebe/observer/x",
+        base: "main",
+        title: "Observer: x",
+        body: "the body",
+      }),
+    ).toBe(57);
+    expect(calls[0]?.args).toEqual([
+      "pr",
+      "create",
+      "--head",
+      "phoebe/observer/x",
+      "--base",
+      "main",
+      "--title",
+      "Observer: x",
+      "--body-file",
+      "-",
+      "-R",
+      "acme/widget",
+    ]);
+    expect(calls[0]?.input).toBe("the body");
+    const silent = clientWith(["nothing useful"]);
+    expect(() =>
+      silent.github.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
+    ).toThrow("did not print a PR URL");
+  });
+
   test("issueState reads the REST close reason", () => {
     const { github, calls } = clientWith([
       JSON.stringify({
@@ -1499,18 +1530,25 @@ describe("issue filing surface (sentry kind)", () => {
             number: 7,
             body: "m",
             state: "closed",
+            closed_at: "2026-09-02T00:00:00Z",
             pull_request: { merged_at: "2026-09-02T00:00:00Z" },
           },
-          { number: 8, body: null, state: "closed", pull_request: { merged_at: null } },
+          {
+            number: 8,
+            body: null,
+            state: "closed",
+            closed_at: "2026-09-03T00:00:00Z",
+            pull_request: { merged_at: null },
+          },
           { number: 9, body: "o", state: "open", pull_request: {} },
           { number: 10, body: "issue", state: "open" },
         ],
       }),
     ]);
     expect(github.listPrsMentioning("phoebe-dependencies")).toEqual([
-      { number: 7, body: "m", state: "closed", merged: true },
-      { number: 8, body: "", state: "closed", merged: false },
-      { number: 9, body: "o", state: "open", merged: false },
+      { number: 7, body: "m", state: "closed", merged: true, closedAt: "2026-09-02T00:00:00Z" },
+      { number: 8, body: "", state: "closed", merged: false, closedAt: "2026-09-03T00:00:00Z" },
+      { number: 9, body: "o", state: "open", merged: false, closedAt: null },
     ]);
     expect(calls[0]?.args[1]).toBe(
       `search/issues?q=${encodeURIComponent('repo:acme/widget "phoebe-dependencies" in:body is:pr')}&per_page=100&page=1&sort=created&order=desc`,

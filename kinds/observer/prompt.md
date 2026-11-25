@@ -7,7 +7,7 @@ Phoebe works this repository unattended. Over the last {{OBSERVER_LOOKBACK}}, {{
 The units are on disk. Read them from there:
 
 - `{{FLAGGED_JSON}}`: one object per flagged unit, newest first. `id` is the name you use for it below. `pipeline` and `kind` say what ran, `ref` names the unit (`issue:88`, `pr:12`), `flags` says what went wrong, and `detail` is the engine's one-line account: the error text, or the budget a timeout exceeded. `prNumber`, `provider` and `model` are there when known.
-- `{{PROPOSALS_JSON}}`: every proposal filed before, open or closed, with its `key` (`<category>:<target>`), issue `number`, `state` and `stateReason`.
+- `{{PROPOSALS_JSON}}`: every proposal filed before, open or closed, with its `key` (`<category>:<target>`), its `number`, whether it is a PR (`pr`), `state` and `stateReason`. A merged PR reads as closed `completed`, one closed unmerged as `not_planned`.
 
 Your working directory is a **read-only checkout of `{{DEFAULT_BRANCH}}`**. Nothing you write in it is kept. `{{SCRATCH_DIR}}` is yours to write in.
 
@@ -29,7 +29,7 @@ You are Phoebe's **observer**. Group the flagged units into **findings**: recurr
    - `factory`: Phoebe's own setup for this repository is wrong: a prompt, a run budget, a model, a config field. The fix is in `prompts/` or `phoebe.config.ts`.
    - `engine`: Phoebe itself misbehaves, whatever the tickets and config say. The fix is in the engine.
 
-4. **Name each finding's target**: the file the fix goes in (`AGENTS.md`, `prompts/issues-prompt.md`, `phoebe.config.ts`) or, when there is no one file, a short slug (`acceptance-criteria`, `run-budget`, `worktree-cleanup`). Letters, digits and `. _ / @ + # -` only, no spaces, at most 100 characters.
+4. **Name each finding's target**: the file the fix goes in (`AGENTS.md`, `prompts/issues-prompt.md`, `phoebe.config.ts`) or, when there is no one file, a short slug (`acceptance-criteria`, `run-budget`, `worktree-cleanup`). Letters, digits and `. _ / @ + # -` only, no spaces, at most 100 characters. A `convention` or `factory` finding may go to a second run that makes the edit your `fix` describes, and that run may change only `AGENTS.md`, `prompts/`, `phoebe.config.ts` and skills under `.agents/skills/` that `skills-lock.json` does not list. A fix that needs anything else belongs in another category.
 
 5. **Reuse a key.** When a finding is the same problem as one in `{{PROPOSALS_JSON}}`, use that proposal's `key` exactly, whatever its state. Code decides what to do with it: new evidence on an open one, quiet after a person turned one down, a regression after one was fixed.
 
