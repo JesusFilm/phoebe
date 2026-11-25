@@ -179,7 +179,11 @@ export function RemotePage({
           config={config}
           now={now}
           frozen={row.frozen || row.tone === "disconnected"}
-          history={{ reader: client.history, scope: record.deploymentId }}
+          history={{
+            reader: client.history,
+            scope: record.deploymentId,
+            observe: client.observe,
+          }}
           empty={
             <p className="muted">
               {row.tone === "blocked"

@@ -28,6 +28,7 @@ import type { EditReceipt } from "phoebe-agent/contracts";
 import { age } from "./facts.ts";
 import { HistoryTab } from "./history-tab.tsx";
 import type { HistoryReader } from "./history.ts";
+import { observerTargetsOf, type ObserveRunner } from "./observer.ts";
 import { bootstrapperOf, cellsOf, childrenOf, tenantsOf, type ReportReading } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
@@ -61,8 +62,10 @@ export function DeploymentTabPanel({
   /**
    * How this arm reads unit history (#931), and a stable name for what it
    * reads. Without it the History tab says this page cannot read history.
+   * `observe` is how it starts an observer run (#938); the tab's button shows
+   * only with it, and only for a tenant the report says declares the observer.
    */
-  history?: { reader: HistoryReader; scope: string };
+  history?: { reader: HistoryReader; scope: string; observe?: ObserveRunner };
   /** The report is the last one received, not a current one: grey it (map #690). */
   frozen?: boolean;
 }) {
@@ -105,6 +108,14 @@ export function DeploymentTabPanel({
             scope={history.scope}
             cells={cellsOf(reading.report)}
             now={now}
+            {...(history.observe === undefined
+              ? {}
+              : {
+                  observer: {
+                    targets: observerTargetsOf(reading.report),
+                    run: history.observe,
+                  },
+                })}
           />
         );
       case "doctor":

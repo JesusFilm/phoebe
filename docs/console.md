@@ -254,14 +254,14 @@ disk.
 Selecting an install opens its container's output. The gear beside it opens the
 install's own page: the install tab, and six more.
 
-| Tab           | What it answers                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                     |
-| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                     |
-| **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit.       |
-| **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                           |
-| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                      |
-| **Config**    | Each config as a form, the file one press behind it: the deployment's few settings on a workspace root, a tenant's own on each child. |
+| Tab           | What it answers                                                                                                                                                                                          |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                                                                                        |
+| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                                                                                        |
+| **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit. **Run observer** starts an observer run when a tenant declares the kind. |
+| **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                                                                                              |
+| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                                                                                         |
+| **Config**    | Each config as a form, the file one press behind it: the deployment's few settings on a workspace root, a tenant's own on each child.                                                                    |
 
 Two things write, and both write to this machine. Each row of the config form
 saves itself, as one `{ path, value }` patch against the fingerprint its page was drawn from, and the
@@ -306,6 +306,20 @@ apart.
 
 A deployment whose phoebe-agent predates unit history says it is too old,
 instead of showing an empty table.
+
+When a tenant on the deployment declares the [observer](work-kinds.md) kind,
+the History tab's header has a **Run observer** button, one per tenant when
+several declare it. It opens a small confirm with the lookback filled in as
+`14d`. Confirming starts a run outside the observer's schedule: on a local
+install the companion runs `phoebe observe` in the container, and on a remote
+it calls `POST /api/observe`, which needs a session with `operate`. The
+deployment either starts the run or says why not (the fleet is stopped, or a
+run is already in flight), and the console shows that reason under the button.
+While a run is in flight the button is disabled, and hovering it shows when the
+run started. When the run settles the tab reads its page again, and the run
+appears like any other unit. The drawer shows its summary, with each `#N`
+linked to that issue or PR. A deployment from before manual observer runs says
+it is too old to run the observer.
 
 ## Alerting
 

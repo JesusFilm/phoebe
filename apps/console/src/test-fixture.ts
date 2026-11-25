@@ -29,6 +29,8 @@ import type {
   HistoryPage,
   HistoryQuery,
   HistoryRecord,
+  ObserveRequest,
+  ObserveResponse,
   InstallDirectoryFacts,
   InstallRepair,
   LocalAlertEvent,
@@ -386,6 +388,12 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
         if (pages === undefined || pages.length === 0) return Promise.reject(notAnInstall(dir));
         return Promise.resolve(pages[Math.min(historyAsked, pages.length) - 1] ?? null);
       },
+      observe: (dir, request) => {
+        answers.observeAsks?.push({ dir, request });
+        return answers.observe === undefined
+          ? Promise.reject(notAnInstall(dir))
+          : Promise.resolve(answers.observe);
+      },
     },
     harness: {
       check: (dir, opts) => {
@@ -491,6 +499,9 @@ export type BridgeAnswers = {
   history?: (HistoryPage | null)[];
   /** Every query `installs.history` was asked. */
   historyQueries?: { dir: string; query: HistoryQuery }[];
+  /** What `installs.observe` answers; null is an engine too old to know the verb. */
+  observe?: ObserveResponse | null;
+  observeAsks?: { dir: string; request: ObserveRequest }[];
   /** What a harness check answers with; unset, the check is refused. */
   harness?: HarnessReport;
   harnessChecks?: { dir: string; lookUp: boolean }[];
