@@ -442,6 +442,25 @@ One pipeline's bounded collection of unit records, oldest dropped first. Structu
 never logs: the container keeps no logs.
 _Avoid_: run log, log, audit trail
 
+### Observing
+
+**Observer**:
+The catalog kind that looks back over a tenant's unit history and what became of Phoebe's
+pull requests, and proposes fixes for what keeps going wrong. Every change it wants lands
+as a pull request or an issue a person reviews.
+_Avoid_: judge, grader, retro, self-improver
+
+**Finding**:
+One recurring problem the observer names from several units, with its evidence and a
+category that decides where the fix belongs: the ticket, the repo's conventions, the
+factory's config and prompts, or the engine.
+_Avoid_: insight, recommendation, issue (that is GitHub's)
+
+**Proposal**:
+The pull request or issue the observer files for one finding. A finding has at most one
+open proposal; new evidence for it is added to that proposal, not filed again.
+_Avoid_: suggestion, recommendation, observer PR
+
 ### Console
 
 **Console**:
