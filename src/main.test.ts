@@ -3677,6 +3677,7 @@ describe("the deployment report's rail", () => {
       reportClient: {
         pass: (pollIntervalMs) => passes.push(pollIntervalMs),
         snapshot: () => {},
+        record: () => {},
       },
     });
     const loop = engine.loop();
@@ -3719,7 +3720,11 @@ describe("a snapshot inherited from a child that is gone", () => {
       kinds: [gated],
       concurrency: 1,
       inherited: strandedConflicts,
-      reportClient: { pass: () => {}, snapshot: (snapshot) => reported.push(snapshot) },
+      reportClient: {
+        pass: () => {},
+        snapshot: (snapshot) => reported.push(snapshot),
+        record: () => {},
+      },
     });
     const loop = engine.loop();
     await settle();

@@ -101,6 +101,26 @@ describe("recordUnit", () => {
       /^\[fleet:acme\/widget:work\] could not append to units\.jsonl for conflicts pr:21 — /,
     );
   });
+
+  test("tells the supervisor a record landed, and only when one did", () => {
+    const dir = stateDir();
+    let appended = 0;
+    const deps = {
+      deployment: "fleet",
+      tenant: "acme/widget",
+      pipeline: "work",
+      engineCommit: null,
+      log: () => {},
+      onAppended: () => (appended += 1),
+    };
+
+    createRecordUnit({ ...deps, unitsPath: unitsPathFor(dir, "work") })(input());
+    expect(appended).toBe(1);
+
+    writeFileSync(join(dir, "blocked"), "");
+    createRecordUnit({ ...deps, unitsPath: unitsPathFor(dir, "blocked") })(input());
+    expect(appended).toBe(1);
+  });
 });
 
 describe("appendUnitLine", () => {
