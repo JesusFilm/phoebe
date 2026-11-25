@@ -254,14 +254,14 @@ disk.
 Selecting an install opens its container's output. The gear beside it opens the
 install's own page: the install tab, and six more.
 
-| Tab           | What it answers                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                     |
-| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                     |
-| **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit.       |
-| **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                           |
-| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                      |
-| **Config**    | Each config as a form, the file one press behind it: the deployment's few settings on a workspace root, a tenant's own on each child. |
+| Tab           | What it answers                                                                                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Overview**  | The last 7 days and the units that need a look, then the engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                |
+| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause, its last 7 days. A row opens into its unit history. |
+| **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit.                                       |
+| **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                                                           |
+| **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                                                      |
+| **Config**    | Each config as a form, the file one press behind it: the deployment's few settings on a workspace root, a tenant's own on each child.                                 |
 
 Two things write, and both write to this machine. Each row of the config form
 saves itself, as one `{ path, value }` patch against the fingerprint its page was drawn from, and the
@@ -306,6 +306,21 @@ apart.
 
 A deployment whose phoebe-agent predates unit history says it is too old,
 instead of showing an empty table.
+
+The overview opens with a card for the last 7 days. It shows how many units
+ran and how many a day, what they cost, and how many did not complete. The
+card reads the history summary the report carries, so drawing it fetches no
+records. Under it, "Needs a look" lists up to six units from the last 7 days
+that failed, timed out or were abandoned, newest first. Each one opens the
+same drawer as the History tab, and the link under the list opens the History
+tab. The list is the one part of the overview that reads records. It asks
+again when the report's summary moves, which happens when a unit is recorded.
+
+On the pipelines tab each row shows its units, how many did not complete and
+its cost over the last 7 days. The pipeline's name opens a breakdown of the
+last 24 hours beside the last 7 days: each outcome, cost, tokens, and the
+units with no cost reported or partial usage. The first pipeline arrives
+open. A pipeline whose units reported no cost reads "tokens only".
 
 ## Alerting
 
@@ -378,8 +393,7 @@ machine that holds the folder.
 
 ## Not here yet
 
-The unit history overview card, the per-pipeline breakdown and the fleet stats
-page, and a mobile companion, which will scan the same QR and speak the same
+The fleet stats page, and a mobile companion, which will scan the same QR and speak the same
 API as the desktop one. Recorded against
 [the console map](https://github.com/JesusFilm/phoebe/issues/497) and
 [the remote-access map](https://github.com/JesusFilm/phoebe/issues/690).

@@ -395,7 +395,7 @@ const OUTCOME_TONE: Record<UnitRecordOutcome, string> = {
   abandoned: "chip",
 };
 
-function OutcomeChip({ record }: { record: HistoryRecord }) {
+export function OutcomeChip({ record }: { record: HistoryRecord }) {
   return (
     <>
       <span className={`${OUTCOME_TONE[record.outcome]} outcome-chip`}>{record.outcome}</span>
