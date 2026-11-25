@@ -16,9 +16,12 @@ import type {
   DoctorRunResponse,
   EditReceipt,
   FleetVerbResponse,
+  HistoryPage,
+  HistoryQuery,
   RemoteResponse,
   SessionRow,
 } from "phoebe-agent/contracts";
+import { historyPath, type HistoryFetch } from "./history.ts";
 import { NEEDS_OPERATE } from "./remote-routes.ts";
 
 /** What `/api/secrets` answered. */
@@ -70,6 +73,11 @@ export type RemoteClient = {
   fleetStop: () => Promise<FleetVerbResponse>;
   /** Release the hold. */
   fleetStart: () => Promise<FleetVerbResponse>;
+  /**
+   * One page of unit history (#931). A 404 is a deployment from before the
+   * route, which has no history to give: "too old", not an error.
+   */
+  history: (query: HistoryQuery) => Promise<HistoryFetch>;
 };
 
 export function createRemoteClient(bridge: DesktopBridge, deploymentId: string): RemoteClient {
@@ -117,7 +125,45 @@ export function createRemoteClient(bridge: DesktopBridge, deploymentId: string):
       const response = await send("POST", REMOTE_ROUTES.fleetStart, {});
       return response.body as FleetVerbResponse;
     },
+    async history(query) {
+      try {
+        const response = await send("GET", historyPath(query));
+        if (!isHistoryPage(response.body)) {
+          throw new Error("the deployment answered with something that is not a history page");
+        }
+        return { kind: "page", page: response.body };
+      } catch (error) {
+        if (error instanceof RemoteRequestError && error.status === 404) return { kind: "too-old" };
+        throw error;
+      }
+    },
   };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isHistoryPage(body: unknown): body is HistoryPage {
+  if (!isObject(body)) return false;
+  const { records, summary, retained, nextBefore } = body;
+  return (
+    Array.isArray(records) &&
+    records.every(
+      (record) =>
+        isObject(record) &&
+        typeof record["cell"] === "string" &&
+        isObject(record["unit"]) &&
+        typeof record["unit"]["kind"] === "string",
+    ) &&
+    isObject(summary) &&
+    typeof summary["units"] === "number" &&
+    isObject(summary["byOutcome"]) &&
+    isObject(summary["costUsd"]) &&
+    isObject(summary["tokens"]) &&
+    isObject(retained) &&
+    (nextBefore === null || typeof nextBefore === "string")
+  );
 }
 
 /** A fresh edit id: the same id twice is the same edit, so each press is its own. */
