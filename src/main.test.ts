@@ -18,6 +18,7 @@
 // records every call, so "no worktree, no push" is an assertion rather than a
 // hope.
 
+import { EventEmitter } from "node:events";
 import { describe, expect, onTestFinished, test } from "vite-plus/test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,6 +59,7 @@ import type { DrainSignal } from "./drain.ts";
 import { CredentialRefreshBlockedError, type CredentialClient } from "./credential-client.ts";
 import type { SlotClient } from "./slot-client.ts";
 import type { ReportClient } from "./report-client.ts";
+import { createManualRunInbox, MANUAL_RUN, type ManualRunInbox } from "./manual-run.ts";
 import {
   createEmitUnitEvent,
   createForgetInherited,
@@ -3696,6 +3698,8 @@ function concurrentEngine(opts: {
   env?: NodeJS.ProcessEnv;
   /** The `status.json` this engine boots on — what a previous child left (#670). */
   inherited?: StatusSnapshot;
+  /** Manual runs the bootstrapper forwards (#937). */
+  manualRuns?: ManualRunInbox;
 }): {
   drain: ReturnType<typeof manualDrain>;
   lines: string[];
@@ -3746,6 +3750,7 @@ function concurrentEngine(opts: {
     slotClient: opts.slotClient ?? null,
     credentialClient: opts.credentialClient ?? null,
     reportClient: opts.reportClient ?? null,
+    manualRuns: opts.manualRuns ?? null,
     emitUnitEvent: createEmitUnitEvent(snapshotWriter),
     forgetInherited: createForgetInherited(snapshotWriter),
     run: {
@@ -3811,6 +3816,55 @@ describe("the deployment report's rail", () => {
     expect(passes.length).toBeGreaterThan(0);
     expect(new Set(passes)).toEqual(new Set([1_000]));
 
+    engine.drain.request();
+    await loop;
+  });
+});
+
+describe("manual runs (#937)", () => {
+  test("an arrival ends the idle wait, and the kind takes the run in its fetch", async () => {
+    // The test drain never times out on its own, so a loop that only woke on
+    // the poll interval would sit idle here for good.
+    const gated = gatedKind({ refs: [] });
+    const taken: unknown[] = [];
+    const definition = gated.kind.definition;
+    const manualKind: LoadedCustomKind = {
+      ...gated.kind,
+      definition: {
+        ...definition,
+        fetch: (ctx) => {
+          const run = ctx.takeManualRun?.() ?? null;
+          taken.push(run);
+          if (run !== null) gated.offer(1);
+          return definition.fetch(ctx);
+        },
+      },
+    };
+    const channel = new EventEmitter();
+    const inbox = createManualRunInbox(
+      { on: (event, listener) => channel.on(event, listener) },
+      { schedules: (kind) => kind === "gated", log: () => {} },
+    )!;
+    const engine = concurrentEngine({
+      kinds: [{ kind: manualKind }],
+      concurrency: 1,
+      manualRuns: inbox,
+    });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual([]);
+    expect(taken).toEqual([null]);
+
+    const run = { kind: "gated", by: "shell", at: "2026-08-19T00:00:00.000Z", lookback: "3d" };
+    channel.emit("message", { type: MANUAL_RUN, run });
+    await settle();
+
+    expect(taken).toEqual([null, run]);
+    expect(gated.started).toEqual(["u:1"]);
+    // Taken once: the inbox holds nothing for the next pass.
+    expect(inbox.take("gated")).toBeNull();
+
+    await gated.release("u:1");
     engine.drain.request();
     await loop;
   });

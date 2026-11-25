@@ -151,9 +151,10 @@ describe("the schedule", () => {
     const kind = createObserverKind(config(), resolveObserverOptions(options, "kinds.observer"), {
       readHistory: history.readHistory,
     });
-    const ctx = { ...baseCtx({}, []), ...ctxExtra };
+    const logged: string[] = [];
+    const ctx = { ...baseCtx({}, logged), ...ctxExtra };
     const selection = kind.select(await kind.fetch(ctx), ctx);
-    return { selection, reads: history.reads };
+    return { selection, reads: history.reads, logged };
   }
 
   const observerRun = (overrides: Partial<UnitRecord>) =>
@@ -182,6 +183,65 @@ describe("the schedule", () => {
     });
   });
 
+  describe("a manual run (#937)", () => {
+    const manual = (lookback: string | null) => {
+      let waiting: ReturnType<NonNullable<WorkKindCtx["takeManualRun"]>> = {
+        kind: "observer",
+        by: "shell",
+        at: "2026-11-25T11:59:00.000Z",
+        lookback,
+      };
+      return () => {
+        const run = waiting;
+        waiting = null;
+        return run;
+      };
+    };
+
+    test("is offered with no `every`, and carries its own lookback", async () => {
+      const { selection, reads } = await pick({}, [], { takeManualRun: manual("3d") });
+      expect(selection.unit).toEqual({
+        ref: "observer",
+        revision: "manual:2026-11-25T11:59:00.000Z",
+        manual: { by: "shell", lookback: "3d" },
+      });
+      // No gate was read: the schedule is not asked.
+      expect(reads).toEqual([]);
+    });
+
+    test("skips the `every` gate inside the window", async () => {
+      const own = [observerRun({ settledAt: daysAgo(1) })];
+      expect((await pick({ every: "7d" }, own)).selection.unit).toBeNull();
+      const { selection } = await pick({ every: "7d" }, own, { takeManualRun: manual(null) });
+      expect(selection.unit).toEqual({
+        ref: "observer",
+        revision: "manual:2026-11-25T11:59:00.000Z",
+        manual: { by: "shell", lookback: null },
+      });
+    });
+
+    test("is dropped, not queued, when a run is already in flight", async () => {
+      const takeManualRun = manual(null);
+      const { selection, logged } = await pick({}, [], {
+        takeManualRun,
+        inFlight: new Set(["observer"]),
+      });
+      expect(selection.unit).toBeNull();
+      expect(logged).toEqual([
+        "manual run asked for by shell dropped: a run is already in flight.",
+      ]);
+      expect(takeManualRun()).toBeNull();
+    });
+
+    test("is offered even while the scheduled run is quarantined in memory", async () => {
+      const { selection } = await pick({ every: "7d" }, [], {
+        takeManualRun: manual(null),
+        quarantined: new Set(["observer"]),
+      });
+      expect(selection.unit?.manual).toEqual({ by: "shell", lookback: null });
+    });
+  });
+
   test("a run already in flight is not offered again", async () => {
     const { selection } = await pick({ every: "7d" }, [], { inFlight: new Set(["observer"]) });
     expect(selection).toEqual({
@@ -201,6 +261,7 @@ describe("a run", () => {
     proposals?: MentioningIssue[];
     comments?: Record<number, string[]>;
     findings?: (flagged: Array<{ id: string; ref: string }>) => unknown;
+    unit?: ObserverUnit;
   }) {
     const scratch = mkdtempSync(join(tmpdir(), "observer-test-"));
     const history = histories(opts.byPipeline);
@@ -257,7 +318,7 @@ describe("a run", () => {
       resolveObserverOptions(opts.options ?? { every: "7d" }, "kinds.observer"),
       { readHistory: history.readHistory },
     );
-    const unit: ObserverUnit = { ref: "observer", revision: "never" };
+    const unit: ObserverUnit = opts.unit ?? { ref: "observer", revision: "never" };
     return {
       run: () => kind.run(unit, ctx),
       reads: history.reads,
@@ -347,6 +408,32 @@ describe("a run", () => {
     ]);
     expect(h.agentCalls[0]!["OBSERVER_COVERAGE"]).toBe("coverage work 14d, intake 9d");
     expect(result).toEqual({ summary: "nothing filed; coverage work 14d, intake 9d" });
+  });
+
+  test("a manual run's lookback narrows what it reads for that run only", async () => {
+    const h = harness({
+      byPipeline: byPipeline(),
+      findings: () => ({ findings: [] }),
+      unit: {
+        ref: "observer",
+        revision: "manual:2026-11-25T11:59:00.000Z",
+        manual: { by: "shell", lookback: "3d" },
+      },
+    });
+    const result = await h.run();
+    const flagged = JSON.parse(readFileSync(h.agentCalls[0]!["FLAGGED_JSON"]!, "utf8")) as Array<{
+      ref: string;
+    }>;
+    // issue:3 started three days ago to the millisecond, on the edge; issue:2 and issue:1 are older.
+    expect(flagged.map((unit) => unit.ref)).toEqual(["t:2", "issue:4", "issue:3"]);
+    expect(h.agentCalls[0]!["OBSERVER_LOOKBACK"]).toBe("3d");
+    expect(h.logged[0]).toBe("manual run asked for by shell, over the last 3d.");
+    expect(result).toEqual({ summary: "nothing filed; coverage work 3d, intake 3d" });
+
+    // The next scheduled run is back on the configured window.
+    const scheduled = harness({ byPipeline: byPipeline(), findings: () => ({ findings: [] }) });
+    await scheduled.run();
+    expect(scheduled.agentCalls[0]!["OBSERVER_LOOKBACK"]).toBe("14d");
   });
 
   test("files each finding as an issue with the label and the marker", async () => {

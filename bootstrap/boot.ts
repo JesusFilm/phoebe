@@ -121,6 +121,7 @@ import { readConfigDir } from "./config-dir.ts";
 import { readHostPlatform } from "./host-platform.ts";
 import { prepareRemote } from "./remote-boot.ts";
 import { createFleetHold, type FleetHold } from "./fleet-hold.ts";
+import { createObserveDispatcher, watchObserveDrop, type ObserveDispatcher } from "./observe.ts";
 import { createOutputTap, type OutputTap } from "./output-tap.ts";
 import { createRedactor, type Redactor } from "./redact-output.ts";
 import { deliverSecret } from "./secret-delivery.ts";
@@ -993,6 +994,8 @@ function runFleet(opts: {
   hostKnobs: DeploymentHostKnobs;
   /** The fleet hold (map #690): stop and start over the API, nudged like an edit. */
   hold: FleetHold;
+  /** Manual observer runs (#937): told about each child as it spawns. */
+  observer: ObserveDispatcher;
   /** Where every child's output goes on its way to Docker, and what the API serves. */
   output: OutputTap;
   /** Learns each child's secrets as its env is built, so the API never shows one. */
@@ -1065,6 +1068,8 @@ function runFleet(opts: {
     // writes, into the one read model. Wired beside the broker because it is the
     // same channel, opened for the same reason.
     attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
+    // Where a manual observer run is forwarded (#937), if this pipeline runs one.
+    opts.observer.attach(pipeline, child);
     deployment.noteSpawn(pipeline);
     // A child spawning is the fleet being up: the deployment's boot doctor run
     // starts here, and a run a reconcile parked is released here (#507 §7).
@@ -1890,6 +1895,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // A stop or a start is a fact the report carries, so the page that pressed
   // the button sees it move before the first pipeline has drained.
   hold.onChange(() => deployment.publish());
+  // Manual observer runs (#937): one handler for `phoebe observe`'s drop and
+  // `POST /api/observe`, told about each observer pipeline as its child spawns.
+  const observer = createObserveDispatcher({
+    stopped: () => hold.current(),
+    report: () => deployment.latest(),
+    log: (message) => console.log(message),
+  });
   // The secrets inventory (#550): which keys each tenant has and where from,
   // retaken when the tenant set moves and when an edit lands, never on a poll —
   // taking it loads every tenant's work kinds.
@@ -1929,6 +1941,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     {
       fleetStop: (by) => hold.stop(by),
       fleetStart: (by) => hold.start(by),
+      observe: (ask) => observer.request(ask),
       configSet: (edit) => editor.apply(edit),
       doctorRun: (by) => {
         const ask = doctor.request("request", by);
@@ -1967,6 +1980,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       onLine: (listener) => output.onLine((line) => listener(redactor.redact(line))),
     },
   );
+  // The observe drop (#937): uid 10001's own, like the revoke drop, but open
+  // with or without a `remote` block, since `phoebe observe` is a shell verb.
+  const observeDrop = watchObserveDrop({
+    dataBase,
+    dispatcher: observer,
+    log: (message) => console.log(message),
+  });
   if (workspace !== null) {
     // GitHub App mode (#209): if the supervisor holds App credentials, fetch
     // the bot identity once at fleet startup and wire up a per-tenant mint fn.
@@ -2012,6 +2032,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         hostKnobs,
         secrets,
         hold,
+        observer,
         output,
         redactor,
         heldTenants: () => held,
@@ -2036,6 +2057,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
       doctor.stop();
+      observeDrop.stop();
       await remote.stop();
       // A crash-loop report raced against the process ending is a report lost;
       // the flush waits it out, bounded by the reporter's own timeout (#474).
@@ -2159,6 +2181,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     });
     attachBroker({ owner: pipeline.id, broker, child });
     attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
+    observer.attach(pipeline, child);
     deployment.noteSpawn(pipeline);
     doctor.noteFleetUp();
     // Answer the child's credential lease (#211). Solo has no per-tenant `.env`
@@ -2262,6 +2285,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
     doctor.stop();
+    observeDrop.stop();
     await remote.stop();
     await reporter.flush();
   }

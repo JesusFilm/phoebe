@@ -173,6 +173,7 @@ export {
   type ForbiddenBody,
   type LogsBacklog,
   type LogsLineEvent,
+  type ObserveResponse,
   type PairRequest,
   type PairResponse,
   type RemoteDescriptor,
