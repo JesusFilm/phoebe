@@ -330,6 +330,7 @@ Everything is JSON. The descriptor is open; everything under `/api` takes
 | `POST /api/doctor-run`               | `operate` | `{ outcome: "started" \| "joined" \| "refused", detail? }`                                                                 |
 | `POST /api/secrets`                  | `operate` | `{ outcome, tenant, key, editId?, detail }` for `{ tenant, key, value \| null }`                                           |
 | `GET /api/logs`                      | `read`    | Server-sent events: a `backlog` event `{ lines }`, then one `line` event `{ line }` per line printed, a comment every 25 s |
+| `GET /api/history`                   | `read`    | One `HistoryPage` for the query string's `cell`, `kind`, `outcome`, `provider`, `model`, `since`, `before`, `limit`        |
 | `POST /api/fleet/stop`               | `operate` | `{ outcome: "stopped" \| "unchanged" \| "refused", detail? }`                                                              |
 | `POST /api/fleet/start`              | `operate` | `{ outcome: "started" \| "unchanged" \| "refused", detail? }`                                                              |
 

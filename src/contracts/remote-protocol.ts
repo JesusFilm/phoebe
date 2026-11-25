@@ -54,6 +54,12 @@ export const REMOTE_ROUTES = {
    * redacted before it leaves.
    */
   logs: "/api/logs",
+  /**
+   * GET, read — one page of unit history (#930): a `HistoryPage` for the
+   * filters in the query string (`cell`, `kind`, `outcome`, `provider`,
+   * `model`, `since`, `before`, `limit`).
+   */
+  history: "/api/history",
   /** POST, operate — drain every pipeline and hold the fleet down. */
   fleetStop: "/api/fleet/stop",
   /** POST, operate — release the hold and bring the fleet back up. */

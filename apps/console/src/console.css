@@ -2332,3 +2332,79 @@ a.button {
 .rail-entry.remote.current {
   background: var(--chip);
 }
+
+/* ── the History tab (#931) ────────────────────────────────────────────── */
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0 10px;
+}
+
+.history-filters select {
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.history-summary,
+.history-foot {
+  font-size: 12px;
+}
+
+.history-row {
+  cursor: pointer;
+}
+
+.history-row:hover td,
+.history-row:focus-visible td {
+  background: var(--chip);
+}
+
+.chip.ok {
+  background: var(--ok);
+  color: #fff;
+}
+
+.chip.outcome-chip {
+  margin-left: 0;
+}
+
+/* A subscription estimate's "est." and a cost nobody reported: present, quiet. */
+.est,
+.cost-none {
+  color: var(--muted);
+}
+
+.unit-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 100vw);
+  overflow: auto;
+  padding: 18px 20px 40px;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgb(0 0 0 / 18%);
+  z-index: 900;
+}
+
+.unit-drawer h2 {
+  margin-top: 0;
+}
+
+.unit-drawer-close {
+  float: right;
+}
+
+.unit-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -69,7 +69,7 @@ export function remoteConsoleHref(deploymentId: string, tenant?: string): string
   }`;
 }
 
-const TABS: readonly string[] = ["overview", "pipelines", "doctor", "secrets", "config"];
+const TABS: readonly string[] = ["overview", "pipelines", "history", "doctor", "secrets", "config"];
 const CONSOLE = "console";
 /**
  * Setting up this machine (setup-page.tsx): what Docker needs and the buttons

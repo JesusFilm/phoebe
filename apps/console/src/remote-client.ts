@@ -16,9 +16,12 @@ import type {
   DoctorRunResponse,
   EditReceipt,
   FleetVerbResponse,
+  HistoryPage,
+  HistoryQuery,
   RemoteResponse,
   SessionRow,
 } from "phoebe-agent/contracts";
+import { historyPath, type HistoryFetch } from "./history.ts";
 import { NEEDS_OPERATE } from "./remote-routes.ts";
 
 /** What `/api/secrets` answered. */
@@ -70,6 +73,11 @@ export type RemoteClient = {
   fleetStop: () => Promise<FleetVerbResponse>;
   /** Release the hold. */
   fleetStart: () => Promise<FleetVerbResponse>;
+  /**
+   * One page of unit history (#931). A 404 is a deployment from before the
+   * route, which has no history to give: "too old", not an error.
+   */
+  history: (query: HistoryQuery) => Promise<HistoryFetch>;
 };
 
 export function createRemoteClient(bridge: DesktopBridge, deploymentId: string): RemoteClient {
@@ -116,6 +124,15 @@ export function createRemoteClient(bridge: DesktopBridge, deploymentId: string):
     async fleetStart() {
       const response = await send("POST", REMOTE_ROUTES.fleetStart, {});
       return response.body as FleetVerbResponse;
+    },
+    async history(query) {
+      try {
+        const response = await send("GET", historyPath(query));
+        return { kind: "page", page: response.body as HistoryPage };
+      } catch (error) {
+        if (error instanceof RemoteRequestError && error.status === 404) return { kind: "too-old" };
+        throw error;
+      }
     },
   };
 }
