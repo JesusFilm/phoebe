@@ -3054,18 +3054,125 @@ describe("the unit history", () => {
     expect(records[0]).toMatchObject({ outcome: "failed", detail: "push rejected" });
   });
 
-  test("a non-Claude run records no usage rather than zeros", async () => {
+  /** Cursor's per-call usage line and terminal result, as its bundle writes them (#915). */
+  const cursorUsageLine = JSON.stringify({
+    type: "usage",
+    subtype: "model_call",
+    model_call_id: "mc_1",
+    usage: { inputTokens: 12, outputTokens: 30, cacheReadTokens: 900, cacheWriteTokens: 40 },
+  });
+  const cursorToolLine = JSON.stringify({
+    type: "tool_call",
+    subtype: "started",
+    call_id: "call_1",
+    tool_call: { readToolCall: { args: { path: "README.md" } } },
+  });
+  const cursorResultLine = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    duration_ms: 3100,
+    result: "done",
+    usage: { inputTokens: 12, outputTokens: 30, cacheReadTokens: 900, cacheWriteTokens: 40 },
+  });
+
+  /** A Codex command item and the turn total it reports (#915). */
+  const codexToolLine = JSON.stringify({
+    type: "item.started",
+    item: { id: "item_0", type: "command_execution", command: "ls" },
+  });
+  const codexTurnLine = JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 24763,
+      cached_input_tokens: 24448,
+      cache_write_input_tokens: 0,
+      output_tokens: 122,
+      reasoning_output_tokens: 0,
+    },
+  });
+
+  /** A unit killed by a 20 ms budget, for the timeout cases. */
+  const killedBy = (agent: string) => ({
+    env: { PHOEBE_AGENT: agent, PHOEBE_RUN_TIMEOUT_MS: "20" },
+    github: {
+      prTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "sha:abc" }),
+      postUnitComment: () => {},
+    },
+  });
+
+  test("a Cursor run records its tokens and duration, with no cost", async () => {
     const { records } = await unitRecords({
-      agent: scriptedAgent([resultLine], 0),
+      agent: scriptedAgent([cursorUsageLine, cursorToolLine, cursorResultLine], 0),
+      env: { PHOEBE_AGENT: "cursor" },
+    });
+
+    expect(records[0]?.provider).toBe("cursor");
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 30,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 40,
+      providerDurationMs: 3100,
+      costUsd: null,
+      costBasis: null,
+      usageComplete: true,
+      toolCalls: { read: 1 },
+    });
+  });
+
+  test("a Cursor run its budget kills keeps its per-call usage, marked incomplete", async () => {
+    const { records, error } = await unitRecords({
+      agent: scriptedAgent([cursorUsageLine, cursorToolLine], null),
+      ...killedBy("cursor"),
+    });
+
+    expect(error).toBeInstanceOf(RunTimeoutError);
+    expect(records[0]).toMatchObject({ outcome: "timed-out", provider: "cursor" });
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      exitCode: null,
+      inputTokens: 12,
+      outputTokens: 30,
+      cacheReadTokens: 900,
+      costUsd: null,
+      usageComplete: false,
+      toolCalls: { read: 1 },
+    });
+  });
+
+  test("a Codex run records turn.completed with cached tokens out of the input", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([codexToolLine, codexTurnLine], 0),
       env: { PHOEBE_AGENT: "codex" },
     });
 
     expect(records[0]?.provider).toBe("codex");
     expect(records[0]?.agentRuns[0]).toMatchObject({
+      inputTokens: 315,
+      outputTokens: 122,
+      cacheReadTokens: 24448,
+      cacheWriteTokens: 0,
+      costUsd: null,
+      costBasis: null,
+      usageComplete: true,
+      toolCalls: { command_execution: 1 },
+    });
+  });
+
+  test("a Codex run its budget kills records no usage, marked incomplete", async () => {
+    const { records, error } = await unitRecords({
+      agent: scriptedAgent([codexToolLine], null),
+      ...killedBy("codex"),
+    });
+
+    expect(error).toBeInstanceOf(RunTimeoutError);
+    expect(records[0]).toMatchObject({ outcome: "timed-out", provider: "codex" });
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      exitCode: null,
       inputTokens: null,
+      outputTokens: null,
       costUsd: null,
       usageComplete: false,
-      toolCalls: {},
+      toolCalls: { command_execution: 1 },
     });
   });
 });

@@ -25,7 +25,6 @@ import {
 } from "./contracts/unit-record.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import type { UsageMeter } from "./providers/types.ts";
-import { noUsage } from "./providers/usage.ts";
 import { unitTag, type CurrentUnit } from "./unit-event.ts";
 
 /** History filename inside a pipeline's own dir under `state/`. */
@@ -99,7 +98,7 @@ export type AgentRunTrack = {
   promptSha: string;
   /** What a cost figure from this run would be, from its credential. */
   costBasis: CostBasis | null;
-  meter: UsageMeter | null;
+  meter: UsageMeter;
   /** Set when the child exits; `null` while it runs. */
   endedAt: Date | null;
   exitCode: number | null;
@@ -111,7 +110,7 @@ export type AgentRunTrack = {
  * whatever its meter says, and its duration runs to `now`.
  */
 export function agentRunRecord(track: AgentRunTrack, now: Date): AgentRunRecord {
-  const usage = track.meter?.read() ?? noUsage();
+  const usage = track.meter.read();
   const end = track.endedAt ?? now;
   return {
     startedAt: track.startedAt.toISOString(),

@@ -1391,11 +1391,12 @@ export function createEngine(options: EngineOptions): Engine {
     // propagating `RunTimeoutError` at the unit boundary.
     // Tracked on the unit from the moment of spawn, not when the run returns: a
     // unit its budget killed is recorded before its child has exited (#926).
+    const meter = provider.meterUsage();
     const track: AgentRunTrack = {
       startedAt: clock.now(),
       promptSha: promptShaOf(template),
       costBasis: costBasisFor(provider.name, agentEnv),
-      meter: provider.meterUsage?.() ?? null,
+      meter,
       endedAt: null,
       exitCode: null,
     };
@@ -1414,7 +1415,7 @@ export function createEngine(options: EngineOptions): Engine {
         tenant: config.repoSlug,
         pipeline,
         unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
-        ...(track.meter !== null ? { meter: track.meter } : {}),
+        meter,
         ...(options.spawnAgent !== undefined ? { spawn: options.spawnAgent } : {}),
       }));
       track.exitCode = exitCode;
