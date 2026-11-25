@@ -73,7 +73,12 @@ import type {
 } from "./work-kinds/definition.ts";
 import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
 import type { AgentChild, SpawnAgent } from "./providers/run-agent.ts";
-import { promptShaOf, type UnitRecordInput } from "./unit-record.ts";
+import {
+  abandonedRecord,
+  promptShaOf,
+  type RecordUnit,
+  type UnitRecordInput,
+} from "./unit-record.ts";
 import { RunTimeoutError } from "./run-timeout.ts";
 
 // ---------------------------------------------------------------------------
@@ -3679,6 +3684,8 @@ function concurrentEngine(opts: {
   env?: NodeJS.ProcessEnv;
   /** The `status.json` this engine boots on — what a previous child left (#670). */
   inherited?: StatusSnapshot;
+  /** The unit history writer, wired the way the entry point wires it (#928). */
+  recordUnit?: RecordUnit;
 }): {
   drain: ReturnType<typeof manualDrain>;
   lines: string[];
@@ -3730,7 +3737,10 @@ function concurrentEngine(opts: {
     credentialClient: opts.credentialClient ?? null,
     reportClient: opts.reportClient ?? null,
     emitUnitEvent: createEmitUnitEvent(snapshotWriter),
-    forgetInherited: createForgetInherited(snapshotWriter),
+    forgetInherited: createForgetInherited(snapshotWriter, (abandoned) =>
+      opts.recordUnit?.(abandonedRecord(abandoned)),
+    ),
+    ...(opts.recordUnit !== undefined ? { recordUnit: opts.recordUnit } : {}),
     run: {
       runOnce: false,
       dryRun: false,
@@ -3784,6 +3794,7 @@ describe("the deployment report's rail", () => {
       reportClient: {
         pass: (pollIntervalMs) => passes.push(pollIntervalMs),
         snapshot: () => {},
+        record: () => {},
       },
     });
     const loop = engine.loop();
@@ -3803,7 +3814,7 @@ describe("the deployment report's rail", () => {
 // a unit on that unit's own settling event. So the file a new child boots on can
 // claim work nobody is doing — and until this, kept claiming it for good.
 describe("a snapshot inherited from a child that is gone", () => {
-  const strandedConflicts: StatusSnapshot = {
+  const abandonedConflicts: StatusSnapshot = {
     tenant: "acme/widget",
     pipeline: "work",
     currentUnits: [
@@ -3811,6 +3822,9 @@ describe("a snapshot inherited from a child that is gone", () => {
         unit: { kind: "conflicts", id: "pr:565" },
         startedAt: "2026-07-01T18:01:06.007Z",
         runBudgetMs: 2_700_000,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: "high",
       },
     ],
     waitingForSlot: false,
@@ -3819,14 +3833,18 @@ describe("a snapshot inherited from a child that is gone", () => {
     updatedAt: "2026-08-18T03:12:17.540Z",
   };
 
-  test("the stranded unit is gone before the first pass, and the log names it", async () => {
+  test("the abandoned unit is gone before the first pass, and the log names it", async () => {
     const gated = gatedKind({ refs: [] });
     const reported: StatusSnapshot[] = [];
     const engine = concurrentEngine({
       kinds: [gated],
       concurrency: 1,
-      inherited: strandedConflicts,
-      reportClient: { pass: () => {}, snapshot: (snapshot) => reported.push(snapshot) },
+      inherited: abandonedConflicts,
+      reportClient: {
+        pass: () => {},
+        snapshot: (snapshot) => reported.push(snapshot),
+        record: () => {},
+      },
     });
     const loop = engine.loop();
     await settle();
@@ -3843,12 +3861,71 @@ describe("a snapshot inherited from a child that is gone", () => {
     await loop;
   });
 
+  // #928: killed mid-unit and restarted, the pipeline's history says so. The
+  // first engine admits a unit and never settles it; the second boots on the
+  // snapshot it left.
+  test("a unit the killed child was running becomes one abandoned record", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const first = concurrentEngine({
+      kinds: [gated],
+      concurrency: 1,
+      env: { PHOEBE_MODEL: "claude-opus-5-5", PHOEBE_EFFORT: "high" },
+    });
+    const firstLoop = first.loop();
+    await settle();
+    const left = first.status();
+    const running = left!.currentUnits[0]!;
+    expect(left?.currentUnits).toHaveLength(1);
+    expect(running).toMatchObject({
+      unit: { id: "u:1" },
+      provider: "claude",
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+
+    const records: UnitRecordInput[] = [];
+    const second = concurrentEngine({
+      kinds: [gatedKind({ refs: [] })],
+      concurrency: 1,
+      inherited: left!,
+      recordUnit: (record) => records.push(record),
+    });
+    const loop = second.loop();
+    await settle();
+
+    expect(records).toEqual([
+      {
+        unit: running.unit,
+        outcome: "abandoned",
+        quarantined: false,
+        detail: null,
+        startedAt: running.startedAt,
+        settledAt: null,
+        durationMs: null,
+        runBudgetMs: running.runBudgetMs,
+        provider: running.provider,
+        model: running.model,
+        effort: running.effort,
+        branch: null,
+        headSha: null,
+        prNumber: null,
+        agentRuns: [],
+      },
+    ]);
+
+    second.drain.request();
+    await loop;
+    first.drain.request();
+    await gated.release("u:1");
+    await firstLoop;
+  });
+
   test("a unit this child starts is still listed as in flight", async () => {
     const gated = gatedKind({ refs: [1] });
     const engine = concurrentEngine({
       kinds: [gated],
       concurrency: 1,
-      inherited: strandedConflicts,
+      inherited: abandonedConflicts,
     });
     const loop = engine.loop();
     await settle();
@@ -3865,7 +3942,7 @@ describe("a snapshot inherited from a child that is gone", () => {
   test("a dry run leaves the snapshot alone", async () => {
     // `--dry-run` is how an agent previews selection from inside the container,
     // against the same state dir, while the real child has a unit running. That
-    // unit is not stranded, and a preview must not say it is.
+    // unit is not abandoned, and a preview must not say it is.
     let calls = 0;
     await runCycle({
       config: { workOrder: ["issues"] },

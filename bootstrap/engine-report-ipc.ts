@@ -3,9 +3,10 @@
 //
 // Same shape as the broker's adapter (bootstrap/broker-ipc.ts) and the same
 // channel: each engine child is spawned with IPC, runs `createReportClient`
-// (src/report-client.ts), and sends two kinds of message. A completed loop pass
+// (src/report-client.ts), and sends three kinds of message. A completed loop pass
 // moves that pipeline's pass clock; a `status.json` write hands over the
-// snapshot the deployment report publishes.
+// snapshot the deployment report publishes; a unit record appended to the
+// pipeline's history moves its history summary (#929).
 //
 // This is where #501's "the bootstrapper learns of a snapshot change over the
 // existing engine→parent IPC" lands. Not `fs.watch` — the config watch already
@@ -15,7 +16,7 @@
 // A malformed message is ignored. The rail is one-way and unacknowledged, so
 // there is nothing to answer and nothing a bad message can wedge.
 
-import { REPORT_PASS, REPORT_STATUS } from "../src/report-client.ts";
+import { REPORT_PASS, REPORT_RECORD, REPORT_STATUS } from "../src/report-client.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
 import type { BrokerChild } from "./broker-ipc.ts";
 import type { DeploymentState } from "./deployment-state.ts";
@@ -56,6 +57,9 @@ export function attachEngineReports(opts: {
         }
         break;
       }
+      case REPORT_RECORD:
+        state.noteEngineReport(pipelineId, { kind: "record" });
+        break;
     }
   });
 }

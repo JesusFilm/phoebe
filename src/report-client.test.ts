@@ -1,9 +1,9 @@
-// The engine's side of the report rail (#532): two fire-and-forget messages, a
+// The engine's side of the report rail (#532): three fire-and-forget messages, a
 // null client when nothing is supervising, and a send that can never take the
 // engine down.
 
 import { describe, expect, test } from "vite-plus/test";
-import { createReportClient, REPORT_PASS, REPORT_STATUS } from "./report-client.ts";
+import { createReportClient, REPORT_PASS, REPORT_RECORD, REPORT_STATUS } from "./report-client.ts";
 import type { StatusSnapshot } from "./contracts/status-snapshot.ts";
 
 const snapshot: StatusSnapshot = {
@@ -35,6 +35,13 @@ describe("createReportClient", () => {
     expect(sent).toEqual([{ type: REPORT_STATUS, snapshot }]);
   });
 
+  test("a new unit record is announced, not carried: the file is the copy that counts", () => {
+    const sent: unknown[] = [];
+    const client = createReportClient({ send: (message) => sent.push(message) })!;
+    client.record();
+    expect(sent).toEqual([{ type: REPORT_RECORD }]);
+  });
+
   test("every send carries an error-first callback, so a closed channel is handled", () => {
     const callbacks: unknown[] = [];
     const client = createReportClient({
@@ -52,5 +59,6 @@ describe("createReportClient", () => {
     })!;
     expect(() => client.pass(1000)).not.toThrow();
     expect(() => client.snapshot(snapshot)).not.toThrow();
+    expect(() => client.record()).not.toThrow();
   });
 });
