@@ -222,6 +222,12 @@ const ARGV_CASES: ArgvCase[] = [
     fields: "comments",
   },
   {
+    name: "issueCommentBodies",
+    call: (g) => void g.issueCommentBodies(1),
+    replies: [JSON.stringify({ comments: [] })],
+    fields: "comments",
+  },
+  {
     name: "reviewSummaryComments",
     call: (g) => void g.reviewSummaryComments(asPrNumber(1)),
     replies: [JSON.stringify({ comments: [] })],

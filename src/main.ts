@@ -52,6 +52,7 @@ import {
 } from "./credential-client.ts";
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
 import { createReportClient, type ReportClient } from "./report-client.ts";
+import { createManualRunInbox, type ManualRunInbox } from "./manual-run.ts";
 import {
   RunTimeoutError,
   resolveRunTimeoutMs,
@@ -107,6 +108,7 @@ import { runAgent, type SpawnAgent } from "./providers/run-agent.ts";
 import { costBasisFor } from "./providers/usage.ts";
 import {
   agentRunRecord,
+  completedDetail,
   createRecordUnit,
   promptShaOf,
   readEngineCommit,
@@ -166,6 +168,7 @@ import type {
   AgentWorkflowOutcome,
   WorkKindCtx,
   WorkKindRunCtx,
+  WorkKindRunResult,
   WorkspaceHandle,
   WorkUnitGitHubTarget,
   WorkUnitShape,
@@ -386,6 +389,12 @@ export type EngineOptions = {
    */
   reportClient?: ReportClient | null;
   /**
+   * Manual runs the bootstrapper forwards (#937), or null when nothing is
+   * supervising this engine. A kind takes its ask through
+   * `ctx.takeManualRun`, and an arrival ends the wait for the next pass.
+   */
+  manualRuns?: ManualRunInbox | null;
+  /**
    * How an agent child is spawned. Defaults to the real `child_process.spawn`
    * (src/providers/run-agent.ts). A cycle test hands in a fake so what the
    * engine puts on an agent's lines — its tenant, its pipeline, its unit — is
@@ -430,6 +439,7 @@ export type Engine = {
 export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const reportClient = options.reportClient ?? null;
+  const manualRuns = options.manualRuns ?? null;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
   // `--run-once` means one unit, so it pins the pipeline's concurrency to 1 rather
   // than honouring a declaration that would have it admit several and then
@@ -1931,10 +1941,10 @@ export function createEngine(options: EngineOptions): Engine {
     picked: PickedWorkUnit,
     ctx: WorkKindCtx,
     scope: UnitScope,
-  ): Promise<void> {
+  ): Promise<void | WorkKindRunResult> {
     const workspace = lazyWorkspace(picked, scope);
     try {
-      await runWithDeadline({
+      return await runWithDeadline({
         ms: runTimeoutMsFor(picked.kind),
         work: (signal) => {
           const runCtx: WorkKindRunCtx = {
@@ -2037,11 +2047,14 @@ export function createEngine(options: EngineOptions): Engine {
     for (const wake of settleWakers) wake();
   }
 
+  // A manual run (#937) ends the wait the same way a settle does: the next
+  // pass is the one whose fetch takes it.
+  manualRuns?.onArrival(announceSettled);
+
   /**
-   * Wait for the next pass: whichever comes first of a unit settling, the poll
-   * interval, or a drain. A settle latched while nothing was listening counts as
-   * the first of those and returns at once. With nothing running there is
-   * nothing left to settle, so this is the idle poll the loop has always done.
+   * Wait for the next pass: whichever comes first of a unit settling, a manual
+   * run arriving, the poll interval, or a drain. A wake latched while nothing
+   * was listening counts as the first of those and returns at once.
    */
   async function waitForNextPass(): Promise<void> {
     // Every way a pass ends comes through here, which is what makes this the one
@@ -2051,10 +2064,6 @@ export function createEngine(options: EngineOptions): Engine {
     reportClient?.pass(pollIntervalMs);
     if (pendingWake) {
       pendingWake = false;
-      return;
-    }
-    if (inFlight.size === 0) {
-      await drain.wait(pollIntervalMs);
       return;
     }
     let forget = (): void => {};
@@ -2151,9 +2160,9 @@ export function createEngine(options: EngineOptions): Engine {
         ...(quarantined !== undefined ? { quarantined } : {}),
       });
     try {
-      await runPickedUnit(picked, ctx, scope);
+      const result = await runPickedUnit(picked, ctx, scope);
       emitUnitEvent({ unit: ref, event: "completed" });
-      record("completed", null);
+      record("completed", completedDetail(result));
     } catch (error) {
       if (error instanceof WorktreeLeasedError) {
         // Not a failure: someone else is working the tree this unit needs — a
@@ -2286,6 +2295,7 @@ export function createEngine(options: EngineOptions): Engine {
     registry,
     inFlight: refsInFlight,
     quarantined: quarantinedRefs,
+    ...(manualRuns !== null ? { takeManualRun: (kind: string) => manualRuns.take(kind) } : {}),
   });
 
   /**
@@ -2840,6 +2850,13 @@ export async function runEngine(
   // which folds both into `state/deployment.json`. Null when standalone — there
   // is no deployment report without a bootstrapper keeping one.
   const reportClient = createReportClient(ipcChannel);
+  // Manual runs (#937): the one message the bootstrapper sends this process
+  // unprompted, asking a kind to run now. Null when standalone, where nobody
+  // can ask.
+  const manualRuns = createManualRunInbox(ipcChannel, {
+    schedules: (kind) => workOrder.includes(kind),
+    log: (line) => log.say(line),
+  });
 
   // Per-repo observability (#73): one tagged `[<deployment>:<slug>:<pipeline>]` line
   // per unit event + a `status.json` snapshot under this pipeline's own dir in
@@ -2881,6 +2898,7 @@ export async function runEngine(
       slotClient,
       credentialClient,
       reportClient,
+      manualRuns,
       emitUnitEvent,
       forgetInherited: createForgetInherited(snapshotWriter),
       ...(dryRun ? {} : { recordUnit }),

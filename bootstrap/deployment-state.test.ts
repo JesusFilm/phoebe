@@ -53,6 +53,7 @@ function pipelineOf(
       concurrency: overrides.concurrency ?? 1,
       needsClone: true,
       env: [],
+      kinds: [],
       fingerprint: "fp",
     },
     enumerated: true,

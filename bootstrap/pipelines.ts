@@ -53,6 +53,12 @@ export type Pipeline = {
    */
   env: readonly string[];
   /**
+   * The kinds this pipeline schedules (#937), read to find where a manual
+   * observer run goes. Empty from an engine too old to say, which is also an
+   * engine too old to have the observer.
+   */
+  kinds: readonly string[];
+  /**
    * Opaque digest of the pipeline's cold config; a move means relaunch this pipeline.
    * Null for the implicit pipeline of a checkout that cannot enumerate — the same
    * "unknown, never counts as a change" sentinel the tenant fingerprints use.
@@ -72,6 +78,7 @@ export const IMPLICIT_WORK_PIPELINE: Pipeline = Object.freeze({
   concurrency: 1,
   needsClone: true,
   env: [],
+  kinds: [],
   fingerprint: null,
 });
 
@@ -169,7 +176,7 @@ function parsePipeline(value: unknown): Pipeline {
     );
   }
   const pipeline = value as Record<string, unknown>;
-  const { name, disabled, priority, concurrency, needsClone, env, fingerprint } = pipeline;
+  const { name, disabled, priority, concurrency, needsClone, env, kinds, fingerprint } = pipeline;
   if (
     typeof name !== "string" ||
     typeof disabled !== "boolean" ||
@@ -186,6 +193,14 @@ function parsePipeline(value: unknown): Pipeline {
   if (env !== undefined && (!Array.isArray(env) || env.some((key) => typeof key !== "string"))) {
     throw new PipelineEnumerationError(`pipeline ${name} declared a malformed \`env\``);
   }
+  // `kinds` is additive too (#937): absent, the pipeline runs nothing a manual run
+  // could reach, which is true of every engine from before it.
+  if (
+    kinds !== undefined &&
+    (!Array.isArray(kinds) || kinds.some((kind) => typeof kind !== "string"))
+  ) {
+    throw new PipelineEnumerationError(`pipeline ${name} declared malformed \`kinds\``);
+  }
   return {
     name,
     disabled,
@@ -193,6 +208,7 @@ function parsePipeline(value: unknown): Pipeline {
     concurrency,
     needsClone,
     env: (env as string[] | undefined) ?? [],
+    kinds: (kinds as string[] | undefined) ?? [],
     fingerprint,
   };
 }

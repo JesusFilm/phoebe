@@ -79,6 +79,7 @@ export const REMOTE_ROUTES = {
   history: "/api/history",
   fleetStop: "/api/fleet/stop",
   fleetStart: "/api/fleet/start",
+  observe: "/api/observe",
 };
 
 /** The global the companion's preload exposes its bridge on — see desktop-bridge.ts. */
