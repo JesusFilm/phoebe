@@ -180,14 +180,6 @@ describe("agentRunRecord", () => {
     );
     expect(record.costBasis).toBeNull();
   });
-
-  test("an unmetered run records no usage, and not as complete", () => {
-    expect(agentRunRecord(track({ meter: null }), new Date())).toMatchObject({
-      ...noUsage(),
-      exitCode: 0,
-      costBasis: null,
-    });
-  });
 });
 
 describe("readEngineCommit", () => {

@@ -30,11 +30,8 @@ export type Provider = {
    */
   buildCommand(opts: { prompt: string; model: string; effort?: string }): AgentCommand;
   parseStreamLine(line: string): AgentEvent[];
-  /**
-   * A fresh meter for one run. Absent for a provider whose usage Phoebe does not
-   * read yet: its runs record `null` usage, marked incomplete.
-   */
-  meterUsage?(): UsageMeter;
+  /** A fresh meter for one run. */
+  meterUsage(): UsageMeter;
 };
 
 /**
