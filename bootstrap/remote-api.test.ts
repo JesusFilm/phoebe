@@ -3,11 +3,13 @@
 // the bearer gate's answers, the pair exchange and its budget, the stream, the
 // body cap, the operate handlers and who they say `by` is.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
+import type { HistoryPage, HistoryQuery } from "../src/contracts/history.ts";
+import { parseHistoryQuery, queryHistory, type HistorySource } from "../src/history.ts";
 import { CODE_LIFETIME_MS, createPendingCodes, hashCode } from "./pairing-codes.ts";
 import {
   byOf,
@@ -53,7 +55,12 @@ type Harness = {
 };
 
 async function harness(
-  opts: { verbs?: RemoteVerbs; keepAliveMs?: number; maxStreams?: number } = {},
+  opts: {
+    verbs?: RemoteVerbs;
+    keepAliveMs?: number;
+    maxStreams?: number;
+    history?: (query: HistoryQuery) => HistoryPage;
+  } = {},
 ): Promise<Harness> {
   const base = mkdtempSync(join(tmpdir(), "phoebe-api-"));
   dirs.push(base);
@@ -82,6 +89,7 @@ async function harness(
       return () => reports.listeners.delete(listener);
     },
     verbs: opts.verbs ?? {},
+    ...(opts.history !== undefined ? { history: opts.history } : {}),
     now: () => clock.now,
     log: (line) => logged.push(line),
     newId: () => "req_1",
@@ -297,6 +305,91 @@ describe("the reads", () => {
       report: unknown;
     };
     expect(again.report).toBeNull();
+  });
+
+  test("GET /api/history answers the query's page for the filters in the query string", async () => {
+    const base = mkdtempSync(join(tmpdir(), "phoebe-api-history-"));
+    dirs.push(base);
+    mkdirSync(join(base, "work"));
+    const line = (id: string, startedAt: string, outcome: string): string =>
+      `${JSON.stringify({
+        v: 1,
+        tenant: "acme/widget",
+        pipeline: "work",
+        unit: { kind: "issues", id },
+        outcome,
+        quarantined: false,
+        detail: null,
+        startedAt,
+        settledAt: null,
+        durationMs: null,
+        runBudgetMs: null,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: null,
+        branch: null,
+        headSha: null,
+        prNumber: null,
+        engineCommit: null,
+        agentRuns: [],
+      })}\n`;
+    writeFileSync(
+      join(base, "work", "units.jsonl"),
+      line("1", "2026-10-16T10:00:00.000Z", "failed") +
+        line("2", "2026-10-16T11:00:00.000Z", "completed") +
+        line("3", "2026-10-16T11:30:00.000Z", "failed"),
+    );
+    const sources: HistorySource[] = [{ cell: "/etc/phoebe#work", dir: join(base, "work") }];
+    const h = await harness({ history: (query) => queryHistory(sources, query) });
+    const token = await paired(h, ["read"]);
+
+    const response = await fetch(
+      `${h.url}/api/history?outcome=failed&cell=${encodeURIComponent("/etc/phoebe#work")}&limit=1`,
+      { headers: auth(token) },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const page = (await response.json()) as HistoryPage;
+    expect(page).toEqual(
+      queryHistory(
+        sources,
+        parseHistoryQuery({ outcome: "failed", cell: "/etc/phoebe#work", limit: "1" }),
+      ),
+    );
+    expect(page.records.map((record) => record.unit.id)).toEqual(["3"]);
+    expect(page.summary.units).toBe(2);
+    expect(page.retained).toEqual({ "/etc/phoebe#work": "2026-10-16T10:00:00.000Z" });
+
+    const next = (await (
+      await fetch(
+        `${h.url}/api/history?outcome=failed&limit=1&before=${encodeURIComponent(page.nextBefore!)}`,
+        { headers: auth(token) },
+      )
+    ).json()) as HistoryPage;
+    expect(next.records.map((record) => record.unit.id)).toEqual(["1"]);
+    expect(next.nextBefore).toBeNull();
+  });
+
+  test("GET /api/history refuses a session without read, a bad filter, and is 404 where no history is served", async () => {
+    const h = await harness({ history: (query) => queryHistory([], query) });
+    expect((await fetch(`${h.url}/api/history`)).status).toBe(401);
+    const operateOnly = await paired(h, ["operate"]);
+    const forbidden = await fetch(`${h.url}/api/history`, { headers: auth(operateOnly) });
+    expect(forbidden.status).toBe(403);
+    expect(await forbidden.json()).toEqual({ error: "forbidden", needs: "read" });
+
+    const token = await paired(h, ["read"], "Reader");
+    const bad = await fetch(`${h.url}/api/history?outcome=skipped`, { headers: auth(token) });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("bad-request");
+    expect(
+      (await fetch(`${h.url}/api/history`, { method: "POST", headers: auth(token) })).status,
+    ).toBe(405);
+
+    const old = await harness();
+    const oldToken = await paired(old, ["read"]);
+    const missing = await fetch(`${old.url}/api/history`, { headers: auth(oldToken) });
+    expect(missing.status).toBe(404);
   });
 
   test("GET /api/session is this session's own facts", async () => {

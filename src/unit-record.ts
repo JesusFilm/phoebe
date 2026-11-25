@@ -163,6 +163,13 @@ export type UnitHistoryDeps = {
   engineCommit: string | null;
   log?: (line: string) => void;
   append?: (path: string, line: string) => void;
+  /**
+   * A record landed. The engine tells its supervisor here (#929), so the
+   * deployment report's history summary moves with the unit rather than on the
+   * next hourly recompute. Not called when the append failed: there is nothing
+   * new to read.
+   */
+  onAppended?: () => void;
 };
 
 /**
@@ -189,6 +196,8 @@ export function createRecordUnit(deps: UnitHistoryDeps): RecordUnit {
         `${unitTag(deps.deployment, deps.tenant, deps.pipeline)} could not append to ` +
           `${UNITS_FILE} for ${input.unit.kind} ${input.unit.id} — ${String(error)}`,
       );
+      return;
     }
+    deps.onAppended?.();
   };
 }

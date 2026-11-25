@@ -2888,6 +2888,8 @@ export async function runEngine(
     pipeline: pipelineName,
     unitsPath: unitsPathFor(config.paths.stateDir, pipelineName),
     engineCommit: readEngineCommit(moduleDirOf(import.meta.url)),
+    // The report's history summary moves with the unit, not on the hourly tick (#929).
+    ...(reportClient !== null ? { onAppended: () => reportClient.record() } : {}),
   });
 
   const drain = installDrainSignal();

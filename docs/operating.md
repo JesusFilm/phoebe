@@ -218,6 +218,41 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 A tenant running more than one pipeline is [`pipelines.md`](pipelines.md); there is no
 per-pipeline stop verb, because hot `disabled: true` is the stop.
 
+## Reading unit history: `phoebe history`
+
+Every pipeline records each unit it settles in `state/<pipeline>/units.jsonl`
+([`pipelines.md`](pipelines.md)). `phoebe history` lists those records, newest
+first:
+
+```sh
+phoebe history
+phoebe history --outcome failed --since 2026-11-01
+phoebe history --tenant acme/widget --pipeline work --kind issues --json
+```
+
+The filters are `--tenant <owner/repo>`, `--pipeline <name>`, `--cell <id>`
+(the deployment report's `<tenantId>#<pipeline>`), `--kind`, `--outcome`
+(`completed`, `failed`, `timed-out` or `abandoned`), `--provider`, `--model`
+and `--since <date>`. They combine with AND. A page holds 50 units by default;
+`--limit` raises that to at most 200, and a larger number is cut to 200. When
+more units match, the footer prints the `--before <cursor>` that fetches the
+next page.
+
+The table shows each unit's age, pipeline, kind and number, outcome, model,
+duration, cost and tokens in/out. Cost reads `$0.42` for API spend,
+`$0.42 est.` for the list-price figure Claude reports under a subscription, and
+`—` when the provider reported none. A `+` after the tokens means a run ended
+before it reported its final usage, so the numbers are a lower bound. The footer
+totals everything that matched, with API spend and estimates kept apart, and
+says how far back each pipeline's history reaches. Older units have rotated
+out.
+
+`--json` prints one `HistoryPage` object (`records`, `summary`, `nextBefore`,
+`retained`), the same object `GET /api/history` returns
+([`remote.md`](remote.md)). Inside the container the verb reads the files
+directly, so it works while the bootstrapper is down. On the host it runs
+itself in the container with the same flags.
+
 ## Picking issues to benchmark: `phoebe bench select`
 
 `phoebe bench select` builds a suite of fixtures for the offline replay
@@ -564,6 +599,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
 | See the deployment from another machine       | Add a `remote` block, `phoebe stop`, `phoebe start`, then `phoebe pair` and paste the link into the companion ([`remote.md`](remote.md)).                                       |
 | See who is paired, or end a session           | `phoebe sessions`; `phoebe sessions revoke <id>` or `--all`.                                                                                                                    |
+| See which units ran, failed, or cost the most | `phoebe history`, with `--outcome failed`, `--since <date>` or `--json`.                                                                                                        |
 | Pick solved issues to benchmark against       | `phoebe bench select --issues 12,34`, or `--since <date> --limit <n>`, to stdout as JSON.                                                                                       |
 
 ## Running many repos in one container
@@ -607,6 +643,7 @@ and you get the same answer either way:
       held — missing repoSlug in phoebe.config.ts
         work  not supervised  (from disk)
               idle
+[phoebe] history       24h  31 units, 3 failed, 1 timed out  $8.20 api + $4.10 est.
 [phoebe] doctor        0 fail, 1 warn — 4h ago (schedule)
 ```
 
@@ -614,9 +651,18 @@ Top to bottom is priority order: read down until something looks wrong and stop.
 The bootstrapper line names the engine ref and the commit actually running, says
 `quarantined (avoiding <sha>)` when the crash-loop guard has put the deployment
 on last-known-good, says `reconciling (config|ref)` while a relaunch is under
-way, and ends with the age of the report itself. The doctor line is the last
-run's counts and
-its age, or `never run`; `--verbose` inlines the whole doctor table under it.
+way, and ends with the age of the report itself. The history line counts the
+units every pipeline started in the last 24 hours, names the ones that failed,
+timed out or were abandoned, and gives their cost by basis. `api` is what a key
+was billed. `est.` is the list price Claude reports under a subscription,
+which nobody paid. The line prints the two side by side and never adds them. A
+day whose units reported no cost at all reads `tokens only`. The bootstrapper
+sums each pipeline's unit history into the report at boot, when a unit
+settles, and once an hour. `--json` carries the same summary for each pipeline
+and for the fleet, with a 7-day window beside the 24-hour one. History never
+trips `--check`. The doctor line is the last run's counts and its age, or
+`never run`. `--verbose` adds a history line under each pipeline and inlines
+the whole doctor table under the doctor line.
 
 **Two lines per pipeline.** The first is the _process_: what the bootstrapper's
 child is doing — running, draining, exited with its code or signal — plus its

@@ -33,6 +33,7 @@ import type {
 } from "../src/contracts/deployment.ts";
 import { REMOTE_PROTOCOL, type RemoteDescriptor } from "../src/contracts/remote-protocol.ts";
 import { readRemoteUrl } from "../src/remote-url.ts";
+import { historySourcesOf, queryHistory } from "../src/history.ts";
 import { readOrMintDeploymentId } from "./deployment-id.ts";
 import { deploymentReportPath } from "./deployment-report.ts";
 import type { DeploymentState } from "./deployment-state.ts";
@@ -198,6 +199,8 @@ export function prepareRemote(options: PrepareRemoteOptions): PreparedRemote {
               listeners.add(listener);
               return () => listeners.delete(listener);
             },
+            history: (query) =>
+              queryHistory(historySourcesOf(deployment.latest(), options.dataBase), query),
             ...(output === undefined ? {} : { logs: output }),
             verbs: v,
             now,
