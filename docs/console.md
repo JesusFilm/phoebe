@@ -307,6 +307,28 @@ apart.
 A deployment whose phoebe-agent predates unit history says it is too old,
 instead of showing an empty table.
 
+A chart icon sits beside the settings gear at the foot of the rail. Rest the
+pointer on it for half a second and a card opens with totals across every
+deployment the console knows: API spend, the subscription estimate, units, and
+units that did not complete, for the last 24 hours or the last 7 days, with one
+line per deployment. The card stays open while the pointer moves onto it, and
+closes 300 ms after the pointer leaves both.
+
+Clicking the icon opens the fleet stats page, at `#/stats`. It has the same four
+figures as tiles, a chart of units per day over the week, a table by deployment,
+a table by model, and the five most expensive units. Each of those units opens
+the drawer the History tab uses. Choosing an install on the rail leaves the page.
+
+The totals and the table by deployment add up each deployment's report summary.
+The console never recomputes them. A deployment whose report has no summary runs
+an engine from before unit history. It is listed as too old and left out of the
+totals, because counting it as zero would say it ran nothing. A folder on this
+machine that is also paired is counted once. The chart, the table by model and
+the most expensive units need the records themselves, so the page reads each
+deployment's history for the window when it opens, up to 1,000 units each. API
+spend and the subscription estimate sit side by side on the card, the tiles and
+every table, and are never added together.
+
 ## Alerting
 
 Nobody watches a window. The companion raises one notification when an install
@@ -378,8 +400,8 @@ machine that holds the folder.
 
 ## Not here yet
 
-The unit history overview card, the per-pipeline breakdown and the fleet stats
-page, and a mobile companion, which will scan the same QR and speak the same
-API as the desktop one. Recorded against
+The unit history overview card and the per-pipeline breakdown, and a mobile
+companion, which will scan the same QR and speak the same API as the desktop
+one. Recorded against
 [the console map](https://github.com/JesusFilm/phoebe/issues/497) and
 [the remote-access map](https://github.com/JesusFilm/phoebe/issues/690).
