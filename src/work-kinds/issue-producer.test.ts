@@ -109,7 +109,9 @@ function buildRun(
     unitLabel: "ready-for-agent",
     listIssues,
   });
-  return (unit, ctx) => kind.run(unit, ctx);
+  return async (unit, ctx) => {
+    await kind.run(unit, ctx);
+  };
 }
 
 // Construct the label-not-found error that isLabelNotFoundError expects:

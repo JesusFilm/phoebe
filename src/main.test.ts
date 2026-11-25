@@ -68,6 +68,7 @@ import {
 import type {
   AnyWorkKindDefinition,
   WorkKindRunCtx,
+  WorkKindRunResult,
   WorkspaceMode,
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
@@ -2893,7 +2894,10 @@ describe("the unit history", () => {
   }
 
   /** A scratch kind whose run is one agent run, then whatever `after` does. */
-  function agentKind(promptFile: string, after: () => void = () => {}): LoadedCustomKind {
+  function agentKind(
+    promptFile: string,
+    after: () => void | WorkKindRunResult = () => {},
+  ): LoadedCustomKind {
     const definition: AnyWorkKindDefinition = {
       name: "nudge",
       oneShotEligible: true,
@@ -2920,7 +2924,7 @@ describe("the unit history", () => {
       },
       run: async (_unit, ctx: WorkKindRunCtx) => {
         await ctx.agent.run();
-        after();
+        return after();
       },
     };
     return { name: "nudge", definition, options: undefined };
@@ -2931,7 +2935,7 @@ describe("the unit history", () => {
     agent: SpawnAgent;
     env?: NodeJS.ProcessEnv;
     config?: Partial<PhoebeUserConfig>;
-    after?: () => void;
+    after?: () => void | WorkKindRunResult;
     github?: GitHubStubOverrides;
   }): Promise<{ records: UnitRecordInput[]; error: unknown }> {
     const dataBase = tenantRoot();
@@ -3003,6 +3007,19 @@ describe("the unit history", () => {
         toolCalls: { Bash: 1 },
       },
     ]);
+  });
+
+  test("a completed unit's summary becomes its record's detail, on one line", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([resultLine], 0),
+      env: { ANTHROPIC_API_KEY: "sk-test" },
+      after: () => ({ summary: "2 proposals filed (#41, #42),\n1 skipped" }),
+    });
+
+    expect(records[0]).toMatchObject({
+      outcome: "completed",
+      detail: "2 proposals filed (#41, #42), 1 skipped",
+    });
   });
 
   test("a subscription token marks Claude's cost as an estimate", async () => {

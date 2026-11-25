@@ -16,7 +16,7 @@ A kind is one registered **definition** — name, prompt, eligibility, reporting
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
 that start new work (`issues`, and `research` for wayfinder research tickets).
-Five more ship as **catalog kinds**, registered only when a tenant declares them:
+Six more ship as **catalog kinds**, registered only when a tenant declares them:
 [`sentry`](#sentry-triage-production-errors-opt-in), which turns production
 errors into agent-ready issues,
 [`dependency-updates`](#dependency-updates-file-dependency-tickets-opt-in), which
@@ -25,7 +25,10 @@ files dependency tickets,
 files the severe advisories among them, and
 [`dependencies`](#dependencies-finish-a-dependency-upgrade-opt-in), which works
 them, and [`skill-updates`](#skill-updates-propose-newer-upstream-skills-opt-in),
-which opens PRs for newer upstream skills. A tenant may register more directly under
+which opens PRs for newer upstream skills, and
+[`observer`](#observer-propose-fixes-for-what-keeps-going-wrong-opt-in), which
+reads unit history and files proposals for what keeps going wrong. A tenant may
+register more directly under
 [`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
 [`configuration.md`](configuration.md); the runtime plumbing is
@@ -1009,6 +1012,90 @@ major.
 The kind never merges. Vendored skills are instructions every agent in the
 repository follows, so a person reads every bump.
 
+## `observer`, propose fixes for what keeps going wrong (opt-in)
+
+Reads the tenant's unit history, finds the problems that keep recurring, and
+files one [proposal](../GLOSSARY.md) per [finding](../GLOSSARY.md) for a person
+to review. It runs in a pipeline of its own:
+
+```ts
+pipelines: {
+  observe: {
+    kinds: {
+      observer: {
+        path: "phoebe-agent/kinds/observer",
+        every: "7d",
+        // lookback: "14d", maxProposals: 3,
+      },
+    },
+  },
+},
+```
+
+| Option         | Default    | Meaning                                                                                      |
+| -------------- | ---------- | -------------------------------------------------------------------------------------------- |
+| `every`        | none       | How long after its last completed run it runs again. Without it the observer never runs.     |
+| `lookback`     | `"14d"`    | How far back a run reads the other pipelines' history.                                       |
+| `mode`         | `"issues"` | Where proposals go. `"issues"` is the only mode today; `"pr"` fails registration.            |
+| `maxProposals` | `3`        | The most new proposals one run files. New evidence added to an open proposal does not count. |
+
+An unknown option fails registration. So does declaring the observer in a
+pipeline that runs any other kind, `work` included, because the observer never
+reads its own pipeline's history. The tuning knobs and `PHOEBE_OBSERVER_*` apply
+as for any kind. The prompt is `kinds/observer/prompt.md` in the engine
+checkout. It needs no credential beyond the container's `gh` one.
+
+**The schedule.** Each poll, the kind reads its own pipeline's
+`units.jsonl` and offers one unit, ref `observer`, once `every` has passed since
+its last completed run. The history is on disk, so a restart inside the window
+waits like any other poll. A failed or timed-out run is tried again an hour
+later, or after `every` if that is shorter.
+
+**A run** reads `state/<pipeline>/units.jsonl` of every other pipeline the
+tenant declares, read-only, and flags each unit that started inside `lookback`
+and failed, timed out, was abandoned or was quarantined. With nothing flagged it
+stops there and spends no agent run. Otherwise one read-only agent run sees the
+flagged units and the proposals already filed, and writes findings to scratch.
+Each finding has a title, the problem, a suggested fix, the units that show it,
+a target (a file such as `AGENTS.md`, or a short slug), and one of four
+categories:
+
+| Category     | Where the fix belongs                               |
+| ------------ | --------------------------------------------------- |
+| `ticket`     | better tickets                                      |
+| `convention` | `AGENTS.md` or a repo-authored skill                |
+| `factory`    | `prompts/` or the governing `phoebe.config.ts`      |
+| `engine`     | Phoebe itself, filed on the tenant's own repository |
+
+The kind checks every finding and files from it. A finding's key is
+`<category>:<target>`:
+
+| What the proposals with that key show                    | What the run does                                  |
+| -------------------------------------------------------- | -------------------------------------------------- |
+| none                                                     | files a new issue                                  |
+| one is open                                              | comments on it, listing the units it does not list |
+| the newest closed as completed                           | files a new issue opening "Regression of #N"       |
+| the newest closed any other way, within the last 90 days | nothing                                            |
+| the newest closed any other way, more than 90 days ago   | files a new issue                                  |
+
+A regression counts only the units that started after the fix closed. Every
+issue is labelled `phoebe:observer`, never the ready label, so Phoebe works one
+only after a person gives it the ready label. Its body carries
+`<!-- phoebe-observer finding=<category>:<target> -->` and a hidden list of the
+units it names. Findings with more units file first, and the rest past
+`maxProposals` are skipped.
+
+The run's summary is the `detail` of its unit record, so `phoebe history` shows
+what it did:
+
+```text
+2 proposals filed (#41, #42), 1 folded into #38, 1 skipped; coverage work 14d, intake 9d
+```
+
+Coverage names each pipeline it read and how far back that history reaches,
+which is less than `lookback` when the pipeline is new or its older units have
+rotated out.
+
 ## Watermarks
 
 Janitors record their progress as **hidden HTML-comment markers** on the PR so
@@ -1020,14 +1107,15 @@ move whatever the marker is keyed on (see the table below) or remove the newest
 matching comment. See [`operating.md`](operating.md#watermark-comments) for the
 operator's view.
 
-| Kind                  | Marker                   | Keyed on                       | Effect                                                                                                                                                                       |
-| --------------------- | ------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `conflicts`           | `phoebe-conflict-fail`   | `prHead` + `mainHead`          | Skip re-fixing until either the PR or the base moves.                                                                                                                        |
-| `checks`              | `phoebe-checks-fail`     | `prHead`                       | Skip re-fixing until the PR head moves.                                                                                                                                      |
-| `reviews`             | `phoebe-reviews-handled` | `latest` activity timestamp    | Only re-run on review activity newer than this.                                                                                                                              |
-| `sentry`              | `phoebe-sentry`          | the Sentry group id            | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)).                           |
-| `dependency-updates`  | `phoebe-dependencies`    | the bundle key and fingerprint | In the filed issue's body and the PR opened from it; read back by one issue search and one PR search per scan ([above](#dependency-updates-file-dependency-tickets-opt-in)). |
-| `dependency-security` | `phoebe-dependencies`    | the bundle key and fingerprint | As for `dependency-updates`; its keys are `<manager>:security:<package>` ([above](#dependency-security-file-security-advisories-opt-in)).                                    |
+| Kind                  | Marker                   | Keyed on                          | Effect                                                                                                                                                                       |
+| --------------------- | ------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `conflicts`           | `phoebe-conflict-fail`   | `prHead` + `mainHead`             | Skip re-fixing until either the PR or the base moves.                                                                                                                        |
+| `checks`              | `phoebe-checks-fail`     | `prHead`                          | Skip re-fixing until the PR head moves.                                                                                                                                      |
+| `reviews`             | `phoebe-reviews-handled` | `latest` activity timestamp       | Only re-run on review activity newer than this.                                                                                                                              |
+| `sentry`              | `phoebe-sentry`          | the Sentry group id               | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)).                           |
+| `dependency-updates`  | `phoebe-dependencies`    | the bundle key and fingerprint    | In the filed issue's body and the PR opened from it; read back by one issue search and one PR search per scan ([above](#dependency-updates-file-dependency-tickets-opt-in)). |
+| `dependency-security` | `phoebe-dependencies`    | the bundle key and fingerprint    | As for `dependency-updates`; its keys are `<manager>:security:<package>` ([above](#dependency-security-file-security-advisories-opt-in)).                                    |
+| `observer`            | `phoebe-observer`        | the finding's category and target | In the proposal's body, not a comment; read back by one search per run across every state ([above](#observer-propose-fixes-for-what-keeps-going-wrong-opt-in)).              |
 
 ## Writing your own kind
 
@@ -1083,7 +1171,7 @@ export default {
   },
   async fetch(ctx) { /* gather this cycle's candidates */ },
   select(gathered, ctx) { /* { unit, skipped, total } */ },
-  async run(unit, ctx) { /* work the unit; throw = failure */ },
+  async run(unit, ctx) { /* work the unit; throw = failure; may return { summary } */ },
 } satisfies WorkKindDefinition<Gathered, Unit>;
 ```
 
@@ -1099,7 +1187,10 @@ engine gathers every kind before selecting any, so a select that re-fetches
 would see a different world than its neighbours (`select` receives `ctx`, but
 must not touch `ctx.github`). **Run** owns every consequence of the unit —
 pushes, comments, watermarks; the engine's interest is limited to success
-(return) vs. failure (throw), the run deadline, and quarantine accounting.
+(return) vs. failure (throw), the run deadline, and quarantine accounting. A
+`run` may resolve with `{ summary: "one line" }`, and that line becomes the
+`detail` of the unit's record in the pipeline's unit history, where a failed
+unit's error text goes. `phoebe history` and the console show it.
 
 ### The unit and its `ref`
 
