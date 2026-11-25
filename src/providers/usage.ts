@@ -210,3 +210,163 @@ export function costBasisFor(
   if (set("ANTHROPIC_AUTH_TOKEN") || set("ANTHROPIC_API_KEY")) return "api";
   return "subscription-estimate";
 }
+
+/**
+ * The name a Cursor `tool_call` line's call goes by: a function call's own
+ * name, else the key that holds the call (`readToolCall` reads as `read`).
+ */
+function cursorToolName(toolCall: Json): string | null {
+  const fn = asObject(toolCall["function"]);
+  if (fn !== null) return stringOrNull(fn["name"]);
+  const key = Object.keys(toolCall)[0];
+  if (key === undefined) return null;
+  return stringOrNull(key.endsWith("ToolCall") ? key.slice(0, -"ToolCall".length) : key);
+}
+
+/**
+ * Cursor's meter. Cursor writes a `type:"usage"` line after each model call
+ * and may repeat the run's total as `usage` on its terminal `result` line,
+ * which also carries `duration_ms`. Its `inputTokens` is already uncached. It
+ * reports no cost and no stop reason beyond `subtype`, and names its model only
+ * on the `init` line, by display name.
+ *
+ * The total on `result` wins when it is there; otherwise the per-call lines
+ * are summed. A run killed before `result` keeps those per-call lines, less
+ * any call still in flight. Turns are the model calls counted.
+ *
+ * Tool calls come from the top-level `tool_call` lines, once per `call_id`.
+ * Cursor's `assistant` lines are not read for tools, so nothing counts twice.
+ */
+export function meterCursorUsage(): UsageMeter {
+  const toolCalls: Record<string, number> = {};
+  const callIds = new Set<string>();
+  const modelCalls = new Map<string, Json>();
+  let anonymousCalls = 0;
+  let model: string | null = null;
+  let result: Json | null = null;
+
+  return {
+    observe(line) {
+      const obj = parseObject(line);
+      if (obj === null) return;
+      const type = obj["type"];
+      if (type === "system" && obj["subtype"] === "init") {
+        model = stringOrNull(obj["model"]) ?? model;
+      } else if (type === "usage") {
+        const usage = asObject(obj["usage"]);
+        if (usage === null) return;
+        const id = stringOrNull(obj["model_call_id"]) ?? `anonymous:${anonymousCalls++}`;
+        modelCalls.set(id, usage);
+      } else if (type === "result") {
+        result = obj;
+      } else if (type === "tool_call") {
+        const toolCall = asObject(obj["tool_call"]);
+        if (toolCall === null) return;
+        const name = cursorToolName(toolCall);
+        if (name === null) return;
+        const callId = stringOrNull(obj["call_id"]);
+        if (callId === null) {
+          if (obj["subtype"] !== "started") return;
+        } else {
+          if (callIds.has(callId)) return;
+          callIds.add(callId);
+        }
+        countToolCall(toolCalls, name);
+      }
+    },
+
+    read() {
+      const total = result === null ? null : asObject(result["usage"]);
+      const rows = total !== null ? [total] : [...modelCalls.values()];
+      return {
+        ...noUsage(),
+        inputTokens: sumField(rows, "inputTokens"),
+        outputTokens: sumField(rows, "outputTokens"),
+        cacheReadTokens: sumField(rows, "cacheReadTokens"),
+        cacheWriteTokens: sumField(rows, "cacheWriteTokens"),
+        reasoningTokens: sumField(rows, "reasoningTokens"),
+        turns: modelCalls.size > 0 ? modelCalls.size : null,
+        providerDurationMs: result === null ? null : numberOrNull(result["duration_ms"]),
+        stopReason: result === null ? null : stringOrNull(result["subtype"]),
+        reportedModels: model === null ? [] : [model],
+        usageComplete: result !== null,
+        toolCalls: { ...toolCalls },
+      };
+    },
+  };
+}
+
+/** The Codex item types that are tool calls; `agent_message`, `reasoning` and `error` are not. */
+const CODEX_TOOL_ITEMS = new Set([
+  "command_execution",
+  "file_change",
+  "mcp_tool_call",
+  "web_search",
+  "collab_tool_call",
+  "todo_list",
+]);
+
+/**
+ * Codex's meter. `codex exec --json` reports usage only on `turn.completed`,
+ * as the thread's running total, so the last one stands. Its `input_tokens`
+ * counts cached tokens too; they are subtracted so `inputTokens` means uncached
+ * input here as it does for Claude and Cursor. Codex reports no cost, duration,
+ * turn count or model.
+ *
+ * A turn that failed, or a run killed mid-turn, writes no `turn.completed`, so
+ * nothing about its tokens survives: its usage is `null` and incomplete.
+ *
+ * Tool calls are the tool items, once per item id, counted under the item type
+ * or, for an MCP call, the tool's own name.
+ */
+export function meterCodexUsage(): UsageMeter {
+  const toolCalls: Record<string, number> = {};
+  const itemIds = new Set<string>();
+  let usage: Json | null = null;
+  let stopReason: string | null = null;
+
+  return {
+    observe(line) {
+      const obj = parseObject(line);
+      if (obj === null) return;
+      const type = obj["type"];
+      if (type === "turn.completed") {
+        usage = asObject(obj["usage"]);
+        stopReason = "completed";
+      } else if (type === "turn.failed") {
+        stopReason = "failed";
+      } else if (type === "item.started" || type === "item.updated" || type === "item.completed") {
+        const item = asObject(obj["item"]);
+        const itemType = item === null ? null : stringOrNull(item["type"]);
+        if (item === null || itemType === null || !CODEX_TOOL_ITEMS.has(itemType)) return;
+        const id = stringOrNull(item["id"]);
+        if (id === null) {
+          if (type !== "item.completed") return;
+        } else {
+          if (itemIds.has(id)) return;
+          itemIds.add(id);
+        }
+        const name =
+          itemType === "mcp_tool_call" ? (stringOrNull(item["tool"]) ?? itemType) : itemType;
+        countToolCall(toolCalls, name);
+      }
+    },
+
+    read() {
+      if (usage === null) return { ...noUsage(), stopReason, toolCalls: { ...toolCalls } };
+      const input = numberOrNull(usage["input_tokens"]);
+      const cached = numberOrNull(usage["cached_input_tokens"]);
+      return {
+        ...noUsage(),
+        inputTokens: input === null ? null : Math.max(input - (cached ?? 0), 0),
+        outputTokens: numberOrNull(usage["output_tokens"]),
+        cacheReadTokens: cached,
+        cacheWriteTokens: numberOrNull(usage["cache_write_input_tokens"]),
+        reasoningTokens: numberOrNull(usage["reasoning_output_tokens"]),
+        stopReason,
+        usageComplete: true,
+        toolCalls: { ...toolCalls },
+      };
+    },
+  };
+}
