@@ -346,6 +346,11 @@ The rule that only selection and dry runs happen on the host — a real work uni
 inside the container.
 _Avoid_: guard, host check
 
+**Agent run**:
+One spawn of a provider CLI inside a work unit. A unit has zero or more: a clean merge
+spawns none, and a kind may spawn several.
+_Avoid_: invocation, session, turn (a provider's model round trip), agent call
+
 **Drain**:
 Finishing every work unit in flight, admitting no new one, and exiting cleanly. How a
 pipeline answers a shutdown or a relaunch.
@@ -418,6 +423,64 @@ One of Phoebe's own install or upgrade faults, sent to a Sentry project under th
 crash-loop quarantine, an operator command throwing. Never a tenant's failure and never
 anything from the work loop.
 _Avoid_: telemetry, error tracking (that is what the `sentry` kind reads), analytics
+
+**Abandoned unit**:
+A work unit a pipeline process started and never settled, because the process ended
+mid-unit. The next process for that pipeline finds it at boot.
+_Avoid_: stranded (that is a claim with no pull request), orphaned, crashed
+
+### History
+
+**Unit record**:
+The history row for one work unit that settled or was abandoned: what ran, on which
+provider and model, how it ended, and the usage and cost its agent runs reported.
+_Avoid_: run record ("run" already names the run budget, a kind's `run`, a doctor run and a
+verb run), log entry, trace, event (that is the rail)
+
+**Unit history**:
+One pipeline's bounded collection of unit records, oldest dropped first. Structured records,
+never logs: the container keeps no logs.
+_Avoid_: run log, log, audit trail
+
+### Observing
+
+**Observer**:
+The catalog kind that looks back over a tenant's unit history and what became of Phoebe's
+pull requests, and proposes fixes for what keeps going wrong. Every change it wants lands
+as a pull request or an issue a person reviews.
+_Avoid_: judge, grader, retro, self-improver
+
+**Finding**:
+One recurring problem the observer names from several units, with its evidence and a
+category that decides where the fix belongs: the ticket, the repo's conventions, the
+factory's config and prompts, or the engine.
+_Avoid_: insight, recommendation, issue (that is GitHub's)
+
+**Proposal**:
+The pull request or issue the observer files for one finding. A finding has at most one
+open proposal; new evidence for it is added to that proposal, not filed again.
+_Avoid_: suggestion, recommendation, observer PR
+
+### Benchmarking
+
+**Fixture**:
+One issue Phoebe already solved, pinned for replay: the issue as it read when the work
+started, the commit the work branched from, and the pull request that was merged.
+_Avoid_: task (that is a work unit's avoided name), case, sample
+
+**Suite**:
+A named set of fixtures, replayed together.
+_Avoid_: dataset, corpus, benchmark set
+
+**Contender**:
+One named combination of provider, model, effort and prompt file that a benchmark compares
+against the others on the same suite.
+_Avoid_: variant, arm (that is a deployment's shape), config, candidate (that is a
+dependency detector's)
+
+**Trial**:
+One contender replaying one fixture once, offline, with no way to write to GitHub.
+_Avoid_: run (overloaded), attempt, replay
 
 ### Console
 
