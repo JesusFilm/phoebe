@@ -461,6 +461,27 @@ The pull request or issue the observer files for one finding. A finding has at m
 open proposal; new evidence for it is added to that proposal, not filed again.
 _Avoid_: suggestion, recommendation, observer PR
 
+### Benchmarking
+
+**Fixture**:
+One issue Phoebe already solved, pinned for replay: the issue as it read when the work
+started, the commit the work branched from, and the pull request that was merged.
+_Avoid_: task (that is a work unit's avoided name), case, sample
+
+**Suite**:
+A named set of fixtures, replayed together.
+_Avoid_: dataset, corpus, benchmark set
+
+**Contender**:
+One named combination of provider, model, effort and prompt file that a benchmark compares
+against the others on the same suite.
+_Avoid_: variant, arm (that is a deployment's shape), config, candidate (that is a
+dependency detector's)
+
+**Trial**:
+One contender replaying one fixture once, offline, with no way to write to GitHub.
+_Avoid_: run (overloaded), attempt, replay
+
 ### Console
 
 **Console**:
