@@ -5,7 +5,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { DEFAULT_PIPELINE_NAME } from "../config-schema.ts";
 import { unitTag } from "../unit-event.ts";
-import type { Provider } from "./types.ts";
+import type { Provider, UsageMeter } from "./types.ts";
 
 export type AgentRunResult = {
   exitCode: number;
@@ -82,6 +82,12 @@ export async function runAgent(opts: {
    * and install output use, so one unit's whole stream greps as one thing.
    */
   unit?: string;
+  /**
+   * Fed every raw stdout line, so the unit record can read what the run
+   * reported (#926) — including a run its budget killed, which the record reads
+   * before this promise settles.
+   */
+  meter?: UsageMeter;
 }): Promise<AgentRunResult> {
   const { provider, model, effort, prompt, cwd, env } = opts;
   const spawn = opts.spawn ?? defaultSpawn;
@@ -130,6 +136,7 @@ export async function runAgent(opts: {
     };
 
     const handleLine = (line: string): void => {
+      opts.meter?.observe(line);
       for (const event of provider.parseStreamLine(line)) {
         if (event.type === "text") {
           logLines(out, event.text);

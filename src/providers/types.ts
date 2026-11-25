@@ -5,6 +5,7 @@
 // no session capture, no interactive mode.
 
 import type { ProviderName } from "../config-schema.ts";
+import type { AgentRunUsage } from "../contracts/unit-record.ts";
 
 /** A ready-to-spawn CLI invocation. `argv[0]` is the binary; no shell involved. */
 export type AgentCommand = {
@@ -29,4 +30,20 @@ export type Provider = {
    */
   buildCommand(opts: { prompt: string; model: string; effort?: string }): AgentCommand;
   parseStreamLine(line: string): AgentEvent[];
+  /**
+   * A fresh meter for one run. Absent for a provider whose usage Phoebe does not
+   * read yet: its runs record `null` usage, marked incomplete.
+   */
+  meterUsage?(): UsageMeter;
+};
+
+/**
+ * Reads the usage a provider CLI reports out of its stdout stream (#926). Fed
+ * every raw line as it arrives, and read whenever the unit settles — which, for
+ * a run its budget killed, is before the child has exited. So `read` answers
+ * with whatever has arrived so far, at any moment.
+ */
+export type UsageMeter = {
+  observe(line: string): void;
+  read(): AgentRunUsage;
 };

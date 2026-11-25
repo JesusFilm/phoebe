@@ -229,7 +229,11 @@ Two pipelines are two processes over one tenant's clone and one `state/` directo
 Ownership is partitioned rather than locked. Each thing on disk has exactly one
 writer, and nothing needs electing.
 
-`state/<pipeline>/status.json` is the pipeline's alone. Stdout lines are tagged
+`state/<pipeline>/status.json` is the pipeline's alone, and so is its unit history
+beside it, `units.jsonl`: one line per unit that completed, failed or timed out, with
+the tokens, cost and tool calls its agent runs reported. Past 1 MiB that file is
+renamed over `units.1.jsonl` and a new one started, so a pipeline keeps about 2 MiB
+of history and no more. Stdout lines are tagged
 `[<deployment>:<owner>/<repo>:<pipeline>]`, `work` included, so match it as a prefix and
 not as a fixed string. The four tracker sweeps are scoped to the kinds the pipeline
 schedules, so two pipelines cover every object exactly once and a pipeline scheduling none of
