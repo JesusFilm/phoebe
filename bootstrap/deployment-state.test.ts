@@ -271,6 +271,9 @@ describe("the pass rail", () => {
           unit: { kind: "issue", id: "1" },
           startedAt: "2026-05-05T00:00:00.000Z",
           runBudgetMs: 60_000,
+          provider: null,
+          model: null,
+          effort: null,
         },
       ]),
     });
@@ -294,6 +297,9 @@ describe("the wedged verdict the fleet publishes", () => {
           unit: { kind: "issue", id: "1" },
           startedAt: "2026-05-05T00:00:00.000Z",
           runBudgetMs: 60_000,
+          provider: null,
+          model: null,
+          effort: null,
         },
       ]),
     });

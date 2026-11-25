@@ -40,7 +40,14 @@ function writeSnapshot(pipeline: string, fields: Partial<StatusSnapshot> = {}): 
 }
 
 function inFlight(id: string, startedAt: string, runBudgetMs: number | null) {
-  return { unit: { kind: "issues", id }, startedAt, runBudgetMs };
+  return {
+    unit: { kind: "issues", id },
+    startedAt,
+    runBudgetMs,
+    provider: null,
+    model: null,
+    effort: null,
+  };
 }
 
 const WORK_ROW: PipelineFacts = {
