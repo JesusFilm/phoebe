@@ -8,7 +8,7 @@
 //
 // `v` moves only when an existing reader would misread a report.
 
-import type { BenchContender, BenchRunConfig } from "./bench.ts";
+import type { BenchContender, BenchJudge, BenchRunConfig, BenchVerdict } from "./bench.ts";
 
 /**
  * How many of a contender's trials passed one gate. `of` counts every trial the
@@ -20,6 +20,25 @@ export type BenchGateRate = {
   passed: number;
   of: number;
   rate: number | null;
+};
+
+/**
+ * How a contender's trials with commits were judged: one count per verdict,
+ * and `unjudged` for the trials with commits the judge gave no verdict on.
+ */
+export type BenchVerdictCounts = Record<BenchVerdict, number> & { unjudged: number };
+
+/**
+ * What the judge itself spent across the run. Never part of any contender's
+ * row, so it cannot skew the comparison.
+ */
+export type BenchJudgeUsage = BenchJudge & {
+  /** Judge runs started. */
+  runs: number;
+  /** Input, output and cache tokens across them; `null` when none reported any. */
+  tokens: number | null;
+  apiCostUsd: number | null;
+  subscriptionEstimateUsd: number | null;
 };
 
 /** One contender's results across every fixture and repeat. */
@@ -45,6 +64,8 @@ export type BenchReportRow = {
   apiCostUsd: number | null;
   /** Total list-price figure the provider reported under a subscription; `null` when none did. */
   subscriptionEstimateUsd: number | null;
+  /** `null` when the run had no judge. */
+  verdicts: BenchVerdictCounts | null;
 };
 
 /** `bench/<runId>/report.json`. */
@@ -68,4 +89,6 @@ export type BenchReport = {
   outcomes: { completed: number; failed: number; timedOut: number; noChange: number };
   /** One per contender, in the order the bench config lists them. */
   contenders: BenchReportRow[];
+  /** The judge and what it spent; `null` when the run had no judge. */
+  judge: BenchJudgeUsage | null;
 };
