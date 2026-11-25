@@ -164,6 +164,17 @@ describe("countToolCall", () => {
     expect(counts["tool0"]).toBe(2);
     expect(counts["other"]).toBe(4);
   });
+
+  test("counts names that collide with Object.prototype members", () => {
+    const counts: Record<string, number> = {};
+    countToolCall(counts, "constructor");
+    countToolCall(counts, "__proto__");
+    countToolCall(counts, "__proto__");
+
+    expect(Object.getOwnPropertyDescriptor(counts, "constructor")?.value).toBe(1);
+    expect(Object.getOwnPropertyDescriptor(counts, "__proto__")?.value).toBe(2);
+    expect(Object.getPrototypeOf(counts)).toBe(Object.prototype);
+  });
 });
 
 describe("costBasisFor", () => {

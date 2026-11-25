@@ -36,13 +36,18 @@ export function noUsage(): AgentRunUsage {
  * that calls a hundred distinct MCP tools still writes a bounded record.
  */
 export function countToolCall(counts: Record<string, number>, name: string): void {
-  if (Object.hasOwn(counts, name)) {
-    counts[name] = (counts[name] ?? 0) + 1;
-    return;
-  }
+  const bump = (key: string): void => {
+    const current = Object.hasOwn(counts, key) ? (counts[key] ?? 0) : 0;
+    Object.defineProperty(counts, key, {
+      value: current + 1,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  };
+  if (Object.hasOwn(counts, name)) return bump(name);
   const named = Object.keys(counts).filter((key) => key !== OTHER_TOOL_CALLS).length;
-  const key = named < TOOL_CALL_NAMES_MAX ? name : OTHER_TOOL_CALLS;
-  counts[key] = (counts[key] ?? 0) + 1;
+  bump(named < TOOL_CALL_NAMES_MAX ? name : OTHER_TOOL_CALLS);
 }
 
 type Json = Record<string, unknown>;

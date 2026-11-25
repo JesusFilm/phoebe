@@ -743,6 +743,7 @@ export function createEngine(options: EngineOptions): Engine {
     // stranded-unit sweep detects and counts. PR-shaped units do not, so they
     // are counted here on timeout.
     if (target.objectType === "issue") return false;
+    let quarantineLabelled = false;
     try {
       // Phoebe's own login, resolved per write rather than cached: there is
       // deliberately no placeholder for an unresolved login (`""` would be a
@@ -762,6 +763,7 @@ export function createEngine(options: EngineOptions): Engine {
       github.postUnitComment(target, buildUnitTimeoutMarker(count));
       if (quarantine) {
         addUnitLabelCreatingIfMissing(github, target, quarantineLabelOf(), (line) => log.say(line));
+        quarantineLabelled = true;
         github.postUnitComment(
           target,
           buildQuarantineComment({
@@ -783,7 +785,7 @@ export function createEngine(options: EngineOptions): Engine {
         `Could not record timeout toward quarantine for ${ref.kind} ${ref.id} — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
-      return false;
+      return quarantineLabelled;
     }
   }
 
