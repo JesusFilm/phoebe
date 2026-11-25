@@ -73,7 +73,12 @@ import type {
 } from "./work-kinds/definition.ts";
 import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
 import type { AgentChild, SpawnAgent } from "./providers/run-agent.ts";
-import { promptShaOf, type UnitRecordInput } from "./unit-record.ts";
+import {
+  abandonedRecord,
+  promptShaOf,
+  type RecordUnit,
+  type UnitRecordInput,
+} from "./unit-record.ts";
 import { RunTimeoutError } from "./run-timeout.ts";
 
 // ---------------------------------------------------------------------------
@@ -3049,18 +3054,125 @@ describe("the unit history", () => {
     expect(records[0]).toMatchObject({ outcome: "failed", detail: "push rejected" });
   });
 
-  test("a non-Claude run records no usage rather than zeros", async () => {
+  /** Cursor's per-call usage line and terminal result, as its bundle writes them (#915). */
+  const cursorUsageLine = JSON.stringify({
+    type: "usage",
+    subtype: "model_call",
+    model_call_id: "mc_1",
+    usage: { inputTokens: 12, outputTokens: 30, cacheReadTokens: 900, cacheWriteTokens: 40 },
+  });
+  const cursorToolLine = JSON.stringify({
+    type: "tool_call",
+    subtype: "started",
+    call_id: "call_1",
+    tool_call: { readToolCall: { args: { path: "README.md" } } },
+  });
+  const cursorResultLine = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    duration_ms: 3100,
+    result: "done",
+    usage: { inputTokens: 12, outputTokens: 30, cacheReadTokens: 900, cacheWriteTokens: 40 },
+  });
+
+  /** A Codex command item and the turn total it reports (#915). */
+  const codexToolLine = JSON.stringify({
+    type: "item.started",
+    item: { id: "item_0", type: "command_execution", command: "ls" },
+  });
+  const codexTurnLine = JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 24763,
+      cached_input_tokens: 24448,
+      cache_write_input_tokens: 0,
+      output_tokens: 122,
+      reasoning_output_tokens: 0,
+    },
+  });
+
+  /** A unit killed by a 20 ms budget, for the timeout cases. */
+  const killedBy = (agent: string) => ({
+    env: { PHOEBE_AGENT: agent, PHOEBE_RUN_TIMEOUT_MS: "20" },
+    github: {
+      prTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "sha:abc" }),
+      postUnitComment: () => {},
+    },
+  });
+
+  test("a Cursor run records its tokens and duration, with no cost", async () => {
     const { records } = await unitRecords({
-      agent: scriptedAgent([resultLine], 0),
+      agent: scriptedAgent([cursorUsageLine, cursorToolLine, cursorResultLine], 0),
+      env: { PHOEBE_AGENT: "cursor" },
+    });
+
+    expect(records[0]?.provider).toBe("cursor");
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 30,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 40,
+      providerDurationMs: 3100,
+      costUsd: null,
+      costBasis: null,
+      usageComplete: true,
+      toolCalls: { read: 1 },
+    });
+  });
+
+  test("a Cursor run its budget kills keeps its per-call usage, marked incomplete", async () => {
+    const { records, error } = await unitRecords({
+      agent: scriptedAgent([cursorUsageLine, cursorToolLine], null),
+      ...killedBy("cursor"),
+    });
+
+    expect(error).toBeInstanceOf(RunTimeoutError);
+    expect(records[0]).toMatchObject({ outcome: "timed-out", provider: "cursor" });
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      exitCode: null,
+      inputTokens: 12,
+      outputTokens: 30,
+      cacheReadTokens: 900,
+      costUsd: null,
+      usageComplete: false,
+      toolCalls: { read: 1 },
+    });
+  });
+
+  test("a Codex run records turn.completed with cached tokens out of the input", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([codexToolLine, codexTurnLine], 0),
       env: { PHOEBE_AGENT: "codex" },
     });
 
     expect(records[0]?.provider).toBe("codex");
     expect(records[0]?.agentRuns[0]).toMatchObject({
+      inputTokens: 315,
+      outputTokens: 122,
+      cacheReadTokens: 24448,
+      cacheWriteTokens: 0,
+      costUsd: null,
+      costBasis: null,
+      usageComplete: true,
+      toolCalls: { command_execution: 1 },
+    });
+  });
+
+  test("a Codex run its budget kills records no usage, marked incomplete", async () => {
+    const { records, error } = await unitRecords({
+      agent: scriptedAgent([codexToolLine], null),
+      ...killedBy("codex"),
+    });
+
+    expect(error).toBeInstanceOf(RunTimeoutError);
+    expect(records[0]).toMatchObject({ outcome: "timed-out", provider: "codex" });
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      exitCode: null,
       inputTokens: null,
+      outputTokens: null,
       costUsd: null,
       usageComplete: false,
-      toolCalls: {},
+      toolCalls: { command_execution: 1 },
     });
   });
 });
@@ -3572,6 +3684,8 @@ function concurrentEngine(opts: {
   env?: NodeJS.ProcessEnv;
   /** The `status.json` this engine boots on — what a previous child left (#670). */
   inherited?: StatusSnapshot;
+  /** The unit history writer, wired the way the entry point wires it (#928). */
+  recordUnit?: RecordUnit;
 }): {
   drain: ReturnType<typeof manualDrain>;
   lines: string[];
@@ -3623,7 +3737,10 @@ function concurrentEngine(opts: {
     credentialClient: opts.credentialClient ?? null,
     reportClient: opts.reportClient ?? null,
     emitUnitEvent: createEmitUnitEvent(snapshotWriter),
-    forgetInherited: createForgetInherited(snapshotWriter),
+    forgetInherited: createForgetInherited(snapshotWriter, (abandoned) =>
+      opts.recordUnit?.(abandonedRecord(abandoned)),
+    ),
+    ...(opts.recordUnit !== undefined ? { recordUnit: opts.recordUnit } : {}),
     run: {
       runOnce: false,
       dryRun: false,
@@ -3697,7 +3814,7 @@ describe("the deployment report's rail", () => {
 // a unit on that unit's own settling event. So the file a new child boots on can
 // claim work nobody is doing — and until this, kept claiming it for good.
 describe("a snapshot inherited from a child that is gone", () => {
-  const strandedConflicts: StatusSnapshot = {
+  const abandonedConflicts: StatusSnapshot = {
     tenant: "acme/widget",
     pipeline: "work",
     currentUnits: [
@@ -3705,6 +3822,9 @@ describe("a snapshot inherited from a child that is gone", () => {
         unit: { kind: "conflicts", id: "pr:565" },
         startedAt: "2026-07-01T18:01:06.007Z",
         runBudgetMs: 2_700_000,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: "high",
       },
     ],
     waitingForSlot: false,
@@ -3713,13 +3833,13 @@ describe("a snapshot inherited from a child that is gone", () => {
     updatedAt: "2026-08-18T03:12:17.540Z",
   };
 
-  test("the stranded unit is gone before the first pass, and the log names it", async () => {
+  test("the abandoned unit is gone before the first pass, and the log names it", async () => {
     const gated = gatedKind({ refs: [] });
     const reported: StatusSnapshot[] = [];
     const engine = concurrentEngine({
       kinds: [gated],
       concurrency: 1,
-      inherited: strandedConflicts,
+      inherited: abandonedConflicts,
       reportClient: {
         pass: () => {},
         snapshot: (snapshot) => reported.push(snapshot),
@@ -3741,12 +3861,71 @@ describe("a snapshot inherited from a child that is gone", () => {
     await loop;
   });
 
+  // #928: killed mid-unit and restarted, the pipeline's history says so. The
+  // first engine admits a unit and never settles it; the second boots on the
+  // snapshot it left.
+  test("a unit the killed child was running becomes one abandoned record", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const first = concurrentEngine({
+      kinds: [gated],
+      concurrency: 1,
+      env: { PHOEBE_MODEL: "claude-opus-5-5", PHOEBE_EFFORT: "high" },
+    });
+    const firstLoop = first.loop();
+    await settle();
+    const left = first.status();
+    const running = left!.currentUnits[0]!;
+    expect(left?.currentUnits).toHaveLength(1);
+    expect(running).toMatchObject({
+      unit: { id: "u:1" },
+      provider: "claude",
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+
+    const records: UnitRecordInput[] = [];
+    const second = concurrentEngine({
+      kinds: [gatedKind({ refs: [] })],
+      concurrency: 1,
+      inherited: left!,
+      recordUnit: (record) => records.push(record),
+    });
+    const loop = second.loop();
+    await settle();
+
+    expect(records).toEqual([
+      {
+        unit: running.unit,
+        outcome: "abandoned",
+        quarantined: false,
+        detail: null,
+        startedAt: running.startedAt,
+        settledAt: null,
+        durationMs: null,
+        runBudgetMs: running.runBudgetMs,
+        provider: running.provider,
+        model: running.model,
+        effort: running.effort,
+        branch: null,
+        headSha: null,
+        prNumber: null,
+        agentRuns: [],
+      },
+    ]);
+
+    second.drain.request();
+    await loop;
+    first.drain.request();
+    await gated.release("u:1");
+    await firstLoop;
+  });
+
   test("a unit this child starts is still listed as in flight", async () => {
     const gated = gatedKind({ refs: [1] });
     const engine = concurrentEngine({
       kinds: [gated],
       concurrency: 1,
-      inherited: strandedConflicts,
+      inherited: abandonedConflicts,
     });
     const loop = engine.loop();
     await settle();
@@ -3763,7 +3942,7 @@ describe("a snapshot inherited from a child that is gone", () => {
   test("a dry run leaves the snapshot alone", async () => {
     // `--dry-run` is how an agent previews selection from inside the container,
     // against the same state dir, while the real child has a unit running. That
-    // unit is not stranded, and a preview must not say it is.
+    // unit is not abandoned, and a preview must not say it is.
     let calls = 0;
     await runCycle({
       config: { workOrder: ["issues"] },

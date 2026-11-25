@@ -354,7 +354,14 @@ describe("the two lines per pipeline", () => {
             tenant: "acme/widget",
             pipeline: "work",
             currentUnits: [
-              { unit: { kind: "issues", id: "12" }, startedAt: MINUTES_AGO(5), runBudgetMs: null },
+              {
+                unit: { kind: "issues", id: "12" },
+                startedAt: MINUTES_AGO(5),
+                runBudgetMs: null,
+                provider: null,
+                model: null,
+                effort: null,
+              },
             ],
             waitingForSlot: false,
             lastError: null,

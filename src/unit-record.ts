@@ -1,6 +1,6 @@
 // Unit history (#926, decisions in #917): one unit record per settled work unit,
 // appended to `state/<pipeline>/units.jsonl` beside the pipeline's
-// `status.json`.
+// `status.json`, and one per abandoned unit the next process finds at boot (#928).
 //
 // #73 made the container log-stateless, and this does not undo it: a record is a
 // bounded row of facts, not a log line, and no transcript or raw payload is ever
@@ -25,8 +25,7 @@ import {
 } from "./contracts/unit-record.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import type { UsageMeter } from "./providers/types.ts";
-import { noUsage } from "./providers/usage.ts";
-import { unitTag } from "./unit-event.ts";
+import { unitTag, type CurrentUnit } from "./unit-event.ts";
 
 /** History filename inside a pipeline's own dir under `state/`. */
 export const UNITS_FILE = "units.jsonl";
@@ -99,7 +98,7 @@ export type AgentRunTrack = {
   promptSha: string;
   /** What a cost figure from this run would be, from its credential. */
   costBasis: CostBasis | null;
-  meter: UsageMeter | null;
+  meter: UsageMeter;
   /** Set when the child exits; `null` while it runs. */
   endedAt: Date | null;
   exitCode: number | null;
@@ -111,7 +110,7 @@ export type AgentRunTrack = {
  * whatever its meter says, and its duration runs to `now`.
  */
 export function agentRunRecord(track: AgentRunTrack, now: Date): AgentRunRecord {
-  const usage = track.meter?.read() ?? noUsage();
+  const usage = track.meter.read();
   const end = track.endedAt ?? now;
   return {
     startedAt: track.startedAt.toISOString(),
@@ -128,6 +127,31 @@ export function agentRunRecord(track: AgentRunTrack, now: Date): AgentRunRecord 
 export type UnitRecordInput = Omit<UnitRecord, "v" | "tenant" | "pipeline" | "engineCommit">;
 
 export type RecordUnit = (record: UnitRecordInput) => void;
+
+/**
+ * The record of an abandoned unit (#928): one a previous process started and
+ * never settled, found in the snapshot at boot. All that survives is what the
+ * snapshot held, so it has no settle time, no duration and no agent runs.
+ */
+export function abandonedRecord(current: CurrentUnit): UnitRecordInput {
+  return {
+    unit: current.unit,
+    outcome: "abandoned",
+    quarantined: false,
+    detail: null,
+    startedAt: current.startedAt,
+    settledAt: null,
+    durationMs: null,
+    runBudgetMs: current.runBudgetMs,
+    provider: current.provider,
+    model: current.model,
+    effort: current.effort,
+    branch: null,
+    headSha: null,
+    prNumber: null,
+    agentRuns: [],
+  };
+}
 
 /** What one pipeline's history writer is built from. */
 export type UnitHistoryDeps = {

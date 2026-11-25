@@ -106,6 +106,7 @@ import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
 import { runAgent, type SpawnAgent } from "./providers/run-agent.ts";
 import { costBasisFor } from "./providers/usage.ts";
 import {
+  abandonedRecord,
   agentRunRecord,
   createRecordUnit,
   promptShaOf,
@@ -573,6 +574,21 @@ export function createEngine(options: EngineOptions): Engine {
       model: selection.model,
       effort: selection.effort,
     };
+  }
+
+  /**
+   * The provider, model and effort a `started` event carries into the snapshot
+   * (#928), so an abandoned unit's record can still name them. A name that does
+   * not resolve leaves them unset here: the unit's own agent run hits the same
+   * error, inside the handling that settles the unit.
+   */
+  function runsOn(picked: PickedWorkUnit): { provider?: string; model?: string; effort?: string } {
+    try {
+      const { provider, model, effort } = selectProvider(picked);
+      return { provider: provider.name, model, ...(effort !== undefined ? { effort } : {}) };
+    } catch {
+      return {};
+    }
   }
 
   const workOrder = validateWorkOrder(config.workOrder, [...registry.keys()]);
@@ -1375,11 +1391,12 @@ export function createEngine(options: EngineOptions): Engine {
     // propagating `RunTimeoutError` at the unit boundary.
     // Tracked on the unit from the moment of spawn, not when the run returns: a
     // unit its budget killed is recorded before its child has exited (#926).
+    const meter = provider.meterUsage();
     const track: AgentRunTrack = {
       startedAt: clock.now(),
       promptSha: promptShaOf(template),
       costBasis: costBasisFor(provider.name, agentEnv),
-      meter: provider.meterUsage?.() ?? null,
+      meter,
       endedAt: null,
       exitCode: null,
     };
@@ -1398,7 +1415,7 @@ export function createEngine(options: EngineOptions): Engine {
         tenant: config.repoSlug,
         pipeline,
         unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
-        ...(track.meter !== null ? { meter: track.meter } : {}),
+        meter,
         ...(options.spawnAgent !== undefined ? { spawn: options.spawnAgent } : {}),
       }));
       track.exitCode = exitCode;
@@ -2254,7 +2271,12 @@ export function createEngine(options: EngineOptions): Engine {
       return "drain";
     }
 
-    emitUnitEvent({ unit: ref, event: "started", runBudgetMs: runTimeoutMsFor(picked.kind) });
+    emitUnitEvent({
+      unit: ref,
+      event: "started",
+      runBudgetMs: runTimeoutMsFor(picked.kind),
+      ...runsOn(picked),
+    });
     const startedAt = clock.now();
     refsInFlight(ref.kind).add(ref.id);
     const key = inFlightKey(ref);
@@ -2420,7 +2442,7 @@ export function createEngine(options: EngineOptions): Engine {
     // --run-once` is a second container on the same data volume, with a
     // supervisor of its own — and clearing there would hide the daemon's live
     // unit from the report for the rest of that unit's run. And on the host no
-    // unit can run, so none can be stranded.
+    // unit can run, so none can be abandoned.
     if (inContainer && !dryRun && !runOnce) options.forgetInherited?.();
 
     // Boot-time login identity cross-check (#346): warn when the resolved login
@@ -2883,7 +2905,12 @@ export async function runEngine(
       credentialClient,
       reportClient,
       emitUnitEvent,
-      forgetInherited: createForgetInherited(snapshotWriter),
+      // Each unit a dead predecessor left in the snapshot becomes one
+      // `abandoned` record in the history (#928). `forgetInherited` never
+      // runs under `--dry-run`, so the record never needs that guard.
+      forgetInherited: createForgetInherited(snapshotWriter, (abandoned) =>
+        recordUnit(abandonedRecord(abandoned)),
+      ),
       ...(dryRun ? {} : { recordUnit }),
       run: { runOnce, dryRun, pollIntervalMs, concurrency },
     });

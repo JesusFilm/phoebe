@@ -1,7 +1,7 @@
 // Observability tests (#73): tagged line grammar, the fixed-size status
 // snapshot fold, and the emit chokepoint (log + snapshot refresh).
 
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
@@ -17,6 +17,7 @@ import {
   statusPathFor,
   unitTag,
   writeStatus,
+  type CurrentUnit,
   type StatusSnapshot,
   type UnitEvent,
 } from "./unit-event.ts";
@@ -74,13 +75,25 @@ describe("statusPathFor", () => {
 describe("applyUnitEvent", () => {
   const base = emptyStatus("acme/widget", "work");
 
-  test("started adds the unit, with its start time and its budget", () => {
-    const s = applyUnitEvent(base, event({ event: "started", runBudgetMs: 1_800_000 }));
+  test("started adds the unit, with its start time, budget, provider, model and effort", () => {
+    const s = applyUnitEvent(
+      base,
+      event({
+        event: "started",
+        runBudgetMs: 1_800_000,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: "high",
+      }),
+    );
     expect(s.currentUnits).toEqual([
       {
         unit: { kind: "issues", id: "42" },
         startedAt: "2026-07-31T12:00:00.000Z",
         runBudgetMs: 1_800_000,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: "high",
       },
     ]);
     expect(s.updatedAt).toBe("2026-07-31T12:00:00.000Z");
@@ -163,6 +176,35 @@ describe("writeStatus (atomic)", () => {
     // The temp file was renamed over the target, not left as debris — a reader
     // never sees a half-written file (the whole point of the temp+rename).
     expect(readdirSync(join(dir, "state"))).toEqual(["status.json"]);
+  });
+
+  // #928: an engine before the provider fields wrote units without them, and
+  // the next boot reads that file to record what it abandoned.
+  test("a unit an older engine wrote reads back with a null provider, model and effort", () => {
+    const path = join(dir, "status.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...emptyStatus("acme/widget", "work"),
+        currentUnits: [
+          {
+            unit: { kind: "issues", id: "9" },
+            startedAt: "2026-09-18T18:02:00.000Z",
+            runBudgetMs: 1,
+          },
+        ],
+      }),
+    );
+    expect(readStatus(path)?.currentUnits).toEqual([
+      {
+        unit: { kind: "issues", id: "9" },
+        startedAt: "2026-09-18T18:02:00.000Z",
+        runBudgetMs: 1,
+        provider: null,
+        model: null,
+        effort: null,
+      },
+    ]);
   });
 });
 
@@ -259,7 +301,7 @@ describe("createEmitUnitEvent", () => {
 // three weeks, across every relaunch, and the report called the pipeline wedged
 // the whole time — including minutes after a fresh boot with nothing running.
 describe("forgetInherited", () => {
-  const stranded: StatusSnapshot = {
+  const abandoned: StatusSnapshot = {
     tenant: "acme/widget",
     pipeline: "work",
     currentUnits: [
@@ -267,6 +309,9 @@ describe("forgetInherited", () => {
         unit: { kind: "conflicts", id: "pr:565" },
         startedAt: "2026-09-18T18:01:06.007Z",
         runBudgetMs: 2_700_000,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: null,
       },
     ],
     waitingForSlot: false,
@@ -277,15 +322,15 @@ describe("forgetInherited", () => {
   const BOOT = "2026-10-09T19:09:38.000Z";
 
   test("a unit a dead child never settled is dropped, and named", () => {
-    const inherited = forgetInherited(stranded, BOOT);
+    const inherited = forgetInherited(abandoned, BOOT);
     expect(inherited?.next.currentUnits).toEqual([]);
-    expect(inherited?.stranded).toEqual(stranded.currentUnits);
+    expect(inherited?.abandoned).toEqual(abandoned.currentUnits);
     // The write is an event like any other: a reader sees the file moved.
     expect(inherited?.next.updatedAt).toBe(BOOT);
   });
 
   test("history is not a claim about now, so it survives", () => {
-    const next = forgetInherited(stranded, BOOT)?.next;
+    const next = forgetInherited(abandoned, BOOT)?.next;
     expect(next?.lastError).toBe("push rejected");
     expect(next?.lastTimeoutAt).toBe("2026-09-01T00:00:00.000Z");
     expect(next?.tenant).toBe("acme/widget");
@@ -296,15 +341,15 @@ describe("forgetInherited", () => {
     // Only `started` clears the flag, so a pass that drained while parked on
     // the broker leaves it set — and a set flag suppresses the `no pass` clause
     // that would notice the next child's loop stopping.
-    const parked = { ...stranded, currentUnits: [], waitingForSlot: true };
+    const parked = { ...abandoned, currentUnits: [], waitingForSlot: true };
     const inherited = forgetInherited(parked, BOOT);
     expect(inherited?.next.waitingForSlot).toBe(false);
     expect(inherited?.wasWaitingForSlot).toBe(true);
-    expect(inherited?.stranded).toEqual([]);
+    expect(inherited?.abandoned).toEqual([]);
   });
 
   test("a snapshot claiming nothing is left alone", () => {
-    const clean = { ...stranded, currentUnits: [] };
+    const clean = { ...abandoned, currentUnits: [] };
     expect(forgetInherited(clean, BOOT)).toBeNull();
     expect(forgetInherited(emptyStatus("acme/widget", "work"), BOOT)).toBeNull();
   });
@@ -319,27 +364,31 @@ describe("createForgetInherited", () => {
   const harness = (found: StatusSnapshot | null, write?: () => void) => {
     const lines: string[] = [];
     const reported: StatusSnapshot[] = [];
+    const recorded: { unit: CurrentUnit; writesBefore: number }[] = [];
     let onDisk = found;
     let writes = 0;
-    const forget = createForgetInherited({
-      deployment: "fleet",
-      tenant: "acme/widget",
-      pipeline: "work",
-      statusPath: "/tmp/state/work/status.json",
-      now: () => "2026-10-09T19:09:38.000Z",
-      log: (line) => lines.push(line),
-      read: () => onDisk,
-      write: (_path, next) => {
-        write?.();
-        writes += 1;
-        onDisk = next;
+    const forget = createForgetInherited(
+      {
+        deployment: "fleet",
+        tenant: "acme/widget",
+        pipeline: "work",
+        statusPath: "/tmp/state/work/status.json",
+        now: () => "2026-10-09T19:09:38.000Z",
+        log: (line) => lines.push(line),
+        read: () => onDisk,
+        write: (_path, next) => {
+          write?.();
+          writes += 1;
+          onDisk = next;
+        },
+        onSnapshot: (snapshot) => reported.push(snapshot),
       },
-      onSnapshot: (snapshot) => reported.push(snapshot),
-    });
-    return { forget, lines, reported, onDisk: () => onDisk, writes: () => writes };
+      (unit) => recorded.push({ unit, writesBefore: writes }),
+    );
+    return { forget, lines, reported, recorded, onDisk: () => onDisk, writes: () => writes };
   };
 
-  test("each stranded unit is logged once, with when it had started", () => {
+  test("each abandoned unit is logged once, with when it had started", () => {
     const h = harness(
       snapshotWith({
         currentUnits: [
@@ -347,11 +396,17 @@ describe("createForgetInherited", () => {
             unit: { kind: "conflicts", id: "pr:565" },
             startedAt: "2026-09-18T18:01:06.007Z",
             runBudgetMs: 2_700_000,
+            provider: "claude",
+            model: "claude-opus-5-5",
+            effort: null,
           },
           {
             unit: { kind: "issues", id: "issue:9" },
             startedAt: "2026-09-18T18:02:00.000Z",
             runBudgetMs: null,
+            provider: "claude",
+            model: "claude-opus-5-5",
+            effort: null,
           },
         ],
       }),
@@ -367,6 +422,42 @@ describe("createForgetInherited", () => {
     ]);
   });
 
+  // #928: the abandoned unit reaches the history, once, and only after the
+  // snapshot no longer claims it — so a boot that could not drop it leaves it
+  // for the next boot instead of recording it twice.
+  test("each abandoned unit is handed over for its record once the snapshot is written", () => {
+    const units = [
+      {
+        unit: { kind: "conflicts", id: "pr:565" },
+        startedAt: "2026-09-18T18:01:06.007Z",
+        runBudgetMs: 2_700_000,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: "high",
+      },
+      {
+        unit: { kind: "issues", id: "issue:9" },
+        startedAt: "2026-09-18T18:02:00.000Z",
+        runBudgetMs: null,
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: null,
+      },
+    ];
+    const h = harness(snapshotWith({ currentUnits: units }));
+    h.forget();
+    expect(h.recorded).toEqual([
+      { unit: units[0], writesBefore: 1 },
+      { unit: units[1], writesBefore: 1 },
+    ]);
+  });
+
+  test("a slot wait alone records nothing", () => {
+    const h = harness(snapshotWith({ waitingForSlot: true }));
+    h.forget();
+    expect(h.recorded).toEqual([]);
+  });
+
   test("the supervisor hears the cleared snapshot, so the report stops saying wedged", () => {
     const h = harness(
       snapshotWith({
@@ -375,6 +466,9 @@ describe("createForgetInherited", () => {
             unit: { kind: "conflicts", id: "pr:565" },
             startedAt: "2026-09-18T18:01:06.007Z",
             runBudgetMs: 1,
+            provider: "claude",
+            model: "claude-opus-5-5",
+            effort: null,
           },
         ],
       }),
@@ -411,6 +505,9 @@ describe("createForgetInherited", () => {
             unit: { kind: "conflicts", id: "pr:565" },
             startedAt: "2026-09-18T18:01:06.007Z",
             runBudgetMs: 1,
+            provider: "claude",
+            model: "claude-opus-5-5",
+            effort: null,
           },
         ],
       }),
@@ -422,8 +519,9 @@ describe("createForgetInherited", () => {
     expect(h.lines).toEqual([
       "[fleet:acme/widget:work] could not clear inherited state from status.json — Error: EROFS",
     ]);
-    // Nothing was written, so nothing is reported as if it had been.
+    // Nothing was written, so nothing is reported or recorded as if it had been.
     expect(h.reported).toEqual([]);
+    expect(h.recorded).toEqual([]);
   });
 });
 
@@ -461,7 +559,14 @@ describe("two pipelines on one tenant", () => {
     expect(readStatus(statusPathFor(stateDir, "work"))).toMatchObject({
       pipeline: "work",
       currentUnits: [
-        { unit: { kind: "issues", id: "7" }, startedAt: expect.any(String), runBudgetMs: null },
+        {
+          unit: { kind: "issues", id: "7" },
+          startedAt: expect.any(String),
+          runBudgetMs: null,
+          provider: null,
+          model: null,
+          effort: null,
+        },
       ],
     });
     expect(readStatus(statusPathFor(stateDir, "intake"))).toMatchObject({

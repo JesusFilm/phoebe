@@ -231,7 +231,10 @@ writer, and nothing needs electing.
 
 `state/<pipeline>/status.json` is the pipeline's alone, and so is its unit history
 beside it, `units.jsonl`: one line per unit that completed, failed or timed out, with
-the tokens, cost and tool calls its agent runs reported. Past 1 MiB that file is
+the tokens, cost and tool calls its agent runs reported. A unit whose process died
+before it settled gets an `abandoned` line from the next process at boot. That line
+names the provider, model and effort the unit started on, and has no settle time,
+no duration and no agent runs. Past 1 MiB that file is
 renamed over `units.1.jsonl` and a new one started, so a pipeline keeps about 2 MiB
 of history and no more. Stdout lines are tagged
 `[<deployment>:<owner>/<repo>:<pipeline>]`, `work` included, so match it as a prefix and
