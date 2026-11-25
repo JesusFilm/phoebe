@@ -1511,3 +1511,119 @@ describe("issue filing surface (sentry kind)", () => {
     );
   });
 });
+
+describe("the bench selection reads (#939)", () => {
+  test("listMergedPrs filters by merge date, newest merge first, and reads only", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify([
+        { number: 1, headRefName: "phoebe/issue-1", mergedAt: "2026-11-01T00:00:00Z" },
+        { number: 2, headRefName: "phoebe/issue-2", mergedAt: "2026-11-03T00:00:00Z" },
+        { number: 3, headRefName: "phoebe/issue-3", mergedAt: null },
+      ]),
+    ]);
+    expect(github.listMergedPrs({ since: "2026-10-01", limit: 1000 })).toEqual([
+      { number: 2, headRefName: "phoebe/issue-2", mergedAt: "2026-11-03T00:00:00Z" },
+      { number: 1, headRefName: "phoebe/issue-1", mergedAt: "2026-11-01T00:00:00Z" },
+    ]);
+    expect(calls[0]?.args).toEqual([
+      "pr",
+      "list",
+      "--state",
+      "merged",
+      "--limit",
+      "1000",
+      "--search",
+      "merged:>=2026-10-01",
+      "--json",
+      "number,headRefName,mergedAt",
+      "-R",
+      "acme/widget",
+    ]);
+    expect(calls[0]?.inherit).toBeUndefined();
+  });
+
+  test("benchPrFacts reads one PR's merge, commits, stack signals and closing issues", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify({
+        data: {
+          repository: {
+            pullRequest: {
+              number: 20,
+              createdAt: "2026-11-02T00:00:00Z",
+              merged: true,
+              baseRefName: "main",
+              headRefName: "phoebe/issue-12",
+              headRefOid: "a".repeat(40),
+              body: null,
+              mergeCommit: { oid: "b".repeat(40) },
+              closingIssuesReferences: { nodes: [{ number: 12 }] },
+              commits: {
+                totalCount: 2,
+                nodes: [
+                  { commit: { oid: "a".repeat(40), author: { name: "Phoebe", email: "p@x" } } },
+                ],
+              },
+              comments: { nodes: [{ body: "hi" }] },
+              timelineItems: { nodes: [{ previousRefName: "phoebe/issue-11" }] },
+            },
+          },
+        },
+      }),
+    ]);
+    expect(github.benchPrFacts(asPrNumber(20))).toEqual({
+      number: 20,
+      createdAt: "2026-11-02T00:00:00Z",
+      merged: true,
+      baseRefName: "main",
+      headRefName: "phoebe/issue-12",
+      headRefOid: "a".repeat(40),
+      mergeCommitOid: "b".repeat(40),
+      body: "",
+      closingIssues: [12],
+      commits: [{ oid: "a".repeat(40), authorName: "Phoebe", authorEmail: "p@x" }],
+      commitsTruncated: true,
+      commentBodies: ["hi"],
+      baseRefChanged: true,
+    });
+    expect(calls[0]?.args.slice(0, 2)).toEqual(["api", "graphql"]);
+    expect(calls[0]?.args).toContain("pr=20");
+  });
+
+  test("benchIssueFacts walks every page of comments and collects labels ever added", () => {
+    const issuePage = (cursor: string | null, comment: string) =>
+      JSON.stringify({
+        data: {
+          repository: {
+            issue: {
+              number: 12,
+              title: "Fix it",
+              body: "Broken.",
+              labels: { nodes: [{ name: "ready-for-agent" }] },
+              timelineItems: {
+                nodes: [{ label: { name: "processing" } }, {}, { label: { name: "processing" } }],
+              },
+              comments: {
+                pageInfo: { hasNextPage: cursor !== null, endCursor: cursor },
+                nodes: [{ body: comment, createdAt: "2026-11-01T00:00:00Z", author: null }],
+              },
+            },
+          },
+        },
+      });
+    const { github, calls } = clientWith([issuePage("c1", "first"), issuePage(null, "second")]);
+    expect(github.benchIssueFacts(12)).toEqual({
+      number: 12,
+      title: "Fix it",
+      body: "Broken.",
+      labels: ["ready-for-agent"],
+      labelsEverAdded: ["processing"],
+      comments: [
+        { body: "first", createdAt: "2026-11-01T00:00:00Z", authorLogin: null },
+        { body: "second", createdAt: "2026-11-01T00:00:00Z", authorLogin: null },
+      ],
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.args).not.toContain("cursor=c1");
+    expect(calls[1]?.args).toContain("cursor=c1");
+  });
+});
