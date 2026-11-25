@@ -76,6 +76,7 @@ export const REMOTE_ROUTES = {
   doctorRun: "/api/doctor-run",
   secrets: "/api/secrets",
   logs: "/api/logs",
+  history: "/api/history",
   fleetStop: "/api/fleet/stop",
   fleetStart: "/api/fleet/start",
 };
