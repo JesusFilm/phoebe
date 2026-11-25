@@ -1,6 +1,6 @@
 // Unit history (#926, decisions in #917): one unit record per settled work unit,
 // appended to `state/<pipeline>/units.jsonl` beside the pipeline's
-// `status.json`.
+// `status.json`, and one per abandoned unit the next process finds at boot (#928).
 //
 // #73 made the container log-stateless, and this does not undo it: a record is a
 // bounded row of facts, not a log line, and no transcript or raw payload is ever
@@ -25,7 +25,7 @@ import {
 } from "./contracts/unit-record.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import type { UsageMeter } from "./providers/types.ts";
-import { unitTag } from "./unit-event.ts";
+import { unitTag, type CurrentUnit } from "./unit-event.ts";
 
 /** History filename inside a pipeline's own dir under `state/`. */
 export const UNITS_FILE = "units.jsonl";
@@ -142,6 +142,31 @@ export type UnitRecordInput = Omit<UnitRecord, "v" | "tenant" | "pipeline" | "en
 
 export type RecordUnit = (record: UnitRecordInput) => void;
 
+/**
+ * The record of an abandoned unit (#928): one a previous process started and
+ * never settled, found in the snapshot at boot. All that survives is what the
+ * snapshot held, so it has no settle time, no duration and no agent runs.
+ */
+export function abandonedRecord(current: CurrentUnit): UnitRecordInput {
+  return {
+    unit: current.unit,
+    outcome: "abandoned",
+    quarantined: false,
+    detail: null,
+    startedAt: current.startedAt,
+    settledAt: null,
+    durationMs: null,
+    runBudgetMs: current.runBudgetMs,
+    provider: current.provider,
+    model: current.model,
+    effort: current.effort,
+    branch: null,
+    headSha: null,
+    prNumber: null,
+    agentRuns: [],
+  };
+}
+
 /** What one pipeline's history writer is built from. */
 export type UnitHistoryDeps = {
   /** The deployment's name, which opens the line a failed write logs (#686). */
@@ -152,6 +177,13 @@ export type UnitHistoryDeps = {
   engineCommit: string | null;
   log?: (line: string) => void;
   append?: (path: string, line: string) => void;
+  /**
+   * A record landed. The engine tells its supervisor here (#929), so the
+   * deployment report's history summary moves with the unit rather than on the
+   * next hourly recompute. Not called when the append failed: there is nothing
+   * new to read.
+   */
+  onAppended?: () => void;
 };
 
 /**
@@ -178,6 +210,8 @@ export function createRecordUnit(deps: UnitHistoryDeps): RecordUnit {
         `${unitTag(deps.deployment, deps.tenant, deps.pipeline)} could not append to ` +
           `${UNITS_FILE} for ${input.unit.kind} ${input.unit.id} — ${String(error)}`,
       );
+      return;
     }
+    deps.onAppended?.();
   };
 }

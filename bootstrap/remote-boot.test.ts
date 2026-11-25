@@ -58,6 +58,7 @@ function fakeState(): DeploymentState & { noted: unknown[] } {
     noteSecrets: () => {},
     notePipelines: () => {},
     noteHolds: () => {},
+    refreshHistory: () => {},
     publish: () => {},
   };
 }

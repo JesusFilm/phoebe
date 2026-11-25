@@ -35,6 +35,7 @@ import type {
 } from "./contracts/deployment.ts";
 import type { RemoteReport } from "./contracts/remote-protocol.ts";
 import type { DoctorReport, DoctorSection } from "./contracts/doctor.ts";
+import type { HistorySummary, HistoryWindow } from "./contracts/unit-record.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentField } from "./config-schema.ts";
 import { readDeploymentCommands } from "./deployment-command.ts";
@@ -93,8 +94,8 @@ export function parseStatusArgs(
 export const STATUS_HELP_TEXT = `phoebe status — what this deployment is doing, from its own report
 
 Usage:
-  phoebe status              The text view (bootstrapper, remote, fleet, doctor)
-  phoebe status --verbose    ...with doctor's full table inlined
+  phoebe status              The text view (bootstrapper, remote, fleet, history, doctor)
+  phoebe status --verbose    ...with a history line per pipeline and doctor's full table
   phoebe status --json       Print state/deployment.json verbatim
   phoebe status --check      Exit 1 when something needs a look
 
@@ -307,6 +308,48 @@ export function formatStateLine(cell: FleetCell): string {
   return parts.join("  ");
 }
 
+function usd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+/**
+ * One history window in a line: the units, the ones that did not complete, and
+ * the cost by basis (#918 §3). API spend and the subscription estimate are
+ * printed side by side and never added: one was billed, the other is a list
+ * price. A window whose units reported no cost at all says so, rather than
+ * printing a zero that reads as "free".
+ */
+export function formatHistoryWindow(window: HistoryWindow): string {
+  const counts = [`${window.units} unit${window.units === 1 ? "" : "s"}`];
+  if (window.outcomes.failed > 0) counts.push(`${window.outcomes.failed} failed`);
+  if (window.outcomes["timed-out"] > 0) counts.push(`${window.outcomes["timed-out"]} timed out`);
+  if (window.outcomes.abandoned > 0) counts.push(`${window.outcomes.abandoned} abandoned`);
+  const parts = [counts.join(", ")];
+  const costs: string[] = [];
+  if (window.costUsd.api > 0) costs.push(`${usd(window.costUsd.api)} api`);
+  if (window.costUsd.subscriptionEstimate > 0) {
+    costs.push(`${usd(window.costUsd.subscriptionEstimate)} est.`);
+  }
+  if (costs.length > 0) parts.push(costs.join(" + "));
+  else if (window.units > 0 && window.unitsWithoutCost === window.units) parts.push("tokens only");
+  return parts.join("  ");
+}
+
+/** The last day of a history summary, as `status` shows it. */
+function formatHistorySummary(history: HistorySummary): string {
+  return `24h  ${formatHistoryWindow(history.last24h)}`;
+}
+
+/**
+ * The deployment's history line (#929), or null for a report written before the
+ * bootstrapper summed history — absent is "not reported", and printing zeros
+ * for it would say the deployment did nothing.
+ */
+export function formatHistoryLine(history: HistorySummary | undefined): string | null {
+  if (history === undefined) return null;
+  return `[phoebe] history       ${formatHistorySummary(history)}`;
+}
+
 function childrenById(report: DeploymentReport): Map<string, ChildLiveness> {
   return new Map(report.bootstrapper.children.map((child) => [child.id, child]));
 }
@@ -317,7 +360,11 @@ function childrenById(report: DeploymentReport): Map<string, ChildLiveness> {
  * `phoebe list` prints, which is what makes it an alias rather than a second
  * reader.
  */
-export function formatFleetSection(report: DeploymentReport, now: number): string {
+export function formatFleetSection(
+  report: DeploymentReport,
+  now: number,
+  opts: { verbose?: boolean } = {},
+): string {
   const { fleet } = report;
   const children = childrenById(report);
   const header =
@@ -338,6 +385,9 @@ export function formatFleetSection(report: DeploymentReport, now: number): strin
           formatCellMark(cell),
       );
       lines.push(`        ${" ".repeat(width)}  ${formatStateLine(cell)}`);
+      if (opts.verbose === true && cell.history !== undefined) {
+        lines.push(`        ${" ".repeat(width)}  history ${formatHistorySummary(cell.history)}`);
+      }
     }
   }
   return lines.join("\n");
@@ -393,9 +443,9 @@ export type StatusView = {
 
 /**
  * The whole text view, in the priority order #508 §2 fixes: what the
- * bootstrapper is doing, then the remote line, then the fleet, then doctor. Priority
- * order is the point — an operator reads down until something is wrong and
- * stops.
+ * bootstrapper is doing, then the remote line, then the fleet and its history
+ * line (#929), then doctor. Priority order is the point — an operator reads
+ * down until something is wrong and stops.
  */
 export function formatStatusReport(view: StatusView): string {
   const { report, now } = view;
@@ -411,7 +461,9 @@ export function formatStatusReport(view: StatusView): string {
   lines.push(formatBootstrapperLine(report, { now, withReportAge: view.bootAlive }));
   const remote = formatRemoteLine(report.remote, now);
   if (remote !== null) lines.push(remote);
-  lines.push(formatFleetSection(report, now));
+  lines.push(formatFleetSection(report, now, { verbose: view.verbose }));
+  const history = formatHistoryLine(report.fleet.history);
+  if (history !== null) lines.push(history);
   lines.push(formatDoctorLine(report.doctor, now));
   if (view.verbose && report.doctor?.report != null && view.doctorTable !== undefined) {
     lines.push(
