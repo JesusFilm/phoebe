@@ -1,16 +1,20 @@
-// `phoebe bench` (#939): the flags, the one-off container the host arm starts,
-// the tenant the container arm reads, and the suite it prints.
+// `phoebe bench` (#939, #940): the flags, the one-off container the host arm
+// starts, the tenant the container arm reads, the suite it prints, and the run
+// it starts.
 
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   benchComposeArgv,
+  containerSuitePath,
   ensureGhToken,
   parseBenchArgs,
   resolveBenchTenant,
   runBenchCli,
+  runBenchRunInContainer,
   runBenchSelectInContainer,
 } from "./bench-command.ts";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
@@ -22,6 +26,7 @@ describe("parseBenchArgs", () => {
   test("--issues names the fixtures", () => {
     expect(parseBenchArgs(["select", "--issues", "12,#34, 56"])).toEqual({
       help: false,
+      command: "select",
       request: { by: "issues", issues: [12, 34, 56] },
     });
     expect(parseBenchArgs(["select", "--issues=12"]).request).toEqual({
@@ -36,14 +41,15 @@ describe("parseBenchArgs", () => {
       parseBenchArgs(["select", "--since", "2026-11-01", "--limit=5", "--tenant", "acme/widget"]),
     ).toEqual({
       help: false,
+      command: "select",
       tenant: "acme/widget",
       request: { by: "query", since: "2026-11-01", limit: 5 },
     });
   });
 
   test("refuses what it cannot mean", () => {
-    expect(() => parseBenchArgs([])).toThrow(/needs a command: select/);
-    expect(() => parseBenchArgs(["run"])).toThrow(/Unknown `phoebe bench` command `run`/);
+    expect(() => parseBenchArgs([])).toThrow(/needs a command: select or run/);
+    expect(() => parseBenchArgs(["replay"])).toThrow(/Unknown `phoebe bench` command `replay`/);
     expect(() => parseBenchArgs(["select", "--issues", "12", "--limit", "3"])).toThrow(
       /does not combine/,
     );
@@ -52,6 +58,22 @@ describe("parseBenchArgs", () => {
     expect(() => parseBenchArgs(["select", "--limit", "0"])).toThrow(/positive whole/);
     expect(() => parseBenchArgs(["select", "--tenant"])).toThrow(/needs a value/);
     expect(() => parseBenchArgs(["select", "--json"])).toThrow(/Unknown flag `--json`/);
+  });
+
+  test("run takes one suite file and --tenant", () => {
+    expect(parseBenchArgs(["run", "bench/suite.json", "--tenant=acme/widget"])).toEqual({
+      help: false,
+      command: "run",
+      suitePath: "bench/suite.json",
+      tenant: "acme/widget",
+    });
+    expect(() => parseBenchArgs(["run"])).toThrow(/needs a suite file/);
+    expect(() => parseBenchArgs(["run", "a.json", "b.json"])).toThrow(
+      /Unexpected argument `b.json`/,
+    );
+    expect(() => parseBenchArgs(["run", "a.json", "--issues", "1"])).toThrow(
+      /for `select`, not `run`/,
+    );
   });
 
   test("--help needs no command", () => {
@@ -112,6 +134,32 @@ describe("the host arm", () => {
   test("forwards the query's defaults explicitly", () => {
     expect(benchComposeArgv(parseBenchArgs(["select", "--since", "2026-11-01"])).slice(-6)).toEqual(
       ["bench", "select", "--since", "2026-11-01", "--limit", "20"],
+    );
+  });
+
+  test("run hands the container the suite's path inside the deployment directory", async () => {
+    const calls: Array<Parameters<CommandRunner>[0]> = [];
+    const runner: CommandRunner = (spec) => {
+      calls.push(spec);
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    };
+    await runBenchCli(["run", join(root, "bench", "suite.json")], {
+      cwd: root,
+      inContainer: false,
+      dockerAvailable: true,
+      hasDeploymentBlock: false,
+      runner,
+    });
+    expect(calls[0]!.args.slice(-3)).toEqual(["bench", "run", "bench/suite.json"]);
+  });
+
+  test("run refuses a suite the container cannot see", async () => {
+    expect(containerSuitePath("/srv/deploy", "/srv/deploy", "bench/s.json")).toBe("bench/s.json");
+    expect(() => containerSuitePath("/srv/deploy", "/srv/deploy", "../s.json")).toThrow(
+      /outside the deployment directory/,
+    );
+    expect(() => containerSuitePath("/srv/deploy", "/srv/deploy", "/tmp/s.json")).toThrow(
+      /outside the deployment directory/,
     );
   });
 
@@ -232,6 +280,106 @@ describe("the container arm", () => {
       "[phoebe] bench: skipped #13: no merged PR came from phoebe/issue-13",
       "[phoebe] bench: 1 fixture(s) for acme/widget, 1 skipped.",
     ]);
+  });
+});
+
+describe("the container arm of run", () => {
+  let root: string;
+  let dataBase: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "phoebe-bench-run-container-"));
+    dataBase = join(root, "data");
+    writeFileSync(join(root, "phoebe.config.ts"), TENANT_CONFIG);
+    mkdirSync(join(root, "prompts"));
+    writeFileSync(join(root, "prompts", "issues-prompt.md"), "Work #{{ISSUE_NUMBER}}.\n");
+    mkdirSync(join(root, "bench"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function hubWithOneCommit(repoDir: string): string {
+    const git = (...args: string[]): string =>
+      execFileSync(
+        "git",
+        ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args],
+        { cwd: repoDir, encoding: "utf8", stdio: "pipe" },
+      ).trim();
+    mkdirSync(repoDir, { recursive: true });
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "seed");
+    return git("rev-parse", "HEAD");
+  }
+
+  function writeSuite(repo: string, baseSha: string): void {
+    const suite: BenchSuite = {
+      v: 1,
+      repo,
+      selectedAt: "2026-11-25T00:00:00.000Z",
+      selection: { by: "issues", issues: [12] },
+      fixtures: [
+        {
+          issue: { number: 12, title: "Fix it", body: "It is broken.", comments: [] },
+          pr: { number: 20, headSha: baseSha, mergeSha: baseSha },
+          baseSha,
+        },
+      ],
+      skipped: [],
+    };
+    writeFileSync(join(root, "bench", "suite.json"), JSON.stringify(suite));
+  }
+
+  test("runs the suite against the tenant's hub, under the tenant's bench directory", async () => {
+    const hubDir = join(dataBase, "acme", "widget", "repo");
+    const baseSha = hubWithOneCommit(hubDir);
+    writeSuite("acme/widget", baseSha);
+    const stderr: string[] = [];
+    const prepared: string[] = [];
+    const gates: string[] = [];
+
+    const result = await runBenchRunInContainer(parseBenchArgs(["run", "bench/suite.json"]), {
+      cwd: root,
+      env: { PHOEBE_DATA_DIR: dataBase, PATH: process.env["PATH"] },
+      io: { stdout: () => {}, stderr: (line) => stderr.push(line) },
+      prepareClone: (config) => prepared.push(config.paths.repoDir),
+      signal: new AbortController().signal,
+      run: {
+        spawnAgent: (_file, _args, opts) =>
+          spawn("sh", ["-c", "cat >/dev/null"], {
+            cwd: opts.cwd,
+            env: opts.env,
+            stdio: ["pipe", "pipe", "pipe"],
+          }),
+        runGate: (opts) => {
+          gates.push(opts.command);
+          return Promise.resolve({ command: opts.command, exitCode: 0, durationMs: 1 });
+        },
+        engineCommit: null,
+      },
+    });
+
+    expect(prepared).toEqual([hubDir]);
+    expect(result.runDir.startsWith(join(dataBase, "acme", "widget", "bench"))).toBe(true);
+    expect(result.trials).toHaveLength(1);
+    expect(result.trials[0]).toMatchObject({ outcome: "completed", change: "none" });
+    expect(gates).toEqual(["pnpm install"]);
+    expect(result.summary.interrupted).toBe(false);
+  });
+
+  test("refuses a suite for another repo before touching the hub", async () => {
+    writeSuite("acme/gadget", "c".repeat(40));
+    const prepared: string[] = [];
+    await expect(
+      runBenchRunInContainer(parseBenchArgs(["run", "bench/suite.json"]), {
+        cwd: root,
+        env: { PHOEBE_DATA_DIR: dataBase },
+        io: { stdout: () => {}, stderr: () => {} },
+        prepareClone: (config) => prepared.push(config.paths.repoDir),
+      }),
+    ).rejects.toThrow(/for acme\/gadget, not acme\/widget/);
+    expect(prepared).toEqual([]);
   });
 });
 

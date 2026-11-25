@@ -323,6 +323,8 @@ Usage:
                                    The devices paired with this deployment; end a session
   phoebe bench select [--issues <n,n>|--since <date> --limit <n>] [--tenant <owner/repo>]
                                    Pin a suite of solved issues as JSON, for offline replay
+  phoebe bench run <suite.json> [--tenant <owner/repo>]
+                                   Replay a suite offline with the tenant's issues settings
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -729,8 +731,8 @@ export async function runCli(): Promise<void> {
     return await runRemoteUrlCli(args.slice(1));
   }
 
-  // The offline replay benchmark (#939): in the container it reads GitHub and
-  // the hub clone; on the host it starts a one-off container. Lazy like its
+  // The offline replay benchmark (#939, #940): in the container it selects
+  // fixtures or runs trials; on the host it starts a one-off container. Lazy like its
   // neighbours.
   if (args[0] === "bench") {
     const { runBenchCli } = await import("./bench-command.ts");

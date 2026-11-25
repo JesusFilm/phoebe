@@ -124,7 +124,21 @@ export type {
 } from "./init-report.ts";
 export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
 export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
-export type { BenchComment, BenchFixture, BenchSelection, BenchSkip, BenchSuite } from "./bench.ts";
+export type {
+  BenchComment,
+  BenchContender,
+  BenchDiffStats,
+  BenchFixture,
+  BenchGateResult,
+  BenchGates,
+  BenchRunConfig,
+  BenchRunSummary,
+  BenchSelection,
+  BenchSkip,
+  BenchSuite,
+  BenchTrial,
+  BenchWouldHave,
+} from "./bench.ts";
 export type {
   BlockedReason,
   PairResult,

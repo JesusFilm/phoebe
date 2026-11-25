@@ -264,6 +264,55 @@ running, and the run takes none of its slots. The verb reads GitHub with the
 tenant's token and never writes to it. Its only writes are local: it clones the
 hub if the tenant has none yet, and fetches a PR head the hub clone lacks.
 
+## Replaying a suite offline: `phoebe bench run`
+
+`phoebe bench run <suite>` replays every fixture in a suite once, using the
+tenant's own `issues` settings: provider, model, effort, prompt file and run
+budget. Each replay is a trial.
+
+```sh
+phoebe bench run bench/suite.json
+```
+
+A trial cannot reach GitHub:
+
+- The agent works in a fresh repository that holds history up to `baseSha` and
+  nothing later, so the merged PR is not in it. The repository has no remote.
+- The agent and the prompt's `!` commands get a HOME of their own with no git
+  credential helper, and no `GH_TOKEN` or `GH_APP_*`. Provider keys pass
+  through as they do in production.
+- The `gh` on their PATH is a shim. `gh issue view` returns the issue from the
+  suite. Writes such as `gh pr create` and `gh issue comment` get a plausible
+  success and are recorded as "would have". Other reads answer as an empty
+  repository would, or fail with a message saying the trial is offline.
+
+Bench runs the gates itself, in this order: `installCommand`, the agent,
+`checkCommand`, `testCommand`. It records each gate's exit code and duration,
+and the first failure stops the rest. If the agent made no commits, the trial
+is recorded as "no change" and the check and test gates are skipped.
+
+Each run writes to `bench/<runId>/` in the tenant's data directory, beside
+`state/`:
+
+- `config.json`: the settings the run used.
+- `trials.jsonl`: one line per trial. Each line is a unit record with
+  `pipeline: "bench"`, plus the fixture, contender, repeat index, gate results,
+  diff stats and "would have" writes.
+- `patches/`: one patch for each trial that made commits.
+- `report.json`: counts by outcome, and `interrupted: true` if the run was
+  stopped early.
+
+Trials never go into a pipeline's `units.jsonl`, so nothing that reads unit history
+mistakes a trial for real work. Bench removes each trial's tree when the trial ends.
+Before a new run starts, it deletes all but the 9 most recent run directories,
+so 10 remain once the new run is added.
+
+A trial that times out or fails is recorded, and the run moves on to the next
+one. Ctrl-C drops the trial in progress, writes `report.json` with
+`interrupted: true`, and exits with code 130. On the host, the suite file has to
+be inside the deployment directory, because that is the directory the one-off
+container mounts.
+
 ## Checking the deployment's health: `phoebe doctor`
 
 `phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:

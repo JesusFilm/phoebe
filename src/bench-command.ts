@@ -1,21 +1,24 @@
-// `phoebe bench` — the offline replay benchmark's CLI (#939; spec #925). Today
-// it has one subcommand, `select`, which pins a suite of fixtures from issues
-// Phoebe already solved and prints it as JSON on stdout.
+// `phoebe bench` — the offline replay benchmark's CLI (#939; spec #925). Two
+// subcommands: `select` pins a suite of fixtures from issues Phoebe already
+// solved and prints it as JSON on stdout; `run <suite>` (#940) replays every
+// fixture offline with the tenant's own `issues` settings and records each
+// trial under the tenant's `bench/<runId>/` (src/bench-run.ts).
 //
 // Two arms, picked by the container marker as `status` picks its own:
 //
-//   - In the container it does the work: resolve the tenant, read GitHub with
-//     the tenant's token, compute each fixture's `baseSha` in the tenant's hub
-//     clone.
+//   - In the container it does the work: resolve the tenant, then either read
+//     GitHub with the tenant's token and compute each fixture's `baseSha` in
+//     the hub clone (`select`), or run the trials (`run`).
 //   - On the host it starts a one-off container from the deployment's image
 //     (`docker compose run --rm`, the way `--run-once` runs), with the same
 //     arguments, and passes its stdout through untouched. It takes none of the
 //     fleet's slots and needs the long-lived container neither up nor down.
 //
-// Selection reads GitHub and never writes to it.
+// Selection reads GitHub and never writes to it. A run never reaches GitHub at
+// all: its trials have no credential and no remote.
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import {
   computeBaseSha,
@@ -24,6 +27,7 @@ import {
   type BenchSelectGitHub,
   type BenchSelectRequest,
 } from "./bench-select.ts";
+import { parseSuite, runBench, type BenchRunDeps, type BenchRunResult } from "./bench-run.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
 import { withCloneLock } from "./clone-lock.ts";
 import { resolveConfig, type PhoebeConfig } from "./config-schema.ts";
@@ -51,7 +55,11 @@ import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 export type ParsedBenchSelectArgs = {
   help: boolean;
+  command?: "select" | "run";
+  /** `select`: what to pin. */
   request?: BenchSelectRequest;
+  /** `run`: the suite file, as the operator typed it. */
+  suitePath?: string;
   tenant?: string;
   configPath?: string;
 };
@@ -61,6 +69,7 @@ const BENCH_HELP_TEXT = `phoebe bench — replay issues Phoebe already solved, o
 Usage:
   phoebe bench select --issues <n,n,…> [--tenant <owner/repo>]
   phoebe bench select [--since <YYYY-MM-DD>] [--limit <n>] [--tenant <owner/repo>]
+  phoebe bench run <suite.json> [--tenant <owner/repo>]
 
 select pins a suite of fixtures and prints it as JSON on stdout; save it in the
 deployment directory. --issues names the issues; otherwise it walks merged PRs
@@ -76,8 +85,20 @@ Each fixture pins the issue's title, body and the comments posted before the PR
 opened; the PR's number, head and merge commits; and baseSha, the merge-base of
 the PR head and the merge commit's first parent, computed in the hub clone.
 
-On the host it runs in a one-off container from the deployment's image; in a
-workspace, --tenant picks the tenant. It reads GitHub and never writes to it.
+run replays every fixture in a suite once, with the tenant's own issues
+settings, offline. Each trial gets a fresh repository at baseSha with no
+remote, a HOME of its own, no GitHub credential, and a gh that serves the issue
+from the suite and records every write it would have made. Bench runs
+installCommand, the agent, then checkCommand and testCommand itself, stopping at
+the first failure; a trial whose agent left no commits is "no change" and runs
+no gates. Each run lands in bench/<runId>/ under the tenant's data directory:
+config.json, trials.jsonl, one patch per trial with commits, and report.json.
+Only the last 10 runs are kept. Ctrl-C drops the trial in flight and writes a
+partial report.
+
+On the host both run in a one-off container from the deployment's image, which
+takes none of the fleet's slots; the suite file must sit in the deployment
+directory. In a workspace, --tenant picks the tenant.
 `;
 
 function flagValue(argv: readonly string[], i: number, name: string): [string, number] {
@@ -114,6 +135,7 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
   let limit: number | undefined;
   let tenant: string | undefined;
   let configPath: string | undefined;
+  let suitePath: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
@@ -161,11 +183,15 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
     if (arg.startsWith("-")) {
       throw new Error(`Unknown flag \`${arg}\` for \`phoebe bench\`. See \`phoebe bench --help\`.`);
     }
+    if (subcommand === "run" && suitePath === undefined) {
+      suitePath = arg;
+      continue;
+    }
     if (subcommand !== undefined) {
       throw new Error(`Unexpected argument \`${arg}\` for \`phoebe bench ${subcommand}\`.`);
     }
-    if (arg !== "select") {
-      throw new Error(`Unknown \`phoebe bench\` command \`${arg}\`. Expected select.`);
+    if (arg !== "select" && arg !== "run") {
+      throw new Error(`Unknown \`phoebe bench\` command \`${arg}\`. Expected select or run.`);
     }
     subcommand = arg;
   }
@@ -176,7 +202,16 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
     ...(configPath !== undefined ? { configPath } : {}),
   };
   if (help) return common;
-  if (subcommand === undefined) throw new Error("`phoebe bench` needs a command: select.");
+  if (subcommand === undefined) throw new Error("`phoebe bench` needs a command: select or run.");
+  if (subcommand === "run") {
+    if (issues !== undefined || since !== undefined || limit !== undefined) {
+      throw new Error(
+        "`--issues`, `--since` and `--limit` choose fixtures for `select`, not `run`.",
+      );
+    }
+    if (suitePath === undefined) throw new Error("`phoebe bench run` needs a suite file.");
+    return { ...common, command: "run", suitePath };
+  }
   if (issues !== undefined && (since !== undefined || limit !== undefined)) {
     throw new Error(
       "`--issues` names the fixtures itself; it does not combine with `--since` or `--limit`.",
@@ -186,11 +221,16 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
     issues !== undefined
       ? { by: "issues", issues }
       : { by: "query", since: since ?? null, limit: limit ?? DEFAULT_SELECT_LIMIT };
-  return { ...common, request };
+  return { ...common, command: "select", request };
 }
 
 /** The flags the one-off container is handed, rebuilt rather than forwarded raw. */
 export function benchSelectArgv(parsed: ParsedBenchSelectArgs): string[] {
+  if (parsed.command === "run") {
+    const argv = ["bench", "run", parsed.suitePath!];
+    if (parsed.tenant !== undefined) argv.push("--tenant", parsed.tenant);
+    return argv;
+  }
   const argv = ["bench", "select"];
   const request = parsed.request!;
   if (request.by === "issues") {
@@ -220,7 +260,12 @@ export function benchComposeArgv(parsed: ParsedBenchSelectArgs): string[] {
 // --- the tenant -------------------------------------------------------------
 
 /** The tenant a bench run reads, with the env its `gh` calls run under. */
-export type BenchTenant = { config: PhoebeConfig; env: NodeJS.ProcessEnv };
+export type BenchTenant = {
+  config: PhoebeConfig;
+  env: NodeJS.ProcessEnv;
+  /** The tenant's config file; its directory is the runtime root prompts resolve from. */
+  configPath: string;
+};
 
 function readEnvFile(path: string | null): Record<string, string> {
   if (path === null || !existsSync(path)) return {};
@@ -283,7 +328,7 @@ export async function resolveBenchTenant(opts: {
     ...tenantSecrets(tenantStateDir(slug, opts.dataBase)),
   };
   const config = resolveConfig(applyEnvOverlay(user, env), { dataBase: opts.dataBase });
-  return { config, env };
+  return { config, env, configPath };
 }
 
 /**
@@ -333,6 +378,10 @@ export type BenchDeps = {
   /** Container arm: git in the hub clone. */
   git?: GitRunner;
   now?: () => Date;
+  /** Container arm of `run`: the trials' seams. */
+  run?: BenchRunDeps;
+  /** Container arm of `run`: the interrupt; SIGINT and SIGTERM by default. */
+  signal?: AbortSignal;
 };
 
 function benchIo(deps: BenchDeps): BenchIo {
@@ -402,6 +451,94 @@ export async function runBenchSelectInContainer(
 }
 
 /**
+ * The in-container arm of `run`: read the suite, make sure the hub clone
+ * exists, and run the trials. SIGINT or SIGTERM drops the trial in flight and
+ * leaves a partial report; a second Ctrl-C kills the process as usual.
+ */
+export async function runBenchRunInContainer(
+  parsed: ParsedBenchSelectArgs,
+  deps: BenchDeps = {},
+): Promise<BenchRunResult> {
+  const io = benchIo(deps);
+  const cwd = deps.cwd ?? process.cwd();
+  const processEnv = deps.env ?? process.env;
+  const configPath = await followConfigPointer(resolveConfigPath(parsed.configPath, cwd));
+  const tenant = await resolveBenchTenant({
+    configPath,
+    dataBase: resolveDataBase(processEnv),
+    processEnv,
+    ...(parsed.tenant !== undefined ? { tenant: parsed.tenant } : {}),
+  });
+  const { config } = tenant;
+  const suitePath = resolve(cwd, parsed.suitePath!);
+  let text: string;
+  try {
+    text = readFileSync(suitePath, "utf8");
+  } catch (error) {
+    throw new Error(`Could not read the suite ${parsed.suitePath}: ${String(error)}`, {
+      cause: error,
+    });
+  }
+  const suite = parseSuite(text, config.repoSlug);
+  const prepare =
+    deps.prepareClone ??
+    ((c: PhoebeConfig) =>
+      withCloneLock(c.paths.stateDir, () => ensureOriginClone(c, true), {
+        log: (line) => io.stderr(line),
+      }));
+  prepare(config);
+
+  let signal = deps.signal;
+  let release = (): void => {};
+  if (signal === undefined) {
+    const controller = new AbortController();
+    const onSignal = (name: string) => (): void => {
+      io.stderr(`[phoebe] bench: ${name} — stopping after dropping the trial in flight.`);
+      controller.abort();
+    };
+    const onInt = onSignal("interrupted");
+    const onTerm = onSignal("terminated");
+    process.once("SIGINT", onInt);
+    process.once("SIGTERM", onTerm);
+    release = () => {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+    };
+    signal = controller.signal;
+  }
+  try {
+    return await runBench({
+      config,
+      env: tenant.env,
+      suite,
+      suitePath: parsed.suitePath!,
+      runtimeRoot: dirname(tenant.configPath),
+      signal,
+      deps: { log: (line) => io.stderr(line), ...deps.run },
+    });
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Where the container finds a suite the operator named on the host: the same
+ * path relative to the deployment directory, which Compose mounts as the
+ * container's working directory. A suite outside it is not in the container.
+ */
+export function containerSuitePath(deploymentDir: string, cwd: string, suitePath: string): string {
+  const absolute = resolve(cwd, suitePath);
+  const rel = relative(deploymentDir, absolute);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(
+      `The suite ${suitePath} is outside the deployment directory ${deploymentDir}, so the ` +
+        "one-off container cannot see it. Save it there, e.g. bench/suite.json.",
+    );
+  }
+  return rel.split(sep).join("/");
+}
+
+/**
  * The host arm: a one-off container from the deployment's image, stdio passed
  * through so the suite lands on the operator's stdout and the skips on stderr.
  */
@@ -422,9 +559,13 @@ export async function runBenchSelectOnHost(
   if (!(deps.dockerAvailable ?? dockerOnPath())) throw new Error(noDockerMessage("bench"));
   const resolved = resolveDeploymentCompose(cwd, deps.exists);
   if ("kind" in resolved) throw new Error(formatResolveFailure(resolved));
+  const forwarded =
+    parsed.command === "run"
+      ? { ...parsed, suitePath: containerSuitePath(resolved.deploymentDir, cwd, parsed.suitePath!) }
+      : parsed;
   const result = await runCompose({
     deployment: resolved,
-    args: benchComposeArgv(parsed),
+    args: benchComposeArgv(forwarded),
     inheritStdio: true,
     ...(deps.runner !== undefined ? { runner: deps.runner } : {}),
   });
@@ -439,6 +580,11 @@ export async function runBenchCli(argv: readonly string[], deps: BenchDeps = {})
     return;
   }
   if (deps.inContainer ?? isInsideContainer()) {
+    if (parsed.command === "run") {
+      const { summary } = await runBenchRunInContainer(parsed, deps);
+      if (summary.interrupted) process.exitCode = 130;
+      return;
+    }
     await runBenchSelectInContainer(parsed, deps);
     return;
   }
