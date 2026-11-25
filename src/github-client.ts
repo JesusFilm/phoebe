@@ -386,6 +386,8 @@ export type GitHubClient = {
   closeIssue(issueNumber: number, reason: "completed" | "not planned"): void;
   /** An issue's current state and close reason, fetched fresh. */
   issueState(issueNumber: number): IssueStateInfo;
+  /** Every comment body on an issue, oldest first. */
+  issueCommentBodies(issueNumber: number): string[];
   /**
    * Every issue (never a PR) of this repository whose body mentions `text`,
    * across all states, newest first — the one read a body-marker watermark
@@ -1638,6 +1640,17 @@ export function createGitHubClient({
         stateReason: raw.state_reason ?? null,
         closedAt: raw.closed_at ?? null,
       };
+    },
+
+    issueCommentBodies: (issueNumber) => {
+      const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--json",
+        "comments",
+      ]);
+      return comments.map((comment) => comment.body);
     },
 
     listIssuesMentioning: (text) =>

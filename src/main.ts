@@ -107,6 +107,7 @@ import { runAgent, type SpawnAgent } from "./providers/run-agent.ts";
 import { costBasisFor } from "./providers/usage.ts";
 import {
   agentRunRecord,
+  completedDetail,
   createRecordUnit,
   promptShaOf,
   readEngineCommit,
@@ -166,6 +167,7 @@ import type {
   AgentWorkflowOutcome,
   WorkKindCtx,
   WorkKindRunCtx,
+  WorkKindRunResult,
   WorkspaceHandle,
   WorkUnitGitHubTarget,
   WorkUnitShape,
@@ -1931,10 +1933,10 @@ export function createEngine(options: EngineOptions): Engine {
     picked: PickedWorkUnit,
     ctx: WorkKindCtx,
     scope: UnitScope,
-  ): Promise<void> {
+  ): Promise<void | WorkKindRunResult> {
     const workspace = lazyWorkspace(picked, scope);
     try {
-      await runWithDeadline({
+      return await runWithDeadline({
         ms: runTimeoutMsFor(picked.kind),
         work: (signal) => {
           const runCtx: WorkKindRunCtx = {
@@ -2151,9 +2153,9 @@ export function createEngine(options: EngineOptions): Engine {
         ...(quarantined !== undefined ? { quarantined } : {}),
       });
     try {
-      await runPickedUnit(picked, ctx, scope);
+      const result = await runPickedUnit(picked, ctx, scope);
       emitUnitEvent({ unit: ref, event: "completed" });
-      record("completed", null);
+      record("completed", completedDetail(result));
     } catch (error) {
       if (error instanceof WorktreeLeasedError) {
         // Not a failure: someone else is working the tree this unit needs — a
