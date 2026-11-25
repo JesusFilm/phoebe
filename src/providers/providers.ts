@@ -5,6 +5,7 @@
 
 import type { AgentCommand, AgentEvent, Provider } from "./types.ts";
 import type { ProviderName } from "../config-schema.ts";
+import { meterClaudeUsage } from "./usage.ts";
 
 /** Maps allowlisted tool names to the input field carrying the display arg. */
 const TOOL_ARG_FIELDS: Record<string, string> = {
@@ -209,6 +210,7 @@ const claude: Provider = {
     };
   },
   parseStreamLine: parseClaudeStreamLine,
+  meterUsage: meterClaudeUsage,
 };
 
 const codex: Provider = {

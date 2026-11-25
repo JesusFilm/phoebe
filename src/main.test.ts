@@ -73,6 +73,8 @@ import type {
 } from "./work-kinds/definition.ts";
 import { buildRegistry, type LoadedCustomKind } from "./work-kinds/registry.ts";
 import type { AgentChild, SpawnAgent } from "./providers/run-agent.ts";
+import { promptShaOf, type UnitRecordInput } from "./unit-record.ts";
+import { RunTimeoutError } from "./run-timeout.ts";
 
 // ---------------------------------------------------------------------------
 // The world a cycle runs against
@@ -248,6 +250,8 @@ type CycleResult = {
   gitCalls: string[][];
   /** Unit events emitted; a dry cycle must produce none. */
   events: UnitRef[];
+  /** Unit records the cycle wrote to its history (#926). */
+  records: UnitRecordInput[];
 };
 
 /**
@@ -371,6 +375,8 @@ async function runCycle(opts: {
   spawnAgent?: SpawnAgent;
   /** The snapshot writer's boot-time half (#670), when a test watches for the call. */
   forgetInherited?: () => void;
+  /** Where the cycle's unit records land, for a test whose cycle rejects (#926). */
+  records?: UnitRecordInput[];
 }): Promise<CycleResult> {
   const { git, calls: gitCalls } = stubGit(
     opts.shas ?? {},
@@ -379,6 +385,7 @@ async function runCycle(opts: {
     opts.worktreeList ?? "",
   );
   const events: UnitRef[] = [];
+  const records = opts.records ?? [];
   const config = resolveConfig(
     { ...minimalUser(), ...opts.config },
     opts.dataBase !== undefined ? { dataBase: opts.dataBase } : {},
@@ -407,6 +414,9 @@ async function runCycle(opts: {
       events.push(event.unit);
     },
     ...(opts.forgetInherited !== undefined ? { forgetInherited: opts.forgetInherited } : {}),
+    recordUnit: (record) => {
+      records.push(record);
+    },
     run: { runOnce: false, dryRun: true, pollIntervalMs: 1_000, ...opts.run },
   });
 
@@ -416,7 +426,7 @@ async function runCycle(opts: {
   } finally {
     captured.restore();
   }
-  return { lines: captured.lines, gitCalls, events };
+  return { lines: captured.lines, gitCalls, events, records };
 }
 
 /** The one line a dry cycle prints for the unit it picked, or undefined. */
@@ -1760,6 +1770,8 @@ describe("--dry-run", () => {
     expect(result.gitCalls.map((args) => args[0])).toEqual(["fetch", "rev-parse"]);
     // Nothing was started, so nothing was observed as started.
     expect(result.events).toEqual([]);
+    // And nothing ran, so the unit history stays empty (#926).
+    expect(result.records).toEqual([]);
   });
 });
 
@@ -2802,6 +2814,257 @@ describe("what an agent's own lines carry", () => {
   });
 });
 
+// The unit history (#926): every unit that completes, fails or times out leaves
+// one record, carrying what its agent runs reported. The writer and its rotation
+// are pinned in unit-record.test.ts and the stream parsing in usage.test.ts;
+// what is pinned here is the wiring — that a unit run through a real
+// `createEngine` hands the writer the record its settlement describes.
+describe("the unit history", () => {
+  const PROMPT = "Nudge PR {{DEFAULT_BRANCH}}.";
+
+  /** A Claude assistant line: one tool call, and the usage its message opened with. */
+  const toolLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      id: "msg_1",
+      model: "claude-sonnet-5-5",
+      usage: {
+        input_tokens: 10,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 50,
+        output_tokens: 1,
+      },
+      content: [{ type: "tool_use", id: "tu_1", name: "Bash", input: { command: "ls" } }],
+    },
+  });
+
+  /** Claude's terminal line, trimmed from a live run (#915). */
+  const resultLine = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    num_turns: 2,
+    duration_ms: 2160,
+    stop_reason: "end_turn",
+    total_cost_usd: 0.0024,
+    modelUsage: {
+      "claude-sonnet-5-5": {
+        inputTokens: 4,
+        outputTokens: 80,
+        cacheReadInputTokens: 17194,
+        cacheCreationInputTokens: 17302,
+        thinkingTokens: 0,
+        costUSD: 0.0024,
+      },
+    },
+    result: "done",
+  });
+
+  /** An agent that writes `lines` and then exits with `exitCode`, or never exits when null. */
+  function scriptedAgent(lines: readonly string[], exitCode: number | null): SpawnAgent {
+    return () => {
+      const listeners = new Map<string, ((...args: never[]) => void)[]>();
+      const on = (key: string, listener: (...args: never[]) => void): void => {
+        listeners.set(key, [...(listeners.get(key) ?? []), listener]);
+      };
+      const emit = (key: string, ...args: unknown[]): void => {
+        for (const listener of listeners.get(key) ?? []) {
+          (listener as (...a: unknown[]) => void)(...args);
+        }
+      };
+      queueMicrotask(() => {
+        for (const line of lines) emit("stdout:data", Buffer.from(`${line}\n`));
+        if (exitCode !== null) emit("child:close", exitCode);
+      });
+      return {
+        stdout: { on: (event, l) => on(`stdout:${event}`, l as never) },
+        stderr: { on: (event, l) => on(`stderr:${event}`, l as never) },
+        stdin: { write: () => {}, end: () => {} },
+        on: (event: string, l) => on(`child:${event}`, l as never),
+        // A kill the child ignores, so a timed-out run is still going when its
+        // unit is recorded — the case the surviving usage exists for.
+        kill: () => true,
+      };
+    };
+  }
+
+  /** A scratch kind whose run is one agent run, then whatever `after` does. */
+  function agentKind(promptFile: string, after: () => void = () => {}): LoadedCustomKind {
+    const definition: AnyWorkKindDefinition = {
+      name: "nudge",
+      oneShotEligible: true,
+      promptFile,
+      workspace: "scratch",
+      report: {
+        noun: "stale PR(s)",
+        describe: (unit: { prNumber: number }) => `stale-PR nudge for PR #${unit.prNumber}`,
+      },
+      fetch: (ctx) => Promise.resolve({ prs: ctx.github.openPrs() }),
+      select: (gathered: { prs: { number: number }[] }) => {
+        const pick = gathered.prs[0] ?? null;
+        return {
+          unit: pick
+            ? {
+                ref: `pr:${pick.number}`,
+                prNumber: Number(pick.number),
+                github: { objectType: "pr" as const, id: Number(pick.number) },
+              }
+            : null,
+          skipped: [],
+          total: gathered.prs.length,
+        };
+      },
+      run: async (_unit, ctx: WorkKindRunCtx) => {
+        await ctx.agent.run();
+        after();
+      },
+    };
+    return { name: "nudge", definition, options: undefined };
+  }
+
+  /** Run one `--run-once` unit of that kind and return the records it wrote. */
+  async function unitRecords(opts: {
+    agent: SpawnAgent;
+    env?: NodeJS.ProcessEnv;
+    config?: Partial<PhoebeUserConfig>;
+    after?: () => void;
+    github?: GitHubStubOverrides;
+  }): Promise<{ records: UnitRecordInput[]; error: unknown }> {
+    const dataBase = tenantRoot();
+    const promptFile = join(dataBase, "nudge-prompt.md");
+    writeFileSync(promptFile, PROMPT);
+    const records: UnitRecordInput[] = [];
+    let error: unknown;
+    try {
+      await runCycle({
+        config: { workOrder: ["nudge"], ...opts.config },
+        customKinds: [agentKind(promptFile, opts.after)],
+        dataBase,
+        spawnAgent: opts.agent,
+        records,
+        github: {
+          ...prWorld([{ number: 44, issueNumber: 4 }]),
+          resolveLogin: () => PHOEBE_LOGIN,
+          newestUnitMarkerAuthor: () => PHOEBE_LOGIN,
+          ...opts.github,
+        },
+        env: { GH_TOKEN: "t", ...opts.env },
+        inContainer: true,
+        run: { runOnce: true, dryRun: false },
+      });
+    } catch (thrown) {
+      error = thrown;
+    }
+    return { records, error };
+  }
+
+  test("a completed unit appends one record carrying its agent run's usage", async () => {
+    const { records, error } = await unitRecords({
+      agent: scriptedAgent([toolLine, resultLine], 0),
+      env: { ANTHROPIC_API_KEY: "sk-test" },
+    });
+
+    expect(error).toBeUndefined();
+    expect(records).toHaveLength(1);
+    const [record] = records;
+    expect(record).toMatchObject({
+      unit: { kind: "nudge", id: "pr:44" },
+      outcome: "completed",
+      quarantined: false,
+      detail: null,
+      provider: "claude",
+      prNumber: 44,
+      // A scratch directory is no git tree, so there is no head to name.
+      branch: null,
+      headSha: null,
+    });
+    expect(record?.agentRuns).toEqual([
+      {
+        startedAt: "2026-08-19T00:00:00.000Z",
+        durationMs: 0,
+        exitCode: 0,
+        promptSha: promptShaOf(PROMPT),
+        inputTokens: 4,
+        outputTokens: 80,
+        cacheReadTokens: 17194,
+        cacheWriteTokens: 17302,
+        reasoningTokens: 0,
+        costUsd: 0.0024,
+        turns: 2,
+        providerDurationMs: 2160,
+        stopReason: "end_turn",
+        reportedModels: ["claude-sonnet-5-5"],
+        usageComplete: true,
+        costBasis: "api",
+        toolCalls: { Bash: 1 },
+      },
+    ]);
+  });
+
+  test("a subscription token marks Claude's cost as an estimate", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([resultLine], 0),
+      config: { providerEnv: { claude: "CLAUDE_CODE_OAUTH_TOKEN" } },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-test" },
+    });
+
+    expect(records[0]?.agentRuns[0]?.costBasis).toBe("subscription-estimate");
+    expect(records[0]?.agentRuns[0]?.costUsd).toBe(0.0024);
+  });
+
+  test("a unit its budget kills keeps the usage that survived, marked incomplete", async () => {
+    const { records, error } = await unitRecords({
+      agent: scriptedAgent([toolLine], null),
+      env: { ANTHROPIC_API_KEY: "sk-test", PHOEBE_RUN_TIMEOUT_MS: "20" },
+      github: {
+        prTimeoutInputs: () => ({ comments: [], extraActivityAt: null, baseline: "sha:abc" }),
+        postUnitComment: () => {},
+      },
+    });
+
+    expect(error).toBeInstanceOf(RunTimeoutError);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ outcome: "timed-out", detail: "0s budget exceeded" });
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      exitCode: null,
+      inputTokens: 10,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 50,
+      outputTokens: null,
+      costUsd: null,
+      costBasis: null,
+      usageComplete: false,
+      toolCalls: { Bash: 1 },
+    });
+  });
+
+  test("a failed unit records its error", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([resultLine], 0),
+      after: () => {
+        throw new Error("push rejected");
+      },
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ outcome: "failed", detail: "push rejected" });
+  });
+
+  test("a non-Claude run records no usage rather than zeros", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([resultLine], 0),
+      env: { PHOEBE_AGENT: "codex" },
+    });
+
+    expect(records[0]?.provider).toBe("codex");
+    expect(records[0]?.agentRuns[0]).toMatchObject({
+      inputTokens: null,
+      costUsd: null,
+      usageComplete: false,
+      toolCalls: {},
+    });
+  });
+});
+
 describe("sweeps scoped to the pipeline's kinds", () => {
   /** A wet `--run-once` cycle that selects nothing, so only the sweeps run. */
   function sweepCycle(opts: {
@@ -3137,6 +3400,8 @@ describe("the worktree lease at the unit boundary", () => {
     ).toBe(true);
     expect(result.gitCalls).not.toContainEqual(["worktree", "remove", "--force", WORKSPACE_DIR]);
     expect(result.lines.some((line) => line.includes("Failed executing"))).toBe(false);
+    // No work happened, so the unit history has nothing to say (#926).
+    expect(result.records).toEqual([]);
   });
 
   test("an unleased tree is claimed, built, leased, and released", async () => {

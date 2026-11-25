@@ -104,6 +104,18 @@ import { sweepScope, type SweepScope } from "./sweep-scope.ts";
 import { PROVIDERS } from "./providers/providers.ts";
 import { resolveIssueCoAuthorTrailer } from "./co-author.ts";
 import { runAgent, type SpawnAgent } from "./providers/run-agent.ts";
+import { costBasisFor } from "./providers/usage.ts";
+import {
+  agentRunRecord,
+  createRecordUnit,
+  promptShaOf,
+  readEngineCommit,
+  unitsPathFor,
+  type AgentRunTrack,
+  type RecordUnit,
+} from "./unit-record.ts";
+import type { UnitRecordOutcome } from "./contracts/unit-record.ts";
+import { moduleDirOf } from "./package-resource.ts";
 import type { Provider } from "./providers/types.ts";
 import {
   assertPromptFilesExist,
@@ -389,6 +401,11 @@ export type EngineOptions = {
    */
   forgetInherited?: () => void;
   /**
+   * The pipeline's unit history (#926): one record per unit that completed,
+   * failed or timed out, written after its settling event. Unset writes none.
+   */
+  recordUnit?: RecordUnit;
+  /**
    * How this engine runs. Held here rather than passed to `runLoop` so a caller
    * has one mechanism to learn instead of two.
    */
@@ -503,6 +520,10 @@ export function createEngine(options: EngineOptions): Engine {
     echo: (line: string) => void;
     /** The origin hub with this unit's stamp on its children's output. */
     hub: OriginHub;
+    /** Every agent run this unit spawned, in spawn order — what its record carries. */
+    agentRuns: AgentRunTrack[];
+    /** The branch and commit the last agent run left its tree on, when it was a git tree. */
+    head: { branch: string | null; sha: string | null } | null;
   };
 
   function unitScope(ref: UnitRef): UnitScope {
@@ -516,6 +537,8 @@ export function createEngine(options: EngineOptions): Engine {
       leaseReason: formatLeaseReason({ owner, pid: process.pid }),
       echo,
       hub: hub.withOutput(echo),
+      agentRuns: [],
+      head: null,
     };
   }
 
@@ -686,8 +709,11 @@ export function createEngine(options: EngineOptions): Engine {
    * The write target is the unit's structural `github` field (#352): a unit
    * without one gets in-memory counting and a logged no-escalation-surface
    * degraded behavior instead of a crash.
+   *
+   * Says whether this timeout is the one that quarantined the unit, which its
+   * unit record carries as a flag (#926).
    */
-  function recordUnitTimeout(picked: PickedWorkUnit, emit: EmitUnitEvent): void {
+  function recordUnitTimeout(picked: PickedWorkUnit, emit: EmitUnitEvent): boolean {
     const ref = unitRefOf(picked);
     const ghTarget: WorkUnitGitHubTarget | undefined = picked.unit.github;
     if (!ghTarget) {
@@ -710,13 +736,14 @@ export function createEngine(options: EngineOptions): Engine {
                 : `until a pick of it carries a different revision than "${revision}".`)
             : ""),
       );
-      return;
+      return quarantined;
     }
     const target: UnitTarget = ghTarget;
     // Issue-shaped units (issues/research) carry processingLabel, which the
     // stranded-unit sweep detects and counts. PR-shaped units do not, so they
     // are counted here on timeout.
-    if (target.objectType === "issue") return;
+    if (target.objectType === "issue") return false;
+    let quarantineLabelled = false;
     try {
       // Phoebe's own login, resolved per write rather than cached: there is
       // deliberately no placeholder for an unresolved login (`""` would be a
@@ -736,6 +763,7 @@ export function createEngine(options: EngineOptions): Engine {
       github.postUnitComment(target, buildUnitTimeoutMarker(count));
       if (quarantine) {
         addUnitLabelCreatingIfMissing(github, target, quarantineLabelOf(), (line) => log.say(line));
+        quarantineLabelled = true;
         github.postUnitComment(
           target,
           buildQuarantineComment({
@@ -751,11 +779,13 @@ export function createEngine(options: EngineOptions): Engine {
           detail: `timed out ${count}× — labelled ${PHOEBE_QUARANTINE_LABEL}`,
         });
       }
+      return quarantine;
     } catch (error) {
       log.fail(
         `Could not record timeout toward quarantine for ${ref.kind} ${ref.id} — ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
+      return quarantineLabelled;
     }
   }
 
@@ -1324,8 +1354,9 @@ export function createEngine(options: EngineOptions): Engine {
     const { provider, model, effort } = selectProvider(opts.picked);
     // Caller-supplied per-callsite args (ISSUE_NUMBER, PR_NUMBER, …) override
     // the standard config-derived set by key.
+    const template = loadPromptTemplate(opts.promptFile);
     const prompt = renderPrompt(
-      loadPromptTemplate(opts.promptFile),
+      template,
       { ...buildDefaultPromptArgs(config), ...opts.promptArgs },
       promptShell(opts.worktreeDir, env, Object.values(config.providerEnv), pipelineDeclaredEnv),
     );
@@ -1342,23 +1373,61 @@ export function createEngine(options: EngineOptions): Engine {
     // The deadline is held by the outer `runPickedUnit` (#359): the signal
     // already fires when the whole-unit budget expires, killing the child and
     // propagating `RunTimeoutError` at the unit boundary.
-    const { exitCode } = await runAgent({
-      provider,
-      model,
-      effort,
-      prompt,
-      cwd: opts.worktreeDir,
-      env: agentEnv,
-      signal: opts.signal,
-      deployment,
-      tenant: config.repoSlug,
-      pipeline,
-      unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
-      ...(options.spawnAgent !== undefined ? { spawn: options.spawnAgent } : {}),
-    });
+    // Tracked on the unit from the moment of spawn, not when the run returns: a
+    // unit its budget killed is recorded before its child has exited (#926).
+    const track: AgentRunTrack = {
+      startedAt: clock.now(),
+      promptSha: promptShaOf(template),
+      costBasis: costBasisFor(provider.name, agentEnv),
+      meter: provider.meterUsage?.() ?? null,
+      endedAt: null,
+      exitCode: null,
+    };
+    opts.scope.agentRuns.push(track);
+    let exitCode: number;
+    try {
+      ({ exitCode } = await runAgent({
+        provider,
+        model,
+        effort,
+        prompt,
+        cwd: opts.worktreeDir,
+        env: agentEnv,
+        signal: opts.signal,
+        deployment,
+        tenant: config.repoSlug,
+        pipeline,
+        unit: `${opts.scope.ref.kind} ${opts.scope.ref.id}`,
+        ...(track.meter !== null ? { meter: track.meter } : {}),
+        ...(options.spawnAgent !== undefined ? { spawn: options.spawnAgent } : {}),
+      }));
+      track.exitCode = exitCode;
+    } finally {
+      track.endedAt = clock.now();
+    }
+    opts.scope.head = readTreeHead(opts.worktreeDir);
     if (exitCode !== 0) {
       log.say(`Agent exited with code ${exitCode}.`);
     }
+  }
+
+  /**
+   * The branch and commit a tree is on, read locally after an agent run so the
+   * unit record names them without an API call. `null` fields when the tree is
+   * not a git checkout (a scratch directory) or its HEAD is detached.
+   */
+  function readTreeHead(dir: string): { branch: string | null; sha: string | null } {
+    const read = (args: string[]): string | null => {
+      try {
+        const out = git(args, { cwd: dir, stdio: "pipe" }).trim();
+        return out === "" ? null : out;
+      } catch {
+        return null;
+      }
+    };
+    const sha = read(["rev-parse", "HEAD"]);
+    const branch = sha === null ? null : read(["rev-parse", "--abbrev-ref", "HEAD"]);
+    return { sha, branch: branch === "HEAD" ? null : branch };
   }
 
   function tryCleanMerge(
@@ -1857,8 +1926,11 @@ export function createEngine(options: EngineOptions): Engine {
    * `ctx.workspace.dir`, so they pay no churn per unit; a kind that does read
    * it pays then, and only a materialized workspace is removed afterwards.
    */
-  async function runPickedUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<void> {
-    const scope = unitScope(unitRefOf(picked));
+  async function runPickedUnit(
+    picked: PickedWorkUnit,
+    ctx: WorkKindCtx,
+    scope: UnitScope,
+  ): Promise<void> {
     const workspace = lazyWorkspace(picked, scope);
     try {
       await runWithDeadline({
@@ -2011,11 +2083,76 @@ export function createEngine(options: EngineOptions): Engine {
    * Otherwise a failed unit must not kill the daemon — `prepareWorktree` clears
    * any stale worktree on the next attempt.
    */
-  async function workUnit(picked: PickedWorkUnit, ctx: WorkKindCtx): Promise<UnitOutcome> {
-    const ref = unitRefOf(picked);
+  /**
+   * Append the settled unit's record to the pipeline's history (#926), after its
+   * settling event. Everything here is bookkeeping, so nothing here may fail the
+   * unit: a throw anywhere in building the record is one log line, the same as
+   * a write the writer itself could not make.
+   */
+  function recordSettledUnit(opts: {
+    picked: PickedWorkUnit;
+    scope: UnitScope;
+    startedAt: Date;
+    outcome: UnitRecordOutcome;
+    detail: string | null;
+    quarantined?: boolean;
+  }): void {
+    const { recordUnit } = options;
+    if (recordUnit === undefined) return;
+    const { picked, scope } = opts;
     try {
-      await runPickedUnit(picked, ctx);
+      const settledAt = clock.now();
+      const { provider, model, effort } = selectProvider(picked);
+      const target = picked.unit.github;
+      recordUnit({
+        unit: scope.ref,
+        outcome: opts.outcome,
+        quarantined: opts.quarantined ?? false,
+        detail: opts.detail,
+        startedAt: opts.startedAt.toISOString(),
+        settledAt: settledAt.toISOString(),
+        durationMs: Math.max(0, settledAt.getTime() - opts.startedAt.getTime()),
+        runBudgetMs: runTimeoutMsFor(picked.kind),
+        provider: provider.name,
+        model,
+        effort: effort ?? null,
+        branch: scope.head?.branch ?? null,
+        headSha: scope.head?.sha ?? null,
+        prNumber: target?.objectType === "pr" ? target.id : null,
+        agentRuns: scope.agentRuns.map((track) => agentRunRecord(track, settledAt)),
+      });
+    } catch (error) {
+      log.warn(
+        `Could not record ${scope.ref.kind} ${scope.ref.id} in its unit history — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  async function workUnit(
+    picked: PickedWorkUnit,
+    ctx: WorkKindCtx,
+    startedAt: Date,
+  ): Promise<UnitOutcome> {
+    const ref = unitRefOf(picked);
+    const scope = unitScope(ref);
+    const record = (
+      outcome: UnitRecordOutcome,
+      detail: string | null,
+      quarantined?: boolean,
+    ): void =>
+      recordSettledUnit({
+        picked,
+        scope,
+        startedAt,
+        outcome,
+        detail,
+        ...(quarantined !== undefined ? { quarantined } : {}),
+      });
+    try {
+      await runPickedUnit(picked, ctx, scope);
       emitUnitEvent({ unit: ref, event: "completed" });
+      record("completed", null);
     } catch (error) {
       if (error instanceof WorktreeLeasedError) {
         // Not a failure: someone else is working the tree this unit needs — a
@@ -2030,24 +2167,20 @@ export function createEngine(options: EngineOptions): Engine {
         // A whole-unit timeout (#72): the agent was killed, the slot releases in
         // `finally`, and the engine survives (never told to the supervisor, #60
         // orthogonality). #75 layers the poison-unit quarantine on this event.
-        emitUnitEvent({
-          unit: ref,
-          event: "timed-out",
-          detail: `${Math.round(error.elapsedMs / 1000)}s budget exceeded`,
-        });
+        const detail = `${Math.round(error.elapsedMs / 1000)}s budget exceeded`;
+        emitUnitEvent({ unit: ref, event: "timed-out", detail });
         // Count this timeout on the unit and, at K consecutive, quarantine it so
         // a genuinely poisonous unit stops being re-picked forever (#75).
-        recordUnitTimeout(picked, emitUnitEvent);
+        const quarantined = recordUnitTimeout(picked, emitUnitEvent);
+        record("timed-out", detail, quarantined);
       } else {
         // A non-timeout failure: drop the unit from the snapshot and record the
         // error so `phoebe list` shows it (the durable record is still the
         // per-work-kind watermark/failure-comment on GitHub; this is the
         // at-a-glance snapshot).
-        emitUnitEvent({
-          unit: ref,
-          event: "failed",
-          detail: error instanceof Error ? error.message : String(error),
-        });
+        const detail = error instanceof Error ? error.message : String(error);
+        emitUnitEvent({ unit: ref, event: "failed", detail });
+        record("failed", detail);
       }
       if (runOnce) throw error;
       log.fail(
@@ -2122,10 +2255,11 @@ export function createEngine(options: EngineOptions): Engine {
     }
 
     emitUnitEvent({ unit: ref, event: "started", runBudgetMs: runTimeoutMsFor(picked.kind) });
+    const startedAt = clock.now();
     refsInFlight(ref.kind).add(ref.id);
     const key = inFlightKey(ref);
     let outcome: UnitOutcome = "worked";
-    const settled = workUnit(picked, ctx)
+    const settled = workUnit(picked, ctx, startedAt)
       .then((result) => {
         outcome = result;
       })
@@ -2724,6 +2858,15 @@ export async function runEngine(
       : {}),
   };
   const emitUnitEvent = createEmitUnitEvent(snapshotWriter);
+  // The pipeline's unit history (#926), beside its snapshot. Written for every
+  // unit this process runs, `--run-once` included; a dry run runs none.
+  const recordUnit = createRecordUnit({
+    deployment,
+    tenant: config.repoSlug,
+    pipeline: pipelineName,
+    unitsPath: unitsPathFor(config.paths.stateDir, pipelineName),
+    engineCommit: readEngineCommit(moduleDirOf(import.meta.url)),
+  });
 
   const drain = installDrainSignal();
   try {
@@ -2739,6 +2882,7 @@ export async function runEngine(
       reportClient,
       emitUnitEvent,
       forgetInherited: createForgetInherited(snapshotWriter),
+      ...(dryRun ? {} : { recordUnit }),
       run: { runOnce, dryRun, pollIntervalMs, concurrency },
     });
     await engine.runLoop();
