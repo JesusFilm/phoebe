@@ -218,6 +218,52 @@ commands and [`work-kinds.md`](work-kinds.md) for the full selection rules.
 A tenant running more than one pipeline is [`pipelines.md`](pipelines.md); there is no
 per-pipeline stop verb, because hot `disabled: true` is the stop.
 
+## Picking issues to benchmark: `phoebe bench select`
+
+`phoebe bench select` builds a suite of fixtures for the offline replay
+benchmark. Each fixture is an issue Phoebe already solved. The verb prints the
+suite as JSON on stdout. Save it in the deployment directory so a later run can
+replay the same suite:
+
+```sh
+phoebe bench select --issues 812,840 > bench/suite.json
+phoebe bench select --since 2026-10-01 --limit 30 > bench/suite.json
+```
+
+`--issues` names the issues. Without it, the verb walks merged PRs on
+`<branchPrefix>issue-<n>` branches, newest merge first, and stops once
+`--limit` fixtures qualify. The default limit is 20. `--since` keeps only PRs
+merged on or after that date. In a workspace, `--tenant <owner/repo>` picks the
+tenant.
+
+An issue qualifies when exactly one PR came from its branch, that PR merged into
+the default branch, and every commit on it has the same git author. The verb
+skips the rest and gives a reason for each one. It prints the reasons on stderr
+and lists them under `skipped` in the suite. These are skipped:
+
+- Issues whose PR merged into a feature branch.
+- Stacked PRs. A PR counts as stacked if it merged into another issue's branch,
+  says `Stacked on PR #N`, carries the `⛓️ Blocked by` comment, or had its base
+  changed after it opened.
+- PRs with commits from more than one git author. The reason names both authors.
+- Issues blocked mid-way. These issues were labelled `phoebe:blocked` at some
+  point, or a run left a `phoebe-blocked` comment on them.
+- Research tickets, and PRs that close more than one issue.
+
+Each fixture pins three things:
+
+- The issue's title and body, and the comments posted before the PR opened.
+- The PR's number, head commit, and merge commit.
+- `baseSha`, the merge-base of the PR head and the merge commit's first parent.
+  The verb computes it in the tenant's hub clone, so checking out `baseSha` gives
+  the tree the PR started from, or the default branch it last merged in.
+
+On the host the verb starts a one-off container from the deployment's image
+with `docker compose run --rm`. The long-lived container does not need to be
+running, and the run takes none of its slots. The verb reads GitHub with the
+tenant's token and never writes to it. Its only writes are local: it clones the
+hub if the tenant has none yet, and fetches a PR head the hub clone lacks.
+
 ## Checking the deployment's health: `phoebe doctor`
 
 `phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:
@@ -469,6 +515,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | Change one setting without an editor          | `phoebe config set <path> <value>` — one literal, in place, validated first.                                                                                                    |
 | See the deployment from another machine       | Add a `remote` block, `phoebe stop`, `phoebe start`, then `phoebe pair` and paste the link into the companion ([`remote.md`](remote.md)).                                       |
 | See who is paired, or end a session           | `phoebe sessions`; `phoebe sessions revoke <id>` or `--all`.                                                                                                                    |
+| Pick solved issues to benchmark against       | `phoebe bench select --issues 12,34`, or `--since <date> --limit <n>`, to stdout as JSON.                                                                                       |
 
 ## Running many repos in one container
 

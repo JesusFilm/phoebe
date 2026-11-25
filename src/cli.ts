@@ -141,7 +141,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, status, list, config, secret, purge, upgrade, doctor, migrate, stop, start, pair, sessions, remote-url, pipelines, sweep-state. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, secret, purge, upgrade, doctor, migrate, stop, start, pair, sessions, remote-url, pipelines, sweep-state, bench. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -321,6 +321,8 @@ Usage:
   phoebe pair [--operate] [--json] Mint a one-time code to pair the companion over Tailscale
   phoebe sessions [revoke <id>|--all] [--json]
                                    The devices paired with this deployment; end a session
+  phoebe bench select [--issues <n,n>|--since <date> --limit <n>] [--tenant <owner/repo>]
+                                   Pin a suite of solved issues as JSON, for offline replay
   phoebe [--config <path>] [flags] Run the engine
 
 Options (engine mode):
@@ -725,6 +727,14 @@ export async function runCli(): Promise<void> {
   if (args[0] === "remote-url") {
     const { runRemoteUrlCli } = await import("./remote-url.ts");
     return await runRemoteUrlCli(args.slice(1));
+  }
+
+  // The offline replay benchmark (#939): in the container it reads GitHub and
+  // the hub clone; on the host it starts a one-off container. Lazy like its
+  // neighbours.
+  if (args[0] === "bench") {
+    const { runBenchCli } = await import("./bench-command.ts");
+    return await runBenchCli(args.slice(1));
   }
 
   const parsed = parseCliArgs(args);

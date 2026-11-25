@@ -192,6 +192,52 @@ export type QuarantinedUnit = {
   comments: Array<{ body: string }>;
 };
 
+/** A merged PR as `phoebe bench select` lists them (#939). */
+export type MergedPrRef = { number: PrNumber; headRefName: BranchRef; mergedAt: string };
+
+/** One commit on a PR, with the git identity that authored it. */
+export type PrCommitAuthor = {
+  oid: Sha;
+  authorName: string;
+  authorEmail: string;
+};
+
+/** What `phoebe bench select` reads about one PR to decide whether it is a fixture. */
+export type BenchPrFacts = {
+  number: PrNumber;
+  /** ISO; when the PR opened. */
+  createdAt: string;
+  merged: boolean;
+  baseRefName: string;
+  headRefName: string;
+  headRefOid: Sha;
+  /** `null` until the PR merged. */
+  mergeCommitOid: Sha | null;
+  body: string;
+  /** The issues the PR closes on merge. */
+  closingIssues: number[];
+  /** Oldest first. */
+  commits: PrCommitAuthor[];
+  /** The PR holds more commits than were read. */
+  commitsTruncated: boolean;
+  /** The PR's conversation comments, as far as one page reads. */
+  commentBodies: string[];
+  /** Someone (or the engine's unstack) moved the PR's base after it opened. */
+  baseRefChanged: boolean;
+};
+
+/** What `phoebe bench select` reads about one issue: the snapshot, and its history. */
+export type BenchIssueFacts = {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+  /** Every label the issue was ever given, from its timeline. */
+  labelsEverAdded: string[];
+  /** Every comment, oldest first. */
+  comments: GhComment[];
+};
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -369,6 +415,17 @@ export type GitHubClient = {
   newestUnitMarkerAuthor(): string | null;
   issueAuthorLogin(issueNumber: number): string | null;
   lookupUser(login: string): GitHubUser;
+
+  // Bench selection (#939) — reads only
+  /**
+   * Merged PRs, newest merge first, at most `limit` read. `since` (a
+   * `YYYY-MM-DD` date) keeps only PRs merged on or after it.
+   */
+  listMergedPrs(opts: { since: string | null; limit: number }): MergedPrRef[];
+  /** Every merged PR whose head was `branch`, newest merge first. */
+  mergedPrsForBranch(branch: BranchRef): MergedPrRef[];
+  benchPrFacts(prNumber: PrNumber): BenchPrFacts;
+  benchIssueFacts(issueNumber: number): BenchIssueFacts;
 
   // Cycle scope
   forCycle(): CycleGitHubClient;
@@ -648,6 +705,39 @@ export function createGitHubClient({
     } catch (error) {
       rethrowAsGhError(error, args, exec);
     }
+  }
+
+  /**
+   * A GraphQL read against this repository: `owner` and `repo` are always
+   * supplied, and a `null` variable is left out so the query sees its default.
+   */
+  function ghGraphql<T>(query: string, vars: Record<string, string | number | null> = {}): T {
+    const [owner, repo] = config.repoSlug.split("/");
+    const args = ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`];
+    args.push("-f", `repo=${repo}`);
+    for (const [name, value] of Object.entries(vars)) {
+      if (value === null) continue;
+      args.push(typeof value === "number" ? "-F" : "-f", `${name}=${value}`);
+    }
+    try {
+      return JSON.parse(exec(args)) as T;
+    } catch (error) {
+      rethrowAsGhError(error, ["api", "graphql"], exec);
+    }
+  }
+
+  type GhMergedPr = { number: number; headRefName: string; mergedAt: string | null };
+
+  /** Merged rows, newest merge first. A row with no merge time is not merged. */
+  function toMergedPrRefs(rows: readonly GhMergedPr[]): MergedPrRef[] {
+    return rows
+      .filter((row): row is GhMergedPr & { mergedAt: string } => typeof row.mergedAt === "string")
+      .map((row) => ({
+        number: asPrNumber(row.number),
+        headRefName: asBranchRef(row.headRefName),
+        mergedAt: row.mergedAt,
+      }))
+      .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt));
   }
 
   /**
@@ -1596,6 +1686,154 @@ export function createGitHubClient({
       ]).author?.login ?? null,
 
     lookupUser: (login) => ghApiJson<GitHubUser>(`users/${encodeURIComponent(login)}`),
+
+    listMergedPrs: ({ since, limit }) => {
+      const args = ["pr", "list", "--state", "merged", "--limit", String(limit)];
+      if (since !== null) args.push("--search", `merged:>=${since}`);
+      args.push("--json", "number,headRefName,mergedAt");
+      return toMergedPrRefs(ghJson<GhMergedPr[]>(args));
+    },
+
+    mergedPrsForBranch: (branch) =>
+      toMergedPrRefs(
+        ghJson<GhMergedPr[]>([
+          "pr",
+          "list",
+          "--state",
+          "merged",
+          "--head",
+          branch,
+          "--limit",
+          "20",
+          "--json",
+          "number,headRefName,mergedAt",
+        ]),
+      ),
+
+    benchPrFacts: (prNumber) => {
+      type Actor = { name: string | null; email: string | null } | null;
+      type Raw = {
+        data: {
+          repository: {
+            pullRequest: {
+              number: number;
+              createdAt: string;
+              merged: boolean;
+              baseRefName: string;
+              headRefName: string;
+              headRefOid: string;
+              body: string | null;
+              mergeCommit: { oid: string } | null;
+              closingIssuesReferences: { nodes: Array<{ number: number }> };
+              commits: {
+                totalCount: number;
+                nodes: Array<{ commit: { oid: string; author: Actor } }>;
+              };
+              comments: { nodes: Array<{ body: string }> };
+              timelineItems: { nodes: Array<{ previousRefName?: string }> };
+            };
+          };
+        };
+      };
+      const query = `query($owner:String!,$repo:String!,$pr:Int!) {
+  repository(owner:$owner,name:$repo) {
+    pullRequest(number:$pr) {
+      number createdAt merged baseRefName headRefName headRefOid body
+      mergeCommit { oid }
+      closingIssuesReferences(first:20) { nodes { number } }
+      commits(first:100) { totalCount nodes { commit { oid author { name email } } } }
+      comments(first:100) { nodes { body } }
+      timelineItems(first:10, itemTypes:[BASE_REF_CHANGED_EVENT]) {
+        nodes { ... on BaseRefChangedEvent { previousRefName } }
+      }
+    }
+  }
+}`;
+      const pr = ghGraphql<Raw>(query, { pr: prNumber }).data.repository.pullRequest;
+      return {
+        number: asPrNumber(pr.number),
+        createdAt: pr.createdAt,
+        merged: pr.merged,
+        baseRefName: pr.baseRefName,
+        headRefName: pr.headRefName,
+        headRefOid: asSha(pr.headRefOid),
+        mergeCommitOid: pr.mergeCommit === null ? null : asSha(pr.mergeCommit.oid),
+        body: pr.body ?? "",
+        closingIssues: pr.closingIssuesReferences.nodes.map((node) => node.number),
+        commits: pr.commits.nodes.map(({ commit }) => ({
+          oid: asSha(commit.oid),
+          authorName: commit.author?.name ?? "",
+          authorEmail: commit.author?.email ?? "",
+        })),
+        commitsTruncated: pr.commits.totalCount > pr.commits.nodes.length,
+        commentBodies: pr.comments.nodes.map((node) => node.body),
+        // The nodes, not `totalCount`: with `itemTypes` set, GitHub still counts
+        // every timeline item.
+        baseRefChanged: pr.timelineItems.nodes.some(
+          (node) => typeof node.previousRefName === "string",
+        ),
+      };
+    },
+
+    benchIssueFacts: (issueNumber) => {
+      type Raw = {
+        data: {
+          repository: {
+            issue: {
+              number: number;
+              title: string;
+              body: string | null;
+              labels: { nodes: Array<{ name: string }> };
+              timelineItems: { nodes: Array<{ label?: { name: string } | null }> };
+              comments: {
+                pageInfo: { hasNextPage: boolean; endCursor: string | null };
+                nodes: GhTimeoutComment[];
+              };
+            };
+          };
+        };
+      };
+      const query = `query($owner:String!,$repo:String!,$issue:Int!,$cursor:String) {
+  repository(owner:$owner,name:$repo) {
+    issue(number:$issue) {
+      number title body
+      labels(first:100) { nodes { name } }
+      timelineItems(first:100, itemTypes:[LABELED_EVENT]) { nodes { ... on LabeledEvent { label { name } } } }
+      comments(first:100, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { body createdAt author { login } }
+      }
+    }
+  }
+}`;
+      const comments: GhComment[] = [];
+      let cursor: string | null = null;
+      for (;;) {
+        const issue: Raw["data"]["repository"]["issue"] = ghGraphql<Raw>(query, {
+          issue: issueNumber,
+          cursor,
+        }).data.repository.issue;
+        comments.push(...toTimeoutComments(issue.comments.nodes));
+        if (issue.comments.pageInfo.hasNextPage && issue.comments.pageInfo.endCursor !== null) {
+          cursor = issue.comments.pageInfo.endCursor;
+          continue;
+        }
+        return {
+          number: issue.number,
+          title: issue.title,
+          body: issue.body ?? "",
+          labels: issue.labels.nodes.map((label) => label.name),
+          labelsEverAdded: [
+            ...new Set(
+              issue.timelineItems.nodes.flatMap((item) =>
+                item.label?.name !== undefined ? [item.label.name] : [],
+              ),
+            ),
+          ],
+          comments,
+        };
+      }
+    },
 
     forCycle: () => {
       let openPrs: OpenPhoebePr[] | null = null;
