@@ -126,6 +126,14 @@ export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
 export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
 export type { BenchComment, BenchFixture, BenchSelection, BenchSkip, BenchSuite } from "./bench.ts";
 export type {
+  AgentRunRecord,
+  AgentRunUsage,
+  CostBasis,
+  UnitRecord,
+  UnitRecordOutcome,
+} from "./unit-record.ts";
+export type { HistoryPage, HistoryQuery, HistoryRecord, HistoryTotals } from "./history.ts";
+export type {
   BlockedReason,
   PairResult,
   Reachability,

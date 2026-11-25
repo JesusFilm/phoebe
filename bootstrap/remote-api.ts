@@ -42,6 +42,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { chmodSync, existsSync, rmSync } from "node:fs";
 import type { ConfigEdit, ConfigEditValue, EditReceipt } from "../src/contracts/config-edit.ts";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
+import type { HistoryPage, HistoryQuery } from "../src/contracts/history.ts";
+import { parseHistoryQuery, type RawHistoryQuery } from "../src/history.ts";
 import {
   API_SOCKET_PATH,
   REMOTE_ROUTES,
@@ -120,6 +122,12 @@ export type RemoteApiDeps = {
   report: () => { report: DeploymentReport | null; builtAt: string | null };
   /** Called with a function to run on every report write; returns the unsubscribe. */
   onReport: (listener: () => void) => () => void;
+  /**
+   * One page of unit history (#930), from the same query `phoebe history`
+   * runs. Without it `/api/history` answers 404, as a deployment from before
+   * the route would.
+   */
+  history?: (query: HistoryQuery) => HistoryPage;
   /** The output to serve. Without it `/api/logs` answers 404: this deployment keeps none. */
   logs?: ApiLogs;
   verbs?: RemoteVerbs;
@@ -577,6 +585,18 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
       if (deps.logs === undefined) return json(response, 404, { error: "no-logs" });
       return logsStream(request, response, caller, deps.logs);
     }
+    if (path === REMOTE_ROUTES.history) {
+      if (method !== "GET") return json(response, 405, { error: "method-not-allowed" });
+      if (gate(request, response, "read") === null) return;
+      if (deps.history === undefined) return json(response, 404, { error: "not-found" });
+      let query: HistoryQuery;
+      try {
+        query = parseHistoryQuery(historyParams(url.searchParams));
+      } catch (error) {
+        return json(response, 400, { error: "bad-request", detail: messageOf(error) });
+      }
+      return json(response, 200, deps.history(query));
+    }
     if (path === REMOTE_ROUTES.fleetStop || path === REMOTE_ROUTES.fleetStart) {
       if (method !== "POST") return json(response, 405, { error: "method-not-allowed" });
       const caller = gate(request, response, "operate");
@@ -709,6 +729,25 @@ function refusal(edit: ConfigEdit, why: string, at: number): EditReceipt {
     at: new Date(at).toISOString(),
     ...(edit.by !== undefined ? { by: edit.by } : {}),
   };
+}
+
+/** The history filters a query string carries; anything else in it is ignored. */
+export function historyParams(params: URLSearchParams): RawHistoryQuery {
+  const raw: RawHistoryQuery = {};
+  for (const name of [
+    "cell",
+    "kind",
+    "outcome",
+    "provider",
+    "model",
+    "since",
+    "before",
+    "limit",
+  ] as const) {
+    const value = params.get(name);
+    if (value !== null) raw[name] = value;
+  }
+  return raw;
 }
 
 /** The body as JSON, `{}` for none, or `"too-large"` past the cap. */
