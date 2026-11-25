@@ -6,6 +6,9 @@
 /** The word the run's one GitHub search looks for. */
 export const MARKER_TEXT = "phoebe-observer";
 
+/** The label every proposal wears. */
+export const PROPOSAL_LABEL = "phoebe:observer";
+
 const FINDING_RE = /<!--\s*phoebe-observer\s+finding=([^\s>]+)\s*-->/;
 const UNITS_RE = /<!--\s*phoebe-observer\s+units=([0-9a-f,]*)\s*-->/g;
 

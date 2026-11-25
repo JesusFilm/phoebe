@@ -14,8 +14,10 @@
 //     run. The history is on disk, so a restart does not reset the clock.
 //     With no `every` it never offers one;
 //   - `run` reads every other pipeline's history, read-only, and flags units
-//     from their records alone. The agent sees only those units and the
-//     proposals already filed, and writes its findings to scratch;
+//     from their records and from what became of their PRs (#935,
+//     pr-outcomes.ts). A unit on an observer proposal is never flagged. The
+//     agent sees only the flagged units and the proposals already filed, and
+//     writes its findings to scratch;
 //   - code files from the findings. Each is an issue labelled
 //     `phoebe:observer`, never the ready label, carrying
 //     `<!-- phoebe-observer finding=<category>:<target> -->`. GitHub is the
@@ -27,6 +29,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
 import type { PhoebeConfig } from "../../src/config-schema.ts";
+import { defaultGit, type GitRunner } from "../../src/git-model.ts";
 import { readUnitHistory } from "../../src/history.ts";
 import { addLabelCreatingIfMissing, type PhoebeLabel } from "../../src/labels.ts";
 import { pipelineOwnedKinds } from "../../src/pipeline.ts";
@@ -34,6 +37,7 @@ import {
   defineWorkKind,
   type WorkKindCtx,
   type WorkKindDefinition,
+  type WorkKindRunCtx,
   type WorkKindRunResult,
 } from "../../src/work-kinds/definition.ts";
 import {
@@ -48,16 +52,25 @@ import {
   flagUnits,
   observerGate,
   renderCoverage,
+  unitsSince,
   type FlaggedUnit,
   type PipelineHistory,
 } from "./evidence.ts";
 import { FINDINGS_FILE, parseFindings, type Finding } from "./findings.ts";
 import { everyMs, resolveObserverOptions, type ObserverOptions } from "./options.ts";
 import {
+  gatherPrOutcomes,
+  isProposalUnit,
+  parseRevertLog,
+  phoebeIdentityFrom,
+  type RevertCommit,
+} from "./pr-outcomes.ts";
+import {
   decideFinding,
   listedUnitKeys,
   MARKER_TEXT,
   parseFindingMarker,
+  PROPOSAL_LABEL,
   type Proposal,
 } from "./proposals.ts";
 
@@ -68,7 +81,7 @@ export const OBSERVER_PROMPT_FILE = join(import.meta.dirname, "prompt.md");
 
 /** The label every proposal wears. Never the ready label: a person decides. */
 export const OBSERVER_LABEL: PhoebeLabel = {
-  name: "phoebe:observer",
+  name: PROPOSAL_LABEL,
   description: "Proposed by Phoebe's observer; a person decides whether it becomes work",
 };
 
@@ -77,9 +90,10 @@ export type ObserverUnit = { ref: string; revision: string };
 
 export type ObserverGathered = { unit: ObserverUnit | null };
 
-/** Test seam: where unit history is read from. */
+/** Test seams: where unit history is read from, and the git that reads revert commits. */
 export type ObserverKindDeps = {
   readHistory?: (dir: string) => UnitRecord[];
+  git?: GitRunner;
 };
 
 /**
@@ -135,6 +149,7 @@ export function createObserverKind(
   const at = `kinds.${OBSERVER_KIND_NAME}`;
   const ownPipeline = observerPipelineOf(config, at);
   const readHistory = deps.readHistory ?? ((dir: string) => readUnitHistory(dir));
+  const git = deps.git ?? defaultGit;
   const historyDir = (pipeline: string): string => join(config.paths.stateDir, pipeline);
   const lookbackMs = everyMs(options.lookback);
 
@@ -163,11 +178,40 @@ export function createObserverKind(
         detail: record.detail,
         provider: record.provider,
         model: record.model,
-        prNumber: record.prNumber,
+        prNumber: unit.pr?.number ?? record.prNumber,
+        pr: unit.pr,
       };
     });
     writeFileSync(path, `${JSON.stringify(rows, null, 2)}\n`);
     return byId;
+  }
+
+  /**
+   * Revert commits on the default branch since `since`, from the run's own
+   * read-only checkout: no API call. A revert made with `git revert` says
+   * "This reverts commit <sha>". When git cannot answer, the revert PR search
+   * still stands, so this logs and reads none.
+   */
+  function revertCommitsSince(ctx: WorkKindRunCtx, since: Date): RevertCommit[] {
+    try {
+      const output = git(
+        [
+          "-C",
+          ctx.workspace.dir,
+          "log",
+          `--since=${since.toISOString()}`,
+          "--grep=This reverts commit",
+          "--format=%H%x1f%B%x1e",
+        ],
+        { stdio: "pipe" },
+      );
+      return parseRevertLog(output);
+    } catch (error) {
+      ctx.log(
+        `could not read revert commits from the checkout, so only revert PRs count. ${message(error)}`,
+      );
+      return [];
+    }
   }
 
   function writeProposals(path: string, proposals: readonly Proposal[]): void {
@@ -246,15 +290,32 @@ export function createObserverKind(
         histories.map((history) => coverageOf(history, now, lookbackMs)),
         options.lookback,
       );
-      const flagged = flagUnits(histories, new Date(now.getTime() - lookbackMs));
+      const units = unitsSince(histories, new Date(now.getTime() - lookbackMs));
       const tally: RunTally = { filed: [], foldedInto: [], skipped: 0 };
-      if (flagged.length === 0) {
+      const nothingFlagged = (): WorkKindRunResult => {
         const summary = `no flagged units, ${renderSummary(tally, coverage)}`;
         ctx.log(summary);
         return { summary };
-      }
+      };
+      if (units.length === 0) return nothingFlagged();
 
       const proposals = proposalsOf(ctx);
+      const proposalIssues = new Set(proposals.map((proposal) => proposal.number));
+      const outcomes = gatherPrOutcomes({
+        units,
+        github: ctx.github,
+        revertCommits: (since) => revertCommitsSince(ctx, since),
+        proposalIssues,
+        phoebe: phoebeIdentityFrom(ctx.env),
+        repoSlug: config.repoSlug,
+        ignoredBranches: new Set([config.defaultBranch, `${config.branchPrefix}workspace`]),
+        now,
+      });
+      const flagged = flagUnits(units, {
+        onProposal: (unit) => isProposalUnit(unit.record, proposalIssues),
+        prOutcome: (unit) => outcomes.get(unit.key),
+      });
+      if (flagged.length === 0) return nothingFlagged();
       const scratch = ctx.workspace.scratch;
       const flaggedPath = join(scratch, "flagged.json");
       const proposalsPath = join(scratch, "proposals.json");
