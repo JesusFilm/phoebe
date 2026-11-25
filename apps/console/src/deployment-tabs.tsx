@@ -1,4 +1,4 @@
-// The five tabs one deployment has, rendered (#509, #526, #556).
+// The six tabs one deployment has, rendered (#509, #526, #556, #931).
 //
 // Every component here takes a narrowed report and a connection card and draws
 // them. None of them knows whether the report came off a relay's stream or out
@@ -12,7 +12,7 @@
 // arm it is builds the card and passes it down.
 //
 // What a tab does with nothing is as designed as what it does with a report. A
-// deployment with no readable report has four tabs that say what they need and
+// deployment with no readable report has five tabs that say what they need and
 // one — config — that still works, because config is a file and a file is
 // readable with nothing running (#526).
 //
@@ -26,6 +26,8 @@
 import type { ReactNode } from "react";
 import type { EditReceipt } from "phoebe-agent/contracts";
 import { age } from "./facts.ts";
+import { HistoryTab } from "./history-tab.tsx";
+import type { HistoryReader } from "./history.ts";
 import { bootstrapperOf, cellsOf, childrenOf, tenantsOf, type ReportReading } from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
@@ -38,6 +40,7 @@ export function DeploymentTabPanel({
   empty,
   writes = {},
   overview,
+  history,
   frozen = false,
 }: {
   tab: DeploymentTab;
@@ -55,6 +58,11 @@ export function DeploymentTabPanel({
   writes?: { config?: ReactNode; secrets?: ReactNode; doctor?: ReactNode };
   /** Drawn under the overview's cards: the Devices panel (map #690). */
   overview?: ReactNode;
+  /**
+   * How this arm reads unit history (#931), and a stable name for what it
+   * reads. Without it the History tab says this page cannot read history.
+   */
+  history?: { reader: HistoryReader; scope: string };
   /** The report is the last one received, not a current one: grey it (map #690). */
   frozen?: boolean;
 }) {
@@ -85,6 +93,20 @@ export function DeploymentTabPanel({
         );
       case "pipelines":
         return <PipelinesTab reading={reading} />;
+      case "history":
+        return history === undefined ? (
+          <section>
+            <h2>History</h2>
+            <p className="muted">This page has no way to read this deployment's history.</p>
+          </section>
+        ) : (
+          <HistoryTab
+            reader={history.reader}
+            scope={history.scope}
+            cells={cellsOf(reading.report)}
+            now={now}
+          />
+        );
       case "doctor":
         return <DoctorTab reading={reading} now={now} writes={writes.doctor} />;
       case "secrets":
@@ -97,6 +119,7 @@ export function DeploymentTabPanel({
 const TAB_HEADINGS: Record<DeploymentTab, string> = {
   overview: "Overview",
   pipelines: "Pipelines",
+  history: "History",
   doctor: "Doctor",
   secrets: "Secrets",
   config: "Config",

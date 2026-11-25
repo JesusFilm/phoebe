@@ -223,7 +223,7 @@ before the console existed answers the stream with a refusal, and the pane
 says so in place of its lines: `this deployment keeps no output to show;
 update it`.
 
-The remote route's page has the same five tabs as a local install's. Its
+The remote route's page has the same six tabs as a local install's. Its
 connection card shows reachability, the host, the arm, the protocol, when it
 was last heard from, and the session's scopes and expiry. Above the
 session, **This deployment** says whether the fleet is running and carries
@@ -252,12 +252,13 @@ The console is one React bundle in `apps/console`, which the companion loads fro
 disk.
 
 Selecting an install opens its container's output. The gear beside it opens the
-install's own page: the install tab, and five more.
+install's own page: the install tab, and six more.
 
 | Tab           | What it answers                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                     |
 | **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                     |
+| **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit.       |
 | **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                           |
 | **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                      |
 | **Config**    | Each config as a form, the file one press behind it: the deployment's few settings on a workspace root, a tenant's own on each child. |
@@ -276,12 +277,35 @@ window may still be holding the last report it read, and it does not draw it: a
 report with an age on it beside a container that is down is two facts that
 contradict each other.
 
-Everything on the five tabs is a rendering of `state/deployment.json`, which the
+Everything on the other five tabs is a rendering of `state/deployment.json`, which the
 deployment wrote. Derivation happens in the deployment, once. `phoebe status`
 reads the same file on the host and reaches the same verdicts, which is what
 stops the two from disagreeing about a wedged pipeline. A report whose schema
 the console does not know is not read at all. Guessing would be worse than a
 blank tab.
+
+The History tab reads unit records, which the report does not carry. It asks
+for them one page at a time when the tab opens. On a local install the
+companion runs `phoebe history --json` in the container, and on a remote it
+calls `GET /api/history`. Both return the same page. Each filter sends a new
+query, so a filter finds older units as well as the ones already on screen.
+**Show more** fetches the next page. The foot of the table says how far back
+the deployment's history goes, because older units rotate out.
+
+A row opens a drawer on the right. It shows the unit's outcome, age and cost,
+the provider and model, effort, duration and tokens, a link to its issue or PR
+on GitHub, and one row per agent run. A run that ended before it reported its
+usage is marked `partial`, and its numbers are a lower bound.
+
+Cost reads three ways. API spend shows in dollars. Claude's estimate under a
+subscription shows in dollars followed by a muted "est.", because nobody was
+billed that amount. A unit with no reported cost shows a muted dash. Hovering
+any of them says which it is, and the dash names the provider that reports
+tokens but no cost. The totals above the table keep API spend and the estimate
+apart.
+
+A deployment whose phoebe-agent predates unit history says it is too old,
+instead of showing an empty table.
 
 ## Alerting
 
@@ -354,7 +378,8 @@ machine that holds the folder.
 
 ## Not here yet
 
-Unit history and cost, and a mobile companion, which will scan the same QR and
-speak the same API as the desktop one. Recorded against
+The unit history overview card, the per-pipeline breakdown and the fleet stats
+page, and a mobile companion, which will scan the same QR and speak the same
+API as the desktop one. Recorded against
 [the console map](https://github.com/JesusFilm/phoebe/issues/497) and
 [the remote-access map](https://github.com/JesusFilm/phoebe/issues/690).

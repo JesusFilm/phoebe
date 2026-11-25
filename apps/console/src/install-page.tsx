@@ -1,4 +1,4 @@
-// A local install's page: the five tabs every deployment has, and the **install
+// A local install's page: the six tabs every deployment has, and the **install
 // tab** beside them (#526, #522 §6).
 //
 // The five are fed by the `report` event: main's local read loop execs
@@ -50,6 +50,7 @@ import type {
   InstallPatch,
 } from "phoebe-agent/contracts";
 import { DeploymentTabPanel, ReceiptPanel } from "./deployment-tabs.tsx";
+import { localHistory } from "./history.ts";
 import {
   configSetRequest,
   dockerReading,
@@ -290,6 +291,7 @@ export function InstallPage({
               }}
               config={config}
               now={now}
+              history={{ reader: localHistory(bridge, install.dir), scope: install.dir }}
               overview={
                 <LocalDevices
                   install={install}
