@@ -3,7 +3,7 @@
 // it starts.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
@@ -14,11 +14,13 @@ import {
   parseBenchArgs,
   resolveBenchTenant,
   runBenchCli,
+  runBenchReportInContainer,
   runBenchRunInContainer,
   runBenchSelectInContainer,
 } from "./bench-command.ts";
 import { asBranchRef, asPrNumber, asSha } from "./branded.ts";
 import type { BenchSuite } from "./contracts/bench.ts";
+import type { BenchReport } from "./contracts/bench-report.ts";
 import type { CommandRunner } from "./deployment-compose.ts";
 import { stubGitHub } from "./github-stub.ts";
 
@@ -48,7 +50,7 @@ describe("parseBenchArgs", () => {
   });
 
   test("refuses what it cannot mean", () => {
-    expect(() => parseBenchArgs([])).toThrow(/needs a command: select or run/);
+    expect(() => parseBenchArgs([])).toThrow(/needs a command: select, run or report/);
     expect(() => parseBenchArgs(["replay"])).toThrow(/Unknown `phoebe bench` command `replay`/);
     expect(() => parseBenchArgs(["select", "--issues", "12", "--limit", "3"])).toThrow(
       /does not combine/,
@@ -57,7 +59,8 @@ describe("parseBenchArgs", () => {
     expect(() => parseBenchArgs(["select", "--since", "last week"])).toThrow(/YYYY-MM-DD/);
     expect(() => parseBenchArgs(["select", "--limit", "0"])).toThrow(/positive whole/);
     expect(() => parseBenchArgs(["select", "--tenant"])).toThrow(/needs a value/);
-    expect(() => parseBenchArgs(["select", "--json"])).toThrow(/Unknown flag `--json`/);
+    expect(() => parseBenchArgs(["select", "--json"])).toThrow(/always prints JSON/);
+    expect(() => parseBenchArgs(["select", "--bench-config", "b.json"])).toThrow(/are for `run`/);
   });
 
   test("run takes one suite file and --tenant", () => {
@@ -74,6 +77,39 @@ describe("parseBenchArgs", () => {
     expect(() => parseBenchArgs(["run", "a.json", "--issues", "1"])).toThrow(
       /for `select`, not `run`/,
     );
+  });
+
+  test("run takes a bench config, --concurrency and --json", () => {
+    expect(
+      parseBenchArgs([
+        "run",
+        "bench/suite.json",
+        "--bench-config",
+        "bench/bench.json",
+        "--concurrency=3",
+        "--json",
+      ]),
+    ).toEqual({
+      help: false,
+      command: "run",
+      suitePath: "bench/suite.json",
+      benchConfigPath: "bench/bench.json",
+      concurrency: 3,
+      json: true,
+    });
+    expect(() => parseBenchArgs(["run", "s.json", "--concurrency", "0"])).toThrow(/positive whole/);
+  });
+
+  test("report takes one run id and --json", () => {
+    expect(parseBenchArgs(["report", "2026-11-25T12-00-00-000Z", "--json"])).toEqual({
+      help: false,
+      command: "report",
+      runId: "2026-11-25T12-00-00-000Z",
+      json: true,
+    });
+    expect(() => parseBenchArgs(["report"])).toThrow(/needs a run id/);
+    expect(() => parseBenchArgs(["report", "r", "--concurrency", "2"])).toThrow(/are for `run`/);
+    expect(() => parseBenchArgs(["report", "r", "--issues", "1"])).toThrow(/not `report`/);
   });
 
   test("--help needs no command", () => {
@@ -151,6 +187,54 @@ describe("the host arm", () => {
       runner,
     });
     expect(calls[0]!.args.slice(-3)).toEqual(["bench", "run", "bench/suite.json"]);
+  });
+
+  test("run hands the container the bench config's path, --concurrency and --json", async () => {
+    const calls: Array<Parameters<CommandRunner>[0]> = [];
+    const runner: CommandRunner = (spec) => {
+      calls.push(spec);
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    };
+    const deps = {
+      cwd: root,
+      inContainer: false,
+      dockerAvailable: true,
+      hasDeploymentBlock: false,
+      runner,
+    };
+    await runBenchCli(
+      [
+        "run",
+        "bench/suite.json",
+        "--bench-config",
+        join(root, "bench", "bench.json"),
+        "--concurrency",
+        "2",
+        "--json",
+      ],
+      deps,
+    );
+    expect(calls[0]!.args.slice(-8)).toEqual([
+      "bench",
+      "run",
+      "bench/suite.json",
+      "--bench-config",
+      "bench/bench.json",
+      "--concurrency",
+      "2",
+      "--json",
+    ]);
+    await expect(
+      runBenchCli(["run", "bench/suite.json", "--bench-config", "/tmp/bench.json"], deps),
+    ).rejects.toThrow(/The bench config \/tmp\/bench.json is outside the deployment directory/);
+    await runBenchCli(["report", "2026-11-25T12-00-00-000Z", "--tenant", "acme/widget"], deps);
+    expect(calls[1]!.args.slice(-5)).toEqual([
+      "bench",
+      "report",
+      "2026-11-25T12-00-00-000Z",
+      "--tenant",
+      "acme/widget",
+    ]);
   });
 
   test("run refuses a suite the container cannot see", async () => {
@@ -335,14 +419,15 @@ describe("the container arm of run", () => {
     const hubDir = join(dataBase, "acme", "widget", "repo");
     const baseSha = hubWithOneCommit(hubDir);
     writeSuite("acme/widget", baseSha);
+    const stdout: string[] = [];
     const stderr: string[] = [];
     const prepared: string[] = [];
     const gates: string[] = [];
 
     const result = await runBenchRunInContainer(parseBenchArgs(["run", "bench/suite.json"]), {
       cwd: root,
-      env: { PHOEBE_DATA_DIR: dataBase, PATH: process.env["PATH"] },
-      io: { stdout: () => {}, stderr: (line) => stderr.push(line) },
+      env: { PHOEBE_DATA_DIR: dataBase, PATH: process.env["PATH"], ANTHROPIC_API_KEY: "k" },
+      io: { stdout: (text) => stdout.push(text), stderr: (line) => stderr.push(line) },
       prepareClone: (config) => prepared.push(config.paths.repoDir),
       signal: new AbortController().signal,
       run: {
@@ -365,7 +450,68 @@ describe("the container arm of run", () => {
     expect(result.trials).toHaveLength(1);
     expect(result.trials[0]).toMatchObject({ outcome: "completed", change: "none" });
     expect(gates).toEqual(["pnpm install"]);
-    expect(result.summary.interrupted).toBe(false);
+    expect(result.report.interrupted).toBe(false);
+    // The table on stdout, one row for the one contender.
+    const table = stdout.join("");
+    expect(table).toMatch(/^contender\s+trials\s+no change\s+check\s+test/m);
+    expect(table).toMatch(/^tenant\s+1\s+1\s+0%\s+0%/m);
+
+    // `bench report` prints the saved run again, here as JSON.
+    const again: string[] = [];
+    const reprinted = await runBenchReportInContainer(
+      parseBenchArgs(["report", result.runId, "--json"]),
+      {
+        cwd: root,
+        env: { PHOEBE_DATA_DIR: dataBase },
+        io: { stdout: (text) => again.push(text), stderr: () => {} },
+      },
+    );
+    expect(reprinted).toEqual(result.report);
+    expect(JSON.parse(again.join("")) as BenchReport).toEqual(result.report);
+    await expect(
+      runBenchReportInContainer(parseBenchArgs(["report", "nope"]), {
+        cwd: root,
+        env: { PHOEBE_DATA_DIR: dataBase },
+        io: { stdout: () => {}, stderr: () => {} },
+      }),
+    ).rejects.toThrow(
+      new RegExp(`No bench report for run \`nope\`. Saved runs, newest last: ${result.runId}`),
+    );
+  });
+
+  test("refuses a bench config it cannot read, and a contender with no provider key", async () => {
+    const hubDir = join(dataBase, "acme", "widget", "repo");
+    writeSuite("acme/widget", hubWithOneCommit(hubDir));
+    const deps = {
+      cwd: root,
+      env: { PHOEBE_DATA_DIR: dataBase, PATH: process.env["PATH"], ANTHROPIC_API_KEY: "k" },
+      io: { stdout: () => {}, stderr: () => {} },
+      prepareClone: () => {},
+      signal: new AbortController().signal,
+      run: { engineCommit: null },
+    };
+    writeFileSync(
+      join(root, "bench", "bench.json"),
+      JSON.stringify({ contenders: [{ name: "a", modle: "x" }] }),
+    );
+    await expect(
+      runBenchRunInContainer(
+        parseBenchArgs(["run", "bench/suite.json", "--bench-config", "bench/bench.json"]),
+        deps,
+      ),
+    ).rejects.toThrow(/contenders\[0\] has unknown field `modle`/);
+
+    writeFileSync(
+      join(root, "bench", "bench.json"),
+      JSON.stringify({ contenders: [{ name: "a" }, { name: "b", provider: "codex" }] }),
+    );
+    await expect(
+      runBenchRunInContainer(
+        parseBenchArgs(["run", "bench/suite.json", "--bench-config", "bench/bench.json"]),
+        deps,
+      ),
+    ).rejects.toThrow(/b: codex needs OPENAI_KEY, which is unset/);
+    expect(existsSync(join(dataBase, "acme", "widget", "bench"))).toBe(false);
   });
 
   test("refuses a suite for another repo before touching the hub", async () => {

@@ -1,5 +1,5 @@
-// `phoebe bench run` (#940): a real git fixture repo as the hub, a fake agent
-// that reports what its trial looked like, and the run's files on disk.
+// `phoebe bench run` (#940, #941): a real git fixture repo as the hub, a fake
+// agent that reports what its trial looked like, and the run's files on disk.
 
 import { execFileSync, spawn } from "node:child_process";
 import {
@@ -15,10 +15,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
+  assertContenderKeys,
   benchRoot,
   BENCH_RUNS_KEPT,
   isGitHubCredentialKey,
   newRunId,
+  parseBenchConfig,
   parseShortstat,
   parseSuite,
   pruneRuns,
@@ -29,7 +31,8 @@ import {
   WORK_DIR,
 } from "./bench-run.ts";
 import { resolveConfig, type PhoebeConfig } from "./config-schema.ts";
-import type { BenchRunConfig, BenchRunSummary, BenchSuite, BenchTrial } from "./contracts/bench.ts";
+import type { BenchConfig, BenchRunConfig, BenchSuite, BenchTrial } from "./contracts/bench.ts";
+import type { BenchReport } from "./contracts/bench-report.ts";
 import type { SpawnAgent } from "./providers/run-agent.ts";
 
 const IDENTITY = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"];
@@ -71,6 +74,7 @@ if (mode === "sleep") setTimeout(() => {}, 60_000);
 describe("runBench", () => {
   let root: string;
   let runtimeRoot: string;
+  let deploymentDir: string;
   let config: PhoebeConfig;
   let baseSha: string;
   let futureSha: string;
@@ -112,12 +116,13 @@ describe("runBench", () => {
   ): SpawnAgent {
     return (_file, _args, opts) => {
       const issue = Number(/issue-(\d+)-/.exec(opts.cwd)?.[1]);
+      const trialId = /(issue-[^/]+)[/\\]repo/.exec(opts.cwd)?.[1];
       onSpawn(issue);
       return spawn(
         process.execPath,
         [
           agentScript,
-          join(reportsDir, `${issue}.json`),
+          join(reportsDir, trialId === undefined ? `${issue}.json` : `${trialId}.prompt.json`),
           modes[issue] ?? "none",
           String(issue),
           futureSha,
@@ -127,7 +132,10 @@ describe("runBench", () => {
     };
   }
 
-  function seen(issue: number): {
+  function seen(
+    issue: number,
+    trialId = `issue-${issue}-tenant-0`,
+  ): {
     env: Record<string, string>;
     remotes: string;
     credentialHelper: unknown;
@@ -137,7 +145,7 @@ describe("runBench", () => {
     push: unknown;
     prompt: string;
   } {
-    return JSON.parse(readFileSync(join(reportsDir, `${issue}.json`), "utf8"));
+    return JSON.parse(readFileSync(join(reportsDir, `${trialId}.prompt.json`), "utf8"));
   }
 
   function trialsOf(runDir: string): BenchTrial[] {
@@ -152,6 +160,12 @@ describe("runBench", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "phoebe-bench-run-"));
     runtimeRoot = join(root, "runtime");
+    deploymentDir = join(root, "deployment");
+    mkdirSync(join(deploymentDir, "bench"), { recursive: true });
+    writeFileSync(
+      join(deploymentDir, "bench", "candidate.md"),
+      "Candidate prompt for #{{ISSUE_NUMBER}}.\n",
+    );
     config = resolveConfig(
       {
         repoSlug: "acme/widget",
@@ -197,6 +211,8 @@ describe("runBench", () => {
       env?: NodeJS.ProcessEnv;
       signal?: AbortSignal;
       onSpawn?: (issue: number) => void;
+      benchConfig?: BenchConfig;
+      concurrency?: number;
     } = {},
   ) {
     const lines: string[] = [];
@@ -207,6 +223,11 @@ describe("runBench", () => {
       suitePath: "bench/suite.json",
       runtimeRoot,
       ...(extra.signal !== undefined ? { signal: extra.signal } : {}),
+      ...(extra.benchConfig !== undefined
+        ? { benchConfig: extra.benchConfig, benchConfigPath: "bench/bench.json" }
+        : {}),
+      ...(extra.concurrency !== undefined ? { concurrency: extra.concurrency } : {}),
+      deploymentDir,
       deps: {
         spawnAgent: fakeAgent(modes, extra.onSpawn),
         log: (line) => lines.push(line),
@@ -241,7 +262,7 @@ describe("runBench", () => {
   });
 
   test("records each trial with bench's own gate results, its diff and its patch", async () => {
-    const { runDir, trials, summary } = await run([7, 8], { 7: "commit", 8: "none" });
+    const { runDir, trials, report } = await run([7, 8], { 7: "commit", 8: "none" });
 
     expect(trialsOf(runDir)).toEqual(trials);
     const [fixed, untouched] = trials;
@@ -298,11 +319,22 @@ describe("runBench", () => {
       checkCommand: "test -f fixed.txt",
       testCommand: "exit 3",
     });
-    expect(summary).toMatchObject({
+    expect(report).toMatchObject({
       interrupted: false,
+      benchConfig: null,
+      repeat: 1,
+      concurrency: 1,
       planned: 2,
       recorded: 2,
       outcomes: { completed: 2, failed: 0, timedOut: 0, noChange: 1 },
+    });
+    expect(report.contenders).toHaveLength(1);
+    expect(report.contenders[0]).toMatchObject({
+      contender: { name: "tenant" },
+      trials: 2,
+      noChange: 1,
+      check: { passed: 1, of: 2, rate: 0.5 },
+      test: { passed: 0, of: 2, rate: 0 },
     });
   });
 
@@ -361,7 +393,11 @@ describe("runBench", () => {
 
   test("an interrupt drops the trial in flight and leaves a partial report", async () => {
     const controller = new AbortController();
-    const { runDir, trials, summary } = await run(
+    const {
+      runDir,
+      trials,
+      report: returned,
+    } = await run(
       [7, 8, 9],
       { 7: "commit", 8: "sleep" },
       {
@@ -373,12 +409,133 @@ describe("runBench", () => {
     );
     expect(trials.map((trial) => trial.fixture.issue)).toEqual([7]);
     expect(trialsOf(runDir).map((trial) => trial.fixture.issue)).toEqual([7]);
-    const report = JSON.parse(readFileSync(join(runDir, REPORT_FILE), "utf8")) as BenchRunSummary;
-    expect(report).toEqual(summary);
+    const report = JSON.parse(readFileSync(join(runDir, REPORT_FILE), "utf8")) as BenchReport;
+    expect(report).toEqual(returned);
     expect(report).toMatchObject({ interrupted: true, planned: 3, recorded: 1 });
     expect(existsSync(join(runDir, WORK_DIR))).toBe(false);
-    expect(existsSync(join(reportsDir, "9.json"))).toBe(false);
+    expect(existsSync(join(reportsDir, "issue-9-tenant-0.prompt.json"))).toBe(false);
   }, 20_000);
+
+  test("two contenders over one suite give one row each, the tenant filling what each left unset", async () => {
+    config = { ...config, model: "tenant-model", effort: "medium" };
+    const { runDir, trials, report } = await run(
+      [7, 8],
+      { 7: "commit", 8: "none" },
+      {
+        benchConfig: {
+          contenders: [
+            { name: "current" },
+            { name: "candidate", model: "other-model", promptFile: "bench/candidate.md" },
+          ],
+        },
+      },
+    );
+
+    expect(trials.map((trial) => [trial.fixture.issue, trial.contender])).toEqual([
+      [7, "current"],
+      [7, "candidate"],
+      [8, "current"],
+      [8, "candidate"],
+    ]);
+    const [current, candidate] = report.contenders;
+    expect(current!.contender).toMatchObject({
+      name: "current",
+      provider: "claude",
+      model: "tenant-model",
+      effort: "medium",
+      promptFile: config.promptFiles.issue,
+    });
+    // Only the model and prompt are the contender's; provider and effort are the tenant's.
+    expect(candidate!.contender).toMatchObject({
+      name: "candidate",
+      provider: "claude",
+      model: "other-model",
+      effort: "medium",
+      promptFile: "bench/candidate.md",
+    });
+    expect(candidate!.contender.promptSha).not.toBe(current!.contender.promptSha);
+    expect(trials.find((t) => t.contender === "candidate")!.agentRuns[0]!.promptSha).toBe(
+      candidate!.contender.promptSha,
+    );
+    expect(seen(7, "issue-7-candidate-0").prompt).toContain("Candidate prompt for #7.");
+    expect(seen(7, "issue-7-current-0").prompt).toContain("Work issue #7.");
+
+    for (const row of report.contenders) {
+      expect(row).toMatchObject({
+        trials: 2,
+        noChange: 1,
+        check: { passed: 1, of: 2, rate: 0.5 },
+        test: { passed: 0, of: 2, rate: 0 },
+      });
+      expect(row.medianDurationMs).toEqual(expect.any(Number));
+      expect(Object.keys(row).sort()).toEqual(
+        [
+          "apiCostUsd",
+          "check",
+          "contender",
+          "medianDurationMs",
+          "medianTokens",
+          "noChange",
+          "outcomes",
+          "subscriptionEstimateUsd",
+          "test",
+          "trials",
+        ].sort(),
+      );
+    }
+    expect(report).toMatchObject({ planned: 4, recorded: 4, benchConfig: "bench/bench.json" });
+    expect(JSON.parse(readFileSync(join(runDir, REPORT_FILE), "utf8"))).toEqual(report);
+    const runConfig = JSON.parse(
+      readFileSync(join(runDir, RUN_CONFIG_FILE), "utf8"),
+    ) as BenchRunConfig;
+    expect(runConfig.contenders).toEqual(report.contenders.map((row) => row.contender));
+  });
+
+  test("a contender's provider brings that provider's own defaults, not the tenant's model", async () => {
+    const { report } = await run(
+      [8],
+      { 8: "none" },
+      {
+        env: { OPENAI_KEY: "provider-key-for-test" },
+        benchConfig: { contenders: [{ name: "codex", provider: "codex", effort: null }] },
+      },
+    );
+    expect(report.contenders[0]!.contender).toMatchObject({
+      provider: "codex",
+      model: config.defaultModels.codex,
+      effort: null,
+    });
+  });
+
+  test("repeat replays each pair with distinct repeat indexes, concurrently when asked", async () => {
+    const { trials, report } = await run(
+      [7],
+      { 7: "commit" },
+      {
+        benchConfig: { contenders: [{ name: "a" }, { name: "b" }], repeat: 3 },
+        concurrency: 2,
+      },
+    );
+    const pairs = trials.map((trial) => `${trial.contender}#${trial.repeat}`).sort();
+    expect(pairs).toEqual(["a#0", "a#1", "a#2", "b#0", "b#1", "b#2"]);
+    expect(new Set(trials.map((trial) => trial.patch)).size).toBe(6);
+    expect(report).toMatchObject({ repeat: 3, concurrency: 2, planned: 6, recorded: 6 });
+    expect(report.contenders.map((row) => row.trials)).toEqual([3, 3]);
+  }, 30_000);
+
+  test("refuses, before any trial, a contender with a missing prompt file or provider key", async () => {
+    await expect(
+      run(
+        [7],
+        {},
+        { benchConfig: { contenders: [{ name: "x", promptFile: "bench/missing.md" }] } },
+      ),
+    ).rejects.toThrow(/Contender `x`: Could not find prompt file bench\/missing.md/);
+    await expect(
+      run([7], {}, { benchConfig: { contenders: [{ name: "x", provider: "cursor" }] } }),
+    ).rejects.toThrow(/x: cursor needs CURSOR_API_KEY, which is unset/);
+    expect(existsSync(benchRoot(config))).toBe(false);
+  });
 
   test("only the last 10 run directories remain after a new run starts", async () => {
     const bench = benchRoot(config);
@@ -416,6 +573,68 @@ describe("pieces", () => {
       deletions: 1,
     });
     expect(parseShortstat(" 1 file changed, 1 insertion(+)\n", 1)).toMatchObject({ deletions: 0 });
+  });
+
+  test("parseBenchConfig reads contenders and repeat, and refuses what it would guess at", () => {
+    expect(
+      parseBenchConfig(
+        JSON.stringify({
+          contenders: [
+            { name: "a" },
+            { name: "b.2", provider: "codex", model: "m", effort: null, promptFile: "p.md" },
+          ],
+          repeat: 2,
+        }),
+        "bench.json",
+      ),
+    ).toEqual({
+      contenders: [
+        { name: "a" },
+        { name: "b.2", provider: "codex", model: "m", effort: null, promptFile: "p.md" },
+      ],
+      repeat: 2,
+    });
+    const refuse =
+      (value: unknown): (() => BenchConfig) =>
+      () =>
+        parseBenchConfig(JSON.stringify(value), "bench.json");
+    expect(() => parseBenchConfig("{", "bench.json")).toThrow(/bench.json is not JSON/);
+    expect(refuse({ contenders: [] })).toThrow(/at least one/);
+    expect(refuse({ contenders: [{ name: "a" }], repeat: 0 })).toThrow(/`repeat` must be/);
+    expect(refuse({ contenders: [{ name: "a" }], judge: {} })).toThrow(/unknown field `judge`/);
+    expect(refuse({ contenders: [{ name: "a/b" }] })).toThrow(/name must be/);
+    expect(refuse({ contenders: [{ name: "a" }, { name: "a" }] })).toThrow(/two contenders/);
+    expect(refuse({ contenders: [{ name: "a", provider: "gpt" }] })).toThrow(/not one of/);
+    expect(refuse({ contenders: [{ name: "a", model: "" }] })).toThrow(/non-empty string/);
+  });
+
+  test("assertContenderKeys names every contender whose key is unset", () => {
+    const contender = (name: string, provider: string) => ({
+      name,
+      provider,
+      model: "m",
+      effort: null,
+      promptFile: "p",
+      promptSha: "s",
+    });
+    const config = {
+      repoSlug: "acme/widget",
+      providerEnv: { claude: "ANTHROPIC_API_KEY", codex: "OPENAI_KEY", cursor: "CURSOR_API_KEY" },
+    };
+    expect(() =>
+      assertContenderKeys({
+        contenders: [contender("a", "claude"), contender("b", "codex")],
+        config,
+        env: { ANTHROPIC_API_KEY: "k", OPENAI_KEY: " " },
+      }),
+    ).toThrow(/a contender on acme\/widget:\n {2}b: codex needs OPENAI_KEY/);
+    expect(() =>
+      assertContenderKeys({
+        contenders: [contender("a", "claude")],
+        config,
+        env: { ANTHROPIC_API_KEY: "k" },
+      }),
+    ).not.toThrow();
   });
 
   test("parseSuite refuses a suite for another repo, or none at all", () => {

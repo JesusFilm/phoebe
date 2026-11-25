@@ -1,8 +1,13 @@
-// `phoebe bench run <suite>` (#940; spec #925, decisions #921): replay every
-// fixture in a suite with one contender — the tenant's own `issues` settings —
-// offline, and record each trial under `bench/<runId>/`.
+// `phoebe bench run <suite>` (#940, #941; spec #925, decisions #921): replay
+// every fixture in a suite with every contender, `repeat` times each, offline,
+// record each trial under `bench/<runId>/`, and end with a report.
 //
-// A trial is one fixture replayed once:
+// The contenders come from a bench config the operator keeps. Each sets any of
+// `provider`, `model`, `effort` and `promptFile`; the tenant's `issues`
+// settings fill the rest. With no bench config the one contender is the
+// tenant's own settings.
+//
+// A trial is one contender replaying one fixture once:
 //
 //   1. A fresh repository holding the history up to `baseSha`, fetched from the
 //      hub clone, with no remote. Nothing the agent pushes can go anywhere, and
@@ -40,19 +45,27 @@ import {
   GH_SHIM_WOULD_HAVE_FILE,
   type GhShimSnapshot,
 } from "./bench-gh-shim.ts";
-import { DEFAULT_PIPELINE_NAME, type PhoebeConfig } from "./config-schema.ts";
+import { buildBenchReport, REPORT_FILE } from "./bench-report.ts";
+import {
+  DEFAULT_PIPELINE_NAME,
+  PROVIDER_NAMES,
+  type PhoebeConfig,
+  type ProviderName,
+} from "./config-schema.ts";
 import type {
+  BenchConfig,
   BenchContender,
+  BenchContenderSpec,
   BenchDiffStats,
   BenchFixture,
   BenchGateResult,
   BenchGates,
   BenchRunConfig,
-  BenchRunSummary,
   BenchSuite,
   BenchTrial,
   BenchWouldHave,
 } from "./contracts/bench.ts";
+import type { BenchReport } from "./contracts/bench-report.ts";
 import { UNIT_RECORD_VERSION, type UnitRecordOutcome } from "./contracts/unit-record.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { pipelineOwnedKinds, selectPipeline } from "./pipeline.ts";
@@ -63,6 +76,7 @@ import { PROVIDERS } from "./providers/providers.ts";
 import { runAgent, type SpawnAgent } from "./providers/run-agent.ts";
 import { costBasisFor } from "./providers/usage.ts";
 import { resolveRunTimeoutMsForKind, RunTimeoutError, runWithDeadline } from "./run-timeout.ts";
+import { kindEnvNames, settingAt } from "./settings-catalogue.ts";
 import { buildInstallCommandEnv, buildPromptShellEnv } from "./shell-env.ts";
 import {
   agentRunRecord,
@@ -86,7 +100,7 @@ export const TENANT_CONTENDER = "tenant";
 
 export const TRIALS_FILE = "trials.jsonl";
 export const RUN_CONFIG_FILE = "config.json";
-export const REPORT_FILE = "report.json";
+export { REPORT_FILE };
 export const PATCHES_DIR = "patches";
 /** Where the trials' trees live while they run; removed after each. */
 export const WORK_DIR = "work";
@@ -225,17 +239,21 @@ export type BenchRunDeps = {
   engineCommit?: string | null;
 };
 
-/** One trial's settings, resolved once for the run. */
-type TrialPlan = {
+/** What every trial of a run shares, resolved once. */
+type RunPlan = {
   runId: string;
   runDir: string;
   config: PhoebeConfig;
   env: NodeJS.ProcessEnv;
-  contender: BenchContender;
-  template: string;
   runTimeoutMs: number;
   engineCommit: string | null;
 };
+
+/** A contender with the prompt template it renders. */
+export type ResolvedContender = { contender: BenchContender; template: string };
+
+/** One trial's settings: the run's, and its contender's. */
+type TrialPlan = RunPlan & ResolvedContender;
 
 type TrialDirs = { root: string; repo: string; home: string; bin: string; gh: string };
 
@@ -697,71 +715,201 @@ export function issuesPipelineConfig(config: PhoebeConfig): PhoebeConfig {
   return selectPipeline(config, owner?.[0] ?? DEFAULT_PIPELINE_NAME);
 }
 
-/** The tenant's own `issues` settings, as the one contender. */
-export function tenantContender(opts: {
+// --- contenders -------------------------------------------------------------
+
+/** What a contender's name may be: it lands in trial ids and patch file names. */
+const CONTENDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+const CONTENDER_FIELDS = new Set(["name", "provider", "model", "effort", "promptFile"]);
+const BENCH_CONFIG_FIELDS = new Set(["contenders", "repeat"]);
+
+/** Read a bench config, refusing anything it would have to guess at. */
+export function parseBenchConfig(text: string, where: string): BenchConfig {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${where} is not JSON: ${errorText(error)}`);
+  }
+  const fail = (what: string): never => {
+    throw new Error(`${where}: ${what}`);
+  };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    fail("expected an object with `contenders`.");
+  }
+  const config = raw as Record<string, unknown>;
+  for (const key of Object.keys(config)) {
+    if (!BENCH_CONFIG_FIELDS.has(key)) {
+      fail(`unknown field \`${key}\` (expected ${[...BENCH_CONFIG_FIELDS].join(", ")}).`);
+    }
+  }
+  const repeat = config["repeat"];
+  if (
+    repeat !== undefined &&
+    (typeof repeat !== "number" || !Number.isInteger(repeat) || repeat < 1)
+  ) {
+    fail(`\`repeat\` must be a positive whole number (got ${JSON.stringify(repeat)}).`);
+  }
+  const list = config["contenders"];
+  if (!Array.isArray(list) || list.length === 0) fail("`contenders` must list at least one.");
+  const names = new Set<string>();
+  const contenders = (list as unknown[]).map((entry, i): BenchContenderSpec => {
+    const at = `contenders[${i}]`;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return fail(`${at} must be an object with a \`name\`.`);
+    }
+    const spec = entry as Record<string, unknown>;
+    for (const key of Object.keys(spec)) {
+      if (!CONTENDER_FIELDS.has(key)) {
+        fail(`${at} has unknown field \`${key}\` (expected ${[...CONTENDER_FIELDS].join(", ")}).`);
+      }
+    }
+    const name = spec["name"];
+    if (typeof name !== "string" || !CONTENDER_NAME.test(name)) {
+      fail(
+        `${at}.name must be letters, digits, \`.\`, \`_\` or \`-\` (got ${JSON.stringify(name)}).`,
+      );
+    }
+    if (names.has(name as string)) fail(`two contenders are named \`${String(name)}\`.`);
+    names.add(name as string);
+    const text = (key: string): string | undefined => {
+      const value = spec[key];
+      if (value === undefined) return undefined;
+      if (typeof value !== "string" || value.trim() === "") {
+        fail(`${at}.${key} must be a non-empty string.`);
+      }
+      return (value as string).trim();
+    };
+    const provider = text("provider");
+    if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider)) {
+      fail(`${at}.provider \`${provider}\` is not one of ${PROVIDER_NAMES.join(", ")}.`);
+    }
+    const model = text("model");
+    const promptFile = text("promptFile");
+    const effort = spec["effort"] === null ? null : text("effort");
+    return {
+      name: name as string,
+      ...(provider !== undefined ? { provider } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+      ...(promptFile !== undefined ? { promptFile } : {}),
+    };
+  });
+  return { contenders, ...(repeat !== undefined ? { repeat: repeat as number } : {}) };
+}
+
+const PROVIDER_SETTING = settingAt("defaultProvider");
+const MODEL_SETTING = settingAt("model");
+const EFFORT_SETTING = settingAt("effort");
+
+/**
+ * The env a contender's provider, model and effort resolve under: the tenant's,
+ * with each field the contender sets written as the `issues` kind's own env
+ * setting. That is the top rung of the production ladder, so a set field wins
+ * and an unset one resolves exactly as the tenant's `issues` units would —
+ * including the guard that keeps one provider's model away from another's CLI.
+ */
+function contenderSelectionEnv(
+  env: NodeJS.ProcessEnv,
+  spec: Pick<BenchContenderSpec, "provider" | "model" | "effort">,
+): NodeJS.ProcessEnv {
+  const out = { ...env };
+  const put = (setting: ReturnType<typeof settingAt>, value: string | undefined): void => {
+    if (value === undefined) return;
+    const names = kindEnvNames(setting, "issues");
+    for (const name of names) delete out[name];
+    out[names[0]!] = value;
+  };
+  put(PROVIDER_SETTING, spec.provider);
+  put(MODEL_SETTING, spec.model);
+  put(EFFORT_SETTING, typeof spec.effort === "string" ? spec.effort : undefined);
+  return out;
+}
+
+/**
+ * Resolve a run's contenders. Without a bench config there is one, the tenant's
+ * own `issues` settings, named `tenant`. A contender's `promptFile` resolves
+ * against the deployment directory; the tenant's against its runtime root, as
+ * its engine resolves it. Throws on a prompt file that is not there.
+ */
+export function resolveContenders(opts: {
   config: PhoebeConfig;
   env: NodeJS.ProcessEnv;
+  benchConfig: BenchConfig | null;
   runtimeRoot: string;
-}): { contender: BenchContender; template: string } {
-  const selection = selectProviderForKind({ kind: "issues", env: opts.env, config: opts.config });
-  const promptFile = opts.config.promptFiles.issue;
-  const template = loadPromptTemplate(promptFile, opts.runtimeRoot);
-  return {
-    contender: {
-      name: TENANT_CONTENDER,
-      provider: selection.provider,
-      model: selection.model,
-      effort: selection.effort ?? null,
-      promptFile,
-      promptSha: promptShaOf(template),
-    },
-    template,
-  };
+  deploymentDir: string;
+}): ResolvedContender[] {
+  const specs: BenchContenderSpec[] = opts.benchConfig?.contenders ?? [{ name: TENANT_CONTENDER }];
+  return specs.map((spec) => {
+    const selection = selectProviderForKind({
+      kind: "issues",
+      env: contenderSelectionEnv(opts.env, spec),
+      config: opts.config,
+    });
+    const promptFile = spec.promptFile ?? opts.config.promptFiles.issue;
+    const root = spec.promptFile !== undefined ? opts.deploymentDir : opts.runtimeRoot;
+    let template: string;
+    try {
+      template = loadPromptTemplate(promptFile, root);
+    } catch (error) {
+      throw new Error(`Contender \`${spec.name}\`: ${errorText(error)}`, { cause: error });
+    }
+    return {
+      contender: {
+        name: spec.name,
+        provider: selection.provider,
+        model: selection.model,
+        effort: spec.effort === null ? null : (selection.effort ?? null),
+        promptFile,
+        promptSha: promptShaOf(template),
+      },
+      template,
+    };
+  });
 }
+
+/**
+ * Refuse a run whose contender has no provider key to hand its agent. The
+ * trial's HOME is its own, so a provider's on-disk login is not there to fall
+ * back on: the key the tenant's `providerEnv` names is the only way in.
+ */
+export function assertContenderKeys(opts: {
+  contenders: readonly BenchContender[];
+  config: Pick<PhoebeConfig, "providerEnv" | "repoSlug">;
+  env: NodeJS.ProcessEnv;
+}): void {
+  const missing = opts.contenders.flatMap((contender) => {
+    const key = opts.config.providerEnv[contender.provider as ProviderName];
+    const value = key === undefined ? undefined : opts.env[key];
+    return value !== undefined && value.trim() !== ""
+      ? []
+      : [`  ${contender.name}: ${contender.provider} needs ${key ?? "a key"}, which is unset`];
+  });
+  if (missing.length === 0) return;
+  throw new Error(
+    `No provider key for ${missing.length === 1 ? "a contender" : `${missing.length} contenders`} ` +
+      `on ${opts.config.repoSlug}:\n${missing.join("\n")}\n` +
+      `Set the key in this tenant's .env or secret store, or point providerEnv at the var that holds it.`,
+  );
+}
+
+// --- the run ----------------------------------------------------------------
 
 export type BenchRunResult = {
   runId: string;
   runDir: string;
   trials: BenchTrial[];
-  summary: BenchRunSummary;
+  report: BenchReport;
 };
 
-/** Count what the run recorded. */
-export function summarize(opts: {
-  runId: string;
-  repo: string;
-  startedAt: Date;
-  finishedAt: Date;
-  interrupted: boolean;
-  planned: number;
-  trials: readonly BenchTrial[];
-}): BenchRunSummary {
-  const { trials } = opts;
-  const count = (outcome: UnitRecordOutcome): number =>
-    trials.filter((t) => t.outcome === outcome).length;
-  return {
-    v: 1,
-    runId: opts.runId,
-    repo: opts.repo,
-    startedAt: opts.startedAt.toISOString(),
-    finishedAt: opts.finishedAt.toISOString(),
-    interrupted: opts.interrupted,
-    planned: opts.planned,
-    recorded: trials.length,
-    outcomes: {
-      completed: count("completed"),
-      failed: count("failed"),
-      timedOut: count("timed-out"),
-      noChange: trials.filter((t) => t.outcome === "completed" && t.change === "none").length,
-    },
-  };
-}
-
 /**
- * Replay every fixture once with the tenant's `issues` settings. Trials run one
- * at a time; one that fails or times out is recorded and the run goes on. When
- * `signal` fires, the trial in flight is dropped and `report.json` is written
- * with `interrupted: true`.
+ * Replay every fixture with every contender, `repeat` times each, up to
+ * `concurrency` trials at once. One that fails or times out is recorded and the
+ * run goes on. When `signal` fires, the trials in flight are dropped and
+ * `report.json` is written with `interrupted: true`.
+ *
+ * Throws, before any trial, on what would make every trial meaningless: a
+ * contender whose prompt file is missing, or whose provider has no key.
  */
 export async function runBench(opts: {
   config: PhoebeConfig;
@@ -769,12 +917,19 @@ export async function runBench(opts: {
   suite: BenchSuite;
   suitePath: string;
   runtimeRoot: string;
+  /** Where a contender's `promptFile` resolves from; the runtime root by default. */
+  deploymentDir?: string;
+  benchConfig?: BenchConfig | null;
+  /** The bench config file as the operator named it, for the record. */
+  benchConfigPath?: string | null;
+  concurrency?: number;
   signal?: AbortSignal;
   deps?: BenchRunDeps;
 }): Promise<BenchRunResult> {
   const { env, suite } = opts;
   const config = issuesPipelineConfig(opts.config);
   const signal = opts.signal ?? new AbortController().signal;
+  const concurrency = Math.max(1, Math.floor(opts.concurrency ?? 1));
   const deps: Required<Omit<BenchRunDeps, "engineCommit">> = {
     git: opts.deps?.git ?? defaultGit,
     spawnAgent:
@@ -791,7 +946,19 @@ export async function runBench(opts: {
       ? opts.deps.engineCommit
       : readEngineCommit(import.meta.dirname);
 
-  const { contender, template } = tenantContender({ config, env, runtimeRoot: opts.runtimeRoot });
+  const benchConfig = opts.benchConfig ?? null;
+  const contenders = resolveContenders({
+    config,
+    env,
+    benchConfig,
+    runtimeRoot: opts.runtimeRoot,
+    deploymentDir: opts.deploymentDir ?? opts.runtimeRoot,
+  });
+  assertContenderKeys({
+    contenders: contenders.map((resolved) => resolved.contender),
+    config,
+    env,
+  });
   const runTimeoutMs = resolveRunTimeoutMsForKind({
     kind: "issues",
     env,
@@ -807,7 +974,7 @@ export async function runBench(opts: {
   const runDir = join(root, runId);
   mkdirSync(join(runDir, PATCHES_DIR), { recursive: true });
 
-  const repeat = 1;
+  const repeat = benchConfig?.repeat ?? 1;
   const runConfig: BenchRunConfig = {
     v: 1,
     runId,
@@ -818,8 +985,10 @@ export async function runBench(opts: {
       selectedAt: suite.selectedAt,
       fixtures: suite.fixtures.map((fixture) => fixture.issue.number),
     },
-    contenders: [contender],
+    benchConfig: opts.benchConfigPath ?? null,
+    contenders: contenders.map((resolved) => resolved.contender),
     repeat,
+    concurrency,
     runTimeoutMs,
     installCommand: config.installCommand,
     checkCommand: config.checkCommand,
@@ -828,50 +997,54 @@ export async function runBench(opts: {
   };
   writeFileSync(join(runDir, RUN_CONFIG_FILE), `${JSON.stringify(runConfig, null, 2)}\n`);
   deps.log(
-    `[phoebe] bench: run ${runId} — ${suite.fixtures.length} fixture(s), ` +
-      `${contender.provider} ${contender.model}${contender.effort === null ? "" : ` (${contender.effort})`}, ` +
-      `in ${runDir}.`,
+    `[phoebe] bench: run ${runId} — ${suite.fixtures.length} fixture(s) × ` +
+      `${contenders.length} contender(s) × ${repeat} repeat(s), ${concurrency} at a time, in ${runDir}.`,
   );
+  for (const { contender } of contenders) {
+    deps.log(
+      `[phoebe] bench:   ${contender.name}: ${contender.provider} ${contender.model}` +
+        `${contender.effort === null ? "" : ` (${contender.effort})`}, ${contender.promptFile}`,
+    );
+  }
 
-  const plan: TrialPlan = {
-    runId,
-    runDir,
-    config,
-    env,
-    contender,
-    template,
-    runTimeoutMs,
-    engineCommit,
-  };
+  const shared: RunPlan = { runId, runDir, config, env, runTimeoutMs, engineCommit };
+  const queue = suite.fixtures.flatMap((fixture) =>
+    contenders.flatMap((resolved) =>
+      Array.from({ length: repeat }, (_, index) => ({ fixture, resolved, repeat: index })),
+    ),
+  );
   const trials: BenchTrial[] = [];
-  const planned = suite.fixtures.length * repeat;
-  for (const fixture of suite.fixtures) {
-    for (let index = 0; index < repeat; index++) {
-      if (signal.aborted) break;
-      const trial = await runTrial({ plan, fixture, repeat: index, signal, deps });
-      if (trial === null) break;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (!signal.aborted && next < queue.length) {
+      const job = queue[next++]!;
+      const trial = await runTrial({
+        plan: { ...shared, ...job.resolved },
+        fixture: job.fixture,
+        repeat: job.repeat,
+        signal,
+        deps,
+      });
+      if (trial === null) return;
       trials.push(trial);
       appendFileSync(join(runDir, TRIALS_FILE), `${JSON.stringify(trial)}\n`);
     }
-    if (signal.aborted) break;
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
   rmSync(join(runDir, WORK_DIR), { recursive: true, force: true });
 
-  const summary = summarize({
-    runId,
-    repo: config.repoSlug,
-    startedAt,
+  const report = buildBenchReport({
+    runConfig,
+    trials,
     finishedAt: deps.now(),
     interrupted: signal.aborted,
-    planned,
-    trials,
   });
-  writeFileSync(join(runDir, REPORT_FILE), `${JSON.stringify(summary, null, 2)}\n`);
+  writeFileSync(join(runDir, REPORT_FILE), `${JSON.stringify(report, null, 2)}\n`);
   deps.log(
-    `[phoebe] bench: ${summary.interrupted ? "interrupted after" : "finished"} ` +
-      `${summary.recorded}/${planned} trial(s): ${summary.outcomes.completed} completed ` +
-      `(${summary.outcomes.noChange} with no change), ${summary.outcomes.failed} failed, ` +
-      `${summary.outcomes.timedOut} timed out. ${join(runDir, REPORT_FILE)}`,
+    `[phoebe] bench: ${report.interrupted ? "interrupted after" : "finished"} ` +
+      `${report.recorded}/${report.planned} trial(s): ${report.outcomes.completed} completed ` +
+      `(${report.outcomes.noChange} with no change), ${report.outcomes.failed} failed, ` +
+      `${report.outcomes.timedOut} timed out. ${join(runDir, REPORT_FILE)}`,
   );
-  return { runId, runDir, trials, summary };
+  return { runId, runDir, trials, report };
 }
