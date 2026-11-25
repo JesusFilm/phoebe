@@ -105,3 +105,50 @@ export type UnitRecord = {
   engineCommit: string | null;
   agentRuns: AgentRunRecord[];
 };
+
+/** Token sums over a window. A `null` the provider left is counted as nothing. */
+export type HistoryTokens = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+/**
+ * Cost over a window, by {@link CostBasis}. The two are never added together:
+ * one is money a key was billed, the other a list price nobody paid.
+ */
+export type HistoryCost = {
+  api: number;
+  subscriptionEstimate: number;
+};
+
+/**
+ * The units one window holds, counted and summed — never averaged. A ratio a
+ * renderer shows is two of these counts divided, which is formatting.
+ */
+export type HistoryWindow = {
+  units: number;
+  outcomes: Record<UnitRecordOutcome, number>;
+  /** Timed-out units whose timeout quarantined them. */
+  quarantined: number;
+  costUsd: HistoryCost;
+  /** Units none of whose agent runs reported a cost. */
+  unitsWithoutCost: number;
+  /** Units with at least one agent run whose usage is a lower bound. */
+  unitsWithPartialUsage: number;
+  tokens: HistoryTokens;
+};
+
+/**
+ * A unit history summed over the last 24 hours and the last 7 days, by when
+ * each unit started (#929, decisions in #918). The bootstrapper computes it
+ * for each cell of the deployment report and for the fleet as a whole; a
+ * reader renders it and never recomputes it.
+ */
+export type HistorySummary = {
+  /** The moment both windows end at. */
+  asOf: string;
+  last24h: HistoryWindow;
+  last7d: HistoryWindow;
+};
