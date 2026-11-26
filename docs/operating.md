@@ -628,6 +628,7 @@ and you get the same answer either way:
       held — missing repoSlug in phoebe.config.ts
         work  not supervised  (from disk)
               idle
+[phoebe] history       24h  31 units, 3 failed, 1 timed out  $8.20 api + $4.10 est.
 [phoebe] doctor        0 fail, 1 warn — 4h ago (schedule)
 ```
 
@@ -635,9 +636,18 @@ Top to bottom is priority order: read down until something looks wrong and stop.
 The bootstrapper line names the engine ref and the commit actually running, says
 `quarantined (avoiding <sha>)` when the crash-loop guard has put the deployment
 on last-known-good, says `reconciling (config|ref)` while a relaunch is under
-way, and ends with the age of the report itself. The doctor line is the last
-run's counts and
-its age, or `never run`; `--verbose` inlines the whole doctor table under it.
+way, and ends with the age of the report itself. The history line counts the
+units every pipeline started in the last 24 hours, names the ones that failed,
+timed out or were abandoned, and gives their cost by basis. `api` is what a key
+was billed. `est.` is the list price Claude reports under a subscription,
+which nobody paid. The line prints the two side by side and never adds them. A
+day whose units reported no cost at all reads `tokens only`. The bootstrapper
+sums each pipeline's unit history into the report at boot, when a unit
+settles, and once an hour. `--json` carries the same summary for each pipeline
+and for the fleet, with a 7-day window beside the 24-hour one. History never
+trips `--check`. The doctor line is the last run's counts and its age, or
+`never run`. `--verbose` adds a history line under each pipeline and inlines
+the whole doctor table under the doctor line.
 
 **Two lines per pipeline.** The first is the _process_: what the bootstrapper's
 child is doing — running, draining, exited with its code or signal — plus its

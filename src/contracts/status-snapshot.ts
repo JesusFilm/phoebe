@@ -13,6 +13,15 @@ export type CurrentUnit = {
   startedAt: string;
   /** Its whole-run budget, resolved per kind at boot; `null` if unstated. */
   runBudgetMs: number | null;
+  /**
+   * The provider, model and effort the unit was admitted to run on, from its
+   * `started` event (#928). An abandoned unit's history record reads them from
+   * here, since the process that knew them is gone. `null` in a snapshot an
+   * older engine wrote.
+   */
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
 };
 
 /**

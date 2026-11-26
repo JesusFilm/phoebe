@@ -40,7 +40,19 @@ function pipeline(
     snapshot: {
       tenant: of.slug ?? "",
       pipeline: name,
-      currentUnits: unit === undefined ? [] : [{ unit, startedAt: ago(60), runBudgetMs: null }],
+      currentUnits:
+        unit === undefined
+          ? []
+          : [
+              {
+                unit,
+                startedAt: ago(60),
+                runBudgetMs: null,
+                provider: null,
+                model: null,
+                effort: null,
+              },
+            ],
       waitingForSlot: false,
       lastError: lastError ?? null,
       lastTimeoutAt: null,

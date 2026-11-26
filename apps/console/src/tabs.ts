@@ -1,5 +1,5 @@
-// The five tabs one deployment has, and which of them can say anything (#509,
-// #526).
+// The six tabs one deployment has, and which of them can say anything (#509,
+// #526, #931).
 //
 // Arm-neutral on purpose. A remote deployment's tabs are fed by the report the
 // relay forwarded; a local install's by the report main read out of the
@@ -8,13 +8,20 @@
 // whole point of the local read loop emitting the relay's own `report` event.
 //
 // What is here is the rule for when a tab has nothing: a deployment with no
-// readable report has four empty tabs and one that still works, because config
+// readable report has five empty tabs and one that still works, because config
 // is the one thing that can be read off the disk with nothing running (#526).
 
 import type { ConfigFieldFacts } from "phoebe-agent/contracts";
 
 /** In the order the tab strip draws them. */
-export const DEPLOYMENT_TABS = ["overview", "pipelines", "doctor", "secrets", "config"] as const;
+export const DEPLOYMENT_TABS = [
+  "overview",
+  "pipelines",
+  "history",
+  "doctor",
+  "secrets",
+  "config",
+] as const;
 
 export type DeploymentTab = (typeof DEPLOYMENT_TABS)[number];
 
@@ -55,7 +62,8 @@ export type ConfigReading =
 /**
  * Can this tab say anything right now?
  *
- * Four of the five render a report and are empty without one. Config is not:
+ * Five of the six need a report, or for history the running deployment the
+ * report came from, and are empty without one. Config is not:
  * it is a file, and a stopped install's config is as true as a running one's.
  */
 export function tabHasContent(

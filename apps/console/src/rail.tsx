@@ -47,6 +47,8 @@ import {
   type RailChild,
 } from "./local-install.ts";
 import { FOLDER_ATTRIBUTE } from "./context-menu.ts";
+import { StatsButton } from "./fleet-stats-page.tsx";
+import type { StatsDeployment } from "./fleet-stats.ts";
 import { hostnameOf } from "./reachability.ts";
 import {
   hostSections,
@@ -98,6 +100,8 @@ export function Rail({
   onRemoteAction,
   onRemoteChild,
   selectedRemoteChild = null,
+  stats,
+  onStats,
 }: {
   surface: Surface;
   /** The deployments paired over Tailscale (map #690): one section per host. */
@@ -166,6 +170,13 @@ export function Rail({
   onHome?: () => void;
   onDownload?: () => void;
   onRestart?: () => void;
+  /**
+   * Every deployment as the stats see it (#933): what the stats button's card
+   * adds up. The button is there only with `onStats`.
+   */
+  stats?: readonly StatsDeployment[];
+  /** The stats button: the fleet stats page. Absent in a browser, which knows no deployments. */
+  onStats?: () => void;
 }) {
   // Which workspaces are opened out to their children. Closed to begin with:
   // a rail of six workspaces opened out is a list, not a rail.
@@ -251,7 +262,7 @@ export function Rail({
         {...(onDownload !== undefined ? { onDownload } : {})}
         {...(onRestart !== undefined ? { onRestart } : {})}
       />
-      <RailFoot />
+      <RailFoot {...(onStats === undefined ? {} : { stats: stats ?? [], onStats })} />
     </nav>
   );
 }
@@ -594,14 +605,23 @@ function RailBrand({ surface, onHome }: { surface: Surface; onHome?: () => void 
  * The foot of the rail: a bare gear onto the console's own settings
  * (settings-page.tsx), where T3 Code keeps its. A control, not a place on the
  * rail, so it never reads as selected. The app's settings, not an install's:
- * those are behind the gear on the install's own entry.
+ * those are behind the gear on the install's own entry. Beside it, the stats
+ * button (#933): totals across every deployment on hover, the fleet stats page
+ * on click.
  */
-function RailFoot() {
+function RailFoot({
+  stats,
+  onStats,
+}: {
+  stats?: readonly StatsDeployment[];
+  onStats?: () => void;
+}) {
   return (
     <footer className="rail-foot">
       <a className="rail-settings" href={SETTINGS_HREF} aria-label="Settings" title="Settings">
         <Settings size={16} aria-hidden="true" />
       </a>
+      {onStats === undefined ? null : <StatsButton deployments={stats ?? []} onOpen={onStats} />}
     </footer>
   );
 }
