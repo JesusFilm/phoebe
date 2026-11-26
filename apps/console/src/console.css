@@ -2494,3 +2494,179 @@ button.quiet.expander {
 .outcome-bar .abandoned {
   background: var(--muted);
 }
+
+/* ── the stats button and the fleet stats page (#933) ──────────────────── */
+
+/* The gear and the chart icon side by side, each in the same 28 px box. */
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+button.rail-settings {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.rail-settings[aria-expanded="true"] {
+  background: var(--chip);
+  color: inherit;
+}
+
+.stats-card {
+  position: fixed;
+  left: 12px;
+  bottom: 52px;
+  width: min(440px, calc(100vw - 24px));
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 25%);
+  font-size: 13px;
+  z-index: 950;
+}
+
+.stats-card-head,
+.stats-page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.stats-card-head .stats-range,
+.stats-page-head .stats-range {
+  margin: 0 0 0 auto;
+}
+
+.stats-page-head h1 {
+  margin: 0;
+}
+
+.stats-figures {
+  display: flex;
+  gap: 22px;
+  margin: 10px 0;
+}
+
+.stats-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 8px 0 14px;
+}
+
+.stats-tiles .stats-figure {
+  min-width: 180px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stats-tiles h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stats-big {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.stats-bad {
+  color: var(--fail);
+}
+
+.stats-label,
+.stats-note {
+  font-size: 12px;
+}
+
+.stats-card .stats-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+
+.stats-troubles {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.fleet-stats h2 {
+  margin-top: 22px;
+}
+
+.stats-chart {
+  margin: 10px 0 4px;
+}
+
+.stats-columns {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.stats-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 40px;
+  font-size: 11px;
+}
+
+/* The column's stack: bars grow up from the baseline, a 2 px gap between them. */
+.stats-bars {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  width: 24px;
+  height: 90px;
+}
+
+.stats-bar {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+}
+
+.stats-bars .stats-bar:first-child {
+  border-radius: 4px 4px 0 0;
+}
+
+.stats-bar.ok,
+.stats-swatch.ok {
+  background: var(--ok);
+}
+
+.stats-bar.bad,
+.stats-swatch.bad {
+  background: var(--fail);
+}
+
+.stats-count {
+  margin-top: 4px;
+}
+
+.stats-legend {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.stats-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin: 0 2px 0 6px;
+  border-radius: 2px;
+}
