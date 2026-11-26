@@ -8,7 +8,9 @@ import { basename, join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
 import { resolveConfig, type PhoebeUserConfig } from "../../src/config-schema.ts";
-import type { MentioningIssue } from "../../src/github-client.ts";
+import { asBranchRef, asPrNumber, asSha } from "../../src/branded.ts";
+import type { GitRunner } from "../../src/git-model.ts";
+import type { MentioningIssue, ObservedPr } from "../../src/github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "../../src/github-stub.ts";
 import { selectPipeline } from "../../src/pipeline.ts";
 import type { WorkKindCtx, WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
@@ -261,6 +263,8 @@ describe("a run in issue mode", () => {
     comments?: Record<number, string[]>;
     findings?: (flagged: Array<{ id: string; ref: string }>) => unknown;
     unit?: ObserverUnit;
+    github?: GitHubStubOverrides;
+    git?: GitRunner;
   }) {
     const scratch = mkdtempSync(join(tmpdir(), "observer-test-"));
     const history = histories(opts.byPipeline);
@@ -286,6 +290,7 @@ describe("a run in issue mode", () => {
         postUnitComment: (target, body) => {
           posted.push({ id: target.id, body });
         },
+        ...opts.github,
       },
       logged,
     );
@@ -319,7 +324,7 @@ describe("a run in issue mode", () => {
         { mode: "issues", ...(opts.options ?? { every: "7d" }) },
         "kinds.observer",
       ),
-      { readHistory: history.readHistory },
+      { readHistory: history.readHistory, ...(opts.git ? { git: opts.git } : {}) },
     );
     const unit: ObserverUnit = opts.unit ?? { ref: "observer", revision: "never" };
     return {
@@ -437,6 +442,105 @@ describe("a run in issue mode", () => {
     const scheduled = harness({ byPipeline: byPipeline(), findings: () => ({ findings: [] }) });
     await scheduled.run();
     expect(scheduled.agentCalls[0]!["OBSERVER_LOOKBACK"]).toBe("14d");
+  });
+
+  test("flags units from what became of their PRs, and never a unit on a proposal", async () => {
+    const observed = (overrides: Partial<ObservedPr>): ObservedPr => ({
+      number: asPrNumber(70),
+      state: "merged",
+      createdAt: daysAgo(3),
+      mergedAt: daysAgo(2.9),
+      closedAt: daysAgo(2.9),
+      headRefName: asBranchRef("phoebe/issue-6"),
+      mergeCommitOid: asSha("e".repeat(40)),
+      body: "Closes #6",
+      labels: [],
+      closingIssues: [6],
+      changesRequested: 0,
+      reviewThreads: 0,
+      commits: [],
+      commitsTruncated: false,
+      ...overrides,
+    });
+    const prs = [
+      observed({}),
+      observed({ number: asPrNumber(71), state: "closed", mergedAt: null, closingIssues: [7] }),
+      observed({ number: asPrNumber(72), closingIssues: [41], mergeCommitOid: null }),
+    ];
+    const gitCalls: string[][] = [];
+    const h = harness({
+      byPipeline: {
+        work: [
+          // Opened #70 on its branch; the record has no PR number.
+          unitRecord({
+            unit: { kind: "issues", id: "issue:6" },
+            branch: "phoebe/issue-6",
+            startedAt: daysAgo(3.1),
+            settledAt: daysAgo(3),
+          }),
+          unitRecord({
+            unit: { kind: "reviews", id: "pr:71" },
+            prNumber: 71,
+            startedAt: daysAgo(2),
+          }),
+          // Works proposal #41 and failed: still not evidence.
+          unitRecord({
+            unit: { kind: "checks", id: "pr:72" },
+            prNumber: 72,
+            outcome: "failed",
+            startedAt: daysAgo(1),
+          }),
+          unitRecord({
+            unit: { kind: "issues", id: "issue:41" },
+            outcome: "failed",
+            startedAt: daysAgo(1),
+          }),
+        ],
+        intake: [],
+      },
+      proposals: [
+        {
+          number: 41,
+          body: renderFindingMarker("ticket:acceptance-criteria"),
+          state: "open",
+          stateReason: null,
+          closedAt: null,
+          labels: ["phoebe:observer"],
+        },
+      ],
+      github: {
+        branchPrs: (branches) =>
+          new Map(
+            branches.map((branch) => [
+              branch,
+              branch === "phoebe/issue-6"
+                ? [{ number: asPrNumber(70), createdAt: daysAgo(3), closedAt: daysAgo(2.9) }]
+                : [],
+            ]),
+          ),
+        observedPrs: (numbers) => prs.filter((pr) => numbers.includes(pr.number)),
+        revertPrs: () => [],
+        branchWorkflowRuns: () => [],
+      },
+      git: (args) => {
+        gitCalls.push(args);
+        return `${"f".repeat(40)}\x1fRevert\n\nThis reverts commit ${"e".repeat(40)}.\n\x1e`;
+      },
+      findings: () => ({ findings: [] }),
+    });
+    await h.run();
+    expect(gitCalls[0]?.slice(2, 3)).toEqual(["log"]);
+    const flagged = JSON.parse(readFileSync(h.agentCalls[0]!["FLAGGED_JSON"]!, "utf8")) as Array<{
+      ref: string;
+      flags: string[];
+      prNumber: number | null;
+      pr: { revertedBy: string | null } | null;
+    }>;
+    expect(flagged.map((unit) => [unit.ref, unit.flags, unit.prNumber])).toEqual([
+      ["pr:71", ["closed-unmerged"], 71],
+      ["issue:6", ["reverted"], 70],
+    ]);
+    expect(flagged[1]!.pr?.revertedBy).toBe("fffffff");
   });
 
   test("files each finding as an issue with the label and the marker", async () => {

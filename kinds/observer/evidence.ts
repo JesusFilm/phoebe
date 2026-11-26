@@ -5,13 +5,18 @@
 
 import { createHash } from "node:crypto";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
+import { PR_FLAGS, type PrFlag, type PrSignals, type UnitPrOutcome } from "./pr-outcomes.ts";
+
+/** Why a unit is evidence, from its record alone. */
+export const RECORD_FLAGS = ["failed", "timed-out", "abandoned", "quarantined"] as const;
+export type RecordFlag = (typeof RECORD_FLAGS)[number];
 
 /**
- * Why a unit is evidence. Today these come from the record alone; the signals
- * from what became of a unit's pull request join them with PR mode.
+ * Every flag a unit can earn: its record's, then its settled PR's
+ * (pr-outcomes.ts).
  */
-export const UNIT_FLAGS = ["failed", "timed-out", "abandoned", "quarantined"] as const;
-export type UnitFlag = (typeof UNIT_FLAGS)[number];
+export const UNIT_FLAGS = [...RECORD_FLAGS, ...PR_FLAGS] as const;
+export type UnitFlag = RecordFlag | PrFlag;
 
 /** One pipeline's unit history, as read off disk. */
 export type PipelineHistory = { pipeline: string; records: readonly UnitRecord[] };
@@ -23,11 +28,13 @@ export type FlaggedUnit = {
   pipeline: string;
   record: UnitRecord;
   flags: UnitFlag[];
+  /** What became of the unit's PR, once it settled; `null` otherwise. */
+  pr: PrSignals | null;
 };
 
 /** The flags one record earns. A quarantine rides on the timeout that caused it. */
-export function flagsOf(record: UnitRecord): UnitFlag[] {
-  const flags: UnitFlag[] = [];
+export function flagsOf(record: UnitRecord): RecordFlag[] {
+  const flags: RecordFlag[] = [];
   if (record.outcome === "failed") flags.push("failed");
   if (record.outcome === "timed-out") flags.push("timed-out");
   if (record.outcome === "abandoned") flags.push("abandoned");
@@ -47,18 +54,49 @@ export function unitKeyOf(pipeline: string, record: UnitRecord): string {
     .slice(0, 12);
 }
 
-/** Every unit started at or after `since` that earned a flag, newest first. */
-export function flagUnits(histories: readonly PipelineHistory[], since: Date): FlaggedUnit[] {
+/** One unit that started inside the lookback, under its stable key. */
+export type WindowedUnit = { key: string; pipeline: string; record: UnitRecord };
+
+/** Every unit started at or after `since`, in history order. */
+export function unitsSince(histories: readonly PipelineHistory[], since: Date): WindowedUnit[] {
   const cut = since.getTime();
-  const flagged: FlaggedUnit[] = [];
+  const units: WindowedUnit[] = [];
   for (const { pipeline, records } of histories) {
     for (const record of records) {
       const started = Date.parse(record.startedAt);
       if (Number.isNaN(started) || started < cut) continue;
-      const flags = flagsOf(record);
-      if (flags.length === 0) continue;
-      flagged.push({ key: unitKeyOf(pipeline, record), pipeline, record, flags });
+      units.push({ key: unitKeyOf(pipeline, record), pipeline, record });
     }
+  }
+  return units;
+}
+
+/** What the flagging knows about a unit beyond its record. */
+export type UnitContext = {
+  /** The unit ran on an observer proposal, or on a PR that is or works one. */
+  onProposal(unit: WindowedUnit): boolean;
+  /** What became of the unit's PR, or `undefined` when it has none. */
+  prOutcome(unit: WindowedUnit): UnitPrOutcome | undefined;
+};
+
+const NO_CONTEXT: UnitContext = { onProposal: () => false, prOutcome: () => undefined };
+
+/**
+ * The units that earned a flag, from their record or their settled PR, newest
+ * first. A unit on an observer proposal is never flagged, whatever happened to
+ * it: the observer does not grade its own proposals.
+ */
+export function flagUnits(
+  units: readonly WindowedUnit[],
+  context: UnitContext = NO_CONTEXT,
+): FlaggedUnit[] {
+  const flagged: FlaggedUnit[] = [];
+  for (const unit of units) {
+    const outcome = context.prOutcome(unit);
+    if (outcome?.proposal === true || context.onProposal(unit)) continue;
+    const flags: UnitFlag[] = [...flagsOf(unit.record), ...(outcome?.flags ?? [])];
+    if (flags.length === 0) continue;
+    flagged.push({ ...unit, flags, pr: outcome?.signals ?? null });
   }
   return flagged.sort((a, b) => Date.parse(b.record.startedAt) - Date.parse(a.record.startedAt));
 }
