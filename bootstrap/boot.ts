@@ -92,6 +92,7 @@ import { DOCTOR_DEADLINE_MS } from "../src/doctor-deadline.ts";
 import type { DoctorLeases } from "../src/doctor-lease.ts";
 import {
   createDeploymentState,
+  HISTORY_REFRESH_MS,
   type DeploymentState,
   type HeldTenant,
 } from "./deployment-state.ts";
@@ -1902,6 +1903,10 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     report: () => deployment.latest(),
     log: (message) => console.log(message),
   });
+  // The history summary's hourly recompute (#929). A pipeline's own records
+  // move its summary as they land; this is what slides a quiet one's windows.
+  const historyTick = setInterval(() => deployment.refreshHistory(), HISTORY_REFRESH_MS);
+  historyTick.unref();
   // The secrets inventory (#550): which keys each tenant has and where from,
   // retaken when the tenant set moves and when an edit lands, never on a poll —
   // taking it loads every tenant's work kinds.
@@ -2053,6 +2058,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       throw error;
     } finally {
       stop.dispose();
+      clearInterval(historyTick);
       // Nothing in flight is cancelled: a doctor child outliving the drain by a
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
@@ -2284,6 +2290,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Drop the listeners before propagating: re-raising the engine's killing
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
+    clearInterval(historyTick);
     doctor.stop();
     observeDrop.stop();
     await remote.stop();

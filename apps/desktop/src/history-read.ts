@@ -89,16 +89,29 @@ export async function readContainerHistory(opts: {
   return body;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isHistoryPage(body: unknown): body is HistoryPage {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
-  const page = body as Record<string, unknown>;
+  if (!isObject(body)) return false;
+  const { records, summary, retained, nextBefore } = body;
   return (
-    Array.isArray(page["records"]) &&
-    typeof page["summary"] === "object" &&
-    page["summary"] !== null &&
-    typeof page["retained"] === "object" &&
-    page["retained"] !== null &&
-    (page["nextBefore"] === null || typeof page["nextBefore"] === "string")
+    Array.isArray(records) &&
+    records.every(
+      (record) =>
+        isObject(record) &&
+        typeof record["cell"] === "string" &&
+        isObject(record["unit"]) &&
+        typeof record["unit"]["kind"] === "string",
+    ) &&
+    isObject(summary) &&
+    typeof summary["units"] === "number" &&
+    isObject(summary["byOutcome"]) &&
+    isObject(summary["costUsd"]) &&
+    isObject(summary["tokens"]) &&
+    isObject(retained) &&
+    (nextBefore === null || typeof nextBefore === "string")
   );
 }
 

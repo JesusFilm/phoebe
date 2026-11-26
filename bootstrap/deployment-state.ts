@@ -13,7 +13,8 @@
 //     child's lifecycle, and boot sees each of them without the supervisor
 //     needing a hook for it.
 //   - **The engine's IPC** (bootstrap/engine-report-ipc.ts) — each child's
-//     completed passes and its `status.json` writes.
+//     completed passes, its `status.json` writes, and each unit record it
+//     appends to its history.
 //   - **Read at publish time** — the crash-loop record, the broker's numbers,
 //     and whatever is on the tenants' disks that the live matrix does not
 //     account for.
@@ -33,6 +34,12 @@
 // publishes nothing: on a healthy idle pipeline it would rewrite the file every
 // poll interval forever. What gets published is the *verdict* that clock feeds,
 // when it flips — which the fleet poll re-derives anyway (#507).
+//
+// **History is summed on its own clock** (#929). Each cell's unit history is
+// read off disk and summed at boot, when that pipeline reports a new record, and
+// on the hourly tick boot drives through `refreshHistory`. Never on an ordinary
+// publish: the summary is stamped `asOf`, and a stamp that moved on every
+// snapshot write would make every publish a change.
 //
 // Nothing here may throw into the supervisor. A deployment that cannot write its
 // own report is a deployment with a reporting fault, not a deployment that
@@ -66,6 +73,7 @@ import {
 } from "../src/contracts/effective-config.ts";
 import type { SecretsSection } from "../src/contracts/secrets.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
+import type { HistorySummary, UnitRecord } from "../src/contracts/unit-record.ts";
 import { boundConfigRows, unknownConfig, type ConfigCollector } from "./config-report.ts";
 import { PIPELINE_DEFAULTS } from "../src/config-schema.ts";
 import { derivePaths } from "../src/paths.ts";
@@ -76,6 +84,7 @@ import {
   type PipelineSource,
 } from "../src/pipeline-listing.ts";
 import { readStatus, statusPathFor } from "../src/unit-event.ts";
+import { HISTORY_WEEK_MS, readUnitHistory, summarizeHistory } from "../src/unit-history.ts";
 import {
   deploymentReportPath,
   stampReport,
@@ -97,10 +106,15 @@ export type HeldTenant = {
   reason: string;
 };
 
+/** How often boot re-sums every cell's unit history, so its windows slide (#929). */
+export const HISTORY_REFRESH_MS = 60 * 60 * 1000;
+
 /** What the engine child running one pipeline last told the bootstrapper. */
 export type EngineReport =
   | { kind: "pass"; pollIntervalMs: number | null }
-  | { kind: "status"; snapshot: StatusSnapshot };
+  | { kind: "status"; snapshot: StatusSnapshot }
+  /** A unit record was appended to this pipeline's history. */
+  | { kind: "record" };
 
 /**
  * The remote section as the listener reports it (map #690) — everything but
@@ -166,6 +180,8 @@ export type DeploymentStateDeps = {
   /** Persist a report worth writing. Injected so tests never touch a disk. */
   write?: (report: DeploymentReport) => void;
   readSnapshot?: (path: string) => StatusSnapshot | null;
+  /** One pipeline's unit history, both generations (#929). */
+  readUnits?: (stateDir: string, pipeline: string) => UnitRecord[];
   listStateDirs?: (stateDir: string) => string[];
   exists?: (path: string) => boolean;
   /** How long a child must live to stop counting as crash-looping (#401). */
@@ -233,6 +249,12 @@ export type DeploymentState = {
    * the tenant, and a root that will not load never reaches supervision.
    */
   noteHolds: (held: readonly HeldTenant[]) => void;
+  /**
+   * Re-read every cell's unit history and sum it again as of now (#929). Boot
+   * calls it hourly, so a quiet pipeline's windows still slide; a pipeline
+   * that reports a record has its own summary moved there and then.
+   */
+  refreshHistory: () => void;
   /** Rebuild the report and write it if anything moved. */
   publish: () => void;
   /**
@@ -291,6 +313,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     ((report: DeploymentReport) =>
       writeDeploymentReport(deploymentReportPath(deps.dataBase), report));
   const readSnapshot = deps.readSnapshot ?? readStatus;
+  const readUnits = deps.readUnits ?? readUnitHistory;
   const listStateDirs = deps.listStateDirs ?? ((stateDir: string) => stateDirNames(stateDir));
   const exists = deps.exists ?? existsSync;
   const healthyRunMs = deps.healthyRunMs ?? HEALTHY_RUN_MS;
@@ -316,6 +339,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
   let collector: ConfigCollector | null = null;
   /** The config section as it stands: already ordered, already inside its budget. */
   let config: { tenants: TenantEffectiveConfig[]; omitted: number } = { tenants: [], omitted: 0 };
+  /**
+   * Each cell's unit records as last read, cut to the longest window. A cell
+   * missing here is read on the next publish; dropping one is how a new record
+   * or the hourly tick asks for a re-read.
+   */
+  const unitRecords = new Map<string, UnitRecord[]>();
+  /** The summaries as last computed, every one at the same `asOf`. */
+  let histories: { cells: Map<string, HistorySummary>; fleet: HistorySummary } | null = null;
 
   /**
    * Re-read every tenant's effective config and re-fit the section.
@@ -496,6 +527,54 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     return { tenants: rows.sort(byId), cells: cells.sort(byId) };
   };
 
+  /**
+   * The fleet with every cell's history summary on it, and the fleet's own.
+   *
+   * Summaries are recomputed only when the records under them were re-read or
+   * the cell set moved, and then all of them at once, at one `asOf`: the fleet
+   * total is a sum of the cells, and a total stamped at a different moment from
+   * its parts would not add up.
+   */
+  const withHistory = (
+    fleet: { tenants: TenantFacts[]; cells: FleetCell[] },
+    at: number,
+  ): { tenants: TenantFacts[]; cells: FleetCell[]; history: HistorySummary } => {
+    let moved = false;
+    const ids = new Set(fleet.cells.map((cell) => cell.id));
+    for (const id of unitRecords.keys()) {
+      if (ids.has(id)) continue;
+      unitRecords.delete(id);
+      moved = true;
+    }
+    for (const cell of fleet.cells) {
+      if (unitRecords.has(cell.id)) continue;
+      const slug = cell.tenant.slug;
+      const records =
+        slug === null ? [] : readUnits(derivePaths(slug, deps.dataBase).stateDir, cell.pipeline);
+      // Only the longest window is ever summed, so the rest is not worth holding.
+      const since = at - HISTORY_WEEK_MS;
+      unitRecords.set(
+        cell.id,
+        records.filter((record) => Date.parse(record.startedAt) > since),
+      );
+      moved = true;
+    }
+    if (histories === null || moved) {
+      const cells = new Map<string, HistorySummary>();
+      for (const [id, records] of unitRecords) cells.set(id, summarizeHistory(records, at));
+      histories = { cells, fleet: summarizeHistory([...unitRecords.values()].flat(), at) };
+    }
+    const summaries = histories;
+    return {
+      tenants: fleet.tenants,
+      cells: fleet.cells.map((cell) => {
+        const history = summaries.cells.get(cell.id);
+        return history === undefined ? cell : { ...cell, history };
+      }),
+      history: summaries.fleet,
+    };
+  };
+
   const livenessOf = (at: number): ChildLiveness[] => {
     const rows: ChildLiveness[] = [];
     for (const record of children.values()) {
@@ -535,7 +614,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           ...(deps.fleetStop === undefined ? {} : { stopped: deps.fleetStop() }),
         },
         remote,
-        fleet: buildFleet(at),
+        fleet: withHistory(buildFleet(at), at),
         doctor,
         config: {
           version: collector?.version() ?? EFFECTIVE_CONFIG_VERSION,
@@ -632,6 +711,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     },
 
     noteEngineReport(pipelineId, report) {
+      if (report.kind === "record") {
+        // The file is the copy that counts, so the cell is re-read rather than
+        // handed the record. Not gated on a live child: the record is on disk
+        // whatever became of the process that wrote it.
+        unitRecords.delete(pipelineId);
+        publish();
+        return;
+      }
       const record = children.get(pipelineId);
       if (record === undefined) return;
       if (report.kind === "pass") {
@@ -678,6 +765,11 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     noteHolds(held) {
       holds = [...held];
       refreshConfig();
+      publish();
+    },
+
+    refreshHistory() {
+      unitRecords.clear();
       publish();
     },
 

@@ -14,6 +14,7 @@ import { afterAll, describe, expect, test } from "vite-plus/test";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
 import type { TenantEffectiveConfig } from "../src/contracts/effective-config.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
+import type { AgentRunRecord, UnitRecord } from "../src/contracts/unit-record.ts";
 import type { SupervisedPipeline } from "./pipelines.ts";
 import {
   CONFIG_SECTION_BUDGET_BYTES,
@@ -79,6 +80,9 @@ function harness(overrides: Partial<DeploymentStateDeps> = {}) {
   let clock = Date.parse("2026-05-05T00:00:00.000Z");
   const snapshots = new Map<string, StatusSnapshot>();
   const dirs = new Map<string, string[]>();
+  /** Unit records by `<stateDir>/<pipeline>`, and how often each was read. */
+  const units = new Map<string, UnitRecord[]>();
+  const unitReads: string[] = [];
   const state = createDeploymentState({
     identity: () => ({ name: "acme/widget", arm: "solo" }),
     dataBase: "/data/repos",
@@ -90,6 +94,10 @@ function harness(overrides: Partial<DeploymentStateDeps> = {}) {
     write: (report) => written.push(report),
     readSnapshot: (path) => snapshots.get(path) ?? null,
     listStateDirs: (dir) => dirs.get(dir) ?? [],
+    readUnits: (dir, pipeline) => {
+      unitReads.push(`${dir}/${pipeline}`);
+      return units.get(`${dir}/${pipeline}`) ?? [];
+    },
     exists: () => true,
     ...overrides,
   });
@@ -98,6 +106,9 @@ function harness(overrides: Partial<DeploymentStateDeps> = {}) {
     written,
     snapshots,
     dirs,
+    units,
+    unitReads,
+    now: () => clock,
     advance: (ms: number) => {
       clock += ms;
     },
@@ -272,6 +283,9 @@ describe("the pass rail", () => {
           unit: { kind: "issue", id: "1" },
           startedAt: "2026-05-05T00:00:00.000Z",
           runBudgetMs: 60_000,
+          provider: null,
+          model: null,
+          effort: null,
         },
       ]),
     });
@@ -295,6 +309,9 @@ describe("the wedged verdict the fleet publishes", () => {
           unit: { kind: "issue", id: "1" },
           startedAt: "2026-05-05T00:00:00.000Z",
           runBudgetMs: 60_000,
+          provider: null,
+          model: null,
+          effort: null,
         },
       ]),
     });
@@ -851,6 +868,138 @@ describe("the edit ledger the report ships (#503, #547)", () => {
   });
 });
 
+describe("the unit history summary (#929)", () => {
+  const STATE = "/data/repos/acme/widget/state";
+  const HOUR = 60 * 60 * 1000;
+
+  function costedRun(costUsd: number, costBasis: AgentRunRecord["costBasis"]): AgentRunRecord {
+    return {
+      startedAt: "2026-05-04T23:00:00.000Z",
+      durationMs: 1000,
+      exitCode: 0,
+      promptSha: "sha",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: null,
+      costUsd,
+      turns: 1,
+      providerDurationMs: null,
+      stopReason: null,
+      reportedModels: [],
+      usageComplete: true,
+      toolCalls: {},
+      costBasis,
+    };
+  }
+
+  function unitAt(startedAt: number, overrides: Partial<UnitRecord> = {}): UnitRecord {
+    return {
+      v: 1,
+      tenant: "acme/widget",
+      pipeline: "work",
+      unit: { kind: "issue", id: String(startedAt) },
+      outcome: "completed",
+      quarantined: false,
+      detail: null,
+      startedAt: new Date(startedAt).toISOString(),
+      settledAt: new Date(startedAt).toISOString(),
+      durationMs: 0,
+      runBudgetMs: null,
+      provider: "claude",
+      model: null,
+      effort: null,
+      branch: null,
+      headSha: null,
+      prNumber: null,
+      engineCommit: null,
+      agentRuns: [],
+      ...overrides,
+    };
+  }
+
+  test("every cell and the fleet carry a summary, stamped asOf, from the first report", () => {
+    const h = harness();
+    h.units.set(`${STATE}/work`, [
+      unitAt(h.now() - HOUR, { agentRuns: [costedRun(0.5, "api")] }),
+      unitAt(h.now() - 2 * HOUR, {
+        outcome: "failed",
+        agentRuns: [costedRun(2, "subscription-estimate")],
+      }),
+    ]);
+    h.units.set(`${STATE}/triage`, [unitAt(h.now() - 3 * 24 * HOUR)]);
+    h.state.notePipelines([pipelineOf("/t/a", "work"), pipelineOf("/t/a", "triage")]);
+
+    const { fleet } = h.latest()!;
+    const work = fleet.cells.find((cell) => cell.pipeline === "work")!;
+    const triage = fleet.cells.find((cell) => cell.pipeline === "triage")!;
+    expect(work.history?.asOf).toBe("2026-05-05T00:00:00.000Z");
+    expect(work.history?.last24h.units).toBe(2);
+    expect(work.history?.last24h.outcomes.failed).toBe(1);
+    expect(work.history?.last24h.costUsd).toEqual({ api: 0.5, subscriptionEstimate: 2 });
+    expect(triage.history?.last24h.units).toBe(0);
+    expect(triage.history?.last7d.units).toBe(1);
+    expect(fleet.history?.asOf).toBe("2026-05-05T00:00:00.000Z");
+    expect(fleet.history?.last7d.units).toBe(3);
+    expect(fleet.history?.last7d.costUsd).toEqual({ api: 0.5, subscriptionEstimate: 2 });
+  });
+
+  test("a stale cell's history is summed too", () => {
+    const h = harness();
+    h.dirs.set(STATE, ["work", "retired"]);
+    h.units.set(`${STATE}/retired`, [unitAt(h.now() - HOUR)]);
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+
+    const retired = h.latest()!.fleet.cells.find((cell) => cell.pipeline === "retired")!;
+    expect(retired.source).toBe("stale");
+    expect(retired.history?.last24h.units).toBe(1);
+  });
+
+  test("an ordinary publish neither re-reads the history nor moves its stamp", () => {
+    const h = harness();
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    const reads = h.unitReads.length;
+
+    h.advance(60_000);
+    h.state.noteSpawn(pipelineOf("/t/a", "work"));
+    h.state.noteEngineReport("/t/a#work", { kind: "status", snapshot: snapshotWith([]) });
+
+    expect(h.unitReads.length).toBe(reads);
+    expect(h.latest()!.fleet.cells[0]!.history?.asOf).toBe("2026-05-05T00:00:00.000Z");
+  });
+
+  test("a record reported over IPC shows up without waiting for the hourly recompute", () => {
+    const h = harness();
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.latest()!.fleet.history?.last24h.units).toBe(0);
+
+    h.advance(60_000);
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - 1000)]);
+    h.state.noteEngineReport("/t/a#work", { kind: "record" });
+
+    const { fleet } = h.latest()!;
+    expect(fleet.cells[0]!.history?.last24h.units).toBe(1);
+    expect(fleet.history?.last24h.units).toBe(1);
+    expect(fleet.history?.asOf).toBe("2026-05-05T00:01:00.000Z");
+  });
+
+  test("the hourly refresh slides a quiet pipeline's windows", () => {
+    const h = harness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR)]);
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(h.latest()!.fleet.history?.last24h.units).toBe(1);
+
+    h.advance(24 * HOUR);
+    h.state.refreshHistory();
+
+    const { fleet } = h.latest()!;
+    expect(fleet.history?.last24h.units).toBe(0);
+    expect(fleet.history?.last7d.units).toBe(1);
+    expect(fleet.history?.asOf).toBe("2026-05-06T00:00:00.000Z");
+  });
+});
+
 describe("the file a workspace with many tenants writes", () => {
   /** A tenant tree about the size a real one costs — ~200 annotated leaves. */
   function fatRow(id: string): TenantEffectiveConfig {
@@ -905,9 +1054,11 @@ describe("the file a workspace with many tenants writes", () => {
     const fiveHundred = fleetOf(500);
 
     // Ten times the tenants is not ten times the file: the fleet matrix grows
-    // with the fleet (a cell is tens of bytes), the config section does not.
+    // with the fleet, the config section does not. A cell is about 2 KiB
+    // written out, most of it the history summary (#929): fixed per cell, never
+    // growing with the units behind it.
     expect(fifty).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 256 * 1024);
-    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 512 * 1024);
+    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 1024 * 1024);
     expect(fiveHundred).toBeLessThan(fifty * 2);
   });
 });

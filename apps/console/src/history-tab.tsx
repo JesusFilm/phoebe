@@ -485,12 +485,21 @@ export function UnitDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const opener = document.activeElement;
+    closeRef.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+
   const href = githubHref(record);
   const tokens = unitTokens(record);
   const title = `${record.unit.kind} ${unitLabel(record)}`;
   return (
     <aside className="unit-drawer" role="dialog" aria-label={title}>
-      <button type="button" className="quiet unit-drawer-close" onClick={onClose}>
+      <button type="button" ref={closeRef} className="quiet unit-drawer-close" onClick={onClose}>
         Close
       </button>
       <h2>{title}</h2>

@@ -13,12 +13,16 @@ import type {
 } from "./contracts/deployment.ts";
 import type { RemoteReport } from "./contracts/remote-protocol.ts";
 import type { DoctorSection } from "./contracts/doctor.ts";
+import type { HistorySummary, HistoryWindow } from "./contracts/unit-record.ts";
+import { emptyHistoryWindow } from "./unit-history.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
 import { COMPOSE_REL_PATH } from "./deployment-compose.ts";
 import {
   deploymentBlockMessage,
   formatBootstrapperLine,
   formatDoctorLine,
+  formatHistoryLine,
+  formatHistoryWindow,
   formatProcessLine,
   formatRemoteLine,
   formatStateLine,
@@ -85,6 +89,7 @@ function report(fields: {
   remote?: RemoteReport;
   doctor?: DoctorSection;
   bootstrapper?: Partial<DeploymentReport["bootstrapper"]>;
+  history?: HistorySummary;
 }): DeploymentReport {
   const cells = fields.cells ?? [];
   return {
@@ -104,6 +109,7 @@ function report(fields: {
     fleet: {
       tenants: fields.tenants ?? (cells.length > 0 ? [cells[0]!.tenant] : []),
       cells,
+      ...(fields.history !== undefined ? { history: fields.history } : {}),
       updatedAt: MINUTES_AGO(2),
     },
     config: fields.config ?? {
@@ -142,6 +148,25 @@ function doctorSection(fields: Partial<DoctorSection> = {}): DoctorSection {
     ...fields,
   };
 }
+
+function historyWindow(fields: Partial<HistoryWindow> = {}): HistoryWindow {
+  return { ...emptyHistoryWindow(), ...fields };
+}
+
+function history(last24h: Partial<HistoryWindow> = {}): HistorySummary {
+  return {
+    asOf: MINUTES_AGO(5),
+    last24h: historyWindow(last24h),
+    last7d: historyWindow({ units: 140 }),
+  };
+}
+
+/** Thirty-one units in a day, four of them not completed, on both kinds of cost. */
+const BUSY_DAY: Partial<HistoryWindow> = {
+  units: 31,
+  outcomes: { completed: 27, failed: 3, "timed-out": 1, abandoned: 0 },
+  costUsd: { api: 8.2, subscriptionEstimate: 4.1 },
+};
 
 function view(overrides: Partial<Parameters<typeof formatStatusReport>[0]> = {}) {
   return formatStatusReport({
@@ -329,7 +354,14 @@ describe("the two lines per pipeline", () => {
             tenant: "acme/widget",
             pipeline: "work",
             currentUnits: [
-              { unit: { kind: "issues", id: "12" }, startedAt: MINUTES_AGO(5), runBudgetMs: null },
+              {
+                unit: { kind: "issues", id: "12" },
+                startedAt: MINUTES_AGO(5),
+                runBudgetMs: null,
+                provider: null,
+                model: null,
+                effort: null,
+              },
             ],
             waitingForSlot: false,
             lastError: null,
@@ -470,6 +502,75 @@ describe("the text view", () => {
   });
 });
 
+describe("the history line (#929)", () => {
+  test("the day's units, the ones that did not complete, and spend apart from the estimate", () => {
+    expect(formatHistoryLine(history(BUSY_DAY))).toBe(
+      "[phoebe] history       24h  31 units, 3 failed, 1 timed out  $8.20 api + $4.10 est.",
+    );
+  });
+
+  test("a cost only one basis reported is shown alone, never as a total", () => {
+    expect(
+      formatHistoryWindow(
+        historyWindow({ units: 2, costUsd: { api: 0, subscriptionEstimate: 1 } }),
+      ),
+    ).toBe("2 units  $1.00 est.");
+    expect(
+      formatHistoryWindow(
+        historyWindow({
+          units: 1,
+          outcomes: { completed: 0, failed: 0, "timed-out": 0, abandoned: 1 },
+          costUsd: { api: 0.42, subscriptionEstimate: 0 },
+        }),
+      ),
+    ).toBe("1 unit, 1 abandoned  $0.42 api");
+  });
+
+  test("units that reported no cost say tokens only, rather than costing nothing", () => {
+    expect(formatHistoryWindow(historyWindow({ units: 3, unitsWithoutCost: 3 }))).toBe(
+      "3 units  tokens only",
+    );
+    expect(formatHistoryWindow(historyWindow())).toBe("0 units");
+  });
+
+  test("sits under the fleet section, before doctor", () => {
+    const text = view({
+      report: report({ cells: [cell({ pipeline: "work" })], history: history(BUSY_DAY) }),
+    });
+    const order = text
+      .split("\n")
+      .filter((line) => line.startsWith("[phoebe] "))
+      .map((line) => line.split(/\s{2,}/)[0]);
+    expect(order).toEqual([
+      "[phoebe] bootstrapper",
+      "[phoebe] fleet",
+      "[phoebe] history",
+      "[phoebe] doctor",
+    ]);
+  });
+
+  test("a report from before the summary prints no history line, not zeros", () => {
+    expect(formatHistoryLine(undefined)).toBeNull();
+    expect(view({ report: report({ cells: [cell({ pipeline: "work" })] }) })).not.toContain(
+      "history",
+    );
+  });
+
+  test("--verbose adds a history line under each pipeline that has one", () => {
+    const report_ = report({
+      cells: [
+        cell({ pipeline: "work", history: history({ units: 2, unitsWithoutCost: 2 }) }),
+        cell({ pipeline: "old", source: "stale" }),
+      ],
+      history: history(),
+    });
+    const verbose = view({ report: report_, verbose: true });
+    expect(verbose).toContain("history 24h  2 units  tokens only");
+    expect(verbose.match(/ history 24h/g)).toHaveLength(1);
+    expect(view({ report: report_ })).not.toContain(" history 24h");
+  });
+});
+
 describe("statusFindings — what --check exits 1 for", () => {
   test("a healthy deployment has none", () => {
     expect(
@@ -504,6 +605,18 @@ describe("statusFindings — what --check exits 1 for", () => {
       "doctor: failing check(s)",
       "held tenant: children/widget",
     ]);
+  });
+
+  test("history is never a finding, however many units failed or whatever they cost", () => {
+    expect(
+      statusFindings({
+        report: report({
+          cells: [cell({ pipeline: "work", history: history(BUSY_DAY) })],
+          history: history(BUSY_DAY),
+        }),
+        bootAlive: true,
+      }),
+    ).toEqual([]);
   });
 
   test("a doctor warning and a stale pipeline directory are not findings", () => {
