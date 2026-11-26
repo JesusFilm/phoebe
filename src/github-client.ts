@@ -54,6 +54,14 @@ import {
 // prompt, network partition). Mirrors the git-side bound in main.ts; the two are
 // separate knobs because a `gh` call and a `git` call fail differently.
 const CHILD_PROCESS_TIMEOUT_MS = 120_000;
+// Node's default `maxBuffer` is 1 MiB, and full pages of REST objects pass it:
+// 100 Actions runs measured 1.8 MB (#986), and a search or comments page of 100
+// objects with bodies can too. GitHub caps a body at 65,536 characters, so a
+// full page of 100 bodies stays well under 64 MiB, and a nested GraphQL page
+// (100 review threads of 30 comments each) would need nearly every comment at
+// that cap to reach the 256 MiB set here. V8 tops out at about 512 MiB per
+// string, so a higher cap would only trade ENOBUFS for an out-of-memory error.
+const CHILD_PROCESS_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
 // GitHub computes mergeability server-side and answers UNKNOWN while it works,
 // so a first read on a freshly-pushed PR routinely says nothing useful. That is
 // a GitHub quirk, not loop knowledge, which is why the retry lives here.
@@ -615,6 +623,7 @@ export function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
       env,
       encoding: "utf8",
       timeout: CHILD_PROCESS_TIMEOUT_MS,
+      maxBuffer: CHILD_PROCESS_MAX_BUFFER_BYTES,
       // Captured stderr is what the classifiers read; stdin carries `--input -`
       // bodies on this path exactly as on the inherit path — dropping it here
       // once sent GitHub an empty body for every ref and stack write.
@@ -773,9 +782,13 @@ export function createGitHubClient({
     return hits;
   }
 
-  /** A REST call. The endpoint names the resource, so these carry no `-R`. */
-  function ghApiJson<T>(endpoint: string): T {
-    const args = ["api", endpoint];
+  /**
+   * A REST call. The endpoint names the resource, so these carry no `-R`.
+   * `jq` projects the response inside `gh`, so only the fields a caller reads
+   * cross the pipe.
+   */
+  function ghApiJson<T>(endpoint: string, jq?: string): T {
+    const args = ["api", endpoint, ...(jq !== undefined ? ["--jq", jq] : [])];
     try {
       return JSON.parse(exec(args)) as T;
     } catch (error) {
@@ -2106,16 +2119,17 @@ export function createGitHubClient({
     },
 
     branchWorkflowRuns: (branch) => {
-      type Raw = {
-        workflow_runs: Array<{
-          name: string | null;
-          head_sha: string;
-          conclusion: string | null;
-          created_at: string;
-        }>;
-      };
-      const { workflow_runs: runs } = ghApiJson<Raw>(
+      type Raw = Array<{
+        name: string | null;
+        head_sha: string;
+        conclusion: string | null;
+        created_at: string;
+      }>;
+      // A whole run object is about 18 KB and only four fields are read, so
+      // `gh` projects the page before it crosses the pipe (#986).
+      const runs = ghApiJson<Raw>(
         `repos/${config.repoSlug}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=100`,
+        "[.workflow_runs[] | {name, head_sha, conclusion, created_at}]",
       );
       return runs.map((run) => ({
         name: run.name ?? "",
