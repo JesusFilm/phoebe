@@ -636,7 +636,7 @@ describe("runBench", () => {
     expect(inside.files["merged.diff"]).toContain("+the merged answer");
     expect(inside.files["trial.patch"]).toBe(readFileSync(join(runDir, seven!.patch!), "utf8"));
     expect(Object.keys(inside.env).filter(isGitHubCredentialKey)).toEqual([]);
-    expect(inside.env["HOME"]).toContain(join(WORK_DIR, "issue-7-tenant-0-judge", "home"));
+    expect(inside.env["HOME"]).toContain(join(WORK_DIR, "f0-issue-7-tenant-0-judge", "home"));
     expect(inside.prompt).toContain("Issue #7 was solved by a pull request");
     expect(inside.prompt).toContain("(PR #70)");
 
@@ -665,6 +665,7 @@ describe("runBench", () => {
   });
 
   test("a judge that crashes leaves the trial recorded with no verdict", async () => {
+    config = { ...config, testCommand: "true" };
     const { trials } = await run(
       [7],
       { 7: "commit" },
