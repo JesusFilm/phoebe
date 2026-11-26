@@ -1308,6 +1308,9 @@ export function createEngine(options: EngineOptions): Engine {
     }
     if (!labels.includes(config.processingLabel)) return null;
     if (isLandedMember({ labels }, config.mergedLabel)) return null;
+    // An operator who pulled the ticket off its queue mid-run leaves it with no
+    // owner; the sweep leaves such a claim alone, and so does this.
+    if (scope.issueOwner(labels)?.kind !== picked.kind) return null;
     const settled = settleStrandedClaim(target.id, picked.kind, `settling its unit`);
     return typeof settled === "object" ? { quarantined: settled.quarantined } : null;
   }

@@ -299,7 +299,8 @@ export function PipelineWeek({ summary }: { summary: HistorySummary | null }) {
 function OutcomeBar({ window }: { window: HistoryWindow }) {
   if (window.units === 0) return null;
   const share = (n: number): string => `${(n / window.units) * 100}%`;
-  const { completed, unproductive, failed, abandoned } = window.outcomes;
+  const { completed, failed, abandoned } = window.outcomes;
+  const unproductive = window.outcomes.unproductive ?? 0;
   const timedOut = window.outcomes["timed-out"];
   const label =
     `${completed} completed, ${unproductive} unproductive, ${failed} failed, ` +
@@ -351,7 +352,7 @@ export function PipelineBreakdown({ summary, now }: { summary: HistorySummary | 
         <tbody>
           {row("Units", (window) => window.units)}
           {row("Completed", (window) => window.outcomes.completed)}
-          {row("Unproductive", (window) => window.outcomes.unproductive)}
+          {row("Unproductive", (window) => window.outcomes.unproductive ?? 0)}
           {row("Failed", (window) => window.outcomes.failed)}
           {row("Timed out", (window) => window.outcomes["timed-out"])}
           {row("Abandoned", (window) => window.outcomes.abandoned)}

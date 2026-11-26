@@ -320,10 +320,16 @@ export async function readNeedsALook(
   since: string,
 ): Promise<NeedsALookFetch> {
   const fetched = await Promise.all(
-    NOT_COMPLETED.map((outcome) => reader({ outcome, since, limit: FEED_SIZE })),
+    NOT_COMPLETED.map((outcome) => {
+      const read = reader({ outcome, since, limit: FEED_SIZE });
+      // An engine older than the outcome rejects the filter. Only that read
+      // may fail quietly: the feed still lists the outcomes it knows.
+      return outcome === "unproductive" ? read.catch((): null => null) : read;
+    }),
   );
   const pages: HistoryPage[] = [];
   for (const one of fetched) {
+    if (one === null) continue;
     if (one.kind === "too-old") return { kind: "too-old" };
     pages.push(one.page);
   }
