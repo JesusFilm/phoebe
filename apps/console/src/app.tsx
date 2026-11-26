@@ -82,8 +82,12 @@ import {
   remoteConsoleHref,
   remoteHref,
   SETUP_HREF,
+  STATS_HREF,
   type Route,
 } from "./route.ts";
+import { FleetStatsPage } from "./fleet-stats-page.tsx";
+import { statsDeployments, type StatsArm } from "./fleet-stats.ts";
+import { localHistory } from "./history.ts";
 import { SetupPage } from "./setup-page.tsx";
 import { readContext, textToCopy } from "./context-menu.ts";
 import { CLI_CHANNEL } from "./logs-channels.ts";
@@ -705,6 +709,21 @@ export function App({
     () => remoteJoins(installs, reports, remotes),
     [installs, reports, remotes],
   );
+  // Every deployment as the stats see it (#933): the rail's card and the page
+  // add up the same list, and a folder that is also paired counts once.
+  const stats = useMemo(
+    () => statsDeployments(installs, reports, remotes, joinsByRemote),
+    [installs, reports, remotes, joinsByRemote],
+  );
+  const statsReader = useCallback(
+    (arm: StatsArm) =>
+      bridge === null
+        ? null
+        : arm.kind === "local"
+          ? localHistory(bridge, arm.dir)
+          : createRemoteClient(bridge, arm.deploymentId).history,
+    [bridge],
+  );
   const openRemote =
     route.page === "remote"
       ? (remotes.find((record) => record.deploymentId === route.deploymentId) ?? null)
@@ -823,6 +842,15 @@ export function App({
               },
               selectedRemoteChild:
                 route.page === "remote" && route.console === true ? (route.tenant ?? null) : null,
+              // The stats button. Closed here as well as by the route effect, as
+              // `onAdd` does: when the hash is already `#/stats`, choosing an
+              // install left it open over the page, and setting the hash again
+              // changes nothing.
+              stats,
+              onStats: () => {
+                setOpenInstall(null);
+                window.location.hash = STATS_HREF;
+              },
             })}
       />
       <section className="pane">
@@ -959,6 +987,8 @@ export function App({
               }}
             />
           )
+        ) : route.page === "stats" && bridge !== null ? (
+          <FleetStatsPage deployments={stats} readerOf={statsReader} now={now} />
         ) : route.page === "setup" ? (
           <SetupPage
             environment={environment}

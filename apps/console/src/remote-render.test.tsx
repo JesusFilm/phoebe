@@ -272,9 +272,9 @@ describe("a remote route's page", () => {
       />,
     );
 
-  test("carries the five tabs and no install tab", () => {
+  test("carries the six tabs and no install tab", () => {
     const markup = page();
-    for (const tab of ["overview", "pipelines", "doctor", "secrets", "config"]) {
+    for (const tab of ["overview", "pipelines", "history", "doctor", "secrets", "config"]) {
       expect(markup).toMatch(new RegExp(`<button[^>]*class="tab[^"]*"[^>]*>${tab}</button>`));
     }
     expect(markup).not.toMatch(/>install</);
