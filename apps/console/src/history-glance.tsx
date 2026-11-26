@@ -168,9 +168,13 @@ export function NeedsALook({
     state.kind === "read" && state.fetched.kind === "units"
       ? state.fetched.records.filter((record) => record.startedAt >= cutoff)
       : [];
+  // Omitted units are older than every returned one, so once any returned unit
+  // has aged out, the omitted ones have too.
   const more =
-    state.kind === "read" && state.fetched.kind === "units"
-      ? state.fetched.total - (state.fetched.records.length - current.length) - current.length
+    state.kind === "read" &&
+    state.fetched.kind === "units" &&
+    current.length === state.fetched.records.length
+      ? state.fetched.total - state.fetched.records.length
       : 0;
   const body = ((): ReactNode => {
     if (state.kind === "loading") return <p className="muted">Reading units…</p>;
