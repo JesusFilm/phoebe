@@ -24,6 +24,10 @@
 //   5. One line in `trials.jsonl` — a unit record under the `bench` pipeline,
 //      plus the fixture, contender, repeat, gates, diff and would-have writes —
 //      and the patch, when there are commits. Then the trial's tree goes.
+//   6. When the bench config names a judge and the trial left commits, one
+//      judge run compares the patch with the merged PR (src/bench-judge.ts),
+//      after the trial's clock has stopped. Its verdict and usage go on the
+//      line's `judgement`, apart from the contender's own.
 //
 // Nothing here writes to a pipeline's `units.jsonl` and nothing reaches
 // GitHub: the engine's push and PR code never runs.
@@ -45,6 +49,7 @@ import {
   GH_SHIM_WOULD_HAVE_FILE,
   type GhShimSnapshot,
 } from "./bench-gh-shim.ts";
+import { judgeTrial, parseBenchJudge } from "./bench-judge.ts";
 import { buildBenchReport, REPORT_FILE } from "./bench-report.ts";
 import {
   DEFAULT_PIPELINE_NAME,
@@ -60,6 +65,8 @@ import type {
   BenchFixture,
   BenchGateResult,
   BenchGates,
+  BenchJudge,
+  BenchJudgement,
   BenchRunConfig,
   BenchSuite,
   BenchTrial,
@@ -303,6 +310,8 @@ type RunPlan = {
   env: NodeJS.ProcessEnv;
   runTimeoutMs: number;
   engineCommit: string | null;
+  /** `null` when the bench config names no judge. */
+  judge: BenchJudge | null;
 };
 
 /** A contender with the prompt template it renders. */
@@ -577,6 +586,7 @@ async function runTrial(opts: {
   let commits = 0;
   let diff: BenchDiffStats | null = null;
   let patch: string | null = null;
+  let patchText = "";
   let head: { branch: string | null; sha: string | null } = { branch: null, sha: null };
   let wouldHave: BenchWouldHave[] = [];
   const checkInterrupt = (): void => {
@@ -740,6 +750,9 @@ async function runTrial(opts: {
           },
         );
         patch = patchPath;
+        if (plan.judge !== null) {
+          patchText = readFileSync(join(plan.runDir, patchPath), "utf8");
+        }
       }
       wouldHave = readWouldHave(trialDirs.gh);
     }
@@ -758,6 +771,39 @@ async function runTrial(opts: {
 
   const settledAt = now();
   echo(`${outcome}${detail === null ? "" : `: ${detail}`}.`);
+
+  let judgement: BenchJudgement | null = null;
+  if (plan.judge !== null && patch !== null) {
+    const judge = plan.judge;
+    echo(`judging against PR #${fixture.pr.number} with ${judge.provider} ${judge.model}.`);
+    judgement = await judgeTrial({
+      judge,
+      config,
+      agentEnv: (judgeDirs) =>
+        trialAgentEnv({
+          parentEnv: plan.env,
+          config,
+          provider: judge.provider as ProviderName,
+          dirs: judgeDirs,
+        }),
+      fixture,
+      patch: patchText,
+      dir: join(plan.runDir, WORK_DIR, `${trialId}-judge`),
+      runTimeoutMs: plan.runTimeoutMs,
+      signal,
+      git,
+      spawnAgent: deps.spawnAgent,
+      now,
+      log: deps.log,
+      unit: `issues issue:${issue}`,
+    });
+    echo(
+      judgement.verdict !== null
+        ? `judged ${judgement.verdict}${judgement.rationale === null ? "" : `: ${judgement.rationale}`}`
+        : `no verdict: ${judgement.error ?? "unknown"}.`,
+    );
+  }
+
   return {
     v: UNIT_RECORD_VERSION,
     tenant: config.repoSlug,
@@ -787,6 +833,7 @@ async function runTrial(opts: {
     diff,
     patch,
     wouldHave,
+    judgement,
   };
 }
 
@@ -808,7 +855,7 @@ export function issuesPipelineConfig(config: PhoebeConfig): PhoebeConfig {
 const CONTENDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const CONTENDER_FIELDS = new Set(["name", "provider", "model", "effort", "promptFile"]);
-const BENCH_CONFIG_FIELDS = new Set(["contenders", "repeat"]);
+const BENCH_CONFIG_FIELDS = new Set(["contenders", "repeat", "judge"]);
 
 /** Read a bench config, refusing anything it would have to guess at. */
 export function parseBenchConfig(text: string, where: string): BenchConfig {
@@ -882,7 +929,12 @@ export function parseBenchConfig(text: string, where: string): BenchConfig {
       ...(promptFile !== undefined ? { promptFile } : {}),
     };
   });
-  return { contenders, ...(repeat !== undefined ? { repeat: repeat as number } : {}) };
+  const judge = config["judge"] === undefined ? undefined : parseBenchJudge(config["judge"], fail);
+  return {
+    contenders,
+    ...(repeat !== undefined ? { repeat: repeat as number } : {}),
+    ...(judge !== undefined ? { judge } : {}),
+  };
 }
 
 const PROVIDER_SETTING = settingAt("defaultProvider");
@@ -956,12 +1008,13 @@ export function resolveContenders(opts: {
 }
 
 /**
- * Refuse a run whose contender has no provider key to hand its agent. The
- * trial's HOME is its own, so a provider's on-disk login is not there to fall
- * back on: the key the tenant's `providerEnv` names is the only way in.
+ * Refuse a run whose contender (or judge) has no provider key to hand its
+ * agent. The trial's HOME is its own, so a provider's on-disk login is not
+ * there to fall back on: the key the tenant's `providerEnv` names is the only
+ * way in.
  */
 export function assertContenderKeys(opts: {
-  contenders: readonly BenchContender[];
+  contenders: readonly Pick<BenchContender, "name" | "provider">[];
   config: Pick<PhoebeConfig, "providerEnv" | "repoSlug">;
   env: NodeJS.ProcessEnv;
 }): void {
@@ -996,7 +1049,8 @@ export type BenchRunResult = {
  * `report.json` is written with `interrupted: true`.
  *
  * Throws, before any trial, on what would make every trial meaningless: a
- * contender whose prompt file is missing, or whose provider has no key.
+ * contender whose prompt file is missing, or a contender or judge whose
+ * provider has no key.
  */
 export async function runBench(opts: {
   config: PhoebeConfig;
@@ -1041,8 +1095,12 @@ export async function runBench(opts: {
     runtimeRoot: opts.runtimeRoot,
     deploymentDir: opts.deploymentDir ?? opts.runtimeRoot,
   });
+  const judge = benchConfig?.judge ?? null;
   assertContenderKeys({
-    contenders: contenders.map((resolved) => resolved.contender),
+    contenders: [
+      ...contenders.map((resolved) => resolved.contender),
+      ...(judge === null ? [] : [{ name: "judge", provider: judge.provider }]),
+    ],
     config,
     env,
   });
@@ -1075,6 +1133,7 @@ export async function runBench(opts: {
     benchConfig: opts.benchConfigPath ?? null,
     contenders: contenders.map((resolved) => resolved.contender),
     repeat,
+    judge,
     concurrency,
     runTimeoutMs,
     installCommand: config.installCommand,
@@ -1093,8 +1152,13 @@ export async function runBench(opts: {
         `${contender.effort === null ? "" : ` (${contender.effort})`}, ${contender.promptFile}`,
     );
   }
+  if (judge !== null) {
+    deps.log(
+      `[phoebe] bench:   judge: ${judge.provider} ${judge.model}, on every trial with commits`,
+    );
+  }
 
-  const shared: RunPlan = { runId, runDir, config, env, runTimeoutMs, engineCommit };
+  const shared: RunPlan = { runId, runDir, config, env, runTimeoutMs, engineCommit, judge };
   const queue = suite.fixtures.flatMap((fixture, fixtureIndex) =>
     contenders.flatMap((resolved) =>
       Array.from({ length: repeat }, (_, index) => ({

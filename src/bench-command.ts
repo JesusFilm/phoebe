@@ -118,7 +118,8 @@ config is a JSON file in the deployment directory:
       { "name": "opus-high", "model": "claude-opus-5-5", "effort": "high" },
       { "name": "new-prompt", "promptFile": "bench/issue-candidate.md" }
     ],
-    "repeat": 3
+    "repeat": 3,
+    "judge": { "provider": "claude", "model": "claude-opus-5-5" }
   }
 
 Each contender sets any of provider, model, effort and promptFile; the tenant's
@@ -127,6 +128,13 @@ directory, so a prompt can be tried before it is installed. repeat (default 1)
 replays each fixture-contender pair that many times. --concurrency (default 1)
 runs that many trials at once; they share the provider's rate limits with the
 live fleet.
+
+judge is optional. With it, each trial that made commits gets one judge run
+after the trial ends. The judge reads the issue, the merged PR's diff from the
+hub clone and the trial's patch, in a scratch directory with no repository and
+no GitHub credential, and answers better, equivalent, worse or wrong with a
+short rationale. Its usage and cost are recorded on the trial, apart from the
+contender's.
 
 Each trial gets a fresh repository at baseSha with no
 remote, a HOME of its own, no GitHub credential, and a gh that serves the issue
@@ -141,12 +149,13 @@ partial report.
 When the run ends it prints one row per contender: trials, how many made no
 change, check and test pass rates over all its trials, median duration and
 tokens, and the API cost and subscription estimate the provider reported (a
-dash where it reported none). --json prints the BenchReport instead, the same
+dash where it reported none). With a judge, it adds a count per verdict and a
+line for what the judge spent. --json prints the BenchReport instead, the same
 JSON saved as report.json. report <runId> prints a saved run's report again.
 
 The exit code is 0 when every trial ran, whatever the trials scored. It is
 non-zero only when bench itself could not run: a bad suite or bench config, a
-missing prompt file, or a contender whose provider key is unset.
+missing prompt file, or a contender or judge whose provider key is unset.
 
 On the host every subcommand runs in a one-off container from the deployment's
 image, which takes none of the fleet's slots; the suite and bench config files

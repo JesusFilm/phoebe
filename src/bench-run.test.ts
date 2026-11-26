@@ -78,6 +78,27 @@ if (mode === "commit") {
 if (mode === "sleep") setTimeout(() => {}, 60_000);
 `;
 
+// The fake judge. It reports what it was handed, then answers as its mode
+// says, on Claude's stream: a verdict, a verdict off the scale, or a crash.
+const FAKE_JUDGE = `
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+const [report, mode] = process.argv.slice(2);
+writeFileSync(report, JSON.stringify({
+  env: process.env,
+  files: Object.fromEntries(readdirSync(".").map((name) => [name, readFileSync(name, "utf8")])),
+  prompt: readFileSync(0, "utf8"),
+}));
+if (mode === "crash") process.exit(2);
+const verdict = mode === "off-scale" ? "great" : mode;
+const result = "Read all three.\\n" + JSON.stringify({ verdict, rationale: "Same fix, same file." });
+console.log(JSON.stringify({
+  type: "result",
+  result,
+  total_cost_usd: 0.75,
+  modelUsage: { "judge-model": { inputTokens: 4000, outputTokens: 500 } },
+}));
+`;
+
 describe("runBench", () => {
   let root: string;
   let runtimeRoot: string;
@@ -86,6 +107,7 @@ describe("runBench", () => {
   let baseSha: string;
   let futureSha: string;
   let agentScript: string;
+  let judgeScript: string;
   let reportsDir: string;
 
   const PARENT_ENV: NodeJS.ProcessEnv = {
@@ -205,6 +227,8 @@ describe("runBench", () => {
     mkdirSync(reportsDir);
     agentScript = join(root, "fake-agent.mjs");
     writeFileSync(agentScript, FAKE_AGENT);
+    judgeScript = join(root, "fake-judge.mjs");
+    writeFileSync(judgeScript, FAKE_JUDGE);
   });
 
   afterEach(() => {
@@ -220,8 +244,27 @@ describe("runBench", () => {
       onSpawn?: (issue: number) => void;
       benchConfig?: BenchConfig;
       concurrency?: number;
+      /** What the judge answers for each issue; `equivalent` when unlisted. */
+      judgeModes?: Record<number, string>;
     } = {},
   ) {
+    const agent = fakeAgent(modes, extra.onSpawn);
+    const judgeRuns: number[] = [];
+    const spawnAgent: SpawnAgent = (file, args, opts) => {
+      const judged = /(issue-(\d+)-[^/\\]+)-judge[/\\]inputs$/.exec(opts.cwd);
+      if (judged === null) return agent(file, args, opts);
+      const issue = Number(judged[2]);
+      judgeRuns.push(issue);
+      return spawn(
+        process.execPath,
+        [
+          judgeScript,
+          join(reportsDir, `${judged[1]}.judge.json`),
+          extra.judgeModes?.[issue] ?? "equivalent",
+        ],
+        { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] },
+      );
+    };
     const lines: string[] = [];
     const result = await runBench({
       config,
@@ -236,12 +279,12 @@ describe("runBench", () => {
       ...(extra.concurrency !== undefined ? { concurrency: extra.concurrency } : {}),
       deploymentDir,
       deps: {
-        spawnAgent: fakeAgent(modes, extra.onSpawn),
+        spawnAgent,
         log: (line) => lines.push(line),
         engineCommit: "e".repeat(40),
       },
     });
-    return { ...result, lines };
+    return { ...result, lines, judgeRuns };
   }
 
   test("a trial's agent holds no GitHub credential, its clone has no remote, and gh is the shim", async () => {
@@ -487,6 +530,7 @@ describe("runBench", () => {
           "subscriptionEstimateUsd",
           "test",
           "trials",
+          "verdicts",
         ].sort(),
       );
     }
@@ -541,6 +585,121 @@ describe("runBench", () => {
     await expect(
       run([7], {}, { benchConfig: { contenders: [{ name: "x", provider: "cursor" }] } }),
     ).rejects.toThrow(/x: cursor needs CURSOR_API_KEY, which is unset/);
+    expect(existsSync(benchRoot(config))).toBe(false);
+  });
+
+  test("without a judge, nothing is judged and the report has no verdicts", async () => {
+    const { trials, report, judgeRuns } = await run([7], { 7: "commit" });
+    expect(judgeRuns).toEqual([]);
+    expect(trials[0]!.judgement).toBeNull();
+    expect(report.judge).toBeNull();
+    expect(report.contenders[0]!.verdicts).toBeNull();
+  });
+
+  test("a judge gives each trial with commits one verdict, its cost kept apart", async () => {
+    const judge = { provider: "claude", model: "judge-model" };
+    const { runDir, trials, report, judgeRuns } = await run(
+      [7, 8, 9],
+      { 7: "commit", 8: "none", 9: "commit" },
+      {
+        benchConfig: { contenders: [{ name: "tenant" }], judge },
+        judgeModes: { 7: "better", 9: "off-scale" },
+      },
+    );
+
+    // Only the trials with commits were judged, once each.
+    expect(judgeRuns).toEqual([7, 9]);
+    const [seven, eight, nine] = trials;
+    expect(seven!.judgement).toMatchObject({
+      provider: "claude",
+      model: "judge-model",
+      verdict: "better",
+      rationale: "Same fix, same file.",
+      error: null,
+      run: { exitCode: 0, costUsd: 0.75, costBasis: "api", inputTokens: 4000, outputTokens: 500 },
+    });
+    expect(eight!.judgement).toBeNull();
+    // A verdict off the scale is no verdict.
+    expect(nine!.judgement).toMatchObject({
+      verdict: null,
+      rationale: null,
+      error: "the judge's reply held no verdict on the scale",
+    });
+
+    // The judge read the issue, the merged PR's diff and the trial's patch,
+    // with no GitHub credential and no repository.
+    const inside = JSON.parse(
+      readFileSync(join(reportsDir, "issue-7-tenant-0.judge.json"), "utf8"),
+    ) as { env: Record<string, string>; files: Record<string, string>; prompt: string };
+    expect(Object.keys(inside.files).sort()).toEqual(["issue.md", "merged.diff", "trial.patch"]);
+    expect(inside.files["issue.md"]).toContain("# #7: Issue 7");
+    expect(inside.files["merged.diff"]).toContain("+the merged answer");
+    expect(inside.files["trial.patch"]).toBe(readFileSync(join(runDir, seven!.patch!), "utf8"));
+    expect(Object.keys(inside.env).filter(isGitHubCredentialKey)).toEqual([]);
+    expect(inside.env["HOME"]).toContain(join(WORK_DIR, "f0-issue-7-tenant-0-judge", "home"));
+    expect(inside.prompt).toContain("Issue #7 was solved by a pull request");
+    expect(inside.prompt).toContain("(PR #70)");
+
+    // The judge's usage is on the judgement, never in the contender's runs or columns.
+    expect(seven!.agentRuns).toHaveLength(1);
+    expect(seven!.agentRuns[0]!.costUsd).toBeNull();
+    const [row] = report.contenders;
+    expect(row).toMatchObject({
+      apiCostUsd: null,
+      subscriptionEstimateUsd: null,
+      medianTokens: null,
+      verdicts: { better: 1, equivalent: 0, worse: 0, wrong: 0, unjudged: 1 },
+    });
+    expect(report.judge).toEqual({
+      ...judge,
+      runs: 2,
+      tokens: 9000,
+      apiCostUsd: 1.5,
+      subscriptionEstimateUsd: null,
+    });
+    const runConfig = JSON.parse(
+      readFileSync(join(runDir, RUN_CONFIG_FILE), "utf8"),
+    ) as BenchRunConfig;
+    expect(runConfig.judge).toEqual(judge);
+    expect(existsSync(join(runDir, WORK_DIR))).toBe(false);
+  });
+
+  test("a judge that crashes leaves the trial recorded with no verdict", async () => {
+    config = { ...config, testCommand: "true" };
+    const { trials } = await run(
+      [7],
+      { 7: "commit" },
+      {
+        benchConfig: {
+          contenders: [{ name: "tenant" }],
+          judge: { provider: "claude", model: "j" },
+        },
+        judgeModes: { 7: "crash" },
+      },
+    );
+    expect(trials[0]).toMatchObject({
+      outcome: "completed",
+      judgement: {
+        verdict: null,
+        error: "the judge exited 2 with no verdict",
+        run: { exitCode: 2 },
+      },
+    });
+  });
+
+  test("refuses, before any trial, a judge whose provider key is unset", async () => {
+    await expect(
+      run(
+        [7],
+        {},
+        {
+          benchConfig: {
+            contenders: [{ name: "tenant" }],
+            judge: { provider: "cursor", model: "j" },
+          },
+        },
+      ),
+    ).rejects.toThrow(/judge: cursor needs CURSOR_API_KEY, which is unset/);
     expect(existsSync(benchRoot(config))).toBe(false);
   });
 
@@ -614,7 +773,26 @@ describe("pieces", () => {
     expect(() => parseBenchConfig("{", "bench.json")).toThrow(/bench.json is not JSON/);
     expect(refuse({ contenders: [] })).toThrow(/at least one/);
     expect(refuse({ contenders: [{ name: "a" }], repeat: 0 })).toThrow(/`repeat` must be/);
-    expect(refuse({ contenders: [{ name: "a" }], judge: {} })).toThrow(/unknown field `judge`/);
+    expect(refuse({ contenders: [{ name: "a" }], judges: {} })).toThrow(/unknown field `judges`/);
+    expect(refuse({ contenders: [{ name: "a" }], judge: {} })).toThrow(/judge.provider must be/);
+    expect(refuse({ contenders: [{ name: "a" }], judge: { provider: "claude" } })).toThrow(
+      /judge.model must be/,
+    );
+    expect(refuse({ contenders: [{ name: "a" }], judge: { provider: "gpt", model: "m" } })).toThrow(
+      /judge.provider `gpt` is not one of/,
+    );
+    expect(
+      refuse({
+        contenders: [{ name: "a" }],
+        judge: { provider: "claude", model: "m", effort: "x" },
+      }),
+    ).toThrow(/judge has unknown field `effort`/);
+    expect(
+      parseBenchConfig(
+        JSON.stringify({ contenders: [{ name: "a" }], judge: { provider: "codex", model: " m " } }),
+        "bench.json",
+      ),
+    ).toEqual({ contenders: [{ name: "a" }], judge: { provider: "codex", model: "m" } });
     expect(refuse({ contenders: [{ name: "a/b" }] })).toThrow(/name must be/);
     expect(refuse({ contenders: [{ name: "a" }, { name: "a" }] })).toThrow(/two contenders/);
     expect(refuse({ contenders: [{ name: "a", provider: "gpt" }] })).toThrow(/not one of/);

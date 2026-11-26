@@ -8,8 +8,19 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BenchContender, BenchRunConfig, BenchTrial } from "./contracts/bench.ts";
-import type { BenchGateRate, BenchReport, BenchReportRow } from "./contracts/bench-report.ts";
+import {
+  BENCH_VERDICTS,
+  type BenchContender,
+  type BenchRunConfig,
+  type BenchTrial,
+} from "./contracts/bench.ts";
+import type {
+  BenchGateRate,
+  BenchJudgeUsage,
+  BenchReport,
+  BenchReportRow,
+  BenchVerdictCounts,
+} from "./contracts/bench-report.ts";
 import type { AgentRunRecord } from "./contracts/unit-record.ts";
 
 /** The file a run's report is saved as, in its run directory. */
@@ -53,6 +64,44 @@ function costOn(trials: readonly BenchTrial[], basis: AgentRunRecord["costBasis"
   return total;
 }
 
+/**
+ * How a contender's trials with commits were judged. A trial with commits the
+ * judge gave no verdict on is `unjudged`; a trial with none was never judged
+ * and is not counted.
+ */
+export function verdictCounts(trials: readonly BenchTrial[]): BenchVerdictCounts {
+  const counts: BenchVerdictCounts = { better: 0, equivalent: 0, worse: 0, wrong: 0, unjudged: 0 };
+  for (const trial of trials) {
+    if (trial.patch === null) continue;
+    const verdict = trial.judgement?.verdict ?? null;
+    if (verdict === null) counts.unjudged += 1;
+    else counts[verdict] += 1;
+  }
+  return counts;
+}
+
+/** What the judge spent across the run, apart from every contender. */
+export function judgeUsage(
+  judge: NonNullable<BenchRunConfig["judge"]>,
+  trials: readonly BenchTrial[],
+): BenchJudgeUsage {
+  const runs = trials.flatMap((trial) => (trial.judgement?.run ? [trial.judgement.run] : []));
+  const cost = (basis: AgentRunRecord["costBasis"]): number | null =>
+    runs.reduce<number | null>(
+      (total, run) =>
+        run.costBasis === basis && run.costUsd !== null ? (total ?? 0) + run.costUsd : total,
+      null,
+    );
+  return {
+    provider: judge.provider,
+    model: judge.model,
+    runs: runs.length,
+    tokens: trialTokens(runs),
+    apiCostUsd: cost("api"),
+    subscriptionEstimateUsd: cost("subscription-estimate"),
+  };
+}
+
 function gateRate(
   trials: readonly BenchTrial[],
   command: string,
@@ -67,7 +116,7 @@ function gateRate(
 export function contenderRow(
   contender: BenchContender,
   trials: readonly BenchTrial[],
-  commands: Pick<BenchRunConfig, "checkCommand" | "testCommand">,
+  run: Pick<BenchRunConfig, "checkCommand" | "testCommand" | "judge">,
 ): BenchReportRow {
   const mine = trials.filter((trial) => trial.contender === contender.name);
   const count = (outcome: BenchTrial["outcome"]): number =>
@@ -82,12 +131,13 @@ export function contenderRow(
     },
     noChange: mine.filter((trial) => trial.outcome === "completed" && trial.change === "none")
       .length,
-    check: gateRate(mine, commands.checkCommand, "check"),
-    test: gateRate(mine, commands.testCommand, "test"),
+    check: gateRate(mine, run.checkCommand, "check"),
+    test: gateRate(mine, run.testCommand, "test"),
     medianDurationMs: median(mine.flatMap((trial) => trial.durationMs ?? [])),
     medianTokens: median(mine.flatMap((trial) => trialTokens(trial.agentRuns) ?? [])),
     apiCostUsd: costOn(mine, "api"),
     subscriptionEstimateUsd: costOn(mine, "subscription-estimate"),
+    verdicts: run.judge === null ? null : verdictCounts(mine),
   };
 }
 
@@ -122,6 +172,7 @@ export function buildBenchReport(opts: {
         .length,
     },
     contenders: runConfig.contenders.map((contender) => contenderRow(contender, trials, runConfig)),
+    judge: runConfig.judge === null ? null : judgeUsage(runConfig.judge, trials),
   };
 }
 
@@ -163,32 +214,52 @@ function settingsOf(contender: BenchContender): string {
     .join(" · ");
 }
 
-const HEADERS = [
-  "contender",
-  "trials",
-  "no change",
-  "check",
-  "test",
-  "median time",
-  "median tokens",
-  "API cost",
-  "subscription est.",
-] as const;
+const GATE_HEADERS = ["contender", "trials", "no change", "check", "test"] as const;
+const VERDICT_HEADERS = BENCH_VERDICTS;
+const USAGE_HEADERS = ["median time", "median tokens", "API cost", "subscription est."] as const;
 
-/** The report as the terminal shows it: a heading, one row per contender, and each contender's settings. */
+function judgeLine(judge: BenchJudgeUsage, unjudged: number): string {
+  const tokens = judge.tokens === null ? "" : `, ${formatTokens(judge.tokens)} tokens`;
+  const costs = [
+    ...(judge.apiCostUsd === null ? [] : [`API cost ${formatUsd(judge.apiCostUsd)}`]),
+    ...(judge.subscriptionEstimateUsd === null
+      ? []
+      : [`subscription est. ${formatUsd(judge.subscriptionEstimateUsd)}`]),
+  ];
+  return (
+    `Judge: ${judge.provider} ${judge.model}, ${judge.runs} run(s)${tokens}` +
+    `${costs.length === 0 ? "" : `, ${costs.join(", ")}`}, not in any contender's columns.` +
+    (unjudged === 0 ? "" : ` ${unjudged} trial(s) with commits got no verdict.`)
+  );
+}
+
+/**
+ * The report as the terminal shows it: a heading, one row per contender, and
+ * each contender's settings. With a judge, a column per verdict after the
+ * gates, and a line for what the judge spent.
+ */
 export function renderBenchReport(report: BenchReport): string {
+  const judge = report.judge ?? null;
+  const headers: readonly string[] = [
+    ...GATE_HEADERS,
+    ...(judge === null ? [] : VERDICT_HEADERS),
+    ...USAGE_HEADERS,
+  ];
   const rows = report.contenders.map((row) => [
     row.contender.name,
     String(row.trials),
     String(row.noChange),
     percent(row.check),
     percent(row.test),
+    ...(judge === null
+      ? []
+      : VERDICT_HEADERS.map((verdict) => (row.verdicts ? String(row.verdicts[verdict]) : NONE))),
     formatDuration(row.medianDurationMs),
     formatTokens(row.medianTokens),
     formatUsd(row.apiCostUsd),
     formatUsd(row.subscriptionEstimateUsd),
   ]);
-  const widths = HEADERS.map((header, i) =>
+  const widths = headers.map((header, i) =>
     Math.max(header.length, ...rows.map((row) => row[i]!.length)),
   );
   const line = (cells: readonly string[]): string =>
@@ -204,8 +275,17 @@ export function renderBenchReport(report: BenchReport): string {
       `${report.repeat} repeat(s): ${report.recorded}/${report.planned} trial(s) recorded, ` +
       `${outcomes.failed} failed, ${outcomes.timedOut} timed out.`,
     "",
-    line(HEADERS),
+    line(headers),
     ...rows.map(line),
+    ...(judge === null
+      ? []
+      : [
+          "",
+          judgeLine(
+            judge,
+            report.contenders.reduce((sum, row) => sum + (row.verdicts?.unjudged ?? 0), 0),
+          ),
+        ]),
     "",
     ...report.contenders.map(
       (row) => `${row.contender.name.padEnd(widths[0]!)}  ${settingsOf(row.contender)}`,
@@ -230,7 +310,12 @@ export function parseBenchReport(text: string, where: string): BenchReport {
   if (r === null || typeof r !== "object" || r.v !== 1 || !Array.isArray(r.contenders)) {
     throw new Error(`${where} is not a bench report this engine reads (expected \`v: 1\`).`);
   }
-  return r as BenchReport;
+  // A report saved before the judge (#942) has neither field; it had no judge.
+  return {
+    ...(r as BenchReport),
+    judge: r.judge ?? null,
+    contenders: r.contenders.map((row) => ({ ...row, verdicts: row.verdicts ?? null })),
+  };
 }
 
 /** A run id names a directory under the bench root, and nothing outside it. */

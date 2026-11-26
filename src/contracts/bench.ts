@@ -10,7 +10,7 @@
 // it ran with. It also reads one file the operator keeps, the bench config that
 // names the contenders. The report a run ends with is in ./bench-report.ts.
 
-import type { UnitRecord } from "./unit-record.ts";
+import type { AgentRunRecord, UnitRecord } from "./unit-record.ts";
 
 /** One issue comment as it stood when the PR opened. */
 export type BenchComment = {
@@ -136,11 +136,47 @@ export type BenchContenderSpec = {
   promptFile?: string;
 };
 
+/**
+ * The judge (#942): the provider and model that compare each trial with
+ * commits against the PR that merged. Both are required; the judge runs at its
+ * provider CLI's default effort.
+ */
+export type BenchJudge = {
+  provider: string;
+  model: string;
+};
+
 /** The file `bench run --bench-config` reads. */
 export type BenchConfig = {
   contenders: BenchContenderSpec[];
   /** How many times each fixture–contender pair is replayed. Default 1. */
   repeat?: number;
+  /** Off when absent: no judge runs and the report has no verdicts. */
+  judge?: BenchJudge;
+};
+
+/** The fixed scale a judge places a trial's patch on, against the merged PR. */
+export const BENCH_VERDICTS = ["better", "equivalent", "worse", "wrong"] as const;
+
+export type BenchVerdict = (typeof BENCH_VERDICTS)[number];
+
+/**
+ * The judge's reading of one trial. `verdict` and `rationale` are `null` when
+ * the judge gave no verdict on the scale: its run failed, timed out, was
+ * interrupted, or answered with something else. `error` then says which.
+ *
+ * `run` is the judge's own usage. It is kept here, apart from the trial's
+ * `agentRuns`, so nothing that totals a contender's cost ever counts it.
+ */
+export type BenchJudgement = {
+  provider: string;
+  model: string;
+  verdict: BenchVerdict | null;
+  /** At most 500 characters. */
+  rationale: string | null;
+  error: string | null;
+  /** `null` when the judge never started, e.g. the merged diff could not be read. */
+  run: AgentRunRecord | null;
 };
 
 /**
@@ -177,6 +213,8 @@ export type BenchTrial = UnitRecord & {
   /** The trial's patch, relative to the run directory; `null` with no commits. */
   patch: string | null;
   wouldHave: BenchWouldHave[];
+  /** `null` when the run had no judge or the trial left no commits. */
+  judgement: BenchJudgement | null;
 };
 
 /** `bench/<runId>/config.json`: what the run was set to do, written before the first trial. */
@@ -191,6 +229,8 @@ export type BenchRunConfig = {
   benchConfig: string | null;
   contenders: BenchContender[];
   repeat: number;
+  /** The bench config's judge; `null` when it named none. */
+  judge: BenchJudge | null;
   /** How many trials ran at once. */
   concurrency: number;
   runTimeoutMs: number;

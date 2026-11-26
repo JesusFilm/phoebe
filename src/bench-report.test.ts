@@ -15,8 +15,14 @@ import {
   renderBenchReport,
   REPORT_FILE,
   trialTokens,
+  verdictCounts,
 } from "./bench-report.ts";
-import type { BenchContender, BenchRunConfig, BenchTrial } from "./contracts/bench.ts";
+import type {
+  BenchContender,
+  BenchJudgement,
+  BenchRunConfig,
+  BenchTrial,
+} from "./contracts/bench.ts";
 import type { AgentRunRecord } from "./contracts/unit-record.ts";
 
 function contender(name: string, provider = "claude"): BenchContender {
@@ -39,6 +45,7 @@ const RUN_CONFIG: BenchRunConfig = {
   benchConfig: "bench/bench.json",
   contenders: [contender("claude"), contender("codex", "codex")],
   repeat: 1,
+  judge: null,
   concurrency: 1,
   runTimeoutMs: 2_700_000,
   installCommand: "pnpm install",
@@ -102,6 +109,7 @@ function trial(over: Partial<BenchTrial> & Pick<BenchTrial, "contender">): Bench
     diff: null,
     patch: null,
     wouldHave: [],
+    judgement: null,
     ...over,
   };
 }
@@ -250,6 +258,130 @@ describe("buildBenchReport", () => {
   });
 });
 
+describe("with a judge", () => {
+  const JUDGE = { provider: "claude", model: "judge-model" };
+
+  function judged(
+    verdict: BenchJudgement["verdict"],
+    run: AgentRunRecord | null = agentRun({}),
+  ): BenchJudgement {
+    return {
+      ...JUDGE,
+      verdict,
+      rationale: verdict === null ? null : "because",
+      error: verdict === null ? "the judge's reply held no verdict on the scale" : null,
+      run,
+    };
+  }
+
+  const JUDGED: BenchTrial[] = [
+    trial({
+      contender: "claude",
+      patch: "patches/a.patch",
+      agentRuns: [agentRun({ costBasis: "api", costUsd: 0.5, inputTokens: 100 })],
+      judgement: judged(
+        "better",
+        agentRun({ costBasis: "api", costUsd: 2, inputTokens: 9000, outputTokens: 1000 }),
+      ),
+    }),
+    trial({
+      contender: "claude",
+      patch: "patches/b.patch",
+      judgement: judged(
+        "wrong",
+        agentRun({ costBasis: "subscription-estimate", costUsd: 3, inputTokens: 5 }),
+      ),
+    }),
+    trial({ contender: "claude", patch: "patches/c.patch", judgement: judged(null) }),
+    trial({ contender: "codex", change: "none", patch: null }),
+    trial({ contender: "codex", patch: "patches/d.patch", judgement: judged("equivalent") }),
+  ];
+
+  const report = buildBenchReport({
+    runConfig: { ...RUN_CONFIG, judge: JUDGE },
+    trials: JUDGED,
+    finishedAt: new Date("2026-11-25T12:10:00.000Z"),
+    interrupted: false,
+  });
+
+  test("counts verdicts per contender over the trials with commits", () => {
+    const [claude, codex] = report.contenders;
+    expect(claude!.verdicts).toEqual({ better: 1, equivalent: 0, worse: 0, wrong: 1, unjudged: 1 });
+    expect(codex!.verdicts).toEqual({ better: 0, equivalent: 1, worse: 0, wrong: 0, unjudged: 0 });
+  });
+
+  test("keeps the judge's usage and cost out of every contender's columns", () => {
+    const [claude] = report.contenders;
+    expect(claude!.apiCostUsd).toBe(0.5);
+    expect(claude!.subscriptionEstimateUsd).toBeNull();
+    expect(claude!.medianTokens).toBe(100);
+    expect(report.judge).toEqual({
+      provider: "claude",
+      model: "judge-model",
+      runs: 4,
+      tokens: 10_005,
+      apiCostUsd: 2,
+      subscriptionEstimateUsd: 3,
+    });
+  });
+
+  test("renders a column per verdict and a line for the judge", () => {
+    const table = renderBenchReport(report);
+    const lines = table.split("\n");
+    const header = lines.find((line) => line.startsWith("contender"))!;
+    expect(header.split(/\s{2,}/)).toEqual([
+      "contender",
+      "trials",
+      "no change",
+      "check",
+      "test",
+      "better",
+      "equivalent",
+      "worse",
+      "wrong",
+      "median time",
+      "median tokens",
+      "API cost",
+      "subscription est.",
+    ]);
+    const row = (name: string): string[] =>
+      lines
+        .find((line) => line.startsWith(`${name} `))!
+        .trim()
+        .split(/\s{2,}/);
+    expect(row("claude").slice(5, 9)).toEqual(["1", "0", "0", "1"]);
+    expect(row("claude").slice(11)).toEqual(["$0.50", NONE]);
+    expect(row("codex").slice(5, 9)).toEqual(["0", "1", "0", "0"]);
+    expect(table).toContain(
+      "Judge: claude judge-model, 4 run(s), 10.0k tokens, API cost $2.00, subscription est. $3.00, " +
+        "not in any contender's columns. 1 trial(s) with commits got no verdict.",
+    );
+  });
+
+  test("without a judge there are no verdicts and no verdict column", () => {
+    const plain = buildBenchReport({
+      runConfig: RUN_CONFIG,
+      trials: JUDGED,
+      finishedAt: new Date("2026-11-25T12:10:00.000Z"),
+      interrupted: false,
+    });
+    expect(plain.judge).toBeNull();
+    expect(plain.contenders.map((row) => row.verdicts)).toEqual([null, null]);
+    const table = renderBenchReport(plain);
+    expect(table).not.toMatch(/better|equivalent|Judge:/);
+  });
+
+  test("verdictCounts skips trials with no commits", () => {
+    expect(verdictCounts([trial({ contender: "x", patch: null })])).toEqual({
+      better: 0,
+      equivalent: 0,
+      worse: 0,
+      wrong: 0,
+      unjudged: 0,
+    });
+  });
+});
+
 describe("pieces", () => {
   test("median", () => {
     expect(median([])).toBeNull();
@@ -295,6 +427,16 @@ describe("pieces", () => {
         `Saved runs, newest last: ${RUN_CONFIG.runId}.`,
       );
       expect(() => readBenchReport(join(root, "none"), "x")).toThrow(/no saved runs/);
+      // A report saved before the judge existed reads as one without a judge.
+      const { judge: _judge, ...older } = report;
+      writeFileSync(
+        join(root, RUN_CONFIG.runId, REPORT_FILE),
+        JSON.stringify({
+          ...older,
+          contenders: older.contenders.map(({ verdicts: _verdicts, ...row }) => row),
+        }),
+      );
+      expect(readBenchReport(root, RUN_CONFIG.runId)).toEqual(report);
       writeFileSync(join(root, RUN_CONFIG.runId, REPORT_FILE), JSON.stringify({ v: 1 }));
       expect(() => readBenchReport(root, RUN_CONFIG.runId)).toThrow(/not a bench report/);
     } finally {

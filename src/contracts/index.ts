@@ -134,14 +134,24 @@ export type {
   BenchFixture,
   BenchGateResult,
   BenchGates,
+  BenchJudge,
+  BenchJudgement,
   BenchRunConfig,
   BenchSelection,
   BenchSkip,
   BenchSuite,
   BenchTrial,
+  BenchVerdict,
   BenchWouldHave,
 } from "./bench.ts";
-export type { BenchGateRate, BenchReport, BenchReportRow } from "./bench-report.ts";
+export { BENCH_VERDICTS } from "./bench.ts";
+export type {
+  BenchGateRate,
+  BenchJudgeUsage,
+  BenchReport,
+  BenchReportRow,
+  BenchVerdictCounts,
+} from "./bench-report.ts";
 export type {
   AgentRunRecord,
   AgentRunUsage,

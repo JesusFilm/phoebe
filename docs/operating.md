@@ -354,7 +354,8 @@ contenders:
     { "name": "opus-high", "model": "claude-opus-5-5", "effort": "high" },
     { "name": "new-prompt", "promptFile": "bench/issue-candidate.md" }
   ],
-  "repeat": 3
+  "repeat": 3,
+  "judge": { "provider": "claude", "model": "claude-opus-5-5" }
 }
 ```
 
@@ -371,9 +372,12 @@ contenders:
   none of the fleet's slots, but it does share the provider's rate limits with
   the live fleet.
 - Every trial uses the tenant's `issues` run budget.
+- `judge` is optional and needs both `provider` and `model`. See
+  [The judge](#the-judge).
 
 Before the first trial, bench checks that every contender's prompt file exists
-and that its provider key (the variable `providerEnv` names) is set. A trial
+and that its provider key (the variable `providerEnv` names) is set, and that
+the judge's provider key is set too. A trial
 has its own HOME, so a provider's on-disk login is not available to it.
 
 A trial has no GitHub credentials and no git remote. The bench container sets no
@@ -448,8 +452,37 @@ phoebe bench report 2026-11-25T12-00-00-000Z --json
 
 The exit code is 0 when every trial ran, however the trials scored. Failing
 gates never change it. Bench exits non-zero only when it could not do its job:
-a bad suite or bench config, a missing prompt file, or a contender whose
-provider key is unset.
+a bad suite or bench config, a missing prompt file, or a contender or judge
+whose provider key is unset.
+
+### The judge
+
+Gates tell you whether a trial's patch passes. The judge tells you how it
+compares with the PR that actually merged. It is off unless the bench config
+has a `judge`.
+
+After each trial that made commits, bench runs the judge once. The judge works
+in a scratch directory that holds three files: the issue as the suite pinned
+it, the merged PR's diff from the hub clone, and the trial's patch. The merged
+diff runs from `baseSha` to the PR's head, the same starting point as the
+trial's patch. There is no repository, no remote and no GitHub credential, and
+bench deletes the directory afterwards. The judge answers with one verdict and a short rationale:
+
+- `better`: solves the issue and is clearly better than the merged PR.
+- `equivalent`: solves the issue about as well, even if the code differs.
+- `worse`: addresses the issue but falls short of the merged PR.
+- `wrong`: does not solve the issue, or would break something.
+
+The verdict, the rationale and the judge's usage go on the trial's line in
+`trials.jsonl` as `judgement`. If the judge fails, times out, or answers off
+the scale, the trial is still recorded, with no verdict and an `error` saying
+why. The judge runs after the trial's clock stops and its usage is never in
+`agentRuns`, so it cannot show up in a contender's time, tokens or cost.
+
+With a judge, the report adds a column per verdict after **test**, and a line
+under the table with the judge's runs, tokens and cost. A trial with no change
+is never judged. A trial with commits that got no verdict counts as
+`unjudged` in the JSON report, and the line under the table says how many.
 
 ## Checking the deployment's health: `phoebe doctor`
 
