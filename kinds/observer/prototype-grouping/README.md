@@ -15,17 +15,21 @@ flagging over it, runs each prompt variant once with the `claude` CLI, and write
 `report/index.html`. Open the report from disk; it needs no server. A
 compact summary also goes to stdout.
 
-Each run of all three variants costs a few dollars and takes a few minutes. The
-GitHub reads are cached in `cache/`, so a re-run only pays for the agent.
+Five runs are defined in `run.ts` (`RUN_SPECS`): `A`, `B`, `C` and `D-sonnet` on
+`claude-sonnet-5-5`, the model an observer with no kind block gets
+(`defaultModels.claude` in src/config-schema.ts), and `D-opus` on `claude-opus-5-5` at
+`low`, which this repo's own `.phoebe/phoebe.config.ts` would give it. Each costs
+cents and takes under a few minutes. The GitHub reads are cached in `cache/`, so a
+re-run only pays for the agent.
 
 | Flag | Default | What it does |
 | --- | --- | --- |
 | `--units <path>` | `fixture/units.jsonl` | A real `units.jsonl` dump: one `UnitRecord` (src/contracts/unit-record.ts) per line |
 | `--pipeline <name>` | each record's `pipeline` | Use one pipeline name for every record, for a dump from a single `state/<pipeline>/` |
 | `--days <n>` / `--lookback <30d>` | `30` | The window, for both the fixture and the lookback |
-| `--now <iso>` | now | Where the lookback ends, for replaying an old dump |
-| `--variants A,B` | `A,B,C` | Which prompts in `variants/` to run |
-| `--model <id>` / `--effort <lvl>` | `claude-sonnet-5-5`, none | The grouping run's model. The default is `defaultModels.claude` in src/config-schema.ts, the model an observer with no kind block gets. This repo's own `.phoebe/phoebe.config.ts` would give it `claude-opus-5-5` at `low` |
+| `--now <iso>` | when the fixture was built (now, for `--units`) | Where the lookback ends, for replaying an old dump |
+| `--runs D-sonnet,D-opus` | every reported run | Which runs call the agent now; the others load their saved results |
+| `--report A,B,C` | all five | Which runs the report covers |
 | `--flag-only` | | Stop after flagging and write `report/runs/flagged.json` |
 | `--reuse` | | Rescore the saved runs in `report/runs/` without calling the agent (after editing `calibration.json`) |
 | `--rebuild` | | Rebuild the fixture first |
@@ -107,11 +111,16 @@ Where the fixture departs from what the engine would record:
 - `build-fixture.ts`, `run.ts`, `lib.ts`: the code.
 - `variants/A.md`: verbatim copy of `kinds/observer/prompt.md`. `B.md`: stricter
   evidence and grouping. `C.md`: B plus proposals shown with title and first problem
-  paragraph, and a fold-first rule.
-- `fake-proposals.json`: two invented prior proposals that only variant C sees
-  (#9901 open, #9902 closed `not_planned`), so the fold path runs. The report marks them fake.
-- `calibration.json`: a **DRAFT** labelled set of past problems in the window, for
-  a person to correct. `expect: "none"` marks noise no finding should rest on.
+  paragraph, and a fold-first rule. `D.md`: A's structure with the cause named in one
+  sentence and cited, weak-evidence notes, one finding per cause, fixed problems left
+  out, C's proposals file, and a fold only when the same fix applies. For D, code
+  drops any finding under two distinct issues or PRs (`MIN_REFS`).
+- `fake-proposals.json`: two invented prior proposals that only variants C and D see
+  (#9901 open, #9902 closed `not_planned`), so the fold path runs. `matchesProblems` names the labelled problems each one's cause covers; the scorer reads it to judge a fold, and the agent never sees it. The report marks them fake.
+- `calibration.json`: the labelled set of past problems in the window, as agreed.
+  A problem with no finding counts as "omitted, fixed" when its diagnosing issue
+  closed or its fix PR merged after the last flagged unit that showed it. The ship
+  bar is at least 4 of 6 found or omitted as fixed, no noise finding, no wrong fold. `expect: "none"` marks noise no finding should rest on.
 - `fixture/`: the generated history. `report/`: the generated report, plus each
   variant's rendered prompt, proposals file, findings and raw CLI output under `runs/`.
 - `cache/`: GitHub reads, not committed.

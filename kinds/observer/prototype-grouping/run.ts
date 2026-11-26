@@ -40,7 +40,17 @@ import {
   type FindingDecision,
   type Proposal,
 } from "../proposals.ts";
-import { argValue, cached, firstParagraph, hasFlag, oneLine, PROTO_DIR, REPO_ROOT } from "./lib.ts";
+import {
+  argValue,
+  cached,
+  firstParagraph,
+  ghJson,
+  hasFlag,
+  oneLine,
+  PROTO_DIR,
+  REPO_ROOT,
+  REPO_SLUG,
+} from "./lib.ts";
 
 const CLAUDE = process.env["CLAUDE_BIN"] ?? "/home/q/.local/bin/claude";
 const CHECKOUT = "/tmp/observer-proto-checkout";
@@ -51,15 +61,59 @@ const FLAGGED_CAP = 150;
 
 // The model the observer runs on when nothing names one: `defaultModels.claude`
 // in src/config-schema.ts, with no effort flag (`defaultEfforts` is empty).
-const MODEL = argValue("--model") ?? "claude-sonnet-5-5";
-const EFFORT = argValue("--effort");
+const SONNET = "claude-sonnet-5-5";
+
+/** One agent run: a prompt variant on a model. Its id names its files in report/runs/. */
+type RunSpec = { id: string; variant: string; model: string; effort?: string };
+const RUN_SPECS: RunSpec[] = [
+  { id: "A", variant: "A", model: SONNET },
+  { id: "B", variant: "B", model: SONNET },
+  { id: "C", variant: "C", model: SONNET },
+  { id: "D-sonnet", variant: "D", model: SONNET },
+  // What this repo's own config gives an observer with no kind block of its own.
+  { id: "D-opus", variant: "D", model: "claude-opus-5-5", effort: "low" },
+];
+/** Variants whose proposals.json carries title and first problem paragraph, and the fakes. */
+const RICH_PROPOSALS: ReadonlySet<string> = new Set(["C", "D"]);
+/** Variants where code, not the prompt, enforces minimum evidence. */
+const CODE_FILTER: ReadonlySet<string> = new Set(["D"]);
+/** The code filter: a finding needs this many distinct issues or PRs. */
+const MIN_REFS = 2;
+/** The ship bar: labelled problems found or correctly omitted as fixed. */
+const BAR_MIN_PROBLEMS = 4;
+
 const LOOKBACK = argValue("--lookback") ?? `${argValue("--days") ?? 30}d`;
-const VARIANTS = (argValue("--variants") ?? "A,B,C").split(",").filter(Boolean);
 const UNITS_PATH = argValue("--units") ?? join(PROTO_DIR, "fixture", "units.jsonl");
 const PIPELINE_OVERRIDE = argValue("--pipeline");
-const NOW = argValue("--now") === undefined ? new Date() : new Date(argValue("--now")!);
 const REUSE = hasFlag("--reuse");
 const FLAG_ONLY = hasFlag("--flag-only");
+const pickRuns = (flag: string): RunSpec[] | undefined => {
+  const value = argValue(flag);
+  if (value === undefined) return undefined;
+  const ids = value.split(",").filter(Boolean);
+  for (const id of ids) {
+    if (!RUN_SPECS.some((spec) => spec.id === id)) throw new Error(`unknown run ${id}`);
+  }
+  return RUN_SPECS.filter((spec) => ids.includes(spec.id));
+};
+/** The runs the report covers; each loads its saved result unless it is executed. */
+const REPORTED = pickRuns("--report") ?? RUN_SPECS;
+/** The runs that call the agent now. `--reuse` runs none. */
+const EXECUTE: ReadonlySet<string> = new Set(
+  REUSE ? [] : (pickRuns("--runs") ?? REPORTED).map((spec) => spec.id),
+);
+/**
+ * Where the lookback ends: `--now`, else when the fixture was built (so a
+ * re-run numbers the flagged units the same way and saved findings still
+ * resolve), else now.
+ */
+const FIXTURE_META = join(PROTO_DIR, "fixture", "meta.json");
+const NOW =
+  argValue("--now") !== undefined
+    ? new Date(argValue("--now")!)
+    : argValue("--units") === undefined && existsSync(FIXTURE_META)
+      ? new Date((JSON.parse(readFileSync(FIXTURE_META, "utf8")) as { builtAt: string }).builtAt)
+      : new Date();
 
 const config = resolveConfig(repoUserConfig);
 
@@ -233,7 +287,12 @@ function proposalRows(proposals: readonly Proposal[]) {
 }
 
 /** Variant C: the same rows plus each proposal's title and first paragraph. */
-type RichProposal = Proposal & { title: string; fake?: boolean };
+type RichProposal = Proposal & {
+  title: string;
+  fake?: boolean;
+  /** For the scorer only, never shown to the agent: the labelled problems this proposal's cause is. */
+  matchesProblems?: string[];
+};
 function richProposalRows(proposals: readonly RichProposal[]) {
   return proposals.map((proposal) => ({
     ...proposalRows([proposal])[0],
@@ -326,7 +385,7 @@ const SANDBOX_NOTE =
   ". `gh` reads GitHub normally. Use the Read, Grep and Glob tools for files, and the Write " +
   "tool for the findings file. A denied command means only that command is unavailable.";
 
-function runClaude(variant: string, prompt: string, scratch: string): Promise<RunMeta> {
+function runClaude(spec: RunSpec, prompt: string, scratch: string): Promise<RunMeta> {
   const argv = [
     "--append-system-prompt",
     SANDBOX_NOTE,
@@ -334,8 +393,8 @@ function runClaude(variant: string, prompt: string, scratch: string): Promise<Ru
     "--output-format",
     "json",
     "--model",
-    MODEL,
-    ...(EFFORT === undefined ? [] : ["--effort", EFFORT]),
+    spec.model,
+    ...(spec.effort === undefined ? [] : ["--effort", spec.effort]),
     "--permission-mode",
     "dontAsk",
     "--strict-mcp-config",
@@ -361,7 +420,7 @@ function runClaude(variant: string, prompt: string, scratch: string): Promise<Ru
     child.stderr.on("data", (chunk: Buffer) => (err += chunk.toString()));
     child.stdin.end(prompt);
     child.on("close", (code) => {
-      writeFileSync(join(RUNS_DIR, `${variant}.claude.json`), out);
+      writeFileSync(join(RUNS_DIR, `${spec.id}.claude.json`), out);
       let parsed: Record<string, unknown> | null = null;
       try {
         parsed = JSON.parse(out) as Record<string, unknown>;
@@ -369,9 +428,9 @@ function runClaude(variant: string, prompt: string, scratch: string): Promise<Ru
         parsed = null;
       }
       resolve({
-        variant,
-        model: MODEL,
-        effort: EFFORT ?? null,
+        variant: spec.id,
+        model: spec.model,
+        effort: spec.effort ?? null,
         exitCode: code,
         durationMs: Date.now() - started,
         costUsd: typeof parsed?.["total_cost_usd"] === "number" ? (parsed["total_cost_usd"] as number) : null,
@@ -434,8 +493,36 @@ type Problem = {
 };
 type Calibration = { draft: boolean; note: string; problems: Problem[] };
 
+/** When a labelled problem's fix landed after the last unit that showed it; null if it did not. */
+type FixInfo = { lastUnitAt: string; fixedBy: number; fixedAt: string } | null;
+
+type Bar = {
+  found: number;
+  omittedFixed: number;
+  positives: number;
+  noise: number;
+  wrongFolds: number;
+  pass: boolean;
+};
+
+/** When an issue closed as completed, or a PR merged; null otherwise. */
+function closedAsFixed(n: number): string | null {
+  const issue = ghJson<{
+    state: string;
+    state_reason: string | null;
+    closed_at: string | null;
+    pull_request?: { merged_at: string | null };
+  }>(["api", `repos/${REPO_SLUG}/issues/${n}`]);
+  if (issue.pull_request !== undefined) return issue.pull_request.merged_at;
+  return issue.state === "closed" && issue.state_reason === "completed" ? issue.closed_at : null;
+}
+
 type Score = {
   problem: Problem;
+  status: "found" | "omitted-fixed" | "miss" | "clean" | "noise";
+  fix: FixInfo;
+  /** The run's final message names one of the problem's refs. */
+  mentioned: boolean;
   /** For an `expect: none` problem, the findings that rest on it. */
   offenders: Finding[];
   finding: Finding | null;
@@ -490,7 +577,7 @@ function ghLink(ref: string): string {
 function attemptOneNote(): string {
   const dir = join(RUNS_DIR, "attempt-1-no-shell");
   if (!existsSync(dir)) return "";
-  const parts = VARIANTS.flatMap((variant) => {
+  const parts = ["A", "B", "C"].flatMap((variant) => {
     const metaPath = join(dir, `${variant}.meta.json`);
     const findingsPath = join(dir, `${variant}.findings.json`);
     if (!existsSync(metaPath)) return [];
@@ -592,10 +679,46 @@ async function main(): Promise<void> {
   ) as Calibration;
   const flaggedNumbers = new Set(rows.flatMap(numbersOf));
 
-  type VariantResult = {
-    variant: string;
+  // When each labelled problem's fix landed: its diagnosing issue closed as
+  // completed, or its fix PR merged, after the last flagged unit that showed it.
+  const fixOf = new Map<string, FixInfo>();
+  for (const problem of calibration.problems) {
+    if (problem.expect === "none") continue;
+    const shown = rows.filter((row) => numbersOf(row).some((n) => problem.refs.includes(n)));
+    if (shown.length === 0) {
+      fixOf.set(problem.id, null);
+      continue;
+    }
+    const lastUnitAt = shown.map((row) => row.startedAt).sort().at(-1)!;
+    let best: FixInfo = null;
+    for (const n of problem.diagnosedIn) {
+      const at = closedAsFixed(n);
+      if (at === null || Date.parse(at) <= Date.parse(lastUnitAt)) continue;
+      if (best === null || Date.parse(at) < Date.parse(best.fixedAt)) {
+        best = { lastUnitAt, fixedBy: n, fixedAt: at };
+      }
+    }
+    fixOf.set(problem.id, best);
+  }
+
+  type Fold = {
+    finding: Finding;
+    proposal: RichProposal;
+    /** Labelled problems among the folded units. */
+    labelled: string[];
+    /** Those the proposal's cause does not cover: a wrong fold. */
+    outside: string[];
+    unlabelledUnits: number;
+    wrong: boolean;
+  };
+  type RunResult = {
+    spec: RunSpec;
     meta: RunMeta | null;
+    /** Everything parseFindings kept. */
+    parsed: Finding[];
+    /** What would file: `parsed` after the code's evidence filter, when the run has one. */
     findings: Finding[];
+    codeDropped: Finding[];
     dropped: string[];
     parseError: string | null;
     decisions: Map<string, FindingDecision>;
@@ -603,27 +726,30 @@ async function main(): Promise<void> {
     scores: Score[];
     unlabelled: Finding[];
     proposals: RichProposal[];
+    folds: Fold[];
+    bar: Bar;
   };
 
   const pending: Promise<void>[] = [];
   const metas = new Map<string, RunMeta | null>();
-  const variantProposals = new Map<string, RichProposal[]>();
-  if (!REUSE) ensureCheckout();
+  const runProposals = new Map<string, RichProposal[]>();
+  const executing = REPORTED.filter((spec) => EXECUTE.has(spec.id));
+  if (executing.length > 0) ensureCheckout();
   try {
-    for (const variant of VARIANTS) {
-      const template = readFileSync(join(PROTO_DIR, "variants", `${variant}.md`), "utf8");
-      const scratch = join(SCRATCH_ROOT, variant);
+    for (const spec of REPORTED) {
+      const template = readFileSync(join(PROTO_DIR, "variants", `${spec.variant}.md`), "utf8");
+      const scratch = join(SCRATCH_ROOT, spec.id);
       rmSync(scratch, { recursive: true, force: true });
       mkdirSync(scratch, { recursive: true });
       const flaggedPath = join(scratch, "flagged.json");
       const proposalsPath = join(scratch, "proposals.json");
       const findingsPath = join(scratch, FINDINGS_FILE);
       writeFileSync(flaggedPath, `${JSON.stringify(rows, null, 2)}\n`);
-      const rich = variant === "C";
+      const rich = RICH_PROPOSALS.has(spec.variant);
       const proposals: RichProposal[] = rich
         ? [...realProposals.map((p) => ({ ...p, title: "" })), ...fakes]
         : realProposals.map((p) => ({ ...p, title: "" }));
-      variantProposals.set(variant, proposals);
+      runProposals.set(spec.id, proposals);
       writeFileSync(
         proposalsPath,
         `${JSON.stringify(rich ? richProposalRows(proposals) : proposalRows(proposals), null, 2)}\n`,
@@ -644,23 +770,26 @@ async function main(): Promise<void> {
           throw new Error(`prompt asked to run ${command}`);
         },
       );
-      writeFileSync(join(RUNS_DIR, `${variant}.prompt.md`), prompt);
-      writeFileSync(join(RUNS_DIR, `${variant}.proposals.json`), readFileSync(proposalsPath));
-      if (REUSE) {
-        const metaPath = join(RUNS_DIR, `${variant}.meta.json`);
-        metas.set(variant, existsSync(metaPath) ? (JSON.parse(readFileSync(metaPath, "utf8")) as RunMeta) : null);
+      writeFileSync(join(RUNS_DIR, `${spec.id}.prompt.md`), prompt);
+      writeFileSync(join(RUNS_DIR, `${spec.id}.proposals.json`), readFileSync(proposalsPath));
+      if (!EXECUTE.has(spec.id)) {
+        const metaPath = join(RUNS_DIR, `${spec.id}.meta.json`);
+        metas.set(
+          spec.id,
+          existsSync(metaPath) ? (JSON.parse(readFileSync(metaPath, "utf8")) as RunMeta) : null,
+        );
         continue;
       }
-      console.log(`running variant ${variant} on ${MODEL}…`);
+      console.log(`running ${spec.id} (variant ${spec.variant}) on ${spec.model}${spec.effort ? ` at ${spec.effort}` : ""}…`);
       pending.push(
-        runClaude(variant, prompt, scratch).then((meta) => {
-          metas.set(variant, meta);
-          writeFileSync(join(RUNS_DIR, `${variant}.meta.json`), `${JSON.stringify(meta, null, 2)}\n`);
+        runClaude(spec, prompt, scratch).then((meta) => {
+          metas.set(spec.id, meta);
+          writeFileSync(join(RUNS_DIR, `${spec.id}.meta.json`), `${JSON.stringify(meta, null, 2)}\n`);
           if (existsSync(findingsPath)) {
-            writeFileSync(join(RUNS_DIR, `${variant}.findings.json`), readFileSync(findingsPath));
+            writeFileSync(join(RUNS_DIR, `${spec.id}.findings.json`), readFileSync(findingsPath));
           }
           console.log(
-            `variant ${variant}: exit ${meta.exitCode}, ${Math.round(meta.durationMs / 1000)}s, ` +
+            `${spec.id}: exit ${meta.exitCode}, ${Math.round(meta.durationMs / 1000)}s, ` +
               `$${meta.costUsd?.toFixed(2) ?? "?"}, ${meta.turns ?? "?"} turns`,
           );
         }),
@@ -668,30 +797,41 @@ async function main(): Promise<void> {
     }
     await Promise.all(pending);
   } finally {
-    if (!REUSE) removeCheckout();
+    if (executing.length > 0) removeCheckout();
   }
 
-  const results: VariantResult[] = [];
-  for (const variant of VARIANTS) {
-    const findingsPath = join(RUNS_DIR, `${variant}.findings.json`);
-    let findings: Finding[] = [];
+  const evidenceOf = (finding: Finding): Evidence => {
+    const findingRows = finding.units.map((id) => rowById.get(id)!);
+    const refs = new Set(findingRows.map((row) => threadOf(row, prToIssue)));
+    const days = new Set(findingRows.map((row) => row.startedAt.slice(0, 10)));
+    return { units: findingRows.length, refs: refs.size, days: days.size, refList: [...refs] };
+  };
+  const numbersOfFinding = (finding: Finding) =>
+    new Set(finding.units.flatMap((id) => numbersOf(rowById.get(id)!)));
+  const positives = calibration.problems.filter((problem) => problem.expect !== "none");
+
+  const results: RunResult[] = [];
+  for (const spec of REPORTED) {
+    const findingsPath = join(RUNS_DIR, `${spec.id}.findings.json`);
+    let parsed: Finding[] = [];
     let dropped: string[] = [];
     let parseError: string | null = null;
     if (!existsSync(findingsPath)) {
       parseError = `no ${FINDINGS_FILE} was written`;
     } else {
       try {
-        const parsed = parseFindings(readFileSync(findingsPath, "utf8"), new Set(rowById.keys()));
-        findings = [...parsed.findings].sort((a, b) => b.units.length - a.units.length);
-        dropped = parsed.dropped;
+        const out = parseFindings(readFileSync(findingsPath, "utf8"), new Set(rowById.keys()));
+        parsed = [...out.findings].sort((a, b) => b.units.length - a.units.length);
+        dropped = out.dropped;
       } catch (error) {
         parseError = error instanceof Error ? error.message : String(error);
       }
     }
-    const proposals = variantProposals.get(variant) ?? [];
+    const meta = metas.get(spec.id) ?? null;
+    const proposals = runProposals.get(spec.id) ?? [];
     const decisions = new Map<string, FindingDecision>();
     const evidence = new Map<string, Evidence>();
-    for (const finding of findings) {
+    for (const finding of parsed) {
       decisions.set(
         finding.key,
         decideFinding(
@@ -699,20 +839,18 @@ async function main(): Promise<void> {
           NOW,
         ),
       );
-      const findingRows = finding.units.map((id) => rowById.get(id)!);
-      const refs = new Set(findingRows.map((row) => threadOf(row, prToIssue)));
-      const days = new Set(findingRows.map((row) => row.startedAt.slice(0, 10)));
-      evidence.set(finding.key, {
-        units: findingRows.length,
-        refs: refs.size,
-        days: days.size,
-        refList: [...refs],
-      });
+      evidence.set(finding.key, evidenceOf(finding));
     }
+    // The code filter (variant D): fewer than two distinct issues or PRs never files.
+    const filtered = CODE_FILTER.has(spec.variant);
+    const findings = filtered ? parsed.filter((f) => evidence.get(f.key)!.refs >= MIN_REFS) : parsed;
+    const codeDropped = parsed.filter((f) => !findings.includes(f));
+
     const matched = new Set<string>();
-    const numbersOfFinding = (finding: Finding) =>
-      new Set(finding.units.flatMap((id) => numbersOf(rowById.get(id)!)));
+    const mentions = (problem: Problem) =>
+      meta?.result != null && problem.refs.some((n) => new RegExp(`#${n}\\b`).test(meta.result!));
     const scores: Score[] = calibration.problems.map((problem) => {
+      const inFlagged = problem.refs.filter((n) => flaggedNumbers.has(n));
       if (problem.expect === "none") {
         // A finding rests on noise when at least half its issues/PRs are the noise's refs.
         const offenders = findings.filter((finding) => {
@@ -723,12 +861,15 @@ async function main(): Promise<void> {
         for (const finding of offenders) matched.add(finding.key);
         return {
           problem,
+          status: offenders.length === 0 ? "clean" : "noise",
           offenders,
           finding: null,
           overlap: [],
           categoryOk: false,
           targetOk: false,
-          inFlagged: problem.refs.filter((n) => flaggedNumbers.has(n)),
+          inFlagged,
+          fix: null,
+          mentioned: false,
         };
       }
       let best: Finding | null = null;
@@ -742,21 +883,57 @@ async function main(): Promise<void> {
           bestOverlap = overlap;
         }
       }
+      const fix = fixOf.get(problem.id) ?? null;
       const categories = [problem.category, ...(problem.acceptCategories ?? [])];
       return {
         problem,
+        status: best !== null ? "found" : fix !== null ? "omitted-fixed" : "miss",
         offenders: [],
         finding: best,
         overlap: bestOverlap,
         categoryOk: best !== null && categories.includes(best.category),
         targetOk: best !== null && targetMatches(problem, best.target),
-        inFlagged: problem.refs.filter((n) => flaggedNumbers.has(n)),
+        inFlagged,
+        fix,
+        mentioned: mentions(problem),
       };
     });
+
+    // Folds: a finding filed under an existing proposal's key.
+    const folds: Fold[] = [];
+    for (const finding of findings) {
+      const proposal = proposals.find((p) => p.key === finding.key);
+      if (proposal === undefined) continue;
+      const labelled = new Set<string>();
+      let unlabelledUnits = 0;
+      for (const id of finding.units) {
+        const numbers = numbersOf(rowById.get(id)!);
+        const hit = positives.filter((problem) => numbers.some((n) => problem.refs.includes(n)));
+        if (hit.length === 0) unlabelledUnits += 1;
+        for (const problem of hit) labelled.add(problem.id);
+      }
+      const covers = new Set(proposal.matchesProblems ?? []);
+      const outside = [...labelled].filter((id) => !covers.has(id));
+      folds.push({
+        finding,
+        proposal,
+        labelled: [...labelled],
+        outside,
+        unlabelledUnits,
+        wrong: outside.length > 0,
+      });
+    }
+
+    const found = scores.filter((s) => s.status === "found").length;
+    const omittedFixed = scores.filter((s) => s.status === "omitted-fixed").length;
+    const noise = scores.filter((s) => s.status === "noise").length;
+    const wrongFolds = folds.filter((fold) => fold.wrong).length;
     results.push({
-      variant,
-      meta: metas.get(variant) ?? null,
+      spec,
+      meta,
+      parsed,
       findings,
+      codeDropped,
       dropped,
       parseError,
       decisions,
@@ -764,35 +941,55 @@ async function main(): Promise<void> {
       scores,
       unlabelled: findings.filter((finding) => !matched.has(finding.key)),
       proposals,
+      folds,
+      bar: {
+        found,
+        omittedFixed,
+        positives: positives.length,
+        noise,
+        wrongFolds,
+        pass: found + omittedFixed >= BAR_MIN_PROBLEMS && noise === 0 && wrongFolds === 0,
+      },
     });
   }
 
   // --- stdout summary ---
   console.log("");
-  for (const result of results) {
-    const positives = result.scores.filter((s) => s.problem.expect !== "none");
-    const hits = positives.filter((s) => s.finding !== null);
-    const noisy = result.scores.filter((s) => s.problem.expect === "none" && s.offenders.length > 0);
+  for (const r of results) {
+    const { bar } = r;
     console.log(
-      `variant ${result.variant}: ${result.findings.length} findings, ` +
-        `$${result.meta?.costUsd?.toFixed(2) ?? "?"}, ${Math.round((result.meta?.durationMs ?? 0) / 1000)}s; ` +
-        `calibration ${hits.length}/${positives.length} covered ` +
-        `(${hits.filter((s) => s.categoryOk).length} right category, ` +
-        `${hits.filter((s) => s.targetOk).length} right target), ` +
-        `${noisy.length} noise problems turned into findings, ` +
-        `${result.unlabelled.length} unlabelled findings` +
-        (result.parseError === null ? "" : ` [${result.parseError}]`),
+      `${r.spec.id} (${r.spec.model}${r.spec.effort ? ` ${r.spec.effort}` : ""}): ` +
+        `${r.findings.length} findings${r.codeDropped.length > 0 ? ` (+${r.codeDropped.length} dropped by the code filter)` : ""}, ` +
+        `$${r.meta?.costUsd?.toFixed(2) ?? "?"}, ${Math.round((r.meta?.durationMs ?? 0) / 1000)}s; ` +
+        `found ${bar.found}, omitted as fixed ${bar.omittedFixed}, of ${bar.positives}; ` +
+        `noise ${bar.noise}; folds ${r.folds.length} (${bar.wrongFolds} wrong); ` +
+        `bar ${bar.pass ? "PASS" : "FAIL"}` +
+        (r.parseError === null ? "" : ` [${r.parseError}]`),
     );
-    for (const finding of result.findings) {
-      const e = result.evidence.get(finding.key)!;
-      const pass = RULES.filter((rule) => rule.test(e)).map((rule) => rule.id).join(",") || "none";
-      const decision = result.decisions.get(finding.key)!;
+    for (const s of r.scores) {
+      if (s.problem.expect === "none") continue;
       console.log(
-        `  ${finding.key} — ${finding.units.length} units, ${e.refs} refs, ${e.days} days; ` +
+        `    ${s.problem.id} ${s.status}${s.finding ? ` via ${s.finding.key}` : ""}` +
+          `${s.status === "omitted-fixed" ? ` (#${s.fix!.fixedBy} ${s.fix!.fixedAt.slice(0, 10)}; mentioned: ${s.mentioned ? "yes" : "no"})` : ""}`,
+      );
+    }
+    for (const finding of r.parsed) {
+      const e = r.evidence.get(finding.key)!;
+      const pass = RULES.filter((rule) => rule.test(e)).map((rule) => rule.id).join(",") || "none";
+      const decision = r.decisions.get(finding.key)!;
+      const cut = r.codeDropped.includes(finding) ? " DROPPED by code filter;" : "";
+      console.log(
+        `  ${finding.key} — ${finding.units.length} units, ${e.refs} refs, ${e.days} days;${cut} ` +
           `passes ${pass}; code would ${decision.action}${decision.action === "fold" ? ` into #${decision.into.number}` : ""}`,
       );
     }
-    for (const line of result.dropped) console.log(`  dropped ${line}`);
+    for (const fold of r.folds) {
+      console.log(
+        `  fold ${fold.finding.key} → #${fold.proposal.number}: ${fold.wrong ? "WRONG" : "right"} ` +
+          `(labelled ${fold.labelled.join(",") || "none"}, outside ${fold.outside.join(",") || "none"}, ${fold.unlabelledUnits} unlabelled units)`,
+      );
+    }
+    for (const line of r.dropped) console.log(`  dropped ${line}`);
   }
 
   // --- HTML report ---
@@ -807,7 +1004,7 @@ async function main(): Promise<void> {
 <p>History file <code>${esc(UNITS_PATH.replace(REPO_ROOT + "/", ""))}</code>${
     meta === null ? "" : `, built ${esc(meta.builtAt.slice(0, 16))} UTC`
   }. Lookback <strong>${esc(LOOKBACK)}</strong> ending ${esc(NOW.toISOString().slice(0, 16))} UTC, ${esc(coverage)}.
-Grouping model <code>${esc(MODEL)}</code>${EFFORT === undefined ? " (no effort flag)" : `, effort ${esc(EFFORT)}`}.
+Each run's model is in the Runs table.
 Phoebe's git identity for <code>outside-commits</code>: <code>${esc(phoebe)}</code>.</p>
 ${meta === null ? "" : `<ul>${meta.notes.map((note) => `<li>${esc(note)}</li>`).join("")}</ul>`}
 <div class="grid">
@@ -833,22 +1030,41 @@ ${meta === null ? "" : `<ul>${meta.notes.map((note) => `<li>${esc(note)}</li>`).
     )
     .join("")}</tbody></table></details></section>`);
 
-  // Run cost table.
-  section.push(`<section><h2>Runs</h2><table><thead><tr><th>variant</th><th>findings</th><th>exit</th><th>duration</th><th>turns</th><th>cost (USD)</th><th>input / output / cache read / cache write tokens</th><th>denied tool calls</th></tr></thead><tbody>${results
+  const runLabel = (spec: RunSpec) =>
+    `${spec.id} · ${spec.model.replace("claude-", "")}${spec.effort ? ` ${spec.effort}` : ""}`;
+
+  // Ship bar.
+  section.push(`<section><h2>Ship bar</h2>
+<p>A run passes when it finds, or correctly omits as already fixed, at least ${BAR_MIN_PROBLEMS} of the ${positives.length} labelled problems, turns no noise (N1, N2) into a finding, and makes no wrong fold. A wrong fold reuses a proposal's key for units whose labelled cause is not the one the proposal describes.</p>
+<table><thead><tr><th>run</th><th>variant</th><th>found</th><th>omitted, fixed</th><th>missed</th><th>noise findings</th><th>folds</th><th>cost</th><th>result</th></tr></thead><tbody>${results
     .map((r) => {
-      const u = (r.meta?.usage ?? {}) as Record<string, number | undefined>;
-      return `<tr><td><a href="#v-${r.variant}">${r.variant}</a></td><td class="n">${r.findings.length}</td><td>${r.meta?.exitCode ?? "–"}</td><td class="n">${r.meta === null ? "–" : `${Math.round(r.meta.durationMs / 1000)}s`}</td><td class="n">${r.meta?.turns ?? "–"}</td><td class="n">${r.meta?.costUsd?.toFixed(2) ?? "–"}</td><td class="n">${[u["input_tokens"], u["output_tokens"], u["cache_read_input_tokens"], u["cache_creation_input_tokens"]].map((v) => (v === undefined ? "–" : v.toLocaleString("en-US"))).join(" / ")}</td><td>${(r.meta?.denials ?? []).length === 0 ? "0" : `<details><summary>${r.meta!.denials.length}</summary><ul>${r.meta!.denials.map((d) => `<li><code>${esc(d)}</code></li>`).join("")}</ul></details>`}</td></tr>`;
+      const b = r.bar;
+      const missed = r.scores.filter((s) => s.status === "miss").map((s) => s.problem.id);
+      const omitted = r.scores.filter((s) => s.status === "omitted-fixed").map((s) => s.problem.id);
+      const found = r.scores.filter((s) => s.status === "found").map((s) => s.problem.id);
+      return `<tr><td><a href="#v-${esc(r.spec.id)}">${esc(runLabel(r.spec))}</a></td><td>${esc(r.spec.variant)}</td><td>${b.found} <span class="muted">${found.join(" ")}</span></td><td>${b.omittedFixed} <span class="muted">${omitted.join(" ")}</span></td><td>${missed.length} <span class="muted">${missed.join(" ")}</span></td><td class="${b.noise === 0 ? "" : "miss"}">${b.noise}</td><td class="${b.wrongFolds === 0 ? "" : "miss"}">${r.folds.length === 0 ? "none" : r.folds.map((f) => `${f.wrong ? "wrong" : "right"}: <code>${esc(f.finding.key)}</code> → #${f.proposal.number}`).join("<br>")}</td><td class="n">${r.meta?.costUsd?.toFixed(2) ?? "–"}</td><td class="${b.pass ? "hit" : "miss"}"><strong>${b.pass ? "PASS" : "FAIL"}</strong> (${b.found + b.omittedFixed}/${b.positives})</td></tr>`;
     })
     .join("")}</tbody></table>
-<p class="muted">Cost is what the CLI reports (<code>total_cost_usd</code>); on a subscription it is a list-price estimate nobody paid.</p>${attemptOneNote()}</section>`);
+<p class="muted">"Omitted, fixed" is a heuristic: the problem has no finding, and its diagnosing issue closed as completed or its fix PR merged after the last flagged unit that showed it. It cannot tell an omission the run reasoned about from one it never noticed; the scorecard says whether the run's final message named the problem's refs. Applied to every run, A to C included, so earlier numbers moved from the first report.</p></section>`);
+
+  // Run cost table.
+  section.push(`<section><h2>Runs</h2><table><thead><tr><th>run</th><th>prompt</th><th>model</th><th>findings</th><th>exit</th><th>duration</th><th>turns</th><th>cost (USD)</th><th>input / output / cache read / cache write tokens</th><th>denied tool calls</th></tr></thead><tbody>${results
+    .map((r) => {
+      const u = (r.meta?.usage ?? {}) as Record<string, number | undefined>;
+      return `<tr><td><a href="#v-${esc(r.spec.id)}">${esc(r.spec.id)}</a></td><td><code>variants/${esc(r.spec.variant)}.md</code></td><td><code>${esc(r.spec.model)}</code>${r.spec.effort ? `, effort ${esc(r.spec.effort)}` : ", no effort flag"}</td><td class="n">${r.findings.length}${r.codeDropped.length > 0 ? ` <span class="muted">(+${r.codeDropped.length} cut)</span>` : ""}</td><td>${r.meta?.exitCode ?? "–"}</td><td class="n">${r.meta === null ? "–" : `${Math.round(r.meta.durationMs / 1000)}s`}</td><td class="n">${r.meta?.turns ?? "–"}</td><td class="n">${r.meta?.costUsd?.toFixed(2) ?? "–"}</td><td class="n">${[u["input_tokens"], u["output_tokens"], u["cache_read_input_tokens"], u["cache_creation_input_tokens"]].map((v) => (v === undefined ? "–" : v.toLocaleString("en-US"))).join(" / ")}</td><td>${(r.meta?.denials ?? []).length === 0 ? "0" : `<details><summary>${r.meta!.denials.length}</summary><ul>${r.meta!.denials.map((d) => `<li><code>${esc(d)}</code></li>`).join("")}</ul></details>`}</td></tr>`;
+    })
+    .join("")}</tbody></table>
+<p class="muted">Every run got the same appended system-prompt line listing the read-only shell commands it may use. Cost is what the CLI reports (<code>total_cost_usd</code>); on a subscription it is a list-price estimate nobody paid.</p>${attemptOneNote()}</section>`);
 
   // Calibration scorecard.
-  section.push(`<section><h2>Calibration scorecard <span class="badge">DRAFT labels</span></h2>
+  section.push(`<section><h2>Calibration scorecard</h2>
 <p>${esc(calibration.note)}</p>
-<table class="score"><thead><tr><th>problem</th><th>expected</th><th>in flagged set</th>${results
-    .map((r) => `<th>${r.variant}</th>`)
+<div class="note"><strong>A label to revisit.</strong> P2's refs #871 and #876 ran on 2026-11-17, after #872 had fixed the clock (merged 2026-11-16 21:30). #906 says #871's runs found nothing to change because the ticket was already fixed, and left no comment. #876's cause is not on record; #880 later did it by hand. So those units may be #906's problem, not P2's. The labels stand as agreed; this is a note, not a change.</div>
+<table class="score"><thead><tr><th>problem</th><th>expected</th><th>in flagged set</th><th>fixed after its last unit</th>${results
+    .map((r) => `<th>${esc(r.spec.id)}</th>`)
     .join("")}</tr></thead><tbody>${calibration.problems
     .map((problem, index) => {
+      const fix = fixOf.get(problem.id) ?? null;
       const cells = results
         .map((r) => {
           const s = r.scores[index]!;
@@ -857,72 +1073,76 @@ ${meta === null ? "" : `<ul>${meta.notes.map((note) => `<li>${esc(note)}</li>`).
               ? `<td class="hit">clean</td>`
               : `<td class="miss">rests on it: ${s.offenders.map((f) => `<code>${esc(f.key)}</code>`).join(", ")}</td>`;
           }
+          if (s.status === "omitted-fixed") {
+            return `<td class="hit">omitted, fixed<br><span class="muted">named in final message: ${s.mentioned ? "yes" : "no"}</span></td>`;
+          }
           if (s.finding === null) return `<td class="miss">miss</td>`;
           return `<td class="${s.categoryOk ? "hit" : "partial"}"><code>${esc(s.finding.key)}</code><br>category ${s.categoryOk ? "✓" : "✗"}, target ${s.targetOk ? "✓" : "✗"}<br>refs ${s.overlap.map((n) => `#${n}`).join(" ")} of ${s.inFlagged.length}</td>`;
         })
         .join("");
       return `<tr><td><strong>${esc(problem.id)}</strong>${problem.expect === "none" ? ' <span class="badge">noise</span>' : ""} ${esc(problem.cause)}<br><span class="muted">diagnosed in ${problem.diagnosedIn.map((n) => `<a href="https://github.com/JesusFilm/phoebe/issues/${n}">#${n}</a>`).join(", ")}${problem.notes ? ` · ${esc(problem.notes)}` : ""}</span></td><td>${problem.expect === "none" ? "no finding" : `<code>${esc(problem.category)}:${esc(problem.target)}</code>${problem.acceptCategories ? `<br><span class="muted">or ${esc(problem.acceptCategories.join(", "))}</span>` : ""}`}</td><td>${problem.refs
         .map((n) => (flaggedNumbers.has(n) ? `#${n}` : `<s title="not flagged">#${n}</s>`))
-        .join(" ")}</td>${cells}</tr>`;
+        .join(" ")}</td><td>${problem.expect === "none" ? "" : fix === null ? "no" : `#${fix.fixedBy}, ${esc(fix.fixedAt.slice(0, 16))}<br><span class="muted">last unit ${esc(fix.lastUnitAt.slice(0, 16))}</span>`}</td>${cells}</tr>`;
     })
     .join("")}
-<tr><td colspan="3"><strong>Covered · right category · right target · noise turned into findings · unlabelled findings</strong></td>${results
+<tr><td colspan="4"><strong>Found · omitted as fixed · right category · right target · noise findings · unlabelled findings</strong></td>${results
     .map((r) => {
-      const positives = r.scores.filter((s) => s.problem.expect !== "none");
-      const hits = positives.filter((s) => s.finding !== null);
-      const noisy = r.scores.filter((s) => s.problem.expect === "none" && s.offenders.length > 0);
-      return `<td>${hits.length}/${positives.length} · ${hits.filter((s) => s.categoryOk).length} · ${hits.filter((s) => s.targetOk).length} · ${noisy.length} · ${r.unlabelled.length}</td>`;
+      const hits = r.scores.filter((s) => s.status === "found");
+      return `<td>${r.bar.found} · ${r.bar.omittedFixed} · ${hits.filter((s) => s.categoryOk).length} · ${hits.filter((s) => s.targetOk).length} · ${r.bar.noise} · ${r.unlabelled.length}</td>`;
     })
     .join("")}</tr></tbody></table>
-<p class="muted">A problem is covered when some finding lists a unit whose issue or PR is one of the problem's refs; the cell shows the finding with the largest overlap. A struck-through ref was never flagged, so no prompt could cover it. "Unlabelled" findings match no labelled problem: false positives or discoveries, for a person to judge.</p></section>`);
+<p class="muted">A problem is found when some finding that would file lists a unit whose issue or PR is one of the problem's refs; the cell shows the finding with the largest overlap. A struck-through ref was never flagged, so no prompt could cover it. "Unlabelled" findings match no labelled problem: false positives or discoveries, for a person to judge.</p></section>`);
 
   // Matrix of findings x rules.
-  section.push(`<section><h2>Minimum evidence</h2><p>Each rule is applied in code to every finding. Refs count a PR's units as the issue the PR closes, so the run that opened a PR and the reviews run on it are one ref.</p>${results
-    .map(
-      (r) => `<h3>Variant ${r.variant}</h3><table class="matrix"><thead><tr><th>finding</th><th>units</th><th>refs</th><th>days</th>${RULES.map((rule) => `<th title="${esc(rule.text)}">${rule.id}<br><span class="muted">${esc(rule.text)}</span></th>`).join("")}<th>code would</th></tr></thead><tbody>${r.findings
+  section.push(`<section><h2>Minimum evidence</h2><p>Each rule is applied in code to every finding parseFindings kept. Refs count a PR's units as the issue the PR closes, so the run that opened a PR and the reviews run on it are one ref. Variant D files only what passes M2 (at least ${MIN_REFS} distinct issues or PRs); for A to C the rules are shown for comparison and nothing was cut.</p>${results
+    .map((r) => {
+      const filtered = CODE_FILTER.has(r.spec.variant);
+      return `<h3>${esc(runLabel(r.spec))}</h3><table class="matrix"><thead><tr><th>finding</th><th>units</th><th>refs</th><th>days</th>${RULES.map((rule) => `<th title="${esc(rule.text)}">${rule.id}<br><span class="muted">${esc(rule.text)}</span></th>`).join("")}<th>code filter</th><th>code would</th></tr></thead><tbody>${r.parsed
         .map((finding) => {
           const e = r.evidence.get(finding.key)!;
           const d = r.decisions.get(finding.key)!;
-          return `<tr><td><code>${esc(finding.key)}</code></td><td class="n">${e.units}</td><td class="n">${e.refs}</td><td class="n">${e.days}</td>${RULES.map((rule) => (rule.test(e) ? `<td class="hit">pass</td>` : `<td class="miss">cut</td>`)).join("")}<td>${esc(d.action)}${d.action === "fold" ? ` into #${d.into.number}` : d.action === "skip" ? `: ${esc(d.reason)}` : ""}</td></tr>`;
+          const cut = r.codeDropped.includes(finding);
+          return `<tr><td><code>${esc(finding.key)}</code></td><td class="n">${e.units}</td><td class="n">${e.refs}</td><td class="n">${e.days}</td>${RULES.map((rule) => (rule.test(e) ? `<td class="hit">pass</td>` : `<td class="miss">cut</td>`)).join("")}<td class="${cut ? "miss" : ""}">${filtered ? (cut ? "dropped" : "kept") : "none"}</td><td>${cut ? "nothing" : `${esc(d.action)}${d.action === "fold" ? ` into #${d.into.number}` : d.action === "skip" ? `: ${esc(d.reason)}` : ""}`}</td></tr>`;
         })
-        .join("")}<tr><td><strong>survive</strong></td><td></td><td></td><td></td>${RULES.map((rule) => `<td class="n"><strong>${r.findings.filter((f) => rule.test(r.evidence.get(f.key)!)).length}/${r.findings.length}</strong></td>`).join("")}<td></td></tr></tbody></table>`,
-    )
+        .join("")}<tr><td><strong>survive</strong></td><td></td><td></td><td></td>${RULES.map((rule) => `<td class="n"><strong>${r.parsed.filter((f) => rule.test(r.evidence.get(f.key)!)).length}/${r.parsed.length}</strong></td>`).join("")}<td class="n"><strong>${r.findings.length}/${r.parsed.length}</strong></td><td></td></tr></tbody></table>`;
+    })
     .join("")}</section>`);
 
-  // Per variant findings.
-  for (const r of results) {
-    const proposalNote =
-      r.variant === "C"
-        ? `<div class="note"><strong>Fake prior proposals.</strong> This variant's <code>proposals.json</code> carries each proposal's title and first problem paragraph, and two invented proposals that do not exist on GitHub: ${r.proposals
-            .filter((p) => p.fake)
-            .map((p) => `<code>${esc(p.key)}</code> (#${p.number}, ${esc(p.state)}${p.stateReason ? ` ${esc(p.stateReason)}` : ""}: “${esc(p.title)}”)`)
-            .join(" and ")}.</div>`
-        : "";
-    section.push(`<section id="v-${r.variant}"><h2>Variant ${r.variant}: ${r.findings.length} findings</h2>${proposalNote}${
-      r.parseError === null ? "" : `<p class="miss">Parse error: ${esc(r.parseError)}</p>`
-    }${r.dropped.length === 0 ? "" : `<p class="muted">Dropped by parseFindings: ${r.dropped.map(esc).join("; ")}</p>`}${
-      r.meta?.error ? `<p class="miss">Run error: ${esc(r.meta.error)}</p>` : ""
-    }${r.findings
-      .map((finding) => {
-        const e = r.evidence.get(finding.key)!;
-        const d = r.decisions.get(finding.key)!;
-        const labelled = r.scores
-          .filter((s) => s.finding?.key === finding.key || s.offenders.some((f) => f.key === finding.key))
-          .map((s) => (s.problem.expect === "none" ? `${s.problem.id} (noise)` : s.problem.id));
-        return `<article class="finding"><header><span class="cat cat-${esc(finding.category)}">${esc(finding.category)}</span> <code>${esc(finding.target)}</code> <span class="muted">${e.units} units · ${e.refs} refs · ${e.days} days · code would ${esc(d.action)}${d.action === "fold" ? ` into #${d.into.number}` : ""}${labelled.length > 0 ? ` · matches ${labelled.join(", ")}` : " · unlabelled"}</span></header>
+  // Per run findings.
+  const renderFinding = (r: RunResult, finding: Finding, cut: boolean): string => {
+    const e = r.evidence.get(finding.key)!;
+    const d = r.decisions.get(finding.key)!;
+    const labelled = r.scores
+      .filter((s) => s.finding?.key === finding.key || s.offenders.some((f) => f.key === finding.key))
+      .map((s) => (s.problem.expect === "none" ? `${s.problem.id} (noise)` : s.problem.id));
+    const fold = r.folds.find((f) => f.finding.key === finding.key);
+    return `<article class="finding${cut ? " cut" : ""}"><header><span class="cat cat-${esc(finding.category)}">${esc(finding.category)}</span> <code>${esc(finding.target)}</code> <span class="muted">${e.units} units · ${e.refs} refs · ${e.days} days · ${cut ? "<strong>dropped by the code filter</strong>" : `code would ${esc(d.action)}${d.action === "fold" ? ` into #${d.into.number}` : ""}`}${cut ? "" : labelled.length > 0 ? ` · matches ${labelled.join(", ")}` : " · unlabelled"}${fold ? ` · <strong>${fold.wrong ? `wrong fold: ${esc(fold.outside.join(", "))} not covered by #${fold.proposal.number}` : `right fold into #${fold.proposal.number}`}</strong>` : ""}</span></header>
 <h3>${esc(finding.title)}</h3>
 <h4>Problem</h4>${md(finding.problem)}<h4>Fix</h4>${md(finding.fix)}
 <details><summary>${finding.units.length} units</summary><table class="units"><tbody>${finding.units
-          .map((id) => {
-            const row = rowById.get(id)!;
-            const unit = unitById.get(id)!;
-            return `<tr><td>${id}</td><td>${esc(row.kind)}</td><td>${ghLink(row.ref)}</td><td>${row.prNumber === null ? "" : ghLink(`pr:${row.prNumber}`)}</td><td>${esc(unit.flags.join(", "))}</td><td>${esc(row.startedAt.slice(0, 16))}</td><td class="detail">${esc(oneLine(row.detail ?? "", 240))}</td></tr>`;
-          })
-          .join("")}</tbody></table></details></article>`;
+      .map((id) => {
+        const row = rowById.get(id)!;
+        const unit = unitById.get(id)!;
+        return `<tr><td>${id}</td><td>${esc(row.kind)}</td><td>${ghLink(row.ref)}</td><td>${row.prNumber === null ? "" : ghLink(`pr:${row.prNumber}`)}</td><td>${esc(unit.flags.join(", "))}</td><td>${esc(row.startedAt.slice(0, 16))}</td><td class="detail">${esc(oneLine(row.detail ?? "", 240))}</td></tr>`;
       })
-      .join("")}${
-      r.meta?.result ? `<details><summary>The run's final message</summary><pre>${esc(r.meta.result)}</pre></details>` : ""
-    }</section>`);
+      .join("")}</tbody></table></details></article>`;
+  };
+  for (const r of results) {
+    const proposalNote = RICH_PROPOSALS.has(r.spec.variant)
+      ? `<div class="note"><strong>Fake prior proposals.</strong> This run's <code>proposals.json</code> carries each proposal's title and first problem paragraph, and two invented proposals that do not exist on GitHub: ${r.proposals
+          .filter((p) => p.fake)
+          .map((p) => `<code>${esc(p.key)}</code> (#${p.number}, ${esc(p.state)}${p.stateReason ? ` ${esc(p.stateReason)}` : ""}: “${esc(p.title)}”; same cause as ${esc((p.matchesProblems ?? []).join(", "))})`)
+          .join(" and ")}.</div>`
+      : "";
+    section.push(`<section id="v-${esc(r.spec.id)}"><h2>${esc(runLabel(r.spec))}: ${r.findings.length} findings${r.codeDropped.length > 0 ? `, ${r.codeDropped.length} dropped` : ""}</h2>${proposalNote}${
+      r.parseError === null ? "" : `<p class="miss">Parse error: ${esc(r.parseError)}</p>`
+    }${r.dropped.length === 0 ? "" : `<p class="muted">Dropped by parseFindings: ${r.dropped.map(esc).join("; ")}</p>`}${
+      r.meta?.error ? `<p class="miss">Run error: ${esc(r.meta.error)}</p>` : ""
+    }${r.findings.map((finding) => renderFinding(r, finding, false)).join("")}${
+      r.codeDropped.length === 0
+        ? ""
+        : `<h3>Dropped by the code filter (fewer than ${MIN_REFS} distinct issues or PRs)</h3>${r.codeDropped.map((finding) => renderFinding(r, finding, true)).join("")}`
+    }${r.meta?.result ? `<details><summary>The run's final message</summary><pre>${esc(r.meta.result)}</pre></details>` : ""}</section>`);
   }
 
   const html = `<!doctype html>
@@ -936,7 +1156,7 @@ main{max-width:1200px;margin:0 auto;padding:24px 16px 64px}h1{font-size:1.6rem;m
 a{color:var(--accent)}code{background:var(--code);padding:1px 4px;border-radius:3px;font-size:.88em}pre{white-space:pre-wrap;background:var(--code);padding:12px;border-radius:6px;font-size:.85em}
 table{border-collapse:collapse;width:100%;margin:8px 0;font-size:.9em}th,td{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}th{background:var(--code)}td.n{text-align:right;font-variant-numeric:tabular-nums}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.muted{color:var(--muted)}.hit{background:var(--hit)}.miss{background:var(--miss)}.partial{background:var(--partial)}
-.finding{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}.finding p{margin:4px 0}.cat{font-weight:600;padding:1px 6px;border-radius:4px;background:var(--code)}
+.finding.cut{opacity:.75;border-style:dashed}.finding{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}.finding p{margin:4px 0}.cat{font-weight:600;padding:1px 6px;border-radius:4px;background:var(--code)}
 .banner{background:var(--partial);border:1px solid var(--line);padding:8px 12px;border-radius:6px}.note{background:var(--code);padding:8px 12px;border-radius:6px;margin:8px 0}.badge{font-size:.7em;background:var(--partial);padding:2px 6px;border-radius:4px;vertical-align:middle}
 td.detail{max-width:520px;word-break:break-word}table.units{font-size:.82em}.score td{min-width:120px}
 @media (max-width:700px){table{display:block;overflow-x:auto}}

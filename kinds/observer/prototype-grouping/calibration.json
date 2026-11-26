@@ -1,16 +1,31 @@
 {
-  "draft": true,
-  "note": "DRAFT labels, written by the prototype's author from the issue and PR threads, for a person to correct. Each problem is a real one from the fixture's window that a human diagnosed; refs are the issues and PRs whose units show it. Problems marked expect=none are noise the observer should not turn into a finding. Categories follow prompt.md; where two read as defensible, acceptCategories lists the second.",
+  "draft": false,
+  "note": "Labels written from the issue and PR threads and accepted by the user as drafted. Each problem is a real one from the fixture's window that a human diagnosed; refs are the issues and PRs whose units show it. Problems marked expect=none are noise the observer should not turn into a finding. Categories follow prompt.md; where two read as defensible, acceptCategories lists the second.",
   "problems": [
     {
       "id": "P1",
       "cause": "The dogfood image's corepack could not run pnpm 12, so every unit died on its first `pnpm install --frozen-lockfile` with MODULE_NOT_FOUND.",
       "category": "factory",
-      "acceptCategories": ["engine"],
+      "acceptCategories": [
+        "engine"
+      ],
       "target": ".phoebe/container/Dockerfile",
-      "acceptTargets": ["dockerfile", "dogfood", "corepack", "pnpm", "install", "container", "image"],
-      "refs": [755, 763],
-      "diagnosedIn": [773],
+      "acceptTargets": [
+        "dockerfile",
+        "dogfood",
+        "corepack",
+        "pnpm",
+        "install",
+        "container",
+        "image"
+      ],
+      "refs": [
+        755,
+        763
+      ],
+      "diagnosedIn": [
+        773
+      ],
       "notes": "The fix is in the deployment's image, which no category names outright and the edit allowlist does not cover."
     },
     {
@@ -18,9 +33,23 @@
       "cause": "Two tests on main used a fixed clock (2026-10-16) that had passed the 30-day session expiry, so `ready` was red for every unit whatever it changed.",
       "category": "engine",
       "target": "bootstrap/remote-sessions.ts",
-      "acceptTargets": ["clock", "remote-sessions", "remote-api", "session", "red-main", "main"],
-      "refs": [870, 871, 876],
-      "diagnosedIn": [871, 872],
+      "acceptTargets": [
+        "clock",
+        "remote-sessions",
+        "remote-api",
+        "session",
+        "red-main",
+        "main"
+      ],
+      "refs": [
+        870,
+        871,
+        876
+      ],
+      "diagnosedIn": [
+        871,
+        872
+      ],
       "notes": "In this repo the product is the engine, so a red main reads as engine. A checks run that says 'main fails the same' is also a factory/engine gap of its own."
     },
     {
@@ -28,29 +57,69 @@
       "cause": "A dependency bundle whose every bump drops (here a release-age gate) opens no PR, so the run is counted unproductive and re-run until quarantine instead of being parked.",
       "category": "engine",
       "target": "kinds/dependencies-work",
-      "acceptTargets": ["dependencies", "bundle", "requeue", "quarantine", "unproductive", "release-age", "stranded"],
-      "refs": [858, 859],
-      "diagnosedIn": [862, 866]
+      "acceptTargets": [
+        "dependencies",
+        "bundle",
+        "requeue",
+        "quarantine",
+        "unproductive",
+        "release-age",
+        "stranded"
+      ],
+      "refs": [
+        858,
+        859
+      ],
+      "diagnosedIn": [
+        862,
+        866
+      ]
     },
     {
       "id": "P4",
       "cause": "A research run that answers in a document and opens no PR is treated as stranded and re-run until quarantine.",
       "category": "engine",
       "target": "stranded-unit-sweep",
-      "acceptTargets": ["sweep", "stranded", "blocked", "research", "unproductive", "quarantine"],
-      "refs": [751],
-      "diagnosedIn": [817, 829],
+      "acceptTargets": [
+        "sweep",
+        "stranded",
+        "blocked",
+        "research",
+        "unproductive",
+        "quarantine"
+      ],
+      "refs": [
+        751
+      ],
+      "diagnosedIn": [
+        817,
+        829
+      ],
       "notes": "One ref only: every rule from M2 up cuts it. Fixed (#829) before the window closed."
     },
     {
       "id": "P5",
       "cause": "The token the deployment pushes with lacks the `workflow` scope, so a ticket that adds a file under .github/workflows/ cannot be pushed.",
       "category": "factory",
-      "acceptCategories": ["convention", "engine"],
+      "acceptCategories": [
+        "convention",
+        "engine"
+      ],
       "target": "workflow-scope",
-      "acceptTargets": ["workflow", "token", "scope", "credential", "pat", "grant"],
-      "refs": [781],
-      "diagnosedIn": [848],
+      "acceptTargets": [
+        "workflow",
+        "token",
+        "scope",
+        "credential",
+        "pat",
+        "grant"
+      ],
+      "refs": [
+        781
+      ],
+      "diagnosedIn": [
+        848
+      ],
       "notes": "One ref only, but the run's own comment leaves no doubt the next such ticket hits it too: the prompt's one-unit exception."
     },
     {
@@ -58,9 +127,22 @@
       "cause": "Hosted Renovate and the dependency kinds ran at once: Renovate bumped the bot's security overrides past their pins, and the checks kind could not fix those PRs.",
       "category": "factory",
       "target": "renovate.json",
-      "acceptTargets": ["renovate", "dependency", "override"],
-      "refs": [809, 812, 819, 820, 825, 843],
-      "diagnosedIn": [831]
+      "acceptTargets": [
+        "renovate",
+        "dependency",
+        "override"
+      ],
+      "refs": [
+        809,
+        812,
+        819,
+        820,
+        825,
+        843
+      ],
+      "diagnosedIn": [
+        831
+      ]
     },
     {
       "id": "N1",
@@ -68,8 +150,21 @@
       "cause": "A Renovate runtime bump arrives red on the `changeset` gate by design, and the checks kind adds the changeset. Working as intended.",
       "category": "factory",
       "target": "none",
-      "refs": [731, 739, 742, 766, 772, 782, 794, 796, 834, 845],
-      "diagnosedIn": [655]
+      "refs": [
+        731,
+        739,
+        742,
+        766,
+        772,
+        782,
+        794,
+        796,
+        834,
+        845
+      ],
+      "diagnosedIn": [
+        655
+      ]
     },
     {
       "id": "N2",
@@ -77,7 +172,17 @@
       "cause": "CodeRabbit leaves review threads on nearly every Phoebe PR, and the reviews kind handles them. A thread count alone is not a problem.",
       "category": "factory",
       "target": "none",
-      "refs": [746, 786, 789, 792, 793, 798, 818, 882, 943],
+      "refs": [
+        746,
+        786,
+        789,
+        792,
+        793,
+        798,
+        818,
+        882,
+        943
+      ],
       "diagnosedIn": [],
       "notes": "Not pure noise: #816 turned CodeRabbit threads on vendored prompts into 13 prompt fixes. A finding about what the threads say can be real; one about how many there are is not."
     }

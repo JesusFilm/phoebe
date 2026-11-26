@@ -1,0 +1,46 @@
+{
+  "variant": "D-sonnet",
+  "model": "claude-sonnet-5-5",
+  "effort": null,
+  "exitCode": 0,
+  "durationMs": 34314,
+  "costUsd": 0.1289664,
+  "turns": 11,
+  "usage": {
+    "input_tokens": 14,
+    "cache_creation_input_tokens": 28731,
+    "cache_read_input_tokens": 132369,
+    "output_tokens": 3597,
+    "output_tokens_details": {
+      "thinking_tokens": 1196
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 28731
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 541,
+        "cache_read_input_tokens": 27958,
+        "cache_creation_input_tokens": 773,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 773,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "result": "I wrote one finding to `findings.json`. Everything else I either left out as fixed or judged too weak to propose.\n\n**The finding (engine):** issue runs that end with no PR and no comment get re-armed by the stranded-unit sweep until the ticket is quarantined. Units u26–u31 on #876 and #871 show it. #871 had already been fixed by #872, which didn't reference the issue, so Phoebe ran it three times for nothing. #876 also hit the 2700s budget, and the records don't say why its runs left nothing. I gave this its own key instead of reusing `engine:stranded-unit-sweep`, because that proposal covers runs that did leave a comment.\n\n**Left out:**\n- **pnpm/corepack install failures (u68–u70):** #838 and #839 merged on Nov 12, after those units ran.\n- **`ready` red on `main` (u14, u33, u35):** the failures came from `main`, which the agent said in each case, and each break already has an issue (#962, #871). I didn't treat the checks runs themselves as a separate engine problem.\n- **Failing checks on Renovate PRs:** closed proposal #9902 already covers this.\n- **Review threads:** these are mostly CodeRabbit comments, and PR #961 alone has 32.\n- **Outside commits on #954 and #959:** these are the maintainer's merges on stacked PRs, which also produced the duplicate `UnitRecordOutcome` export. I judged that noise.\n- **u46 (#781):** the push was rejected for a missing `workflow` token scope, which I saw on only one issue.\n\n<promise>COMPLETE</promise>",
+  "denials": [],
+  "error": null
+}

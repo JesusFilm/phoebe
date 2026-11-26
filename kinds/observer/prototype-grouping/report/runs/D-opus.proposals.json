@@ -1,0 +1,22 @@
+[
+  {
+    "number": 9901,
+    "pr": false,
+    "key": "engine:stranded-unit-sweep",
+    "state": "open",
+    "stateReason": null,
+    "closedAt": null,
+    "title": "Observer: Runs that end without a PR are re-run until quarantine, whatever the run said",
+    "problem": "When a run on a ticket ends without opening a pull request, the stranded-unit sweep drops the claim and puts the ticket back in the queue, even when the run left a comment explaining that nothing can be done yet. The next run reaches the same conclusion, and after three such runs the ticket is quarantined as unproductive."
+  },
+  {
+    "number": 9902,
+    "pr": false,
+    "key": "factory:renovate.json",
+    "state": "closed",
+    "stateReason": "not_planned",
+    "closedAt": "2026-11-20T18:00:00Z",
+    "title": "Observer: Hosted Renovate keeps opening PRs the checks kind cannot fix",
+    "problem": "Renovate opens dependency PRs whose checks fail, and the `checks` kind's idle CI fix gives up on them. Renovate's schedule should be narrowed so it opens fewer PRs."
+  }
+]

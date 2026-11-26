@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "category": "engine",
+      "target": "stranded-unit-sweep",
+      "title": "Runs that explain why they opened no PR are still re-armed until quarantine",
+      "problem": "The engine treats any run that ends without a PR as stranded and re-arms it, even when the run's own summary says why it stopped and when a retry would work. Dependency runs on #858 dropped `jsdom@31.0.1` three times because it was still inside pnpm's 1440-minute `minimumReleaseAge` window. Each said so (\"a retry after 2026-11-14T06:33Z should go through\"), and the unit was quarantined anyway. #859 did the same with `electron@45.3.2`. Run #781 reported a push rejected for missing `workflow` token scope, which only a person can fix. Research run #751 left its answers on a branch stacked on #750 and was still marked failed.",
+      "fix": "When a run ends without a PR but leaves an explanation, record it as blocked or deferred instead of stranded. For dependency bumps held back by `minimumReleaseAge`, re-arm the unit once the window has closed instead of retrying on the usual schedule. For blockers that need a person (token scope), post the run's summary on the issue and stop retrying.",
+      "units": ["u39", "u40", "u41", "u42", "u46", "u75"]
+    },
+    {
+      "category": "engine",
+      "target": "checks-red-main",
+      "title": "Checks runs on a PR are recorded as failed when the failure comes from main",
+      "problem": "When `ready` is red on `main`, every open PR inherits the failure. The checks kind diagnoses that correctly and leaves the branch alone, but the engine still records the unit as failed and posts \"A human should investigate the CI failures\". On #953 the run found a duplicate `UnitRecordOutcome` export that was already on `origin/main` (tracked in #962). On #870, two runs found that `bootstrap/remote-api.test.ts` and `bootstrap/remote-sessions.test.ts` fail on `main` because of a fixed clock (tracked in #871). The runs repeat on each PR until `main` goes green.",
+      "fix": "Before dispatching a checks run, compare the PR's failing jobs with the latest `ready` run on the base branch. When the same jobs fail there, skip the PR, or park it until `main` goes green, and do not mark the unit failed. File or link one tracking issue for the red `main` instead of commenting on every PR.",
+      "units": ["u14", "u33", "u35"]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "category": "engine",
+      "target": "silent-no-pr-runs",
+      "title": "Issue runs that end with no PR and no comment are re-armed until quarantine, including on tickets already fixed",
+      "problem": "A run that ends without a PR and without a comment leaves the ticket looking unworked, so the stranded-unit sweep re-arms it and three such runs quarantine it. Units u26-u31 on #876 and #871 all record `the run left no PR and no comment; the stranded-unit sweep re-armed it`, and both issues ended up quarantined with the comment `3 consecutive runs ... produced no PR`. #871 had already been fixed by #872, which merged 21 minutes after the issue was filed but did not reference it, so the issue stayed open and Phoebe spent three runs on work that was done. #876 also shows a `2700s budget exceeded` timeout (u30); the records do not say why those runs left nothing, so that cause is unknown. This differs from open proposal #9901, which is about runs that did leave an explanatory comment.",
+      "fix": "Make an issue run always end with a visible outcome. If the agent exits with no PR, no comment and no commit, the engine posts a comment saying so, with the exit reason (timeout, nothing to do). Before arming an issue run, check whether a merged PR already touched the work, for example one that mentions the issue or one that merged after the issue was filed, and ask the agent to close the issue or comment instead of re-running it blind.",
+      "units": ["u26", "u27", "u28", "u29", "u30", "u31"]
+    }
+  ]
+}
