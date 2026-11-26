@@ -1,14 +1,17 @@
-// `phoebe bench` — the offline replay benchmark's CLI (#939; spec #925). Two
+// `phoebe bench` — the offline replay benchmark's CLI (#939; spec #925). Three
 // subcommands: `select` pins a suite of fixtures from issues Phoebe already
-// solved and prints it as JSON on stdout; `run <suite>` (#940) replays every
-// fixture offline with the tenant's own `issues` settings and records each
-// trial under the tenant's `bench/<runId>/` (src/bench-run.ts).
+// solved and prints it as JSON on stdout; `run <suite>` (#940, #941) replays
+// every fixture offline with every contender the bench config names (or the
+// tenant's own `issues` settings), records each trial under the tenant's
+// `bench/<runId>/` (src/bench-run.ts) and prints the report; `report <runId>`
+// prints a saved run's report again (src/bench-report.ts).
 //
 // Two arms, picked by the container marker as `status` picks its own:
 //
 //   - In the container it does the work: resolve the tenant, then either read
 //     GitHub with the tenant's token and compute each fixture's `baseSha` in
-//     the hub clone (`select`), or run the trials (`run`).
+//     the hub clone (`select`), run the trials (`run`), or read a saved
+//     report (`report`).
 //   - On the host it starts a one-off container from the deployment's image
 //     (`docker compose run --rm`, the way `--run-once` runs), with the same
 //     arguments, and passes its stdout through untouched. It takes none of the
@@ -27,12 +30,22 @@ import {
   type BenchSelectGitHub,
   type BenchSelectRequest,
 } from "./bench-select.ts";
-import { parseSuite, runBench, type BenchRunDeps, type BenchRunResult } from "./bench-run.ts";
+import { readBenchReport, renderBenchReport } from "./bench-report.ts";
+import {
+  benchRoot,
+  issuesPipelineConfig,
+  parseBenchConfig,
+  parseSuite,
+  runBench,
+  type BenchRunDeps,
+  type BenchRunResult,
+} from "./bench-run.ts";
 import { matchConfigFlag } from "./cli-flags.ts";
 import { withCloneLock } from "./clone-lock.ts";
 import { resolveConfig, type PhoebeConfig } from "./config-schema.ts";
 import { followConfigPointer } from "./config-pointer.ts";
-import type { BenchSuite } from "./contracts/bench.ts";
+import type { BenchConfig, BenchSuite } from "./contracts/bench.ts";
+import type { BenchReport } from "./contracts/bench-report.ts";
 import {
   dockerOnPath,
   formatResolveFailure,
@@ -55,11 +68,19 @@ import { enumerateWorkspaceTenants } from "./tenant-commands.ts";
 
 export type ParsedBenchSelectArgs = {
   help: boolean;
-  command?: "select" | "run";
+  command?: "select" | "run" | "report";
   /** `select`: what to pin. */
   request?: BenchSelectRequest;
   /** `run`: the suite file, as the operator typed it. */
   suitePath?: string;
+  /** `run`: the bench config naming the contenders, as the operator typed it. */
+  benchConfigPath?: string;
+  /** `run`: how many trials at once; 1 when absent. */
+  concurrency?: number;
+  /** `report`: the run to print. */
+  runId?: string;
+  /** `run` and `report`: print the `BenchReport` as JSON rather than the table. */
+  json?: boolean;
   tenant?: string;
   configPath?: string;
 };
@@ -69,7 +90,9 @@ const BENCH_HELP_TEXT = `phoebe bench — replay issues Phoebe already solved, o
 Usage:
   phoebe bench select --issues <n,n,…> [--tenant <owner/repo>]
   phoebe bench select [--since <YYYY-MM-DD>] [--limit <n>] [--tenant <owner/repo>]
-  phoebe bench run <suite.json> [--tenant <owner/repo>]
+  phoebe bench run <suite.json> [--bench-config <bench.json>] [--concurrency <n>] [--json]
+                   [--tenant <owner/repo>]
+  phoebe bench report <runId> [--json] [--tenant <owner/repo>]
 
 select pins a suite of fixtures and prints it as JSON on stdout; save it in the
 deployment directory. --issues names the issues; otherwise it walks merged PRs
@@ -85,20 +108,49 @@ Each fixture pins the issue's title, body and the comments posted before the PR
 opened; the PR's number, head and merge commits; and baseSha, the merge-base of
 the PR head and the merge commit's first parent, computed in the hub clone.
 
-run replays every fixture in a suite once, with the tenant's own issues
-settings, offline. Each trial gets a fresh repository at baseSha with no
+run replays every fixture in a suite with every contender, offline. Without
+--bench-config the one contender is the tenant's own issues settings. A bench
+config is a JSON file in the deployment directory:
+
+  {
+    "contenders": [
+      { "name": "current" },
+      { "name": "opus-high", "model": "claude-opus-5-5", "effort": "high" },
+      { "name": "new-prompt", "promptFile": "bench/issue-candidate.md" }
+    ],
+    "repeat": 3
+  }
+
+Each contender sets any of provider, model, effort and promptFile; the tenant's
+issues settings fill the rest. promptFile is relative to the deployment
+directory, so a prompt can be tried before it is installed. repeat (default 1)
+replays each fixture-contender pair that many times. --concurrency (default 1)
+runs that many trials at once; they share the provider's rate limits with the
+live fleet.
+
+Each trial gets a fresh repository at baseSha with no
 remote, a HOME of its own, no GitHub credential, and a gh that serves the issue
 from the suite and records every write it would have made. Bench runs
 installCommand, the agent, then checkCommand and testCommand itself, stopping at
 the first failure; a trial whose agent left no commits is "no change" and skips
 checkCommand and testCommand (installCommand still runs, before the agent). Each run lands in bench/<runId>/ under the tenant's data directory:
 config.json, trials.jsonl, one patch per trial with commits, and report.json.
-Only the last 10 runs are kept. Ctrl-C drops the trial in flight and writes a
+Only the last 10 runs are kept. Ctrl-C drops the trials in flight and writes a
 partial report.
 
-On the host both run in a one-off container from the deployment's image, which
-takes none of the fleet's slots; the suite file must sit in the deployment
-directory. In a workspace, --tenant picks the tenant.
+When the run ends it prints one row per contender: trials, how many made no
+change, check and test pass rates over all its trials, median duration and
+tokens, and the API cost and subscription estimate the provider reported (a
+dash where it reported none). --json prints the BenchReport instead, the same
+JSON saved as report.json. report <runId> prints a saved run's report again.
+
+The exit code is 0 when every trial ran, whatever the trials scored. It is
+non-zero only when bench itself could not run: a bad suite or bench config, a
+missing prompt file, or a contender whose provider key is unset.
+
+On the host every subcommand runs in a one-off container from the deployment's
+image, which takes none of the fleet's slots; the suite and bench config files
+must sit in the deployment directory. In a workspace, --tenant picks the tenant.
 `;
 
 function flagValue(argv: readonly string[], i: number, name: string): [string, number] {
@@ -136,6 +188,10 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
   let tenant: string | undefined;
   let configPath: string | undefined;
   let suitePath: string | undefined;
+  let benchConfigPath: string | undefined;
+  let concurrency: number | undefined;
+  let runId: string | undefined;
+  let json = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
@@ -174,6 +230,22 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
       i += skip;
       continue;
     }
+    if (isFlag(arg, "bench-config")) {
+      const [value, skip] = flagValue(argv, i, "bench-config");
+      benchConfigPath = value;
+      i += skip;
+      continue;
+    }
+    if (isFlag(arg, "concurrency")) {
+      const [value, skip] = flagValue(argv, i, "concurrency");
+      concurrency = positiveInt(value, "`--concurrency`");
+      i += skip;
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
     if (isFlag(arg, "tenant")) {
       const [value, skip] = flagValue(argv, i, "tenant");
       tenant = value;
@@ -187,11 +259,17 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
       suitePath = arg;
       continue;
     }
+    if (subcommand === "report" && runId === undefined) {
+      runId = arg;
+      continue;
+    }
     if (subcommand !== undefined) {
       throw new Error(`Unexpected argument \`${arg}\` for \`phoebe bench ${subcommand}\`.`);
     }
-    if (arg !== "select" && arg !== "run") {
-      throw new Error(`Unknown \`phoebe bench\` command \`${arg}\`. Expected select or run.`);
+    if (arg !== "select" && arg !== "run" && arg !== "report") {
+      throw new Error(
+        `Unknown \`phoebe bench\` command \`${arg}\`. Expected select, run or report.`,
+      );
     }
     subcommand = arg;
   }
@@ -202,15 +280,44 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
     ...(configPath !== undefined ? { configPath } : {}),
   };
   if (help) return common;
-  if (subcommand === undefined) throw new Error("`phoebe bench` needs a command: select or run.");
+  if (subcommand === undefined) {
+    throw new Error("`phoebe bench` needs a command: select, run or report.");
+  }
+  if (
+    subcommand !== "select" &&
+    (issues !== undefined || since !== undefined || limit !== undefined)
+  ) {
+    throw new Error(
+      `\`--issues\`, \`--since\` and \`--limit\` choose fixtures for \`select\`, not \`${subcommand}\`.`,
+    );
+  }
+  if (subcommand !== "run" && (benchConfigPath !== undefined || concurrency !== undefined)) {
+    throw new Error(
+      `\`--bench-config\` and \`--concurrency\` are for \`run\`, not \`${subcommand}\`.`,
+    );
+  }
+  if (subcommand === "select" && json) {
+    throw new Error(
+      "`phoebe bench select` always prints JSON; `--json` is for `run` and `report`.",
+    );
+  }
+  const jsonFlag = json ? { json } : {};
   if (subcommand === "run") {
-    if (issues !== undefined || since !== undefined || limit !== undefined) {
-      throw new Error(
-        "`--issues`, `--since` and `--limit` choose fixtures for `select`, not `run`.",
-      );
-    }
     if (suitePath === undefined) throw new Error("`phoebe bench run` needs a suite file.");
-    return { ...common, command: "run", suitePath };
+    return {
+      ...common,
+      command: "run",
+      suitePath,
+      ...(benchConfigPath !== undefined ? { benchConfigPath } : {}),
+      ...(concurrency !== undefined ? { concurrency } : {}),
+      ...jsonFlag,
+    };
+  }
+  if (subcommand === "report") {
+    if (runId === undefined) {
+      throw new Error("`phoebe bench report` needs a run id, the directory name under bench/.");
+    }
+    return { ...common, command: "report", runId, ...jsonFlag };
   }
   if (issues !== undefined && (since !== undefined || limit !== undefined)) {
     throw new Error(
@@ -228,6 +335,15 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
 export function benchSelectArgv(parsed: ParsedBenchSelectArgs): string[] {
   if (parsed.command === "run") {
     const argv = ["bench", "run", parsed.suitePath!];
+    if (parsed.benchConfigPath !== undefined) argv.push("--bench-config", parsed.benchConfigPath);
+    if (parsed.concurrency !== undefined) argv.push("--concurrency", String(parsed.concurrency));
+    if (parsed.json === true) argv.push("--json");
+    if (parsed.tenant !== undefined) argv.push("--tenant", parsed.tenant);
+    return argv;
+  }
+  if (parsed.command === "report") {
+    const argv = ["bench", "report", parsed.runId!];
+    if (parsed.json === true) argv.push("--json");
     if (parsed.tenant !== undefined) argv.push("--tenant", parsed.tenant);
     return argv;
   }
@@ -450,10 +566,24 @@ export async function runBenchSelectInContainer(
   return suite;
 }
 
+function readOperatorFile(cwd: string, path: string, what: string): string {
+  try {
+    return readFileSync(resolve(cwd, path), "utf8");
+  } catch (error) {
+    throw new Error(`Could not read the ${what} ${path}: ${String(error)}`, { cause: error });
+  }
+}
+
+/** Print a report: the table, or with `--json` the `BenchReport` itself. */
+function printReport(io: BenchIo, report: BenchReport, json: boolean): void {
+  io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : renderBenchReport(report));
+}
+
 /**
- * The in-container arm of `run`: read the suite, make sure the hub clone
- * exists, and run the trials. SIGINT or SIGTERM drops the trial in flight and
- * leaves a partial report; a second Ctrl-C kills the process as usual.
+ * The in-container arm of `run`: read the suite and the bench config, make
+ * sure the hub clone exists, run the trials, and print the report on stdout.
+ * SIGINT or SIGTERM drops the trials in flight and leaves a partial report; a
+ * second Ctrl-C kills the process as usual.
  */
 export async function runBenchRunInContainer(
   parsed: ParsedBenchSelectArgs,
@@ -470,16 +600,14 @@ export async function runBenchRunInContainer(
     ...(parsed.tenant !== undefined ? { tenant: parsed.tenant } : {}),
   });
   const { config } = tenant;
-  const suitePath = resolve(cwd, parsed.suitePath!);
-  let text: string;
-  try {
-    text = readFileSync(suitePath, "utf8");
-  } catch (error) {
-    throw new Error(`Could not read the suite ${parsed.suitePath}: ${String(error)}`, {
-      cause: error,
-    });
-  }
-  const suite = parseSuite(text, config.repoSlug);
+  const suite = parseSuite(readOperatorFile(cwd, parsed.suitePath!, "suite"), config.repoSlug);
+  const benchConfig: BenchConfig | null =
+    parsed.benchConfigPath === undefined
+      ? null
+      : parseBenchConfig(
+          readOperatorFile(cwd, parsed.benchConfigPath, "bench config"),
+          parsed.benchConfigPath,
+        );
   const prepare =
     deps.prepareClone ??
     ((c: PhoebeConfig) =>
@@ -493,7 +621,7 @@ export async function runBenchRunInContainer(
   if (signal === undefined) {
     const controller = new AbortController();
     const onSignal = (name: string) => (): void => {
-      io.stderr(`[phoebe] bench: ${name} — stopping after dropping the trial in flight.`);
+      io.stderr(`[phoebe] bench: ${name} — stopping after dropping the trials in flight.`);
       controller.abort();
     };
     const onInt = onSignal("interrupted");
@@ -506,33 +634,65 @@ export async function runBenchRunInContainer(
     };
     signal = controller.signal;
   }
+  let result: BenchRunResult;
   try {
-    return await runBench({
+    result = await runBench({
       config,
       env: tenant.env,
       suite,
       suitePath: parsed.suitePath!,
       runtimeRoot: dirname(tenant.configPath),
+      deploymentDir: cwd,
+      benchConfig,
+      benchConfigPath: parsed.benchConfigPath ?? null,
+      concurrency: parsed.concurrency ?? 1,
       signal,
       deps: { log: (line) => io.stderr(line), ...deps.run },
     });
   } finally {
     release();
   }
+  printReport(io, result.report, parsed.json === true);
+  return result;
+}
+
+/** The in-container arm of `report`: print a saved run's report again. */
+export async function runBenchReportInContainer(
+  parsed: ParsedBenchSelectArgs,
+  deps: BenchDeps = {},
+): Promise<BenchReport> {
+  const io = benchIo(deps);
+  const cwd = deps.cwd ?? process.cwd();
+  const processEnv = deps.env ?? process.env;
+  const configPath = await followConfigPointer(resolveConfigPath(parsed.configPath, cwd));
+  const tenant = await resolveBenchTenant({
+    configPath,
+    dataBase: resolveDataBase(processEnv),
+    processEnv,
+    ...(parsed.tenant !== undefined ? { tenant: parsed.tenant } : {}),
+  });
+  const report = readBenchReport(benchRoot(issuesPipelineConfig(tenant.config)), parsed.runId!);
+  printReport(io, report, parsed.json === true);
+  return report;
 }
 
 /**
- * Where the container finds a suite the operator named on the host: the same
+ * Where the container finds a file the operator named on the host: the same
  * path relative to the deployment directory, which Compose mounts as the
- * container's working directory. A suite outside it is not in the container.
+ * container's working directory. A file outside it is not in the container.
  */
-export function containerSuitePath(deploymentDir: string, cwd: string, suitePath: string): string {
+export function containerSuitePath(
+  deploymentDir: string,
+  cwd: string,
+  suitePath: string,
+  what: { name: string; example: string } = { name: "suite", example: "bench/suite.json" },
+): string {
   const absolute = resolve(cwd, suitePath);
   const rel = relative(deploymentDir, absolute);
   if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(
-      `The suite ${suitePath} is outside the deployment directory ${deploymentDir}, so the ` +
-        "one-off container cannot see it. Save it there, e.g. bench/suite.json.",
+      `The ${what.name} ${suitePath} is outside the deployment directory ${deploymentDir}, so the ` +
+        `one-off container cannot see it. Save it there, e.g. ${what.example}.`,
     );
   }
   const forwarded = rel.split(sep).join("/");
@@ -562,7 +722,20 @@ export async function runBenchSelectOnHost(
   if ("kind" in resolved) throw new Error(formatResolveFailure(resolved));
   const forwarded =
     parsed.command === "run"
-      ? { ...parsed, suitePath: containerSuitePath(resolved.deploymentDir, cwd, parsed.suitePath!) }
+      ? {
+          ...parsed,
+          suitePath: containerSuitePath(resolved.deploymentDir, cwd, parsed.suitePath!),
+          ...(parsed.benchConfigPath !== undefined
+            ? {
+                benchConfigPath: containerSuitePath(
+                  resolved.deploymentDir,
+                  cwd,
+                  parsed.benchConfigPath,
+                  { name: "bench config", example: "bench/bench.json" },
+                ),
+              }
+            : {}),
+        }
       : parsed;
   const result = await runCompose({
     deployment: resolved,
@@ -582,8 +755,12 @@ export async function runBenchCli(argv: readonly string[], deps: BenchDeps = {})
   }
   if (deps.inContainer ?? isInsideContainer()) {
     if (parsed.command === "run") {
-      const { summary } = await runBenchRunInContainer(parsed, deps);
-      if (summary.interrupted) process.exitCode = 130;
+      const { report } = await runBenchRunInContainer(parsed, deps);
+      if (report.interrupted) process.exitCode = 130;
+      return;
+    }
+    if (parsed.command === "report") {
+      await runBenchReportInContainer(parsed, deps);
       return;
     }
     await runBenchSelectInContainer(parsed, deps);

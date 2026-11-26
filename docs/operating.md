@@ -334,13 +334,47 @@ hub if the tenant has none yet, and fetches a PR head the hub clone lacks.
 
 ## Replaying a suite offline: `phoebe bench run`
 
-`phoebe bench run <suite>` replays every fixture in a suite once, using the
-tenant's own `issues` settings: provider, model, effort, prompt file and run
-budget. Each replay is a trial.
+`phoebe bench run <suite>` replays every fixture in a suite with every
+contender. Each replay is a trial. Without a bench config there is one
+contender, `tenant`, which uses the tenant's own `issues` settings: provider,
+model, effort and prompt file.
 
 ```sh
 phoebe bench run bench/suite.json
+phoebe bench run bench/suite.json --bench-config bench/bench.json --concurrency 2
 ```
+
+A bench config is a JSON file in the deployment directory that names the
+contenders:
+
+```json
+{
+  "contenders": [
+    { "name": "current" },
+    { "name": "opus-high", "model": "claude-opus-5-5", "effort": "high" },
+    { "name": "new-prompt", "promptFile": "bench/issue-candidate.md" }
+  ],
+  "repeat": 3
+}
+```
+
+- A contender sets any of `provider`, `model`, `effort` and `promptFile`.
+  Whatever it leaves out comes from the tenant's `issues` settings, resolved
+  the way the tenant's own `issues` units resolve them. If you change
+  `provider`, set `model` too unless that provider's default is what you want.
+  `"effort": null` passes no effort flag at all.
+- `promptFile` is a path relative to the deployment directory, so you can try a
+  prompt before installing it.
+- `repeat` (default 1) replays each fixture and contender pair that many
+  times, to show how much the results vary.
+- `--concurrency` (default 1) sets how many trials run at once. Bench takes
+  none of the fleet's slots, but it does share the provider's rate limits with
+  the live fleet.
+- Every trial uses the tenant's `issues` run budget.
+
+Before the first trial, bench checks that every contender's prompt file exists
+and that its provider key (the variable `providerEnv` names) is set. A trial
+has its own HOME, so a provider's on-disk login is not available to it.
 
 A trial has no GitHub credentials and no git remote. The bench container sets no
 network restriction, so unauthenticated requests to github.com are not blocked:
@@ -368,8 +402,8 @@ Each run writes to `bench/<runId>/` in the tenant's data directory, beside
   `pipeline: "bench"`, plus the fixture, contender, repeat index, gate results,
   diff stats and "would have" writes.
 - `patches/`: one patch for each trial that made commits.
-- `report.json`: counts by outcome, and `interrupted: true` if the run was
-  stopped early.
+- `report.json`: the run's `BenchReport` (see below), with `interrupted: true`
+  if the run was stopped early.
 
 Trials never go into a pipeline's `units.jsonl`, so nothing that reads unit history
 mistakes a trial for real work. Bench removes each trial's tree when the trial ends.
@@ -377,10 +411,45 @@ Before a new run starts, it deletes all but the 9 most recent run directories,
 so 10 remain once the new run is added.
 
 A trial that times out or fails is recorded, and the run moves on to the next
-one. Ctrl-C drops the trial in progress, writes `report.json` with
-`interrupted: true`, and exits with code 130. On the host, the suite file has to
-be inside the deployment directory, because that is the directory the one-off
-container mounts.
+one. Ctrl-C drops the trials in progress, writes `report.json` with
+`interrupted: true`, and exits with code 130. On the host, the suite and bench
+config files have to be inside the deployment directory, because that is the
+directory the one-off container mounts.
+
+### The report
+
+When the run ends, bench prints one row per contender on stdout:
+
+```
+contender  trials  no change  check  test  median time  median tokens  API cost  subscription est.
+current         6          1    83%   67%       6m 40s           1.9M     $4.12                  —
+opus-high       6          0   100%   83%       9m 05s           2.6M     $9.80                  —
+```
+
+- **check** and **test** are pass rates over all of the contender's trials. A
+  trial with no change, a failure, a timeout, or one stopped by an earlier gate
+  counts as not passing.
+- **median time** is the whole trial: install, agent and gates.
+- **median tokens** adds input, output and cache tokens across the trial's
+  agent runs.
+- **API cost** totals what the provider reported as billed to an API key.
+  **subscription est.** totals the list-price figure Claude reports under a
+  subscription, which nobody actually paid. A dash means the provider reported
+  no figure of that kind.
+
+`--json` prints the report as JSON instead: a `BenchReport` (`v: 1`, exported
+from `phoebe-agent/contracts`). `report.json` holds the same JSON.
+`phoebe bench report <runId>` prints a saved run's report again, as the table or
+with `--json`. The run id is the directory name under `bench/`.
+
+```sh
+phoebe bench report 2026-11-25T12-00-00-000Z --json
+```
+
+The exit code is 0 when every trial ran, however the trials scored. Failing
+gates never change it. Bench exits non-zero only when it could not do its job:
+a bad suite or bench config, a missing prompt file, or a contender whose
+provider key is unset.
 
 ## Checking the deployment's health: `phoebe doctor`
 

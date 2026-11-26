@@ -6,8 +6,9 @@
 // Here rather than beside the verb so the reader on the far side of a file —
 // `bench run`, a console, a script — shares one shape with the writer.
 //
-// `bench run` (#940) writes the rest: one trial per line, the config it ran
-// with, and a summary of how far it got.
+// `bench run` (#940, #941) writes the rest: one trial per line and the config
+// it ran with. It also reads one file the operator keeps, the bench config that
+// names the contenders. The report a run ends with is in ./bench-report.ts.
 
 import type { UnitRecord } from "./unit-record.ts";
 
@@ -118,7 +119,35 @@ export type BenchWouldHave = {
   bodyFile?: string;
 };
 
-/** The settings a trial ran with. In a one-contender run, the tenant's own `issues` settings. */
+// --- the bench config (#941) ------------------------------------------------
+
+/**
+ * One contender as the operator writes it in the bench config. Every field but
+ * `name` is optional: an unset one takes the tenant's `issues` setting.
+ */
+export type BenchContenderSpec = {
+  /** Names the contender in the report, the trial ids and the patch files. */
+  name: string;
+  provider?: string;
+  model?: string;
+  /** `null` passes no effort flag, leaving the provider CLI's own default. */
+  effort?: string | null;
+  /** A prompt template anywhere in the deployment directory, relative to it. */
+  promptFile?: string;
+};
+
+/** The file `bench run --bench-config` reads. */
+export type BenchConfig = {
+  contenders: BenchContenderSpec[];
+  /** How many times each fixture–contender pair is replayed. Default 1. */
+  repeat?: number;
+};
+
+/**
+ * The settings a trial ran with: a contender from the bench config, with the
+ * tenant's `issues` settings filling what it left unset. Without a bench config
+ * the one contender is the tenant's own settings, named `tenant`.
+ */
 export type BenchContender = {
   name: string;
   provider: string;
@@ -158,30 +187,15 @@ export type BenchRunConfig = {
   /** ISO. */
   startedAt: string;
   suite: { path: string; selectedAt: string; fixtures: number[] };
+  /** The bench config file as the operator named it; `null` when the run had none. */
+  benchConfig: string | null;
   contenders: BenchContender[];
   repeat: number;
+  /** How many trials ran at once. */
+  concurrency: number;
   runTimeoutMs: number;
   installCommand: string;
   checkCommand: string;
   testCommand: string;
   engineCommit: string | null;
-};
-
-/**
- * `bench/<runId>/report.json` as a one-contender run writes it: how far the
- * run got. `interrupted` marks a run stopped by Ctrl-C, whose trial in flight
- * was dropped.
- */
-export type BenchRunSummary = {
-  v: 1;
-  runId: string;
-  repo: string;
-  /** ISO. */
-  startedAt: string;
-  finishedAt: string;
-  interrupted: boolean;
-  /** Trials the run meant to make, and the ones it recorded. */
-  planned: number;
-  recorded: number;
-  outcomes: { completed: number; failed: number; timedOut: number; noChange: number };
 };
