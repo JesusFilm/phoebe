@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "category": "engine",
+      "target": "checks-outcome-reporting",
+      "title": "Checks runs that explain a main-side failure or apply a label are posted as failed, with a comment telling a human to investigate",
+      "problem": "When a `checks` run ends without pushing a commit, the engine marks the unit `failed` and posts \"Phoebe attempted an idle CI fix for PR #N but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures.\" It does this even when the run has already reached the outcome `prompts/checks-prompt.md` asks for (steps 3 and 4: a baseline failure noted and tracked, or a policy gate cleared by a label). Three PRs show it:\n\n- #953: the run's own comment says \"The `ready` failure on run 45720556076 comes from `main`, not this PR ... #962 tracks it ... I made no change here\". The engine's boilerplate follows it on the same PR.\n- #870: runs on this PR say the two failing tests also fail on `main` (a fixed clock past the 30-day session expiry, tracked in #871), \"so I made no code change here\". Both were flagged `failed`.\n- #812: the run says \"I applied the `skip-changeset` label, which re-runs the check\". That is a successful fix, yet the engine still posts the give-up comment and flags `failed`.\n\nThe result is a contradictory second comment on the PR and failure counts that include runs that did their job. #819, #820, #825 and #843 carry the same engine comment, but their records say nothing about why the run pushed nothing, so they are left out. I did not read the engine code, so the exact detection rule is not confirmed: the evidence is that \"no new commit\" appears to be treated as \"could not resolve\".",
+      "fix": "In the engine's checks outcome handling, count a run as resolved, or as a distinct `baseline-failure` outcome, when it either (a) applied a label or pushed a changeset, or (b) left its own PR comment. Post the \"A human should investigate\" comment only when the run left no comment of its own and changed nothing. Alternative: have the prompt end with an explicit structured result line (`resolved`, `baseline-only`, `gave-up`) for the engine to read instead of inferring from git state.",
+      "units": ["u14", "u33", "u35", "u53"]
+    }
+  ]
+}

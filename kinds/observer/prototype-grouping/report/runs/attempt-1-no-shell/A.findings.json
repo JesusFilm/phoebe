@@ -1,0 +1,44 @@
+{
+  "findings": [
+    {
+      "category": "engine",
+      "target": "checks-baseline-failure-outcome",
+      "title": "Checks runs that correctly find CI red on main are recorded as failed and posted as 'could not resolve'",
+      "problem": "Three `checks` runs (PR #953, twice on PR #870) ended with a correct diagnosis: the `ready` failure was already on `main` (a duplicate `UnitRecordOutcome` export; two bootstrap tests whose fixed 2026-10-16 clock had passed the 30-day session expiry, tracked in #871). `prompts/checks-prompt.md` already tells the agent that baseline-only failures are out of scope, so the agent did what the prompt asks and left the branch unchanged. The engine still counted the run as `failed` and posted the generic 'attempted an idle CI fix ... could not resolve ... A human should investigate' comment, which sends a person to a PR that has nothing to fix. Several other `checks` runs (u44, u48, u49, u50, u53) carry the same comment with no further detail in the records; u53 in fact fixed its failure by applying `skip-changeset`. I cannot tell from the records whether those were baseline failures too, so they are not claimed here. Both PRs merged within hours, so the cost is noise and wasted runs rather than harm.",
+      "fix": "In the engine's checks handler, let the agent report a 'baseline-only, no change needed' verdict (the prompt already asks for the baseline check) and record that as a successful no-op, not `failed`. Post a comment that names the base-branch run and any tracking issue instead of the generic 'could not resolve' text. Consider skipping the checks run when the same job is already red on the base branch's latest run. Also: a separate fix on the tests side is to stop fixed-clock fixtures from aging out (the #871 cause), but that is a code change, not part of this proposal.",
+      "units": ["u14", "u33", "u35"]
+    },
+    {
+      "category": "engine",
+      "target": "stranded-unit-sweep",
+      "title": "Issue runs end with no PR and no comment, get re-armed by the stranded-unit sweep, and repeat",
+      "problem": "Issues #871 and #876 each ran several times (u26-u31) and every run ended with 'the run left no PR and no comment; the stranded-unit sweep re-armed it', until quarantine. One of these (u30) hit the 2700s budget. The records do not say why the runs left nothing behind: no error text, no timeout on most. Issue #871 is the expired-clock test failure that the checks runs also hit, which may be related, but that is not confirmed. Separately, u69 and u70 (issues #755 and #763) carry a fixture note of 138 and 139 stranded-unit markers in 117 minutes, with the counter cycling 1,2,3 and dropping back 45 times, and no quarantine comment posted. That means the re-arm loop can reset its own count and never reach quarantine.",
+      "fix": "Make a run that leaves no PR and no comment write a reason (last agent message, exit status, whether the budget was hit) into the unit detail, so the next observer pass has a cause to work from. Check why the strand counter resets (the 1,2,3 cycle) and make quarantine count monotonic per issue so a looping issue is parked and commented on after N strands. Then re-examine #871 and #876 for a ticket-level cause.",
+      "units": ["u26", "u27", "u28", "u29", "u30", "u31", "u69", "u70"]
+    },
+    {
+      "category": "engine",
+      "target": "pnpm-corepack-install",
+      "title": "Issue runs fail on `pnpm install --frozen-lockfile` with a missing corepack pnpm binary",
+      "problem": "Three runs (#755 once, #763 twice) failed with `Cannot find module '/opt/corepack/v1/pnpm/12.16.1/bin/pnpm.cjs' (MODULE_NOT_FOUND)` while installing dependencies, before any agent work. The detail is marked 'reconstructed from #773', so a fix may already exist there. These are the same units that looped through the stranded-unit sweep. The records do not say whether the corepack cache was missing from the image or was corrupted during the run.",
+      "fix": "Check whether #773 or a later change already resolved it, and if not, make the container pre-fetch or verify the pinned pnpm (`corepack prepare` at image build, or a retry that clears the corepack cache) and fail the install step with a clear message. If it is fixed, close this out.",
+      "units": ["u68", "u69", "u70"]
+    },
+    {
+      "category": "engine",
+      "target": "dependencies-too-new-outcome",
+      "title": "Dependency runs that drop every bump as 'too new' are recorded as failed and quarantined",
+      "problem": "On 2026-11-13 the dependencies runs for #858 (jsdom 31.0.1) and #859 (electron 45.3.2) each found that the only bump was inside pnpm's 1440-minute `minimumReleaseAge` window, dropped it as `prompts/dependencies-prompt.md` instructs, made no commit, and left a comment. The runs were flagged `failed`, and #858 was quarantined after three such runs within about five minutes. The agent behaved as the prompt says, and its own comments state that a retry after the window closes should succeed. The engine appears to treat 'no commit, no PR' as failure and retry immediately, so the retries cannot succeed. The repo has `kinds/dependency-updates/parked.ts` and `dropped.ts`, which may already cover this, and these units may predate them; I did not verify.",
+      "fix": "Confirm whether the parked/too-new handling covers a run where every bump is dropped for age. If it does not, record such a run as a deferred outcome with a retry-after time (publish time + minimumReleaseAge) instead of `failed`, and keep it out of the quarantine count.",
+      "units": ["u39", "u40", "u41", "u42"]
+    },
+    {
+      "category": "convention",
+      "target": "AGENTS.md",
+      "title": "Tickets that need a new or edited GitHub workflow file cannot be pushed with the deployment token",
+      "problem": "Issue #781 (u46) ended with no PR: GitHub rejected the push with 'refusing to allow a Personal Access Token to create or update workflow `.github/workflows/dogfood-image.yml` without `workflow` scope'. The agent spent a full run building the change before finding out. A second run on #781 later produced PR #839, so the issue was eventually resolved, but not recorded in the records how. Only one unit shows this, but any future ticket that touches `.github/workflows/` will hit the same wall while the token stays as it is.",
+      "fix": "Add a line to AGENTS.md saying the token Phoebe pushes with has no `workflow` scope, so work under `.github/workflows/` cannot be pushed. Such tickets should be done by a person, or the agent should stop early and say so, rather than build the change first. If the maintainers would rather grant the scope, this finding can be closed.",
+      "units": ["u46"]
+    }
+  ]
+}

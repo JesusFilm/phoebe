@@ -1,0 +1,46 @@
+{
+  "variant": "B",
+  "model": "claude-sonnet-5-5",
+  "effort": null,
+  "exitCode": 0,
+  "durationMs": 34987,
+  "costUsd": 0.2167017,
+  "turns": 15,
+  "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 59840,
+    "cache_read_input_tokens": 218737,
+    "output_tokens": 3694,
+    "output_tokens_details": {
+      "thinking_tokens": 1540
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 59840
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 319,
+        "cache_read_input_tokens": 58451,
+        "cache_creation_input_tokens": 1389,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 1389,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "result": "I've written one finding to `findings.json`, and I'm closing out the run now.\n\nThe finding is an `engine` one. When a `checks` run pushes nothing, the engine flags it `failed` and posts \"could not resolve… a human should investigate\". That happens even when the run had already done what the prompt asks:\n- **#953 and #870:** the run noted a failure that already existed on `main`.\n- **#812:** the run applied the `skip-changeset` label.\n\nI left out the other candidates:\n- **Dependency bumps too new for `minimumReleaseAge`:** the prompt already covers them.\n- **The corepack `pnpm` module error:** it was already fixed.\n- **Issue #871:** it was already fixed by a PR that didn't reference it, and #906 tracks that gap.\n- **Issue #876:** its cause isn't in the records.\n- **Bot review threads and one-off failed runs:** these are weak signals on their own.\n\n<promise>COMPLETE</promise>",
+  "denials": [],
+  "error": null
+}

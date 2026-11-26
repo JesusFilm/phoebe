@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "category": "engine",
+      "target": "stranded-unit-sweep",
+      "title": "Runs that end without a PR are re-run until quarantine, whatever the run said",
+      "problem": "Same cause as open proposal #9901: the stranded-unit sweep re-arms a ticket whenever a run leaves no PR, and after three such runs the ticket is quarantined. New evidence on issues #871 and #876: every run ended with \"the run left no PR and no comment; the stranded-unit sweep re-armed it\" (five runs in about 90 minutes on 2026-11-17), and both were quarantined. #871 is the ticket tracking the expired fixed clock in `bootstrap/remote-*.test.ts` (see the `checks` runs on PR #870), so each re-run probably hit the same blocker. The records do not show why those runs produced nothing. Only the repeated re-arm is shown. The pnpm/corepack failures on #755 and #763 are left out: a different cause, and the detail says it was reconstructed from #773.",
+      "fix": "Same as #9901: before re-arming a stranded ticket, compare it with the previous run's outcome. If the last run ended the same way, stop re-arming and post a visible comment instead of re-queuing silently.",
+      "units": ["u26", "u27", "u28", "u29", "u31"]
+    },
+    {
+      "category": "engine",
+      "target": "dependency-release-age-gate",
+      "title": "Dependency runs try bumps that pnpm's minimumReleaseAge gate rejects, then fail and get quarantined",
+      "problem": "The dependencies run picks bumps that are younger than the repo's pnpm `minimumReleaseAge` (1440 min). It cannot land them and reverts, so the run fails with no PR. Issue #859: \"`electron@45.3.2`: npm published it ... about eight hours before this run. pnpm's 1440-minute `minimumReleaseAge` gate rejects it\". Issue #858: three runs in four minutes on `jsdom@31.0.1`, \"still inside pnpm's 1440-minute `minimumReleaseAge` window ... The window closes at 2026-11-14T06:33Z\". The third run was quarantined. `pnpm add` also writes a `minimumReleaseAgeExclude` entry that the run has to undo, which would otherwise fail `src/workspace.test.ts`. This differs from closed proposal #9902, which was about Renovate's schedule and PR volume. Here the bundle is built from versions the gate rejects, so no schedule change helps.",
+      "fix": "When building a dependency bundle, skip any version whose publish time is inside the repo's `minimumReleaseAge`, and treat \"only bump was too new\" as a deferred no-op rather than a failure that counts toward quarantine. Retry the bump after the window closes.",
+      "units": ["u39", "u40", "u41", "u42"]
+    },
+    {
+      "category": "engine",
+      "target": "checks-main-red-handling",
+      "title": "Checks runs report \"could not resolve\" as a failure when the failure is on main or already handled",
+      "problem": "The `checks` kind posts \"Phoebe attempted an idle CI fix ... could not resolve the failing checks ... A human should investigate\" and marks the unit failed whenever it makes no branch commit, even when its own diagnosis says the PR is not at fault. PR #953: \"The `ready` failure ... comes from `main`, not this PR ... duplicate `UnitRecordOutcome` export ... #962 tracks it.\" PR #870 (two runs): the same two `bootstrap/remote-*.test.ts` tests fail on main because of an expired fixed clock, tracked in #871. PR #812: the run applied the `skip-changeset` label, which re-ran the check, and still ended with the failure comment. All three PRs merged with no changes requested, so these failures were not Phoebe's mistakes. The other `checks` failures (#843, #825, #819, #820) carry only the generic comment, so their cause is unknown and I have not counted them.",
+      "fix": "In the checks kind, compare the failing runs with the latest run on the base branch. If the same checks fail there, record the unit as blocked on base (not failed) and post a note that names the base failure. If the run fixed the PR by non-commit means such as a label, report that outcome instead of the generic failure comment.",
+      "units": ["u14", "u33", "u35", "u53"]
+    }
+  ]
+}

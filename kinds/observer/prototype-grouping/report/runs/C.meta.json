@@ -1,0 +1,46 @@
+{
+  "variant": "C",
+  "model": "claude-sonnet-5-5",
+  "effort": null,
+  "exitCode": 0,
+  "durationMs": 20792,
+  "costUsd": 0.10095109999999999,
+  "turns": 6,
+  "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 24891,
+    "cache_read_input_tokens": 81336,
+    "output_tokens": 2194,
+    "output_tokens_details": {
+      "thinking_tokens": 658
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 24891
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 446,
+        "cache_read_input_tokens": 24016,
+        "cache_creation_input_tokens": 875,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 875,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "result": "I wrote one finding to `/tmp/observer-proto-scratch/C/findings.json`.\n\n- **Finding:** it reuses the key `engine:stranded-unit-sweep` (proposal #9901, still open). The sweep re-runs tickets whose run ended without a PR, until they are quarantined.\n- **Strongest evidence:** #858 (jsdom) and #859 (electron). Both runs dropped a bump because it was inside pnpm's 1440-minute `minimumReleaseAge` window and said so. The sweep re-ran #858 until it was quarantined.\n- **Weaker evidence:** #871 and #876 were also quarantined. Their details say the run left no comment, which differs from #9901's wording, and the records don't say why those runs ended without a PR. I included them and said so in `problem`.\n- **Left out, one-off causes:**\n  - The corepack `MODULE_NOT_FOUND` failures on #755 and #763 were fixed in PR #773.\n  - The #781 push rejection was a token without `workflow` scope.\n  - The `ready` failures on #953 and #870 came from main being broken, in two different ways.\n- **Left out, weak flags:** the review-thread and failed-Actions-run flags on the other PRs are the normal bot-review and fix-it loop.\n\n<promise>COMPLETE</promise>",
+  "denials": [],
+  "error": null
+}

@@ -1,0 +1,1903 @@
+[
+  {
+    "id": "u1",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:961",
+    "flags": [
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-26T06:41:22.700Z",
+    "settledAt": "2026-11-26T06:49:23.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 961,
+    "pr": {
+      "number": 961,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 32,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u2",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:963",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-26T06:35:04.820Z",
+    "settledAt": "2026-11-26T07:02:18.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 963,
+    "pr": {
+      "number": 963,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u3",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:961",
+    "flags": [
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-26T05:25:35.360Z",
+    "settledAt": "2026-11-26T05:40:32.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 961,
+    "pr": {
+      "number": 961,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 32,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u4",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:963",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-26T05:25:17.720Z",
+    "settledAt": "2026-11-26T05:40:32.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 963,
+    "pr": {
+      "number": 963,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u5",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:959",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-26T02:36:38.200Z",
+    "settledAt": "2026-11-26T02:57:52.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 959,
+    "pr": {
+      "number": 959,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 3,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 4,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u6",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:959",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-26T01:58:37.560Z",
+    "settledAt": "2026-11-26T02:24:42.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 959,
+    "pr": {
+      "number": 959,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 3,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 4,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u7",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:952",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-26T01:50:52.300Z",
+    "settledAt": "2026-11-26T01:58:07.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 952,
+    "pr": {
+      "number": 952,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 4,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u8",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:954",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-26T01:05:37.980Z",
+    "settledAt": "2026-11-26T01:43:39.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 954,
+    "pr": {
+      "number": 954,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 7,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 3,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u9",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:954",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-26T00:18:26.140Z",
+    "settledAt": "2026-11-26T00:26:28.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 954,
+    "pr": {
+      "number": 954,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 7,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 3,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u10",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:961",
+    "flags": [
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T23:22:44.720Z",
+    "settledAt": "2026-11-25T23:29:50.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 961,
+    "pr": {
+      "number": 961,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 32,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u11",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:963",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T23:22:32.120Z",
+    "settledAt": "2026-11-25T23:29:50.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 963,
+    "pr": {
+      "number": 963,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u12",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:954",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-25T23:16:41.300Z",
+    "settledAt": "2026-11-25T23:32:21.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 954,
+    "pr": {
+      "number": 954,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 7,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 3,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u13",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:953",
+    "flags": [
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T23:16:24.440Z",
+    "settledAt": "2026-11-25T23:32:21.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 953,
+    "pr": {
+      "number": 953,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 4,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u14",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:953",
+    "flags": [
+      "failed",
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T23:14:32.600Z",
+    "settledAt": "2026-11-25T23:27:07.000Z",
+    "detail": "The `ready` failure on run 45720556076 comes from `main`, not this PR. `vp check`, lint and typecheck all fail on a duplicate `UnitRecordOutcome` export in `src/contracts/index.ts` (lines 80 and 140). `origin/main` has the same duplicate, and its latest `ready` run is red. #962 tracks it. This PR doesn't touch those lines, so I made no change here. Once #96… — Phoebe attempted an idle CI fix for PR #953 but could not resolve the failing checks. The branch was left unchanged. A human should inve…",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 953,
+    "pr": {
+      "number": 953,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 4,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u15",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:959",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-25T22:57:28.720Z",
+    "settledAt": "2026-11-25T23:32:21.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 959,
+    "pr": {
+      "number": 959,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 3,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 4,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u16",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:941",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T22:51:24.168Z",
+    "settledAt": "2026-11-25T23:24:12.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 963,
+    "pr": {
+      "number": 963,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u17",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:940",
+    "flags": [
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T22:44:44.460Z",
+    "settledAt": "2026-11-25T23:12:18.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 961,
+    "pr": {
+      "number": 961,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 32,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u18",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:938",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-25T22:22:16.336Z",
+    "settledAt": "2026-11-25T22:59:25.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 959,
+    "pr": {
+      "number": 959,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 3,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 4,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u19",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:932",
+    "flags": [
+      "review-threads",
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-25T21:55:15.416Z",
+    "settledAt": "2026-11-25T22:18:47.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 954,
+    "pr": {
+      "number": 954,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 7,
+      "outsideCommits": 2,
+      "failedRuns": 0,
+      "hoursToMerge": 3,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u20",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:931",
+    "flags": [
+      "review-threads",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T21:41:08.292Z",
+    "settledAt": "2026-11-25T22:10:57.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 953,
+    "pr": {
+      "number": 953,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 4,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u21",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:936",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-25T21:36:22.584Z",
+    "settledAt": "2026-11-25T22:00:57.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 952,
+    "pr": {
+      "number": 952,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 4,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u22",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:943",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-25T06:06:04.220Z",
+    "settledAt": "2026-11-25T06:16:47.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 943,
+    "pr": {
+      "number": 943,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 2,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 14,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u23",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:926",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-25T05:29:34.628Z",
+    "settledAt": "2026-11-25T05:59:17.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 943,
+    "pr": {
+      "number": 943,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 2,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 14,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u24",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:882",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-18T00:18:48.260Z",
+    "settledAt": "2026-11-18T00:42:15.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 882,
+    "pr": {
+      "number": 882,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 1,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u25",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:878",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-17T22:26:33.956Z",
+    "settledAt": "2026-11-17T22:55:23.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 882,
+    "pr": {
+      "number": 882,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 1,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u26",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:876",
+    "flags": [
+      "failed",
+      "quarantined"
+    ],
+    "startedAt": "2026-11-17T03:20:38.000Z",
+    "settledAt": "2026-11-17T03:27:31.000Z",
+    "detail": "the run left no PR and no comment; the stranded-unit sweep re-armed it",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u27",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:876",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-17T03:08:21.400Z",
+    "settledAt": "2026-11-17T03:18:36.000Z",
+    "detail": "the run left no PR and no comment; the stranded-unit sweep re-armed it",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u28",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:871",
+    "flags": [
+      "failed",
+      "quarantined"
+    ],
+    "startedAt": "2026-11-17T02:58:29.800Z",
+    "settledAt": "2026-11-17T03:18:26.000Z",
+    "detail": "the run left no PR and no comment; the stranded-unit sweep re-armed it",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u29",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:871",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-17T02:34:42.200Z",
+    "settledAt": "2026-11-17T02:53:12.000Z",
+    "detail": "the run left no PR and no comment; the stranded-unit sweep re-armed it",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u30",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:876",
+    "flags": [
+      "timed-out"
+    ],
+    "startedAt": "2026-11-17T02:20:14.000Z",
+    "settledAt": "2026-11-17T03:05:29.000Z",
+    "detail": "2700s budget exceeded",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u31",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:871",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-17T02:00:01.000Z",
+    "settledAt": "2026-11-17T02:29:46.000Z",
+    "detail": "the run left no PR and no comment; the stranded-unit sweep re-armed it",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u32",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:870",
+    "flags": [
+      "review-threads",
+      "outside-commits",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-16T21:25:08.860Z",
+    "settledAt": "2026-11-16T21:46:36.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 870,
+    "pr": {
+      "number": 870,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 6,
+      "outsideCommits": 1,
+      "failedRuns": 4,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u33",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:870",
+    "flags": [
+      "failed",
+      "review-threads",
+      "outside-commits",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-16T21:13:51.896Z",
+    "settledAt": "2026-11-16T21:27:28.000Z",
+    "detail": "The `ready` failure on this head (run 43959266674) is only `bootstrap/remote-api.test.ts` and `bootstrap/remote-sessions.test.ts`. The same two fail on `main` (run 43947308561). Their fixed clock (2026-10-16) is past the 30-day session expiry. This is tracked in #871. Every other test passes, so I made no code change here. — Phoebe attempted an idle CI fix for PR #870 but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures. <!-- phoebe…",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 870,
+    "pr": {
+      "number": 870,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 6,
+      "outsideCommits": 1,
+      "failedRuns": 4,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u34",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:870",
+    "flags": [
+      "review-threads",
+      "outside-commits",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-16T21:12:38.120Z",
+    "settledAt": "2026-11-16T21:22:23.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 870,
+    "pr": {
+      "number": 870,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 6,
+      "outsideCommits": 1,
+      "failedRuns": 4,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u35",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:870",
+    "flags": [
+      "failed",
+      "review-threads",
+      "outside-commits",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-16T21:00:53.496Z",
+    "settledAt": "2026-11-16T21:09:20.000Z",
+    "detail": "The `ready` failure on this PR is two tests this PR doesn't touch: `bootstrap/remote-api.test.ts` and `bootstrap/remote-sessions.test.ts`. `main` fails the same two (run 43947308561). Their fixed clock of 2026-10-16 is more than 30 days old, so the sessions they issue have already expired. Tracked in #871. I made no code change here. Every other test passes… — Phoebe attempted an idle CI fix for PR #870 but could not resolve the failing checks. The branch was left unchanged. A human should inve…",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 870,
+    "pr": {
+      "number": 870,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 6,
+      "outsideCommits": 1,
+      "failedRuns": 4,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u36",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:869",
+    "flags": [
+      "review-threads",
+      "outside-commits",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-16T20:23:25.036Z",
+    "settledAt": "2026-11-16T21:02:49.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 870,
+    "pr": {
+      "number": 870,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 6,
+      "outsideCommits": 1,
+      "failedRuns": 4,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u37",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:866",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-13T22:55:50.760Z",
+    "settledAt": "2026-11-13T23:10:33.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 866,
+    "pr": {
+      "number": 866,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 3,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u38",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:862",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-13T22:14:12.664Z",
+    "settledAt": "2026-11-13T22:50:28.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 866,
+    "pr": {
+      "number": 866,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 3,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u39",
+    "pipeline": "dependencies",
+    "kind": "dependencies",
+    "ref": "issue:859",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-13T21:24:04.200Z",
+    "settledAt": "2026-11-13T21:27:58.000Z",
+    "detail": "I didn't make a commit or open a PR this run: the bundle's one bump didn't pass, so I dropped it. - `electron@45.3.2`: npm published it at 13:26 UTC today, about eight hours before this run. pnpm's 1440-minute `minimumReleaseAge` gate rejects it on a clean frozen install. `pnpm add` only got past the gate by adding `electron@45.3.2` to `minimumReleaseAgeExclude` in `pnpm-workspace.yaml`. This repo sets nothing to relax that gate (#684, `renovate.json`), so I reverted the exclusion and then the …",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u40",
+    "pipeline": "dependencies",
+    "kind": "dependencies",
+    "ref": "issue:858",
+    "flags": [
+      "failed",
+      "quarantined"
+    ],
+    "startedAt": "2026-11-13T21:23:16.000Z",
+    "settledAt": "2026-11-13T21:27:01.000Z",
+    "detail": "Dropped the only bump again, so there's no commit and no PR. - `jsdom@31.0.1`: this run started at 2026-11-13T21:26Z, which is still inside pnpm's 1440-minute `minimumReleaseAge` window for a package published at 06:33Z that morning. The window closes at 2026-11-14T06:33Z. A run any time after that should land the bump as a plain manifest and lockfile change. As in the last two runs, `pnpm add` wrote a `minimumReleaseAgeExclude` entry into `pnpm-workspace.yaml` and I took it back out. I ran the…",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u41",
+    "pipeline": "dependencies",
+    "kind": "dependencies",
+    "ref": "issue:858",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-13T21:22:37.000Z",
+    "settledAt": "2026-11-13T21:26:22.000Z",
+    "detail": "Dropped the only bump again, so there's no commit and no PR. - `jsdom@31.0.1`: this run started at 2026-11-13T21:25Z. The package was published at 06:33Z the same day, so it is still inside pnpm's 1440-minute `minimumReleaseAge` window. The window closes at 2026-11-14T06:33Z, and the bump should go through as a plain manifest and lockfile change after that. `pnpm add` wrote `jsdom@31.0.1` into `minimumReleaseAgeExclude` again, and I took it back out. One thing to watch for: once the exclusion w…",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u42",
+    "pipeline": "dependencies",
+    "kind": "dependencies",
+    "ref": "issue:858",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-13T21:21:35.000Z",
+    "settledAt": "2026-11-13T21:25:20.000Z",
+    "detail": "Checked it: with jsdom 31.0.1 in `node_modules`, `pnpm run ready` passes. That's 170 files / 3549 tests in the engine, then 36 / 468 and 29 / 502 in the apps, and the bump needs no code changes. Keeping the `minimumReleaseAgeExclude` entry would also fail `src/workspace.test.ts`, because pnpm appends it right under `allowBuilds`. So a retry after 2026-11-14T06:33Z should go through as a plain manifest and lockfile change.",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u43",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:845",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-12T21:00:33.140Z",
+    "settledAt": "2026-11-12T21:08:23.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 845,
+    "pr": {
+      "number": 845,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 11,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u44",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:843",
+    "flags": [
+      "failed",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-12T20:48:35.344Z",
+    "settledAt": "2026-11-12T21:06:48.000Z",
+    "detail": "Phoebe attempted an idle CI fix for PR #843 but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures. <!-- phoebe-checks-fail: prHead=7bc7173ca9362e0bf99b7f3b9e90e8293ab26938 -->",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 843,
+    "pr": {
+      "number": 843,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 16,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u45",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:781",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-12T01:11:31.896Z",
+    "settledAt": "2026-11-12T01:35:51.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 839,
+    "pr": {
+      "number": 839,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u46",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:781",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-11T23:01:17.960Z",
+    "settledAt": "2026-11-11T23:15:16.000Z",
+    "detail": "I couldn't open a PR for this. GitHub rejected the push: ``` ! [remote rejected] phoebe/issue-781 -> phoebe/issue-781 (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/dogfood-image.yml` without `workflow` scope) ``` The token this deployment pushes with can't create or edit anything under `.github/workflows/`, and this issue needs a new workflow file. Someone has to do one of two things: - grant the token the `workflow` scope (on a fine-grained PAT that…",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u47",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:834",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-11T10:07:33.000Z",
+    "settledAt": "2026-11-11T10:16:33.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 834,
+    "pr": {
+      "number": 834,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 10,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u48",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:825",
+    "flags": [
+      "failed",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-11T01:10:15.864Z",
+    "settledAt": "2026-11-11T01:19:08.000Z",
+    "detail": "Phoebe attempted an idle CI fix for PR #825 but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures. <!-- phoebe-checks-fail: prHead=fcf66f6e0fed6919884c81da9edddd5f8203d2b4 -->",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 825,
+    "pr": {
+      "number": 825,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u49",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:819",
+    "flags": [
+      "failed",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-11T00:38:12.312Z",
+    "settledAt": "2026-11-11T00:49:44.000Z",
+    "detail": "Phoebe attempted an idle CI fix for PR #819 but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures. <!-- phoebe-checks-fail: prHead=e05db2ceb7787715c4c0183cdd5c6bcc06aa24ea -->",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 819,
+    "pr": {
+      "number": 819,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u50",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:820",
+    "flags": [
+      "failed",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-11T00:35:52.856Z",
+    "settledAt": "2026-11-11T00:50:28.000Z",
+    "detail": "Phoebe attempted an idle CI fix for PR #820 but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures. <!-- phoebe-checks-fail: prHead=8ae8cef1b999916a29fb484b33ed4e63e10f6a5d -->",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 820,
+    "pr": {
+      "number": 820,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u51",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:818",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-11T00:34:57.000Z",
+    "settledAt": "2026-11-11T00:44:18.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 818,
+    "pr": {
+      "number": 818,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 5,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u52",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:816",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-10T23:54:27.620Z",
+    "settledAt": "2026-11-11T00:25:35.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 818,
+    "pr": {
+      "number": 818,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 5,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u53",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:812",
+    "flags": [
+      "failed",
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-10T23:23:33.768Z",
+    "settledAt": "2026-11-10T23:33:32.000Z",
+    "detail": "The undici bump is a pnpm override for transitive dev dependencies under apps/desktop, so nothing reaches the published package. Per AGENTS.md that takes the `skip-changeset` label rather than a changeset. I applied the label, which re-runs the check. — Phoebe attempted an idle CI fix for PR #812 but could not resolve the failing checks. The branch was left unchanged. A human should investigate the CI failures. <!-- phoebe-checks-fail: prHead=c7144cdb7b9fdfc5fb8556c932d46e23c69d680e -->",
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 812,
+    "pr": {
+      "number": 812,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 2,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u54",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:809",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-10T23:20:12.720Z",
+    "settledAt": "2026-11-10T23:26:30.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 809,
+    "pr": {
+      "number": 809,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 2,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u55",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:798",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-10T21:42:39.560Z",
+    "settledAt": "2026-11-10T22:02:17.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 798,
+    "pr": {
+      "number": 798,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 5,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u56",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:764",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-10T21:15:44.724Z",
+    "settledAt": "2026-11-10T21:37:15.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 798,
+    "pr": {
+      "number": 798,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 5,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u57",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:792",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-09T19:29:34.580Z",
+    "settledAt": "2026-11-09T19:38:05.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 792,
+    "pr": {
+      "number": 792,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 1,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 69,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u58",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:796",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-09T19:18:37.500Z",
+    "settledAt": "2026-11-09T19:32:00.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 796,
+    "pr": {
+      "number": 796,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u59",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:794",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-07T07:04:59.960Z",
+    "settledAt": "2026-11-07T07:16:29.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 794,
+    "pr": {
+      "number": 794,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u60",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:793",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-07T02:02:47.040Z",
+    "settledAt": "2026-11-07T02:25:28.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 793,
+    "pr": {
+      "number": 793,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 17,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 5,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u61",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:762",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-07T01:26:12.308Z",
+    "settledAt": "2026-11-07T01:59:14.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 793,
+    "pr": {
+      "number": 793,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 17,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 5,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u62",
+    "pipeline": "work",
+    "kind": "conflicts",
+    "ref": "pr:789",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-06T22:37:08.120Z",
+    "settledAt": "2026-11-06T22:52:39.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 789,
+    "pr": {
+      "number": 789,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 9,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 2,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u63",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:788",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-06T22:19:38.852Z",
+    "settledAt": "2026-11-06T22:58:38.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 792,
+    "pr": {
+      "number": 792,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 1,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 69,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u64",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:757",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-06T21:59:46.356Z",
+    "settledAt": "2026-11-06T22:24:18.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 789,
+    "pr": {
+      "number": 789,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 9,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 2,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u65",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:786",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-06T21:39:24.480Z",
+    "settledAt": "2026-11-06T21:46:09.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 786,
+    "pr": {
+      "number": 786,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 11,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u66",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:756",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-06T20:31:55.064Z",
+    "settledAt": "2026-11-06T21:01:41.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 786,
+    "pr": {
+      "number": 786,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 11,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 1,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u67",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:782",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-06T07:04:30.980Z",
+    "settledAt": "2026-11-06T07:11:05.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 782,
+    "pr": {
+      "number": 782,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 13,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u68",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:763",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-06T00:50:10.000Z",
+    "settledAt": "2026-11-06T01:05:31.000Z",
+    "detail": "Command failed: pnpm install --frozen-lockfile — Error: Cannot find module '/opt/corepack/v1/pnpm/12.16.1/bin/pnpm.cjs' (MODULE_NOT_FOUND) [reconstructed from #773]",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u69",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:755",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-05T22:49:09.000Z",
+    "settledAt": "2026-11-06T00:46:20.000Z",
+    "detail": "Command failed: pnpm install --frozen-lockfile — Error: Cannot find module '/opt/corepack/v1/pnpm/12.16.1/bin/pnpm.cjs' (MODULE_NOT_FOUND) [reconstructed from #773] [fixture: 138 stranded-unit markers in 117 min, n=1,2,3,1,2,3,…; the count went back down 45 times and no quarantine comment was posted]",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u70",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:763",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-05T22:48:51.000Z",
+    "settledAt": "2026-11-06T00:46:01.000Z",
+    "detail": "Command failed: pnpm install --frozen-lockfile — Error: Cannot find module '/opt/corepack/v1/pnpm/12.16.1/bin/pnpm.cjs' (MODULE_NOT_FOUND) [reconstructed from #773] [fixture: 139 stranded-unit markers in 117 min, n=1,2,3,1,2,3,…; the count went back down 46 times and no quarantine comment was posted]",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u71",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:772",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-05T13:11:27.360Z",
+    "settledAt": "2026-11-05T13:20:33.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 772,
+    "pr": {
+      "number": 772,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 7,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u72",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:754",
+    "flags": [
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-05T00:38:19.648Z",
+    "settledAt": "2026-11-05T00:57:37.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 771,
+    "pr": {
+      "number": 771,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 1,
+      "failedRuns": 0,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u73",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:753",
+    "flags": [
+      "outside-commits"
+    ],
+    "startedAt": "2026-11-05T00:24:42.188Z",
+    "settledAt": "2026-11-05T00:48:11.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 770,
+    "pr": {
+      "number": 770,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 1,
+      "failedRuns": 0,
+      "hoursToMerge": 0,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u74",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:766",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-04T08:59:37.740Z",
+    "settledAt": "2026-11-04T09:10:00.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 766,
+    "pr": {
+      "number": 766,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 13,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u75",
+    "pipeline": "work",
+    "kind": "research",
+    "ref": "issue:751",
+    "flags": [
+      "failed"
+    ],
+    "startedAt": "2026-11-04T02:06:37.000Z",
+    "settledAt": "2026-11-04T02:17:34.000Z",
+    "detail": "The answers are in `docs/research/renovate-extraction-spike.md` on branch `phoebe/issue-751`. That branch sits on top of the ADR 0003 PR (#750), which adds the skeleton the note fills in. The PR for this branch closes this ticket when it merges. The `JesusFilm/core` timings are still empty, left for the spike. **Output channel.** `--report-type=file --report-path=<file>`. Renovate writes one JSON document when the run ends. Each dependency sits under `repositories.local.packageFiles.<manager>[]…",
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": null,
+    "pr": null
+  },
+  {
+    "id": "u76",
+    "pipeline": "work",
+    "kind": "reviews",
+    "ref": "pr:746",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-03T22:12:55.280Z",
+    "settledAt": "2026-11-03T22:21:32.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 746,
+    "pr": {
+      "number": 746,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 2,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 2,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u77",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:742",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-11-03T21:37:31.780Z",
+    "settledAt": "2026-11-03T21:44:07.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 742,
+    "pr": {
+      "number": 742,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 3,
+      "hoursToMerge": 109,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u78",
+    "pipeline": "work",
+    "kind": "issues",
+    "ref": "issue:745",
+    "flags": [
+      "review-threads"
+    ],
+    "startedAt": "2026-11-03T21:33:58.232Z",
+    "settledAt": "2026-11-03T22:02:35.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "prNumber": 746,
+    "pr": {
+      "number": 746,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 2,
+      "outsideCommits": 0,
+      "failedRuns": 0,
+      "hoursToMerge": 2,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u79",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:739",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-10-29T09:16:22.240Z",
+    "settledAt": "2026-10-29T09:30:58.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 739,
+    "pr": {
+      "number": 739,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 11,
+      "revertedBy": null
+    }
+  },
+  {
+    "id": "u80",
+    "pipeline": "work",
+    "kind": "checks",
+    "ref": "pr:731",
+    "flags": [
+      "actions-failed"
+    ],
+    "startedAt": "2026-10-28T08:40:02.820Z",
+    "settledAt": "2026-10-28T08:49:21.000Z",
+    "detail": null,
+    "provider": "claude",
+    "model": "claude-sonnet-5-5",
+    "prNumber": 731,
+    "pr": {
+      "number": 731,
+      "state": "merged",
+      "changesRequested": 0,
+      "reviewThreads": 0,
+      "outsideCommits": 0,
+      "failedRuns": 1,
+      "hoursToMerge": 8,
+      "revertedBy": null
+    }
+  }
+]

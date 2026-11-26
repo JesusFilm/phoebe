@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "category": "factory",
+      "target": "prompts/dependencies-prompt.md",
+      "title": "Dependency runs attempt bumps still inside the minimumReleaseAge window, then drop them",
+      "problem": "Four dependency runs (issues 858 and 859) ended with no commit and no PR because the only bump in the bundle (`jsdom@31.0.1`, `electron@45.3.2`) was published less than 1440 minutes before the run. pnpm's `minimumReleaseAge` gate rejects it on a frozen install. `pnpm add` gets past the gate only by writing a `minimumReleaseAgeExclude` entry into `pnpm-workspace.yaml`, which the run has to revert, and which would also fail `src/workspace.test.ts`. The run's own notes say a retry after the window closes would pass, so the work is deferred rather than broken. Issue 858 was retried three times inside the same window and was quarantined. What the records do not show is whether the engine could have known the publish time before starting the run.",
+      "fix": "Add a step to the dependencies prompt: before installing a bump, check its publish time against `minimumReleaseAge`. If it is inside the window, skip it, never add a `minimumReleaseAgeExclude` entry, and report the time the window closes in the run summary. Separately, the engine could treat that outcome as deferred rather than failed, so the quarantine counter does not fill up.",
+      "units": ["u39", "u40", "u41", "u42"]
+    },
+    {
+      "category": "engine",
+      "target": "stranded-unit-sweep",
+      "title": "Issue runs end with no PR and no comment and are re-armed by the stranded-unit sweep",
+      "problem": "Issues 871 and 876 each had several runs (u26 to u31) that left no PR and no comment. The stranded-unit sweep re-armed them every time, and both issues were eventually quarantined. One run on 876 hit the 2700s budget. The records do not say why the others stopped: there is no error text. Both tickets were infrastructure work (an integrity check in `ready`, a fixed-clock test failure), but the repository does not show a shared cause. The pattern that matters is that a run can end silently, so the next attempt starts blind and repeats it.",
+      "fix": "Have the engine record why a run ended without output (budget, process exit, killed agent) in the unit's `detail`, and post a comment on the issue when it re-arms a stranded unit. That would let the next observer pass tell a budget problem from an engine crash.",
+      "units": ["u26", "u27", "u28", "u29", "u30", "u31"]
+    },
+    {
+      "category": "engine",
+      "target": "checks-baseline-failure",
+      "title": "Checks runs on a PR whose CI is red because of main are recorded as failed",
+      "problem": "On PRs 953 and 870 the checks run correctly found that the `ready` failure came from `main` (a duplicate `UnitRecordOutcome` export tracked in #962; two fixed-clock tests tracked in #871) and made no change. The engine then posted \"could not resolve the failing checks... A human should investigate\" and flagged the unit failed. The same wording appears on PRs 843, 825, 819 and 820, though those records do not say whether main was also red. These runs reached the right conclusion, so the failure flag adds noise, and the PR keeps failing Actions until main is fixed.",
+      "fix": "Let a checks run report \"baseline failure, nothing to fix\" as its own outcome. The engine would then skip the generic human-needed comment and not retry on every new head until main is green.",
+      "units": ["u14", "u33", "u35", "u32", "u34"]
+    }
+  ]
+}

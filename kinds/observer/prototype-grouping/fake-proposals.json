@@ -1,0 +1,22 @@
+[
+  {
+    "number": 9901,
+    "pr": false,
+    "key": "engine:stranded-unit-sweep",
+    "state": "open",
+    "stateReason": null,
+    "closedAt": null,
+    "title": "Observer: Runs that end without a PR are re-run until quarantine, whatever the run said",
+    "body": "<!-- phoebe-observer finding=engine:stranded-unit-sweep -->\n\n> Proposed by Phoebe's observer from its unit history.\n\n**Category:** engine defect: the fix belongs in Phoebe itself\n**Target:** `stranded-unit-sweep`\n\n## What keeps going wrong\n\nWhen a run on a ticket ends without opening a pull request, the stranded-unit sweep drops the claim and puts the ticket back in the queue, even when the run left a comment explaining that nothing can be done yet. The next run reaches the same conclusion, and after three such runs the ticket is quarantined as unproductive.\n\n## Evidence\n\n(older units, outside this window)\n"
+  },
+  {
+    "number": 9902,
+    "pr": false,
+    "key": "factory:renovate.json",
+    "state": "closed",
+    "stateReason": "not_planned",
+    "closedAt": "2026-11-20T18:00:00Z",
+    "title": "Observer: Hosted Renovate keeps opening PRs the checks kind cannot fix",
+    "body": "<!-- phoebe-observer finding=factory:renovate.json -->\n\n> Proposed by Phoebe's observer from its unit history.\n\n**Category:** factory defect: the fix belongs in `prompts/` or the governing `phoebe.config.ts`\n**Target:** `renovate.json`\n\n## What keeps going wrong\n\nRenovate opens dependency PRs whose checks fail, and the `checks` kind's idle CI fix gives up on them. Renovate's schedule should be narrowed so it opens fewer PRs.\n\n## Evidence\n\n(older units, outside this window)\n"
+  }
+]

@@ -1,0 +1,9 @@
+{
+  "builtAt": "2026-11-26T08:13:38.284Z",
+  "days": 30,
+  "since": "2026-10-27T08:13:38.284Z",
+  "notes": [
+    "65 Phoebe-authored PRs; 13 PRs titled \"Phoebe:\" whose first commit is the operator's, skipped",
+    "109 issues/PRs with a timeout or failure marker touched in the window; 289 timeout markers, 8 unmarked checks/conflict failure comments and 1 phoebe-blocked comments became records"
+  ]
+}
