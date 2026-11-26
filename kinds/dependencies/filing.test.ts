@@ -70,6 +70,7 @@ function issue(
         });
   return {
     number,
+    title: "",
     body,
     state,
     stateReason: state === "closed" ? "not_planned" : null,
@@ -81,6 +82,7 @@ function issue(
 function pr(number: number, body: string, state: "open" | "closed", merged = false): MentioningPr {
   return {
     number,
+    title: "",
     body,
     state,
     merged,

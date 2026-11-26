@@ -4,8 +4,11 @@
 
 import type { FlaggedUnit } from "./evidence.ts";
 import { ALLOWLIST_TEXT } from "./edit.ts";
-import { CATEGORY_TEXT, type Finding } from "./findings.ts";
+import { CATEGORY_TEXT, type Finding, type Omission } from "./findings.ts";
 import { renderFindingMarker, renderUnitsMarker } from "./proposals.ts";
+
+/** The heading the problem text sits under in every proposal body. */
+const PROBLEM_HEADING = "## What keeps going wrong";
 
 /** The most characters of a unit's `detail` an evidence line quotes. */
 export const EVIDENCE_DETAIL_MAX = 200;
@@ -79,7 +82,7 @@ export function renderBody(opts: {
     `**Category:** ${CATEGORY_TEXT[finding.category]}`,
     `**Target:** ${code(finding.target)}`,
     "",
-    "## What keeps going wrong",
+    PROBLEM_HEADING,
     "",
     defang(finding.problem === "" ? finding.title : finding.problem),
     "",
@@ -100,9 +103,45 @@ export function renderBody(opts: {
   return `${lines.join("\n")}\n`;
 }
 
-/** The comment new evidence for an open proposal becomes. */
-export function renderFoldComment(units: readonly FlaggedUnit[]): string {
+/** The most characters of a proposal's problem the grouping run is shown. */
+export const PROBLEM_PARAGRAPH_MAX = 400;
+
+/**
+ * The first paragraph of what a proposal says keeps going wrong, read back
+ * from the body `renderBody` wrote, on one line. `null` when the body has no
+ * such section, as when a person rewrote it.
+ */
+export function problemParagraph(body: string): string | null {
+  const at = body.indexOf(PROBLEM_HEADING);
+  if (at === -1) return null;
+  const rest = body.slice(at + PROBLEM_HEADING.length).trim();
+  if (rest.startsWith("## ")) return null;
+  const paragraph = rest.split(/\n\s*\n/)[0] ?? "";
+  const line = oneLine(paragraph, PROBLEM_PARAGRAPH_MAX);
+  return line === "" ? null : line;
+}
+
+/** The most characters of a cause a fold comment quotes. */
+export const CAUSE_MAX = 300;
+
+/**
+ * A finding's cause: the first sentence of its problem, which the grouping
+ * prompt asks to name the cause, or its title when the problem is empty.
+ */
+export function causeOf(finding: Finding): string {
+  const paragraph = finding.problem.split(/\n\s*\n/)[0]?.trim() ?? "";
+  const sentence = /^[\s\S]*?[.!?](?=\s|$)/.exec(paragraph)?.[0] ?? paragraph;
+  return oneLine(sentence === "" ? finding.title : sentence, CAUSE_MAX);
+}
+
+/**
+ * The comment new evidence for an open proposal becomes. It leads with the
+ * finding's cause, so a person can spot units that do not belong there.
+ */
+export function renderFoldComment(finding: Finding, units: readonly FlaggedUnit[]): string {
   return [
+    `**Cause:** ${defang(causeOf(finding))}`,
+    "",
     `The observer saw this again in ${units.length} more unit(s):`,
     "",
     ...units.map(evidenceLine),
@@ -120,12 +159,22 @@ export type RunTally = {
   skipped: number;
 };
 
+/** The most characters of an omission's cause the summary quotes. */
+export const OMISSION_CAUSE_MAX = 120;
+
 /**
  * The run's one-line summary, which becomes its unit record's `detail`:
  * `2 proposals filed (#41, #42), 1 folded into #38, 1 skipped; coverage work
- * 14d, intake 9d`.
+ * 14d, intake 9d`. Each problem the grouping run left out as already fixed
+ * follows, as its cause and the ref that fixed it, so the omission can be
+ * checked: `; omitted as fixed: Installs fail on pnpm 12 (#872)`. They come
+ * last because the record cuts `detail` to 500 characters.
  */
-export function renderSummary(tally: RunTally, coverage: string): string {
+export function renderSummary(
+  tally: RunTally,
+  coverage: string,
+  omitted: readonly Omission[] = [],
+): string {
   const parts: string[] = [];
   if (tally.filed.length > 0) {
     const noun = tally.filed.length === 1 ? "proposal" : "proposals";
@@ -140,7 +189,13 @@ export function renderSummary(tally: RunTally, coverage: string): string {
   }
   if (tally.skipped > 0) parts.push(`${tally.skipped} skipped`);
   if (parts.length === 0) parts.push("nothing filed");
-  return `${parts.join(", ")}; ${coverage}`;
+  const summary = `${parts.join(", ")}; ${coverage}`;
+  if (omitted.length === 0) return summary;
+  const omissions = omitted.map(
+    (omission) =>
+      `${oneLine(omission.cause, OMISSION_CAUSE_MAX)} (${oneLine(omission.fixedBy, 40)})`,
+  );
+  return `${summary}; omitted as fixed: ${omissions.join("; ")}`;
 }
 /** Why a finding PR mode would have opened as a PR was filed as an issue instead. */
 export type EditAttemptNote =

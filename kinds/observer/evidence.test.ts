@@ -7,7 +7,9 @@ import {
   coverageOf,
   flagsOf,
   flagUnits,
+  issuesByPr,
   observerGate,
+  refsOf,
   renderCoverage,
   RETRY_AFTER_FAILURE_MS,
   unitKeyOf,
@@ -208,6 +210,34 @@ describe("flags", () => {
       unitKeyOf("work", unitRecord({ startedAt: daysAgo(2) })),
     );
     expect(unitKeyOf("work", first)).not.toBe(unitKeyOf("intake", first));
+  });
+});
+
+describe("refs", () => {
+  const flagged = (id: string, overrides: Partial<UnitRecord> = {}, pr: number | null = null) => ({
+    key: id,
+    pipeline: "work",
+    record: unitRecord({ unit: { kind: "issues", id }, outcome: "failed", ...overrides }),
+    flags: ["failed" as const],
+    pr: pr === null ? null : ({ number: pr } as PrSignals),
+  });
+
+  test("a PR's units count as the issue it was opened for", () => {
+    const opener = flagged("issue:6", {}, 70);
+    const recorded = flagged("issue:8", { prNumber: 80 });
+    const byPr = issuesByPr([opener, recorded, flagged("t:1", { prNumber: 90 })]);
+    expect([...byPr]).toEqual([
+      [70, "issue:6"],
+      [80, "issue:8"],
+    ]);
+    const review = flagged("pr:70", { unit: { kind: "reviews", id: "pr:70" } });
+    const stray = flagged("pr:99", { unit: { kind: "checks", id: "pr:99" } });
+    expect([...refsOf([opener, review], byPr)]).toEqual(["issue:6"]);
+    expect([...refsOf([opener, review, stray, flagged("t:1")], byPr)]).toEqual([
+      "issue:6",
+      "pr:99",
+      "t:1",
+    ]);
   });
 });
 

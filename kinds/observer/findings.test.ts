@@ -34,7 +34,11 @@ describe("parseFindings", () => {
   });
 
   test("an empty list is a valid answer", () => {
-    expect(parseFindings('{"findings": []}', known)).toEqual({ findings: [], dropped: [] });
+    expect(parseFindings('{"findings": []}', known)).toEqual({
+      findings: [],
+      omitted: [],
+      dropped: [],
+    });
   });
 
   test("drops a finding with a category outside the four, a bad target, or no known unit", () => {
@@ -73,5 +77,39 @@ describe("parseFindings", () => {
   test("a draft that is not JSON, or has no findings array, throws", () => {
     expect(() => parseFindings("{", known)).toThrow("findings.json is not JSON");
     expect(() => parseFindings('{"items": []}', known)).toThrow("has no `findings` array");
+  });
+
+  test("reads an omitted list; it files nothing and drops a malformed entry", () => {
+    const parsed = parseFindings(
+      JSON.stringify({
+        findings: [],
+        omitted: [
+          { cause: "The image could not run\n pnpm 12.", fixedBy: " #872 ", units: ["u1", "u9"] },
+          { cause: "No units listed.", fixedBy: "abc1234" },
+          { cause: "", fixedBy: "#1" },
+          { cause: "No fix named.", units: ["u1"] },
+          { cause: "Units are not a list.", fixedBy: "#2", units: "u1" },
+          7,
+        ],
+      }),
+      known,
+    );
+    expect(parsed.findings).toEqual([]);
+    expect(parsed.omitted).toEqual([
+      { cause: "The image could not run pnpm 12.", fixedBy: "#872", units: ["u1"] },
+      { cause: "No units listed.", fixedBy: "abc1234", units: [] },
+    ]);
+    expect(parsed.dropped).toEqual([
+      "omission 3: no cause",
+      "omission 4: no fixedBy",
+      "omission 5: units is not a list",
+      "omission 6: not an object",
+    ]);
+  });
+
+  test("an omitted that is not a list throws", () => {
+    expect(() => parseFindings('{"findings": [], "omitted": {}}', known)).toThrow(
+      "findings.json has an `omitted` that is not an array.",
+    );
   });
 });

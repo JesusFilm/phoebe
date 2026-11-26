@@ -36,6 +36,7 @@ describe("verdictIssues", () => {
   const issue = (number: number, key: string, overrides: Partial<MentioningIssue> = {}) =>
     ({
       number,
+      title: "",
       body: `<!-- phoebe-dependencies bundle=${encodeURIComponent(key)} fingerprint=abc -->`,
       state: "open",
       stateReason: null,

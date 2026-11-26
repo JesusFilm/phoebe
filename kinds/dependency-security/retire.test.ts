@@ -49,6 +49,7 @@ function transitive(pkg: string, overrides: Partial<Candidate> = {}): Candidate 
 function open(number: number, body: string): MentioningIssue {
   return {
     number,
+    title: "",
     body,
     state: "open",
     stateReason: null,

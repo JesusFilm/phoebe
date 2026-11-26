@@ -1045,6 +1045,23 @@ reads its own pipeline's history. The tuning knobs and `PHOEBE_OBSERVER_*` apply
 as for any kind. The prompt is `kinds/observer/prompt.md` in the engine
 checkout. It needs no credential beyond the container's `gh` one.
 
+**The model.** The observer has no model default of its own. Its grouping run
+and its edit runs use the tenant's default provider, model and effort unless
+the block names its own:
+
+```ts
+observer: {
+  path: "phoebe-agent/kinds/observer",
+  every: "7d",
+  provider: "claude",
+  model: "claude-opus-5-5",
+  effort: "low",
+},
+```
+
+`PHOEBE_OBSERVER_PROVIDER`, `PHOEBE_OBSERVER_MODEL` and `PHOEBE_OBSERVER_EFFORT`
+override the block, as for any kind.
+
 **The schedule.** Each poll, the kind reads its own pipeline's
 `units.jsonl` and offers one unit, ref `observer`, once `every` has passed since
 its last completed run. The history is on disk, so a restart inside the window
@@ -1088,10 +1105,11 @@ REST call per settled PR. A unit on an observer proposal is never flagged: one
 that ran on a proposal issue, or on a PR that carries `phoebe:observer`, the
 marker, or closes a proposal. With nothing flagged the run stops there and
 spends no agent run. Otherwise one read-only agent run sees the
-flagged units and the proposals already filed, and writes findings to scratch.
-Each finding has a title, the problem, a suggested fix, the units that show it,
-a target (a file such as `AGENTS.md`, or a short slug), and one of four
-categories:
+flagged units and the proposals already filed, each with its title and the
+first paragraph of its problem, and writes findings to scratch. Each finding
+has a title, the problem, a suggested fix, the units that show it, a target (a
+file such as `AGENTS.md`, or a short slug), and one of four categories. The
+problem opens with the cause in one sentence.
 
 | Category     | Where the fix belongs                               |
 | ------------ | --------------------------------------------------- |
@@ -1100,7 +1118,14 @@ categories:
 | `factory`    | `prompts/` or the governing `phoebe.config.ts`      |
 | `engine`     | Phoebe itself, filed on the tenant's own repository |
 
-The kind checks every finding and files from it. A finding's key is
+The grouping run leaves out a problem whose fix merged after the units that
+showed it, and lists it under `omitted` with its cause and the PR, commit or
+issue that fixed it. The kind files nothing from `omitted`.
+
+The kind checks every finding and files from it. It drops a finding whose
+units ran on fewer than two distinct issues or PRs, and logs why. Several units
+on one issue count once, and a unit on a PR counts as the issue that PR was
+opened for. A finding's key is
 `<category>:<target>`. Proposals are issues and PRs alike, and a merged PR
 counts as completed:
 
@@ -1116,8 +1141,9 @@ A regression counts only the units that started after the fix closed. Every
 proposal is labelled `phoebe:observer`, never the ready label, so Phoebe works an
 issue only after a person gives it the ready label. Its body carries
 `<!-- phoebe-observer finding=<category>:<target> -->` and a hidden list of the
-units it names. Findings with more units file first, and the rest past
-`maxProposals` are skipped.
+units it names. A comment that adds units to an open proposal opens with the
+finding's cause, so a person can spot a unit that does not belong. Findings
+with more units file first, and the rest past `maxProposals` are skipped.
 
 **PR mode**, the default, files a `convention` or `factory` finding as a PR.
 `ticket` and `engine` findings are always issues. For each PR proposal one
@@ -1154,6 +1180,13 @@ what it did:
 
 ```text
 2 proposals filed (#41, #42), 1 folded into #38, 1 skipped; coverage work 14d, intake 9d
+```
+
+Each problem the grouping run omitted as fixed follows the coverage, as its
+cause and the ref that fixed it:
+
+```text
+nothing filed; coverage work 14d, intake 9d; omitted as fixed: The image could not run pnpm 12. (#872)
 ```
 
 Coverage names each pipeline it read and how far back that history reaches,

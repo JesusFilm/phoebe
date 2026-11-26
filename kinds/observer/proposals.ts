@@ -51,6 +51,7 @@ export type Proposal = {
   /** A PR rather than an issue: where a fold comment goes. */
   pr: boolean;
   key: string;
+  title: string;
   body: string;
   state: "open" | "closed";
   stateReason: "completed" | "not_planned" | "reopened" | "duplicate" | null;

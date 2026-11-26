@@ -203,6 +203,7 @@ describe("readFailures", () => {
     ["Closes #1", "", "## Dropped", "", ...entries.map((e) => `- \`${e}\`: broke`)].join("\n");
   const pr = (number: number, body: string, merged = true): MentioningPr => ({
     number,
+    title: "",
     body,
     state: "closed",
     merged,
