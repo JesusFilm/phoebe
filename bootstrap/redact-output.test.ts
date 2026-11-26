@@ -3,7 +3,7 @@
 // and a git SHA survives.
 
 import { describe, expect, test } from "vite-plus/test";
-import { createRedactor, REDACTED, SECRET_KEY } from "./redact-output.ts";
+import { createRedactor, REDACTED, redactSecretShapes, SECRET_KEY } from "./redact-output.ts";
 
 describe("learned values", () => {
   test("every value under a key that names a secret is replaced wherever it appears", () => {
@@ -18,7 +18,7 @@ describe("learned values", () => {
     });
     expect(
       redactor.redact("git push https://x:ghp_abc123def456ghi789jkl012mno345@github.com/a/b"),
-    ).toBe(`git push https://x:${REDACTED}@github.com/a/b`);
+    ).toBe(`git push https://${REDACTED}@github.com/a/b`);
     expect(redactor.redact("[acme:JesusFilm/phoebe:work] cycle: 1 candidate")).toBe(
       "[acme:JesusFilm/phoebe:work] cycle: 1 candidate",
     );
@@ -112,5 +112,44 @@ describe("shapes caught on sight", () => {
     const line =
       "[phoebe] boot: engine at 2114a26c5a8f1b0e9d7c6b5a4f3e2d1c0b9a8f7e on main (v0.15.0)";
     expect(redactor.redact(line)).toBe(line);
+  });
+});
+
+// Built at runtime so no credential-shaped literal sits in the source.
+const FAKE_PAT = `github_pat_${"x".repeat(30)}_${"y".repeat(40)}`;
+const FAKE_OPAQUE = "not-a-known-prefix-but-secret";
+
+describe("URL credentials", () => {
+  test("a token in a git URL goes, whatever its shape; scheme and host stay", () => {
+    const line = `Command failed: git ls-remote https://x-access-token:${FAKE_OPAQUE}@github.com/acme/widget.git v1`;
+    expect(redactSecretShapes(line)).toBe(
+      `Command failed: git ls-remote https://${REDACTED}@github.com/acme/widget.git v1`,
+    );
+  });
+
+  test("a fine-grained PAT in a git URL leaves nothing of the token behind", () => {
+    const out = redactSecretShapes(`https://x-access-token:${FAKE_PAT}@github.com/a/b.git`);
+    expect(out).not.toContain("github_pat_");
+    expect(out).toContain("@github.com/a/b.git");
+  });
+
+  test("a URL with no password, or no userinfo, is left alone", () => {
+    const line = "https://git@github.com/a/b.git and https://sentry.io/acme/issues/9/";
+    expect(redactSecretShapes(line)).toBe(line);
+  });
+});
+
+describe("redactSecretShapes", () => {
+  test("catches the shapes with nothing learned, across lines", () => {
+    const text = [
+      "first",
+      `GH_TOKEN=${FAKE_OPAQUE}`,
+      `Authorization: Bearer ${FAKE_OPAQUE}`,
+      FAKE_PAT,
+    ].join("\n");
+    const out = redactSecretShapes(text);
+    expect(out).not.toContain(FAKE_OPAQUE);
+    expect(out).not.toContain(FAKE_PAT);
+    expect(out.split("\n")[0]).toBe("first");
   });
 });

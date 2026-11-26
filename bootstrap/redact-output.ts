@@ -49,6 +49,14 @@ const SHAPES: readonly RegExp[] = [
 const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/g;
 const AUTHORIZATION = /\b([Aa]uthorization:\s*(?:[A-Za-z]+\s+)?)[A-Za-z0-9._~+/=-]{8,}/g;
 
+/**
+ * `https://user:secret@host` — a credential carried in a URL, which is how git
+ * is handed a token (`x-access-token:<token>@github.com`) and how a failed git
+ * command then quotes it back in its error. The scheme and host stay, the whole
+ * userinfo goes: whatever shape the secret has, it sits before the `@`.
+ */
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
+
 /** `SOME_TOKEN=value` printed outright: the key stays, the value goes. */
 const ASSIGNMENT =
   /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSW(?:OR)?D|PRIVATE_KEY|API_?KEY|CREDENTIALS?)[A-Z0-9_]*=)(["']?)[^\s"']+\2/g;
@@ -110,6 +118,7 @@ export function createRedactor(): Redactor {
       const learned = pattern();
       if (learned !== null) out = out.replace(learned, REDACTED);
       for (const shape of SHAPES) out = out.replace(shape, REDACTED);
+      out = out.replace(URL_USERINFO, `$1${REDACTED}@`);
       out = out.replace(BEARER, `$1${REDACTED}`);
       out = out.replace(AUTHORIZATION, `$1${REDACTED}`);
       out = out.replace(ASSIGNMENT, `$1${REDACTED}`);
@@ -117,6 +126,18 @@ export function createRedactor(): Redactor {
     },
     size: () => known.size,
   };
+}
+
+const SHAPES_ONLY = createRedactor();
+
+/**
+ * Text with every secret *shape* replaced: the token prefixes, URL credentials,
+ * bearer headers and `KEY=value` assignments. For a writer that holds no learned
+ * values — a crash report, an issue filed from someone else's crash — and must
+ * still never carry a credential off the box.
+ */
+export function redactSecretShapes(text: string): string {
+  return SHAPES_ONLY.redact(text);
 }
 
 function escape(value: string): string {

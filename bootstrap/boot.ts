@@ -124,7 +124,7 @@ import { prepareRemote } from "./remote-boot.ts";
 import { createFleetHold, type FleetHold } from "./fleet-hold.ts";
 import { createObserveDispatcher, watchObserveDrop, type ObserveDispatcher } from "./observe.ts";
 import { createOutputTap, type OutputTap } from "./output-tap.ts";
-import { createRedactor, type Redactor } from "./redact-output.ts";
+import { createRedactor, redactSecretShapes, type Redactor } from "./redact-output.ts";
 import { deliverSecret } from "./secret-delivery.ts";
 import { resolveDataBase } from "../src/paths.ts";
 import { tenantSecrets, tenantStateDir, type SecretValues } from "../src/secret-store.ts";
@@ -2299,6 +2299,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   propagateExit(exit.code, exit.signal);
 }
 
+/** An error as one log line, any secret shape in it (a token-bearing git URL) scrubbed. */
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactSecretShapes(error instanceof Error ? error.message : String(error));
 }

@@ -18,6 +18,7 @@
 
 import { readEngineSource } from "../bootstrap/engine-source.ts";
 import { resolveCredentialArm, type CredentialArm } from "../bootstrap/credential-arm.ts";
+import { createRedactor, redactSecretShapes } from "../bootstrap/redact-output.ts";
 import { readReportingField, type ReportingField } from "./config-schema.ts";
 import { loadUserConfig } from "./load-config.ts";
 import { DEFAULT_DATA_BASE, resolveDataBase } from "./paths.ts";
@@ -136,13 +137,26 @@ function errorParts(
  * The Sentry event payload, pure so the tests can read exactly what leaves
  * the box: the phase and process tags, the tenant tag under its switch, the
  * error class, message and redacted stack.
+ *
+ * Every free string is scrubbed of secrets as well as tenant paths. A thrown
+ * `git` error quotes its argv, and the engine's argv carries
+ * `x-access-token:<token>@github.com`; the maintainers' project files each new
+ * group as a public issue, so a report that kept the token published it.
+ * `secrets` adds the values this process holds; the shapes are always applied.
  */
 export function buildCrashPayload(
   event: CrashEvent,
   context: CrashContext,
-  opts: { includeRef: boolean; now: Date; eventId: string; dataBase?: string },
+  opts: {
+    includeRef: boolean;
+    now: Date;
+    eventId: string;
+    dataBase?: string;
+    secrets?: (text: string) => string;
+  },
 ): Record<string, unknown> {
-  const redact = (text: string): string => redactTenantPaths(text, opts.dataBase);
+  const scrub = opts.secrets ?? redactSecretShapes;
+  const redact = (text: string): string => scrub(redactTenantPaths(text, opts.dataBase));
   const { type, value, stack } = errorParts(event.error, event.message);
   const tags: Record<string, string> = {
     phase: event.phase,
@@ -154,7 +168,7 @@ export function buildCrashPayload(
     credentialArm: context.credentialArm ?? "unknown",
     tenant: opts.includeRef ? (event.tenant ?? "none") : "redacted",
   };
-  if (opts.includeRef && event.ref !== undefined) tags["ref"] = event.ref;
+  if (opts.includeRef && event.ref !== undefined) tags["ref"] = redact(event.ref);
   for (const [key, raw] of Object.entries(event.tags ?? {})) {
     if (raw === undefined || raw === null) continue;
     tags[key] = redact(String(raw));
@@ -212,6 +226,8 @@ export function createCrashReporter(deps: {
   maintainersDsn?: string | null;
   /** The tenant data root to redact; defaults to the deployment's resolved one. */
   dataBase?: string;
+  /** The env whose secret values are scrubbed from every report; defaults to `process.env`. */
+  env?: Readonly<Record<string, string | undefined>>;
 }): CrashReporter {
   const debug = deps.debug ?? (() => {});
   const now = deps.now ?? (() => new Date());
@@ -220,6 +236,10 @@ export function createCrashReporter(deps: {
   const maintainersDsn = deps.maintainersDsn === undefined ? MAINTAINERS_DSN : deps.maintainersDsn;
   const includeRef = deps.reporting?.includeRef ?? false;
   const dataBase = deps.dataBase ?? resolveDataBase();
+  // The values this process holds under a secret-naming key — `GH_TOKEN` among
+  // them — are learned once, so a report quoting one in any shape is scrubbed.
+  const secrets = createRedactor();
+  secrets.learnEnv(deps.env ?? process.env);
 
   const targets: ParsedDsn[] = [];
   const add = (label: string, dsn: string | null | undefined): void => {
@@ -274,6 +294,7 @@ export function createCrashReporter(deps: {
         now: at,
         eventId: crypto.randomUUID().replaceAll("-", ""),
         dataBase,
+        secrets: secrets.redact,
       });
       const sends = targets.map((dsn) => send(dsn, buildEnvelope(dsn, payload, at)));
       const settled = Promise.allSettled(sends).then(() => undefined);
