@@ -292,6 +292,7 @@ export function InstallPage({
               config={config}
               now={now}
               history={{ reader: localHistory(bridge, install.dir), scope: install.dir }}
+              onTab={setTab}
               overview={
                 <LocalDevices
                   install={install}

@@ -2363,8 +2363,14 @@ a.button {
 }
 
 .history-row:hover td,
-.history-row:focus-visible td {
+.history-row:focus-within td {
   background: var(--chip);
+}
+
+.history-open {
+  padding: 0;
+  text-align: left;
+  font: inherit;
 }
 
 .chip.ok {
@@ -2407,6 +2413,86 @@ a.button {
 .unit-detail {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── history on the overview and pipelines tabs (#932) ─────────────────── */
+
+.week-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  margin: 6px 0 4px;
+}
+
+.week-tile .muted {
+  font-size: 12px;
+}
+
+.week-figure {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.week-figure.unfinished {
+  color: var(--fail);
+}
+
+.week-asof {
+  font-size: 12px;
+}
+
+.feed-detail {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.quiet.expander {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.breakdown-row > td {
+  background: var(--panel);
+}
+
+.pipeline-breakdown table th[scope="row"] {
+  font-weight: normal;
+  color: var(--muted);
+  text-align: left;
+}
+
+.outcome-bar {
+  display: flex;
+  height: 8px;
+  max-width: 360px;
+  margin: 4px 0 10px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--chip);
+}
+
+.outcome-bar span {
+  display: block;
+  height: 100%;
+}
+
+.outcome-bar .completed {
+  background: var(--ok);
+}
+
+.outcome-bar .failed {
+  background: var(--fail);
+}
+
+.outcome-bar .timed-out {
+  background: var(--warn);
+}
+
+.outcome-bar .abandoned {
+  background: var(--muted);
 }
 
 /* ── the stats button and the fleet stats page (#933) ──────────────────── */

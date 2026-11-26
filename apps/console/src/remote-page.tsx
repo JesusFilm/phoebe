@@ -180,6 +180,7 @@ export function RemotePage({
           now={now}
           frozen={row.frozen || row.tone === "disconnected"}
           history={{ reader: client.history, scope: record.deploymentId }}
+          onTab={onTab}
           empty={
             <p className="muted">
               {row.tone === "blocked"

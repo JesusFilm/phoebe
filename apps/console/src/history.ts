@@ -237,3 +237,86 @@ export function retainedSince(page: Pick<HistoryPage, "retained">): string | nul
   }
   return oldest;
 }
+
+// ───────────────────────────── summaries ─────────────────────────────
+
+/** Units that did not complete: failed, timed out or abandoned. */
+export function unfinishedOf(outcomes: Record<UnitRecordOutcome, number>): number {
+  return outcomes.failed + outcomes["timed-out"] + outcomes.abandoned;
+}
+
+/** The part of a summary window or a page's totals a cost reads off. */
+type Summed = {
+  units: number;
+  unitsWithoutCost: number;
+  costUsd: { api: number; subscriptionEstimate: number };
+};
+
+/**
+ * How a summed cost reads (#919): the figures by basis; "tokens only" when
+ * units ran and none of them reported a cost (a reported zero is a cost); nothing when no unit ran.
+ */
+export type SummaryCostView =
+  | { kind: "cost"; api: number | null; estimate: number | null }
+  | { kind: "tokens-only" }
+  | { kind: "no-units" };
+
+export function summaryCost(summed: Summed): SummaryCostView {
+  if (summed.units === 0) return { kind: "no-units" };
+  const { api, subscriptionEstimate } = summed.costUsd;
+  if (summed.unitsWithoutCost >= summed.units) return { kind: "tokens-only" };
+  return {
+    kind: "cost",
+    api: api > 0 || subscriptionEstimate <= 0 ? api : null,
+    estimate: subscriptionEstimate > 0 ? subscriptionEstimate : null,
+  };
+}
+
+/** The line under "tokens only". */
+export const TOKENS_ONLY_NOTE = "None of these units reported a cost. Their tokens are counted.";
+
+// ───────────────────────────── needs a look ─────────────────────────────
+
+/** The outcomes the overview's "Needs a look" feed lists. */
+export const NOT_COMPLETED: readonly UnitRecordOutcome[] = ["failed", "timed-out", "abandoned"];
+
+/** How many units the feed lists at most. */
+export const FEED_SIZE = 6;
+
+/** What the feed's reads came to. */
+export type NeedsALookFetch =
+  | {
+      kind: "units";
+      /** The newest units that did not complete, at most {@link FEED_SIZE}. */
+      records: HistoryRecord[];
+      /** Every unit since then that did not complete, listed or not. */
+      total: number;
+    }
+  | { kind: "too-old" };
+
+/**
+ * The newest units since `since` that did not complete. One read per outcome,
+ * since a query takes one, each capped at the feed's size: the newest six of
+ * the three together are among the newest six of each. The total is the three
+ * pages' own totals, so "more in the History tab" counts what the deployment
+ * holds, not what came back.
+ */
+export async function readNeedsALook(
+  reader: HistoryReader,
+  since: string,
+): Promise<NeedsALookFetch> {
+  const fetched = await Promise.all(
+    NOT_COMPLETED.map((outcome) => reader({ outcome, since, limit: FEED_SIZE })),
+  );
+  const pages: HistoryPage[] = [];
+  for (const one of fetched) {
+    if (one.kind === "too-old") return { kind: "too-old" };
+    pages.push(one.page);
+  }
+  const records = pages
+    .flatMap((page) => page.records)
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
+    .slice(0, FEED_SIZE);
+  const total = pages.reduce((sum, page) => sum + page.summary.units, 0);
+  return { kind: "units", records, total };
+}
