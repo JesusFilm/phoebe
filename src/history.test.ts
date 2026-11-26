@@ -174,6 +174,32 @@ describe("queryHistory", () => {
     expect(seen).toEqual(["5", "4", "9", "3", "2", "1"]);
   });
 
+  test("records that share a start, kind and id in two cells both appear across pages", () => {
+    const base = stateDir();
+    const same = unitRecord({ unit: { kind: "issues", id: "1" }, startedAt: at(1) });
+    const sources = [cell(base, "a", [same]), cell(base, "b", [same])];
+    let before: string | undefined;
+    let seen = 0;
+    do {
+      const page = queryHistory(sources, { limit: 1, ...(before !== undefined ? { before } : {}) });
+      seen += page.records.length;
+      before = page.nextBefore ?? undefined;
+    } while (before !== undefined);
+    expect(seen).toBe(2);
+  });
+
+  test("a record with a null agent run is skipped and its neighbour still reads", () => {
+    const base = stateDir();
+    const bad = JSON.stringify({ ...unitRecord({ startedAt: at(1) }), agentRuns: [null] });
+    const sources = [
+      cell(base, "work", [
+        bad,
+        unitRecord({ unit: { kind: "issues", id: "2" }, startedAt: at(2) }),
+      ]),
+    ];
+    expect(ids(queryHistory(sources, {}))).toEqual(["2"]);
+  });
+
   test("a bare timestamp as before means strictly earlier", () => {
     const base = stateDir();
     const sources = [

@@ -192,8 +192,9 @@ describe("one unit", () => {
 });
 
 describe("a summed cost (#932)", () => {
-  const summed = (api: number, subscriptionEstimate: number, units = 3) => ({
+  const summed = (api: number, subscriptionEstimate: number, units = 3, unitsWithoutCost = 0) => ({
     units,
+    unitsWithoutCost,
     costUsd: { api, subscriptionEstimate },
   });
 
@@ -204,7 +205,8 @@ describe("a summed cost (#932)", () => {
   });
 
   test("units that reported no cost read as tokens only, and no units as nothing", () => {
-    expect(summaryCost(summed(0, 0))).toEqual({ kind: "tokens-only" });
+    expect(summaryCost(summed(0, 0, 3, 3))).toEqual({ kind: "tokens-only" });
+    expect(summaryCost(summed(0, 0, 3, 0))).toEqual({ kind: "cost", api: 0, estimate: null });
     expect(summaryCost(summed(0, 0, 0))).toEqual({ kind: "no-units" });
   });
 

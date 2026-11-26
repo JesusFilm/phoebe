@@ -292,24 +292,22 @@ function Records({
             {loaded.records.map((record) => {
               const tokens = unitTokens(record);
               return (
-                <tr
-                  key={recordKey(record)}
-                  className="history-row"
-                  tabIndex={0}
-                  onClick={() => onOpen(record)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onOpen(record);
-                    }
-                  }}
-                >
+                <tr key={recordKey(record)} className="history-row" onClick={() => onOpen(record)}>
                   <td className="muted" title={record.startedAt}>
                     {age(record.startedAt, now)} ago
                   </td>
                   <td>{showTenant ? `${record.tenant} ${record.pipeline}` : record.pipeline}</td>
                   <td>
-                    <span className="mono">{record.unit.kind}</span> {unitLabel(record)}
+                    <button
+                      type="button"
+                      className="quiet history-open"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpen(record);
+                      }}
+                    >
+                      <span className="mono">{record.unit.kind}</span> {unitLabel(record)}
+                    </button>
                   </td>
                   <td>
                     <OutcomeChip record={record} />

@@ -87,7 +87,11 @@ export function parseUnitLine(line: string): UnitRecord | null {
   if (typeof record["startedAt"] !== "string") return null;
   const unit = record["unit"];
   if (typeof unit !== "object" || unit === null) return null;
-  if (!Array.isArray(record["agentRuns"])) return null;
+  const runs = record["agentRuns"];
+  if (!Array.isArray(runs)) return null;
+  for (const run of runs) {
+    if (typeof run !== "object" || run === null) return null;
+  }
   return value as UnitRecord;
 }
 
@@ -161,11 +165,11 @@ export function summarizeHistory(records: readonly UnitRecord[]): HistoryTotals 
 
 /**
  * Where a record sits in the newest-first order, as a cursor: `startedAt`, then
- * the unit, so two units that started in the same millisecond still have an
+ * the unit and its cell, so two units that started in the same millisecond still have an
  * order, and the order does not move when a file rotates.
  */
-export function historyCursorOf(record: UnitRecord): string {
-  return [record.startedAt, record.unit.kind, record.unit.id].join(CURSOR_SEPARATOR);
+export function historyCursorOf(record: HistoryRecord): string {
+  return [record.startedAt, record.unit.kind, record.unit.id, record.cell].join(CURSOR_SEPARATOR);
 }
 
 /** The limit a page actually uses: the default when absent, never above the cap. */

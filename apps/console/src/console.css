@@ -2363,8 +2363,14 @@ a.button {
 }
 
 .history-row:hover td,
-.history-row:focus-visible td {
+.history-row:focus-within td {
   background: var(--chip);
+}
+
+.history-open {
+  padding: 0;
+  text-align: left;
+  font: inherit;
 }
 
 .chip.ok {

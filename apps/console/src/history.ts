@@ -248,12 +248,13 @@ export function unfinishedOf(outcomes: Record<UnitRecordOutcome, number>): numbe
 /** The part of a summary window or a page's totals a cost reads off. */
 type Summed = {
   units: number;
+  unitsWithoutCost: number;
   costUsd: { api: number; subscriptionEstimate: number };
 };
 
 /**
  * How a summed cost reads (#919): the figures by basis; "tokens only" when
- * units ran and none of them reported a cost; nothing when no unit ran.
+ * units ran and none of them reported a cost (a reported zero is a cost); nothing when no unit ran.
  */
 export type SummaryCostView =
   | { kind: "cost"; api: number | null; estimate: number | null }
@@ -263,10 +264,10 @@ export type SummaryCostView =
 export function summaryCost(summed: Summed): SummaryCostView {
   if (summed.units === 0) return { kind: "no-units" };
   const { api, subscriptionEstimate } = summed.costUsd;
-  if (api <= 0 && subscriptionEstimate <= 0) return { kind: "tokens-only" };
+  if (summed.unitsWithoutCost >= summed.units) return { kind: "tokens-only" };
   return {
     kind: "cost",
-    api: api > 0 ? api : null,
+    api: api > 0 || subscriptionEstimate <= 0 ? api : null,
     estimate: subscriptionEstimate > 0 ? subscriptionEstimate : null,
   };
 }

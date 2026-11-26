@@ -161,9 +161,16 @@ export function NeedsALook({
     };
   }, [scope, asOf, attempt]);
 
+  // The read was made at some earlier `now`; units that have since aged out of
+  // the window are dropped here, and leave the total with them.
+  const cutoff = new Date(now.getTime() - WEEK_MS).toISOString();
+  const current =
+    state.kind === "read" && state.fetched.kind === "units"
+      ? state.fetched.records.filter((record) => record.startedAt >= cutoff)
+      : [];
   const more =
     state.kind === "read" && state.fetched.kind === "units"
-      ? state.fetched.total - state.fetched.records.length
+      ? state.fetched.total - (state.fetched.records.length - current.length) - current.length
       : 0;
   const body = ((): ReactNode => {
     if (state.kind === "loading") return <p className="muted">Reading units…</p>;
@@ -185,30 +192,28 @@ export function NeedsALook({
         </p>
       );
     }
-    const records = state.fetched.records;
+    const records = current;
     if (records.length === 0) return <p className="muted">Every unit this week completed.</p>;
     return (
       <table className="rows feed-rows">
         <tbody>
           {records.map((record) => (
-            <tr
-              key={recordKey(record)}
-              className="history-row"
-              tabIndex={0}
-              onClick={() => setOpen(record)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setOpen(record);
-                }
-              }}
-            >
+            <tr key={recordKey(record)} className="history-row" onClick={() => setOpen(record)}>
               <td className="muted" title={record.startedAt}>
                 {age(record.startedAt, now)} ago
               </td>
               <td>{showTenant ? `${record.tenant} ${record.pipeline}` : record.pipeline}</td>
               <td>
-                <span className="mono">{record.unit.kind}</span> {unitLabel(record)}
+                <button
+                  type="button"
+                  className="quiet history-open"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen(record);
+                  }}
+                >
+                  <span className="mono">{record.unit.kind}</span> {unitLabel(record)}
+                </button>
               </td>
               <td>
                 <OutcomeChip record={record} />
