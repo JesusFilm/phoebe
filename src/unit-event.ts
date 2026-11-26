@@ -82,6 +82,14 @@ export type UnitEvent = {
    * records `null` rather than inventing a number.
    */
   runBudgetMs?: number;
+  /**
+   * The provider, model and effort the unit runs on, carried on `started` so
+   * the snapshot can name them if the process dies before the unit settles
+   * (#928). Unset, the snapshot records `null`.
+   */
+  provider?: string;
+  model?: string;
+  effort?: string;
 };
 
 /**
@@ -178,7 +186,14 @@ export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSn
     case "started":
       next.currentUnits = [
         ...without(),
-        { unit: event.unit, startedAt: event.ts, runBudgetMs: event.runBudgetMs ?? null },
+        {
+          unit: event.unit,
+          startedAt: event.ts,
+          runBudgetMs: event.runBudgetMs ?? null,
+          provider: event.provider ?? null,
+          model: event.model ?? null,
+          effort: event.effort ?? null,
+        },
       ];
       next.waitingForSlot = false;
       break;
@@ -209,8 +224,8 @@ export function applyUnitEvent(prev: StatusSnapshot, event: UnitEvent): StatusSn
 export type Inherited = {
   /** The snapshot with those claims gone, stamped `ts`. */
   next: StatusSnapshot;
-  /** The units a previous child started and never settled, oldest first. */
-  stranded: CurrentUnit[];
+  /** The abandoned units: a previous child started them and never settled them, oldest first. */
+  abandoned: CurrentUnit[];
   /** A previous child's pass was parked on the broker when it went away. */
   wasWaitingForSlot: boolean;
 };
@@ -225,7 +240,7 @@ export type Inherited = {
  * mid-unit never emits one, so its unit stays in `currentUnits` for good: every
  * later child inherits it, and the report reads the pipeline as `working` and
  * `wedged? unit past its budget` for as long as the file exists.
- * `waitingForSlot` strands the same way, and more quietly: only `started`
+ * `waitingForSlot` lingers the same way, and more quietly: only `started`
  * clears it, so a pass that drained while parked on the broker leaves it set,
  * and a set flag switches off the `no pass` clause that would notice the next
  * child's loop stopping.
@@ -239,7 +254,7 @@ export function forgetInherited(prev: StatusSnapshot, ts: string): Inherited | n
   if (prev.currentUnits.length === 0 && !prev.waitingForSlot) return null;
   return {
     next: { ...prev, currentUnits: [], waitingForSlot: false, updatedAt: ts },
-    stranded: prev.currentUnits,
+    abandoned: prev.currentUnits,
     wasWaitingForSlot: prev.waitingForSlot,
   };
 }
@@ -266,13 +281,27 @@ export function readStatus(path: string): StatusSnapshot | null {
           unit: parsed.currentUnit,
           startedAt: parsed.updatedAt ?? empty.updatedAt,
           runBudgetMs: null,
+          provider: null,
+          model: null,
+          effort: null,
         },
       ]
     : [];
+  // A unit an engine before #928 admitted has no provider, model or effort.
+  const currentUnits = (parsed.currentUnits ?? legacy).map(
+    (current: Partial<CurrentUnit> & Pick<CurrentUnit, "unit" | "startedAt">): CurrentUnit => ({
+      unit: current.unit,
+      startedAt: current.startedAt,
+      runBudgetMs: current.runBudgetMs ?? null,
+      provider: current.provider ?? null,
+      model: current.model ?? null,
+      effort: current.effort ?? null,
+    }),
+  );
   return {
     tenant: parsed.tenant ?? empty.tenant,
     pipeline: parsed.pipeline ?? empty.pipeline,
-    currentUnits: parsed.currentUnits ?? legacy,
+    currentUnits,
     waitingForSlot: parsed.waitingForSlot ?? empty.waitingForSlot,
     lastError: parsed.lastError ?? empty.lastError,
     lastTimeoutAt: parsed.lastTimeoutAt ?? empty.lastTimeoutAt,
@@ -357,14 +386,20 @@ export function createEmitUnitEvent(deps: SnapshotWriterDeps): EmitUnitEvent {
 /**
  * Build the boot-time half of the snapshot writer (#670): the call a starting
  * child makes once, before its first pass, to drop what {@link forgetInherited}
- * finds. Each stranded unit gets one line naming it and when it had started, so
+ * finds. Each abandoned unit gets one line naming it and when it had started, so
  * the log says a unit was abandoned and not only that the report went quiet.
+ * Each one is also handed to `recordAbandoned` (#928), which writes its unit
+ * record — after the snapshot is on disk, so a boot that could not drop the
+ * unit leaves it for the next boot rather than recording it twice.
  *
  * Same dependencies as {@link createEmitUnitEvent}, and the same posture: a
  * snapshot that cannot be read or written is one log line, never a boot that
  * failed.
  */
-export function createForgetInherited(deps: SnapshotWriterDeps): () => void {
+export function createForgetInherited(
+  deps: SnapshotWriterDeps,
+  recordAbandoned?: (abandoned: CurrentUnit) => void,
+): () => void {
   const now = deps.now ?? (() => new Date().toISOString());
   const log = deps.log ?? ((line) => console.log(line));
   const read = deps.read ?? readStatus;
@@ -378,11 +413,13 @@ export function createForgetInherited(deps: SnapshotWriterDeps): () => void {
       const inherited = forgetInherited(prev, now());
       if (inherited === null) return;
       write(deps.statusPath, inherited.next);
-      for (const { unit, startedAt } of inherited.stranded) {
+      for (const abandoned of inherited.abandoned) {
+        const { unit, startedAt } = abandoned;
         log(
           `${tag} dropped ${unit.kind} ${unit.id} from status.json — started ${startedAt} ` +
             `by a process that is gone, and never settled.`,
         );
+        recordAbandoned?.(abandoned);
       }
       if (inherited.wasWaitingForSlot) {
         log(`${tag} cleared a slot wait in status.json — the pass that was parked is gone.`);

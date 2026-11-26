@@ -25,6 +25,12 @@ import type {
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  AgentRunRecord,
+  HistoryPage,
+  HistoryQuery,
+  HistoryRecord,
+  HistorySummary,
+  HistoryWindow,
   InstallDirectoryFacts,
   InstallRepair,
   LocalAlertEvent,
@@ -302,6 +308,7 @@ export function environment(overrides: Partial<CompanionEnvironment> = {}): Comp
  * is what stops a page from feature-detecting its way around a missing arm.
  */
 export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
+  let historyAsked = 0;
   return {
     remotes: {
       list: () => Promise.resolve(answers.remotes ?? []),
@@ -373,6 +380,13 @@ export function bridge(answers: BridgeAnswers = {}): DesktopBridge {
       alerts: (onAlert) => {
         for (const event of answers.alerts ?? []) onAlert(event);
         return () => undefined;
+      },
+      history: (dir, query) => {
+        historyAsked += 1;
+        answers.historyQueries?.push({ dir, query });
+        const pages = answers.history;
+        if (pages === undefined || pages.length === 0) return Promise.reject(notAnInstall(dir));
+        return Promise.resolve(pages[Math.min(historyAsked, pages.length) - 1] ?? null);
       },
     },
     harness: {
@@ -472,6 +486,13 @@ export type BridgeAnswers = {
   logs?: string[];
   environment?: CompanionEnvironment;
   installs?: LocalInstall[];
+  /**
+   * What `installs.history` answers, page after page; the last repeats. Unset,
+   * it is refused. `null` is an install too old to serve history.
+   */
+  history?: (HistoryPage | null)[];
+  /** Every query `installs.history` was asked. */
+  historyQueries?: { dir: string; query: HistoryQuery }[];
   /** What a harness check answers with; unset, the check is refused. */
   harness?: HarnessReport;
   harnessChecks?: { dir: string; lookUp: boolean }[];
@@ -551,4 +572,107 @@ export function notAnInstall(dir: string): Error {
   return Object.assign(new Error(`${dir} is not a local install the companion knows`), {
     code: "refused",
   });
+}
+
+/** One agent run as a unit record holds it: a Claude run on an API key. */
+export function agentRun(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
+  return {
+    startedAt: ago(2 * 3600),
+    durationMs: 9 * 60_000,
+    exitCode: 0,
+    promptSha: "sha256:0123456789abcdef",
+    inputTokens: 12_300,
+    outputTokens: 4_500,
+    cacheReadTokens: 210_000,
+    cacheWriteTokens: 8_000,
+    reasoningTokens: null,
+    costUsd: 0.42,
+    turns: 31,
+    providerDurationMs: 8 * 60_000,
+    stopReason: "end_turn",
+    reportedModels: ["claude-opus-5-5"],
+    usageComplete: true,
+    costBasis: "api",
+    toolCalls: { Bash: 12, Edit: 4 },
+    ...overrides,
+  };
+}
+
+/** One unit record as the history read returns it: an issue that completed. */
+export function historyRecord(overrides: Partial<HistoryRecord> = {}): HistoryRecord {
+  return {
+    v: 1,
+    tenant: "JesusFilm/youtube-studio",
+    pipeline: "work",
+    cell: "/etc/phoebe#work",
+    unit: { kind: "issues", id: "issue:88" },
+    outcome: "completed",
+    quarantined: false,
+    detail: null,
+    startedAt: ago(2 * 3600),
+    settledAt: ago(2 * 3600 - 600),
+    durationMs: 10 * 60_000,
+    runBudgetMs: 60 * 60_000,
+    provider: "claude",
+    model: "claude-opus-5-5",
+    effort: "high",
+    branch: "phoebe/issue-88",
+    headSha: "abc1234",
+    prNumber: null,
+    engineCommit: "3e4b6b6d63a5f39441c7309f53262d3a018a22cb",
+    agentRuns: [agentRun()],
+    ...overrides,
+  };
+}
+
+/** A page of history holding `records`, with totals that are only placeholders. */
+export function historyPage(
+  records: HistoryRecord[],
+  overrides: Partial<HistoryPage> = {},
+): HistoryPage {
+  return {
+    records,
+    summary: {
+      units: records.length,
+      byOutcome: { completed: records.length, failed: 0, "timed-out": 0, abandoned: 0 },
+      quarantined: 0,
+      costUsd: { api: 0.42, subscriptionEstimate: 0 },
+      unitsWithoutCost: 0,
+      unitsWithPartialUsage: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+    nextBefore: null,
+    retained: { "/etc/phoebe#work": ago(30 * 86_400) },
+    ...overrides,
+  };
+}
+
+/** One window of a unit history summary: ten units, one of them failed, on an API key. */
+export function historyWindow(overrides: Partial<HistoryWindow> = {}): HistoryWindow {
+  return {
+    units: 10,
+    outcomes: { completed: 9, failed: 1, "timed-out": 0, abandoned: 0 },
+    quarantined: 0,
+    costUsd: { api: 4.2, subscriptionEstimate: 0 },
+    unitsWithoutCost: 0,
+    unitsWithPartialUsage: 0,
+    tokens: { input: 123_000, output: 45_000, cacheRead: 2_100_000, cacheWrite: 80_000 },
+    ...overrides,
+  };
+}
+
+/** A unit history summary (#929) as the report carries it, summed an hour ago. */
+export function historySummary(
+  overrides: { last24h?: Partial<HistoryWindow>; last7d?: Partial<HistoryWindow> } = {},
+): HistorySummary {
+  return {
+    asOf: ago(3600),
+    last24h: historyWindow({
+      units: 2,
+      outcomes: { completed: 2, failed: 0, "timed-out": 0, abandoned: 0 },
+      costUsd: { api: 0.84, subscriptionEstimate: 0 },
+      ...overrides.last24h,
+    }),
+    last7d: historyWindow(overrides.last7d),
+  };
 }

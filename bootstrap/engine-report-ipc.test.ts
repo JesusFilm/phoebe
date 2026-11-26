@@ -1,8 +1,8 @@
-// The supervisor side of the engine's report rail (#532): a child's pass and
-// status messages reach the deployment state, and nothing else does.
+// The supervisor side of the engine's report rail (#532): a child's pass,
+// status and record messages reach the deployment state, and nothing else does.
 
 import { describe, expect, test } from "vite-plus/test";
-import { REPORT_PASS, REPORT_STATUS } from "../src/report-client.ts";
+import { REPORT_PASS, REPORT_RECORD, REPORT_STATUS } from "../src/report-client.ts";
 import { SLOT_ACQUIRE } from "../src/slot-client.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
 import type { BrokerChild } from "./broker-ipc.ts";
@@ -74,6 +74,15 @@ describe("attachEngineReports", () => {
 
     child.emitMessage({ type: REPORT_STATUS, snapshot });
     expect(seen).toEqual([["t#work", { kind: "status", snapshot }]]);
+  });
+
+  test("a record message says the pipeline's history grew", () => {
+    const { state, seen } = recorder();
+    const child = fakeChild();
+    attachEngineReports({ pipelineId: "t#work", child, state });
+
+    child.emitMessage({ type: REPORT_RECORD });
+    expect(seen).toEqual([["t#work", { kind: "record" }]]);
   });
 
   test("the broker's messages, and malformed ones, are not this adapter's business", () => {
