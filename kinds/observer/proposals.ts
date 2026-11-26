@@ -38,9 +38,15 @@ export function listedUnitKeys(texts: readonly string[]): Set<string> {
   return keys;
 }
 
-/** One issue the observer filed, as the search returns it. */
+/**
+ * One proposal the observer filed, as the searches return it. A PR reads as
+ * an issue would: merged is closed as completed, closed unmerged is closed as
+ * not planned.
+ */
 export type Proposal = {
   number: number;
+  /** A PR rather than an issue: where a fold comment goes. */
+  pr: boolean;
   key: string;
   body: string;
   state: "open" | "closed";
