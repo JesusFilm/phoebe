@@ -185,6 +185,8 @@ export type MentioningPr = {
   body: string;
   state: "open" | "closed";
   merged: boolean;
+  /** When it closed or merged; null while open. */
+  closedAt: string | null;
 };
 
 export type UnitTimeoutInputs = {
@@ -369,6 +371,12 @@ export type GitHubClient = {
   /** The open PR on this issue's Phoebe branch, or null when there is none. */
   findIssuePr(issueNumber: number): PrNumber | null;
   createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
+  /**
+   * `createPr` for a caller that needs the new PR's number, read off the URL
+   * `gh pr create` prints. Never retried, like `createIssue`: a create that
+   * succeeded and then failed to answer would be retried into a second PR.
+   */
+  createPullRequest(opts: { head: string; base: string; title: string; body: string }): PrNumber;
   /**
    * Put a PR into its blocker PR's native stack — joining the blocker's
    * existing stack, or founding one (blocker at the bottom) when it has none.
@@ -1417,6 +1425,31 @@ export function createGitHubClient({
       );
     },
 
+    createPullRequest: (opts) => {
+      const out = rawExec(
+        [
+          "pr",
+          "create",
+          "--head",
+          opts.head,
+          "--base",
+          opts.base,
+          "--title",
+          opts.title,
+          "--body-file",
+          "-",
+          "-R",
+          config.repoSlug,
+        ],
+        { input: opts.body },
+      );
+      const match = /\/pull\/(\d+)\s*$/.exec(out.trim());
+      if (match === null) {
+        throw new Error(`gh pr create did not print a PR URL (got ${JSON.stringify(out.trim())}).`);
+      }
+      return asPrNumber(Number(match[1]));
+    },
+
     stackPrOnto: (prNumber, blockerPrNumber) => {
       // Raw `exec`, not the ghJson/ghApiJson wrappers: those rethrow enriched
       // errors, and here every failure — preview not enabled (404), token
@@ -1739,6 +1772,7 @@ export function createGitHubClient({
         body: hit.body ?? "",
         state: hit.state,
         merged: typeof hit.pull_request?.merged_at === "string",
+        closedAt: hit.closed_at ?? null,
       })),
 
     resolveLogin: (envLogin) => {

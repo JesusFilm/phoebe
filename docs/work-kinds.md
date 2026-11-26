@@ -1025,19 +1025,19 @@ pipelines: {
       observer: {
         path: "phoebe-agent/kinds/observer",
         every: "7d",
-        // lookback: "14d", maxProposals: 3,
+        // lookback: "14d", mode: "pr", maxProposals: 3,
       },
     },
   },
 },
 ```
 
-| Option         | Default    | Meaning                                                                                      |
-| -------------- | ---------- | -------------------------------------------------------------------------------------------- |
-| `every`        | none       | How long after its last completed run it runs again. Without it the observer never runs.     |
-| `lookback`     | `"14d"`    | How far back a run reads the other pipelines' history.                                       |
-| `mode`         | `"issues"` | Where proposals go. `"issues"` is the only mode today; `"pr"` fails registration.            |
-| `maxProposals` | `3`        | The most new proposals one run files. New evidence added to an open proposal does not count. |
+| Option         | Default | Meaning                                                                                                  |
+| -------------- | ------- | -------------------------------------------------------------------------------------------------------- |
+| `every`        | none    | How long after its last completed run it runs again. Without it the observer never runs.                 |
+| `lookback`     | `"14d"` | How far back a run reads the other pipelines' history.                                                   |
+| `mode`         | `"pr"`  | Where proposals go. `"pr"` opens a PR for a convention or factory finding; `"issues"` files only issues. |
+| `maxProposals` | `3`     | The most new proposals one run files. New evidence added to an open proposal does not count.             |
 
 An unknown option fails registration. So does declaring the observer in a
 pipeline that runs any other kind, `work` included, because the observer never
@@ -1089,22 +1089,53 @@ categories:
 | `engine`     | Phoebe itself, filed on the tenant's own repository |
 
 The kind checks every finding and files from it. A finding's key is
-`<category>:<target>`:
+`<category>:<target>`. Proposals are issues and PRs alike, and a merged PR
+counts as completed:
 
 | What the proposals with that key show                    | What the run does                                  |
 | -------------------------------------------------------- | -------------------------------------------------- |
-| none                                                     | files a new issue                                  |
+| none                                                     | files a new proposal                               |
 | one is open                                              | comments on it, listing the units it does not list |
-| the newest closed as completed                           | files a new issue opening "Regression of #N"       |
+| the newest closed as completed, or merged                | files a new proposal opening "Regression of #N"    |
 | the newest closed any other way, within the last 90 days | nothing                                            |
-| the newest closed any other way, more than 90 days ago   | files a new issue                                  |
+| the newest closed any other way, more than 90 days ago   | files a new proposal                               |
 
 A regression counts only the units that started after the fix closed. Every
-issue is labelled `phoebe:observer`, never the ready label, so Phoebe works one
-only after a person gives it the ready label. Its body carries
+proposal is labelled `phoebe:observer`, never the ready label, so Phoebe works an
+issue only after a person gives it the ready label. Its body carries
 `<!-- phoebe-observer finding=<category>:<target> -->` and a hidden list of the
 units it names. Findings with more units file first, and the rest past
 `maxProposals` are skipped.
+
+**PR mode**, the default, files a `convention` or `factory` finding as a PR.
+`ticket` and `engine` findings are always issues. For each PR proposal one
+agent run edits a fresh worktree of the default branch, with the prompt
+`kinds/observer/edit-prompt.md`. Code then reads every path the edit changed and
+checks it against the allowlist:
+
+- `AGENTS.md`
+- `prompts/**`
+- `phoebe.config.ts`, the governing config
+- files inside a skill directory under `.agents/skills/` that `skills-lock.json`
+  does not list
+
+| What the edit changed                                                     | What the run files                              |
+| ------------------------------------------------------------------------- | ----------------------------------------------- |
+| only allowlisted paths                                                    | a PR on `<branchPrefix>observer/<key>-<hash>`   |
+| any other path, a vendored skill or `skills-lock.json` included           | an issue naming the paths outside, and no PR    |
+| `prompts/**` or `phoebe.config.ts` where the repository does not track it | an issue carrying the suggested diff, and no PR |
+| nothing                                                                   | an issue saying so                              |
+
+When the repository does not track the governing config or a prompt at those
+paths, as in a workspace whose config lives elsewhere, the kind copies the live
+files from the runtime root into the worktree first. The edit run then changes
+the real files, and the diff in the issue applies where they live.
+
+A PR carries one commit with the edit alone, based on the default branch. It
+is an ordinary Phoebe PR, so `reviews`, `checks` and `conflicts` work it, and
+Phoebe never merges it. A run that opens three PRs makes four agent runs: the
+grouping run and one edit run each. With `mode: "issues"` every finding is an
+issue and a run makes one agent run.
 
 The run's summary is the `detail` of its unit record, so `phoebe history` shows
 what it did:
@@ -1128,15 +1159,15 @@ move whatever the marker is keyed on (see the table below) or remove the newest
 matching comment. See [`operating.md`](operating.md#watermark-comments) for the
 operator's view.
 
-| Kind                  | Marker                   | Keyed on                          | Effect                                                                                                                                                                       |
-| --------------------- | ------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `conflicts`           | `phoebe-conflict-fail`   | `prHead` + `mainHead`             | Skip re-fixing until either the PR or the base moves.                                                                                                                        |
-| `checks`              | `phoebe-checks-fail`     | `prHead`                          | Skip re-fixing until the PR head moves.                                                                                                                                      |
-| `reviews`             | `phoebe-reviews-handled` | `latest` activity timestamp       | Only re-run on review activity newer than this.                                                                                                                              |
-| `sentry`              | `phoebe-sentry`          | the Sentry group id               | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)).                           |
-| `dependency-updates`  | `phoebe-dependencies`    | the bundle key and fingerprint    | In the filed issue's body and the PR opened from it; read back by one issue search and one PR search per scan ([above](#dependency-updates-file-dependency-tickets-opt-in)). |
-| `dependency-security` | `phoebe-dependencies`    | the bundle key and fingerprint    | As for `dependency-updates`; its keys are `<manager>:security:<package>` ([above](#dependency-security-file-security-advisories-opt-in)).                                    |
-| `observer`            | `phoebe-observer`        | the finding's category and target | In the proposal's body, not a comment; read back by one search per run across every state ([above](#observer-propose-fixes-for-what-keeps-going-wrong-opt-in)).              |
+| Kind                  | Marker                   | Keyed on                          | Effect                                                                                                                                                                                               |
+| --------------------- | ------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `conflicts`           | `phoebe-conflict-fail`   | `prHead` + `mainHead`             | Skip re-fixing until either the PR or the base moves.                                                                                                                                                |
+| `checks`              | `phoebe-checks-fail`     | `prHead`                          | Skip re-fixing until the PR head moves.                                                                                                                                                              |
+| `reviews`             | `phoebe-reviews-handled` | `latest` activity timestamp       | Only re-run on review activity newer than this.                                                                                                                                                      |
+| `sentry`              | `phoebe-sentry`          | the Sentry group id               | In the filed issue's body, not a comment; read back by one search per cycle across every state ([above](#sentry-triage-production-errors-opt-in)).                                                   |
+| `dependency-updates`  | `phoebe-dependencies`    | the bundle key and fingerprint    | In the filed issue's body and the PR opened from it; read back by one issue search and one PR search per scan ([above](#dependency-updates-file-dependency-tickets-opt-in)).                         |
+| `dependency-security` | `phoebe-dependencies`    | the bundle key and fingerprint    | As for `dependency-updates`; its keys are `<manager>:security:<package>` ([above](#dependency-security-file-security-advisories-opt-in)).                                                            |
+| `observer`            | `phoebe-observer`        | the finding's category and target | In the proposal's body, issue or PR, not a comment; read back by one issue search and one PR search per run across every state ([above](#observer-propose-fixes-for-what-keeps-going-wrong-opt-in)). |
 
 ## Writing your own kind
 

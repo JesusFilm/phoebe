@@ -18,6 +18,7 @@ const daysAgo = (days: number): string => new Date(now.getTime() - days * DAY).t
 function proposal(overrides: Partial<Proposal>): Proposal {
   return {
     number: 38,
+    pr: false,
     key: "factory:prompts/issues-prompt.md",
     body: "",
     state: "open",

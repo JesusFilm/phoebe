@@ -13,8 +13,11 @@ import {
 
 export { everyMs };
 
-/** Where proposals go. Only issues today; PR mode is refused until it lands. */
-export type ObserverMode = "issues";
+/**
+ * Where proposals go. `pr` opens a PR for a convention or factory finding and
+ * an issue for the rest; `issues` files every finding as an issue.
+ */
+export type ObserverMode = "pr" | "issues";
 
 export type ObserverOptions = {
   /**
@@ -32,7 +35,7 @@ export type ObserverOptions = {
 export const OBSERVER_OPTION_DEFAULTS: ObserverOptions = {
   every: null,
   lookback: "14d",
-  mode: "issues",
+  mode: "pr",
   maxProposals: 3,
 };
 
@@ -51,15 +54,8 @@ function lookback(at: string, value: unknown): string {
 }
 
 function mode(at: string, value: unknown): ObserverMode {
-  if (value === "issues") return value;
-  if (value === "pr") {
-    fail(
-      at,
-      '`mode: "pr"` is not available yet: this engine files every observer proposal as an ' +
-        'issue. Set `mode: "issues"` or leave `mode` out.',
-    );
-  }
-  fail(at, `\`mode\` must be "issues" — got ${JSON.stringify(value)}.`);
+  if (value === "pr" || value === "issues") return value;
+  fail(at, `\`mode\` must be "pr" or "issues" — got ${JSON.stringify(value)}.`);
 }
 
 function maxProposals(at: string, value: unknown): number {
