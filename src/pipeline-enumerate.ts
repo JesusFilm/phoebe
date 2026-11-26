@@ -59,6 +59,11 @@ export type EnumeratedPipeline = {
    * `.env` through it so a rotation relaunches only the pipelines that see the key.
    */
   env: string[];
+  /**
+   * The kinds this pipeline schedules, in work order (#937). The supervisor reads
+   * it for one thing: which pipeline a manual observer run goes to.
+   */
+  kinds: string[];
   /** Opaque digest of the pipeline's cold config; a move means relaunch this pipeline. */
   fingerprint: string;
 };
@@ -231,6 +236,7 @@ export async function enumeratePipelines(
     // that switches its last worktree kind off keeps its clone until something
     // cold moves.
     const owned = pipelineOwnedKinds({ pipelines: config.pipelines, name, pipeline });
+    const scheduled = scheduledKindsOf(config, name, pipeline, registry);
     return {
       name,
       disabled: pipeline.disabled,
@@ -244,7 +250,8 @@ export async function enumeratePipelines(
       // it is the reach of a live credential, and a kind switched off reads
       // nothing. That makes `env` move with a hot `disabled`, which is right —
       // the supervisor rebuilds the scrub from the enumeration it just read.
-      env: declaredEnvKeys(scheduledKindsOf(config, name, pipeline, registry)),
+      env: declaredEnvKeys(scheduled),
+      kinds: scheduled.map((kind) => kind.name),
       fingerprint: pipelineFingerprint(name, pipeline),
     };
   });
@@ -298,7 +305,7 @@ Usage:
   phoebe pipelines --probe             Report that this engine supports enumeration
 
 Each pipeline carries its name, the hot knobs (disabled, priority), its concurrency,
-whether it needs the tenant's git clone, and an opaque fingerprint that moves
+whether it needs the tenant's git clone, the env keys and kinds it schedules, and an opaque fingerprint that moves
 when the pipeline's cold config does. The supervisor reads it; nothing else does.
 `;
 

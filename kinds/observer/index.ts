@@ -12,7 +12,10 @@
 //   - one unit, ref `observer`. `fetch` reads the observer's own unit history
 //     and offers the unit once `every` has passed since its last completed
 //     run. The history is on disk, so a restart does not reset the clock.
-//     With no `every` it never offers one;
+//     With no `every` it never offers one on its own;
+//   - a manual run (#937: `phoebe observe`, `POST /api/observe`) arrives
+//     through `ctx.takeManualRun`. `fetch` offers the unit for it whatever
+//     `every` says, carrying the run's own `lookback` when it named one;
 //   - `run` reads every other pipeline's history, read-only, and flags units
 //     from their records and from what became of their PRs (#935,
 //     pr-outcomes.ts). A unit on an observer proposal is never flagged. The
@@ -98,8 +101,15 @@ export const OBSERVER_LABEL: PhoebeLabel = {
   description: "Proposed by Phoebe's observer; a person decides whether it becomes work",
 };
 
-/** The observer's one unit. `revision` moves when a run completes. */
-export type ObserverUnit = { ref: string; revision: string };
+/**
+ * The observer's one unit. `revision` moves when a run completes. A manual
+ * run carries who asked and, when they named one, its own lookback.
+ */
+export type ObserverUnit = {
+  ref: string;
+  revision: string;
+  manual?: { by: string; lookback: string | null };
+};
 
 export type ObserverGathered = { unit: ObserverUnit | null };
 
@@ -198,7 +208,9 @@ export function createObserverKind(
   const git = deps.git ?? defaultGit;
   const runtimeRoot = deps.runtimeRoot ?? process.cwd();
   const historyDir = (pipeline: string): string => join(config.paths.stateDir, pipeline);
-  const lookbackMs = everyMs(options.lookback);
+
+  /** The lookback a unit runs over: its manual run's own, else the configured one. */
+  const lookbackOf = (unit: ObserverUnit): string => unit.manual?.lookback ?? options.lookback;
 
   /** Every other pipeline's history, in declaration order. */
   function otherHistories(): PipelineHistory[] {
@@ -302,6 +314,7 @@ export function createObserverKind(
     ctx: WorkKindCtx,
     finding: Finding,
     units: readonly FlaggedUnit[],
+    lookback: string,
     regressionOf: number | null,
     attempt?: EditAttemptNote,
   ): number {
@@ -310,7 +323,7 @@ export function createObserverKind(
       body: renderBody({
         finding,
         units,
-        lookback: options.lookback,
+        lookback,
         regressionOf,
         ...(attempt !== undefined ? { attempt } : {}),
       }),
@@ -328,11 +341,16 @@ export function createObserverKind(
     ctx: WorkKindRunCtx,
     finding: Finding,
     units: readonly FlaggedUnit[],
+    lookback: string,
     regressionOf: number | null,
     slot: number,
   ): Promise<{ number: number; pr: boolean; note: string }> {
     if (options.mode !== "pr" || !PR_CATEGORIES.has(finding.category)) {
-      return { number: fileIssue(ctx, finding, units, regressionOf), pr: false, note: "" };
+      return {
+        number: fileIssue(ctx, finding, units, lookback, regressionOf),
+        pr: false,
+        note: "",
+      };
     }
     const title = renderTitle(finding);
     const outcome = await proposeByPr({
@@ -341,7 +359,7 @@ export function createObserverKind(
       slot,
       branch: proposalBranch(ctx.config.branchPrefix, finding.key),
       title,
-      body: renderBody({ finding, units, lookback: options.lookback, regressionOf, as: "pr" }),
+      body: renderBody({ finding, units, lookback, regressionOf, as: "pr" }),
       runtimeRoot,
       evidence: units.map(evidenceLine).join("\n"),
     });
@@ -349,7 +367,7 @@ export function createObserverKind(
       label(ctx, finding, outcome.number, true);
       return { number: outcome.number, pr: true, note: ` as a PR on ${outcome.branch}` };
     }
-    const number = fileIssue(ctx, finding, units, regressionOf, outcome.attempt);
+    const number = fileIssue(ctx, finding, units, lookback, regressionOf, outcome.attempt);
     return { number, pr: false, note: ` as an issue: ${ATTEMPT_LOG[outcome.attempt.reason]}` };
   }
 
@@ -360,10 +378,24 @@ export function createObserverKind(
     workspace: "readonly",
     report: {
       noun: "observer run(s)",
-      describe: () => `observer run over the last ${options.lookback}`,
+      describe: (unit) =>
+        `${unit.manual === undefined ? "observer" : "manual observer"} run over the last ${lookbackOf(unit)}`,
     },
 
     async fetch(ctx) {
+      // A manual run skips the `every` gate. It is taken here whatever happens
+      // next, so one that finds a run in flight is dropped by `select`, never
+      // queued.
+      const manual = ctx.takeManualRun?.() ?? null;
+      if (manual !== null) {
+        return {
+          unit: {
+            ref: OBSERVER_KIND_NAME,
+            revision: `manual:${manual.at}`,
+            manual: { by: manual.by, lookback: manual.lookback },
+          },
+        };
+      }
       if (options.every === null) return { unit: null };
       const gate = observerGate(
         readHistory(historyDir(ownPipeline)),
@@ -379,20 +411,32 @@ export function createObserverKind(
       const candidate = gathered.unit;
       if (candidate === null) return { unit: null, skipped: [], total: 0 };
       if (ctx.inFlight.has(candidate.ref)) {
+        if (candidate.manual !== undefined) {
+          ctx.log(
+            `manual run asked for by ${candidate.manual.by} dropped: a run is already in flight.`,
+          );
+        }
         return { unit: null, skipped: [{ reason: "in flight", count: 1 }], total: 1 };
       }
-      if (ctx.quarantined.has(candidate.ref)) {
+      // An operator who asks for a run gets one: its revision is new, which is
+      // the engine's own exit from an in-memory quarantine.
+      if (ctx.quarantined.has(candidate.ref) && candidate.manual === undefined) {
         return { unit: null, skipped: [{ reason: "quarantined in memory", count: 1 }], total: 1 };
       }
       return { unit: candidate, skipped: [], total: 1 };
     },
 
-    async run(_unit, ctx): Promise<WorkKindRunResult> {
+    async run(unit, ctx): Promise<WorkKindRunResult> {
       const now = ctx.clock.now();
+      const lookback = lookbackOf(unit);
+      const lookbackMs = everyMs(lookback);
+      if (unit.manual !== undefined) {
+        ctx.log(`manual run asked for by ${unit.manual.by}, over the last ${lookback}.`);
+      }
       const histories = otherHistories();
       const coverage = renderCoverage(
         histories.map((history) => coverageOf(history, now, lookbackMs)),
-        options.lookback,
+        lookback,
       );
       const units = unitsSince(histories, new Date(now.getTime() - lookbackMs));
       const tally: RunTally = { filed: [], foldedInto: [], skipped: 0 };
@@ -429,7 +473,7 @@ export function createObserverKind(
 
       await ctx.agent.run({
         promptArgs: {
-          OBSERVER_LOOKBACK: options.lookback,
+          OBSERVER_LOOKBACK: lookback,
           OBSERVER_COVERAGE: coverage,
           FLAGGED_COUNT: String(flagged.length),
           FLAGGED_JSON: flaggedPath,
@@ -510,6 +554,7 @@ export function createObserverKind(
           ctx,
           finding,
           evidence,
+          lookback,
           regression?.number ?? null,
           tally.filed.length + 1,
         );

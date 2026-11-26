@@ -1034,7 +1034,7 @@ pipelines: {
 
 | Option         | Default | Meaning                                                                                                  |
 | -------------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `every`        | none    | How long after its last completed run it runs again. Without it the observer never runs.                 |
+| `every`        | none    | How long after its last completed run it runs again. Without it the observer runs only when asked.       |
 | `lookback`     | `"14d"` | How far back a run reads the other pipelines' history.                                                   |
 | `mode`         | `"pr"`  | Where proposals go. `"pr"` opens a PR for a convention or factory finding; `"issues"` files only issues. |
 | `maxProposals` | `3`     | The most new proposals one run files. New evidence added to an open proposal does not count.             |
@@ -1050,6 +1050,16 @@ checkout. It needs no credential beyond the container's `gh` one.
 its last completed run. The history is on disk, so a restart inside the window
 waits like any other poll. A failed or timed-out run is tried again an hour
 later, or after `every` if that is shorter.
+
+**Manual runs.** `phoebe observe` ([`operating.md`](operating.md)) and
+`POST /api/observe` ([`remote.md`](remote.md)) start a run now. The
+bootstrapper sends the ask to the observer's pipeline over IPC, which ends that
+pipeline's idle wait, and the next fetch offers the unit whether or not
+`every` is set or due. `lookback` given with the ask applies to that run only.
+The bootstrapper refuses the ask with a reason, and queues nothing, when the
+fleet is stopped, when the tenant does not declare the observer, or when a run
+is already in flight there. A manual run counts as the last completed run for
+`every`.
 
 **A run** reads `state/<pipeline>/units.jsonl` of every other pipeline the
 tenant declares, read-only, and flags each unit that started inside `lookback`
@@ -1334,6 +1344,9 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   `select` the way you filter `ctx.inFlight`. Empty for every kind whose units
   carry `github` — those take the label path. See [Units the engine cannot
   see](#units-the-engine-cannot-see).
+- `ctx.takeManualRun?.()` returns the manual run the bootstrapper forwarded
+  for this kind and removes it, or null. Only the observer is ever asked
+  (`phoebe observe`), and the member is absent outside a supervised engine.
 - `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
 
 `run` receives the same surface widened with:

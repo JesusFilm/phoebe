@@ -19,6 +19,7 @@ import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import type { PhoebeConfig } from "../config-schema.ts";
 import type { Feature } from "../feature-branch.ts";
 import type { CycleGitHubClient, GitHubClient } from "../github-client.ts";
+import type { ManualRun } from "../manual-run.ts";
 import type { BlockerPrState, Issue } from "../orchestrator.ts";
 
 /**
@@ -189,6 +190,15 @@ export type WorkKindCtx = {
    * of ignoring it is a stalled kind rather than a burnt run budget.
    */
   quarantined: ReadonlySet<string>;
+  /**
+   * The manual run waiting for this kind (#937), removed as it is read: an
+   * operator's `phoebe observe` or `POST /api/observe`, forwarded by the
+   * bootstrapper. Call it from `fetch`, and offer a unit for it whatever the
+   * kind's own schedule says. Nothing queues it: an ask taken and not acted on
+   * is gone. Absent outside a supervised engine loop; only the observer kind is
+   * ever asked.
+   */
+  takeManualRun?: () => ManualRun | null;
   /** Log with the uniform `[phoebe][<kind> <ref>]` prefix (ref once known). */
   log(message: string): void;
 };
