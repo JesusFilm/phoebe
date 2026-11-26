@@ -20,6 +20,7 @@ import type {
   ChildLiveness,
   DeploymentReport,
   FleetCell,
+  HistorySummary,
   StoredReport,
   TenantFacts,
 } from "phoebe-agent/contracts";
@@ -80,6 +81,34 @@ export function childrenOf(report: DeploymentReport): Map<string, ChildLiveness>
       ? (bootstrapper.children.filter(isRecord) as ChildLiveness[])
       : [];
   return new Map(children.map((child) => [child.id, child]));
+}
+
+/**
+ * A unit history summary (#929): the fleet's total, or one cell's. Null when
+ * the report has none, as one from a bootstrapper that predates the field does,
+ * which says nothing about how many units ran.
+ */
+export function historyOf(of: { history?: unknown } | null | undefined): HistorySummary | null {
+  const history = of?.history;
+  if (!isRecord(history) || typeof history.asOf !== "string") return null;
+  return isWindow(history.last24h) && isWindow(history.last7d)
+    ? (history as unknown as HistorySummary)
+    : null;
+}
+
+/** The fleet's unit history summed as one, or null when the report has none. */
+export function fleetHistoryOf(report: DeploymentReport): HistorySummary | null {
+  return isRecord(report.fleet) ? historyOf(report.fleet) : null;
+}
+
+function isWindow(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.units === "number" &&
+    isRecord(value.outcomes) &&
+    isRecord(value.costUsd) &&
+    isRecord(value.tokens)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

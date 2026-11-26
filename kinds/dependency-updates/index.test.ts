@@ -359,6 +359,7 @@ describe("run", () => {
           body: "## Dropped\n\n- `vite@1.1.0`: broke\n",
           state: "closed",
           merged: true,
+          closedAt: "2026-11-01T00:00:00Z",
         },
       ],
     );
@@ -395,6 +396,7 @@ describe("run", () => {
       body: `Closes #856\n\n## Dropped\n\n${entries}\n`,
       state: "closed",
       merged: true,
+      closedAt: "2026-11-01T00:00:00Z",
     });
     const allDropped = (entry: string) =>
       `Every bump dropped.\n\n## Dropped\n\n${entry}\n\n<!-- phoebe-blocked -->`;

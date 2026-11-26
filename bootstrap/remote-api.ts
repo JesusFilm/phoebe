@@ -51,6 +51,7 @@ import {
   type FleetVerbResponse,
   type LogsBacklog,
   type LogsLineEvent,
+  type ObserveResponse,
   type PairResponse,
   type RemoteDescriptor,
   type RemoteDeviceType,
@@ -59,6 +60,7 @@ import {
 } from "../src/contracts/remote-protocol.ts";
 import { REMOTE_CONTAINER_PORT } from "../src/config-schema.ts";
 import type { SecretOutcome } from "../src/contracts/secrets.ts";
+import { parseObserveBody, type ObserveAsk } from "./observe.ts";
 import { hashCode, normalizeCode, type PendingCodes } from "./pairing-codes.ts";
 import { bearerToken, type Sessions } from "./remote-sessions.ts";
 
@@ -102,6 +104,8 @@ export type RemoteVerbs = {
   fleetStop?: (by: string) => FleetVerbResponse;
   /** Release the hold and bring the fleet back. */
   fleetStart?: (by: string) => FleetVerbResponse;
+  /** Start an observer run now (#937), or say why not. The handler `phoebe observe` reaches. */
+  observe?: (ask: ObserveAsk) => ObserveResponse;
 };
 
 /**
@@ -381,6 +385,36 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
     json(response, 200, answer);
   }
 
+  /** Start an observer run. The body is `{ tenant?, lookback? }`; `by` is the session's. */
+  async function observe(
+    request: IncomingMessage,
+    response: ServerResponse,
+    caller: Caller,
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    if (body === "too-large") return json(response, 413, { error: "body-too-large" });
+    if (typeof body === "object" && body !== null && "by" in (body as object)) {
+      return json(response, 400, { error: "bad-request" });
+    }
+    const ask = parseObserveBody(body);
+    if (ask === null) return json(response, 400, { error: "bad-request" });
+    let answer: ObserveResponse;
+    if (deps.verbs?.observe === undefined) {
+      answer = {
+        outcome: "refused",
+        detail: "this deployment takes no observer runs over the API",
+      };
+    } else {
+      try {
+        answer = deps.verbs.observe({ ...ask, by: caller.by });
+      } catch (error) {
+        answer = { outcome: "refused", detail: messageOf(error) };
+      }
+    }
+    log(`[phoebe] remote: ${caller.by} asked for an observer run — ${answer.outcome}.`);
+    json(response, 200, answer);
+  }
+
   async function configSet(
     request: IncomingMessage,
     response: ServerResponse,
@@ -596,6 +630,12 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
         return json(response, 400, { error: "bad-request", detail: messageOf(error) });
       }
       return json(response, 200, deps.history(query));
+    }
+    if (path === REMOTE_ROUTES.observe) {
+      if (method !== "POST") return json(response, 405, { error: "method-not-allowed" });
+      const caller = gate(request, response, "operate");
+      if (caller === null) return;
+      return observe(request, response, caller);
     }
     if (path === REMOTE_ROUTES.fleetStop || path === REMOTE_ROUTES.fleetStart) {
       if (method !== "POST") return json(response, 405, { error: "method-not-allowed" });

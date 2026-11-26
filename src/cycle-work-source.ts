@@ -26,6 +26,7 @@ import {
 import { parseBlockedBy, type BlockerPrState, type Issue } from "./orchestrator.ts";
 import type { GitHubClient } from "./github-client.ts";
 import type { OriginHub } from "./origin-hub.ts";
+import type { ManualRun } from "./manual-run.ts";
 import type {
   CycleServices,
   WorkKindCtx,
@@ -99,11 +100,18 @@ export function createWorkSource(opts: {
    * what a work source built outside the loop should see.
    */
   quarantined?: (kind: string) => ReadonlySet<string>;
+  /**
+   * Take the manual run waiting for a kind (#937), for `ctx.takeManualRun`.
+   * Unset leaves the member off every ctx, which is what a work source built
+   * outside a supervised loop should see.
+   */
+  takeManualRun?: (kind: string) => ManualRun | null;
 }): WorkSource {
   const { github, originHub, clock, env, config, registry } = opts;
   const tag = opts.tag ?? "[phoebe]";
   const inFlight = opts.inFlight ?? (() => new Set<string>());
   const quarantined = opts.quarantined ?? (() => new Set<string>());
+  const takeManualRun = opts.takeManualRun;
 
   /** The message every per-unit warning below prints, whatever was thrown. */
   function errorText(error: unknown): string {
@@ -250,6 +258,7 @@ export function createWorkSource(opts: {
         get quarantined() {
           return quarantined(kind);
         },
+        ...(takeManualRun !== undefined ? { takeManualRun: () => takeManualRun(kind) } : {}),
         log: (message) => console.log(`${tag}[${kind}] ${message}`),
       };
       ctxCache.set(kind, ctx);

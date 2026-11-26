@@ -169,6 +169,20 @@ describe("enumeratePipelines", () => {
     expect(pipelines[1]).toMatchObject({ name: "intake", needsClone: false });
   });
 
+  test("each pipeline names the kinds it schedules, a disabled one left out (#937)", async () => {
+    const pipelines = await enumerate({
+      pipelines: {
+        work: { order: ["conflicts", "checks"], kinds: { checks: { disabled: true } } },
+        intake: { order: ["reviews"] },
+      },
+    });
+    expect(pipelines.map((pipeline) => [pipeline.name, pipeline.kinds])).toEqual([
+      // `work` also owns the built-ins no pipeline claimed.
+      ["work", ["conflicts", "issues", "research"]],
+      ["intake", ["reviews"]],
+    ]);
+  });
+
   test("a disabled worktree kind still keeps its pipeline's clone", async () => {
     const { dir } = kindModule(SCRATCH_KIND_SOURCE);
     const pipelines = await enumerate(

@@ -141,7 +141,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
       const version = installedVersion();
       throw new Error(
         `Unknown command \`${arg}\` for \`phoebe\`${version === null ? "" : ` (phoebe-agent v${version})`}. ` +
-          `Known commands: boot, init, status, list, config, secret, purge, upgrade, doctor, migrate, stop, start, pair, sessions, remote-url, pipelines, sweep-state, bench, history. If \`${arg}\` was added in a newer ` +
+          `Known commands: boot, init, status, list, config, secret, purge, upgrade, doctor, migrate, stop, start, pair, sessions, remote-url, pipelines, sweep-state, bench, history, observe. If \`${arg}\` was added in a newer ` +
           `release, upgrade first: \`pnpm dlx phoebe-agent@latest upgrade\`. See \`phoebe --help\`.`,
       );
     }
@@ -304,6 +304,8 @@ Usage:
   phoebe list [--json] [--check]   Deprecated alias for status's fleet section
   phoebe history [filters] [--limit <n>] [--before <cursor>] [--json]
                                    The units this deployment ran, newest first
+  phoebe observe [--tenant <owner/repo>] [--lookback <period>]
+                                   Start an observer run now, outside its schedule
   phoebe config [--json]           Every setting, its value, and where it came from
   phoebe secret set <KEY>          Store a tenant secret; value on stdin only
   phoebe secret clear <KEY>        Drop it again, so the .env value governs
@@ -660,6 +662,12 @@ export async function runCli(): Promise<void> {
   if (args[0] === "history") {
     const { runHistoryCli } = await import("./history-command.ts");
     return await runHistoryCli(args.slice(1));
+  }
+  // A manual observer run (#937): an ask through the bootstrapper's drop in the
+  // container, exec'd into it from the host. Lazy like its neighbours.
+  if (args[0] === "observe") {
+    const { runObserveCli } = await import("./observe-command.ts");
+    return await runObserveCli(args.slice(1));
   }
   // The effective config (#531): every setting with its value and its source.
   // Lazy like its neighbours — a plain engine run never loads it.
