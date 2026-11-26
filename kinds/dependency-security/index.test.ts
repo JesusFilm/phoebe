@@ -538,6 +538,7 @@ describe("run", () => {
         number: 41,
         state: "closed",
         merged: true,
+        closedAt: "2026-11-01T00:00:00Z",
         body: [
           "Closes #40",
           "",
@@ -562,6 +563,7 @@ describe("run", () => {
         number: 41,
         state: "closed",
         merged: true,
+        closedAt: "2026-11-01T00:00:00Z",
         body: [
           "Closes #40",
           "",
@@ -921,7 +923,13 @@ describe("an open routed issue the plan no longer covers", () => {
     expect(second.writes).toEqual([]);
 
     const lodash = await filed(41, [direct("lodash")]);
-    const pr = (body: string): MentioningPr => ({ number: 42, body, state: "open", merged: false });
+    const pr = (body: string): MentioningPr => ({
+      number: 42,
+      body,
+      state: "open",
+      merged: false,
+      closedAt: null,
+    });
     const marker = lodash.body.trim().split("\n").at(-1)!;
     for (const body of [`Bumps lodash.\n\n${marker}`, "Closes #41"]) {
       const [, again] = await twice(whole, [], { issues: [lodash], prs: [pr(body)] });
@@ -1011,7 +1019,13 @@ describe("an open routed issue the plan no longer covers", () => {
 
     test("with its PR still open it stays, and holds the rows the PR is fixing", async () => {
       const bundle = await filed(40, native, whole, { labels: [...routed, "processing"] });
-      const pr: MentioningPr = { number: 41, body: "Closes #40", state: "open", merged: false };
+      const pr: MentioningPr = {
+        number: 41,
+        body: "Closes #40",
+        state: "open",
+        merged: false,
+        closedAt: null,
+      };
       const [first, second] = await twice({ transitive: "individual" }, native, {
         issues: [bundle],
         prs: [pr],

@@ -174,6 +174,8 @@ export type MentioningPr = {
   body: string;
   state: "open" | "closed";
   merged: boolean;
+  /** When it closed or merged; null while open. */
+  closedAt: string | null;
 };
 
 export type UnitTimeoutInputs = {
@@ -314,6 +316,12 @@ export type GitHubClient = {
   findIssuePr(issueNumber: number): PrNumber | null;
   createPr(opts: { head: BranchRef; base: string; title: string; body: string }): void;
   /**
+   * `createPr` for a caller that needs the new PR's number, read off the URL
+   * `gh pr create` prints. Never retried, like `createIssue`: a create that
+   * succeeded and then failed to answer would be retried into a second PR.
+   */
+  createPullRequest(opts: { head: string; base: string; title: string; body: string }): PrNumber;
+  /**
    * Put a PR into its blocker PR's native stack — joining the blocker's
    * existing stack, or founding one (blocker at the bottom) when it has none.
    * Never throws: an unavailable Stacks API is a `stacked: false` outcome.
@@ -386,6 +394,8 @@ export type GitHubClient = {
   closeIssue(issueNumber: number, reason: "completed" | "not planned"): void;
   /** An issue's current state and close reason, fetched fresh. */
   issueState(issueNumber: number): IssueStateInfo;
+  /** Every comment body on an issue, oldest first. */
+  issueCommentBodies(issueNumber: number): string[];
   /**
    * Every issue (never a PR) of this repository whose body mentions `text`,
    * across all states, newest first — the one read a body-marker watermark
@@ -1345,6 +1355,31 @@ export function createGitHubClient({
       );
     },
 
+    createPullRequest: (opts) => {
+      const out = rawExec(
+        [
+          "pr",
+          "create",
+          "--head",
+          opts.head,
+          "--base",
+          opts.base,
+          "--title",
+          opts.title,
+          "--body-file",
+          "-",
+          "-R",
+          config.repoSlug,
+        ],
+        { input: opts.body },
+      );
+      const match = /\/pull\/(\d+)\s*$/.exec(out.trim());
+      if (match === null) {
+        throw new Error(`gh pr create did not print a PR URL (got ${JSON.stringify(out.trim())}).`);
+      }
+      return asPrNumber(Number(match[1]));
+    },
+
     stackPrOnto: (prNumber, blockerPrNumber) => {
       // Raw `exec`, not the ghJson/ghApiJson wrappers: those rethrow enriched
       // errors, and here every failure — preview not enabled (404), token
@@ -1640,6 +1675,17 @@ export function createGitHubClient({
       };
     },
 
+    issueCommentBodies: (issueNumber) => {
+      const { comments } = ghJson<{ comments: Array<{ body: string }> }>([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--json",
+        "comments",
+      ]);
+      return comments.map((comment) => comment.body);
+    },
+
     listIssuesMentioning: (text) =>
       searchMentioning(text, "issue").map((hit) => ({
         number: hit.number,
@@ -1656,6 +1702,7 @@ export function createGitHubClient({
         body: hit.body ?? "",
         state: hit.state,
         merged: typeof hit.pull_request?.merged_at === "string",
+        closedAt: hit.closed_at ?? null,
       })),
 
     resolveLogin: (envLogin) => {

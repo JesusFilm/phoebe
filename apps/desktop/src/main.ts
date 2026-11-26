@@ -56,6 +56,8 @@ import type {
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  HistoryPage,
+  HistoryQuery,
   ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
@@ -88,6 +90,7 @@ import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
 import { createHarness } from "./harness.ts";
+import { readContainerHistory } from "./history-read.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import { createRemoteArm, type RemoteArm } from "./remote-arm.ts";
@@ -733,6 +736,32 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRefresh, (_event, dir: string) =>
       answering<LocalReportEvent>(() => reads.refresh(dir)),
+    );
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsHistory, (_event, dir: string, query: HistoryQuery) =>
+      answering<HistoryPage | null>(async () => {
+        const install = await heldInstall(dir);
+        if (install.state !== "running") {
+          throw new BridgeRefusal({
+            code: "container-not-running",
+            message: "History is read from the running container, and this install's is not up.",
+          });
+        }
+        const deployment = resolveDeploymentCompose(deploymentDirOf(install.dir).dir);
+        if ("kind" in deployment) {
+          throw new BridgeRefusal({
+            code: "not-initialised",
+            message: "This install has no container/compose.yml yet.",
+          });
+        }
+        // A WSL install's container is the distro's Docker's, as for the read loop.
+        const wsl = wslLocationOf(install.dir);
+        return readContainerHistory({
+          deployment,
+          query: query ?? {},
+          ...(wsl === null ? {} : { runner: wslRunner(wsl, defaultCommandRunner) }),
+        });
+      }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRepair, (_event, dir: string, repair: InstallRepair) =>

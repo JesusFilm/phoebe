@@ -2,7 +2,7 @@
 // home, never a throw and never a blank screen.
 
 import { describe, expect, test } from "vite-plus/test";
-import { ADD_HREF, HOME_HREF, parseRoute, SETTINGS_HREF, SETUP_HREF } from "./route.ts";
+import { ADD_HREF, HOME_HREF, parseRoute, SETTINGS_HREF, SETUP_HREF, STATS_HREF } from "./route.ts";
 
 describe("parseRoute", () => {
   test("an empty hash, a bare hash and home's own hash are all home", () => {
@@ -19,6 +19,11 @@ describe("parseRoute", () => {
   test("the settings page has an address of its own, behind the gear on the rail", () => {
     expect(parseRoute(SETTINGS_HREF)).toEqual({ page: "settings" });
     expect(parseRoute("#/settings/theme")).toEqual({ page: "home" });
+  });
+
+  test("the fleet stats page has an address of its own, behind the chart icon beside the gear", () => {
+    expect(parseRoute(STATS_HREF)).toEqual({ page: "stats" });
+    expect(parseRoute("#/stats/week")).toEqual({ page: "home" });
   });
 
   test("the setup page has an address of its own, where a machine without Docker opens", () => {
