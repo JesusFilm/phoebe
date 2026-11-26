@@ -63,10 +63,17 @@ describe("summarizeWindow", () => {
       record({ outcome: "failed" }),
       record({ outcome: "timed-out", quarantined: true }),
       record({ outcome: "abandoned", settledAt: null, durationMs: null }),
+      record({ outcome: "unproductive", quarantined: true }),
     ]);
-    expect(window.units).toBe(4);
-    expect(window.outcomes).toEqual({ completed: 1, failed: 1, "timed-out": 1, abandoned: 1 });
-    expect(window.quarantined).toBe(1);
+    expect(window.units).toBe(5);
+    expect(window.outcomes).toEqual({
+      completed: 1,
+      unproductive: 1,
+      failed: 1,
+      "timed-out": 1,
+      abandoned: 1,
+    });
+    expect(window.quarantined).toBe(2);
   });
 
   test("keeps API spend and the subscription estimate apart, never summed", () => {

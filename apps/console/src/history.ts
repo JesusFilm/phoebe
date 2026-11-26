@@ -55,6 +55,7 @@ export function historyPath(query: HistoryQuery): string {
 /** Every outcome a record can carry, in the order the filter lists them. */
 export const HISTORY_OUTCOMES: readonly UnitRecordOutcome[] = [
   "completed",
+  "unproductive",
   "failed",
   "timed-out",
   "abandoned",
@@ -246,9 +247,11 @@ export function retainedSince(page: Pick<HistoryPage, "retained">): string | nul
 
 // ───────────────────────────── summaries ─────────────────────────────
 
-/** Units that did not complete: failed, timed out or abandoned. */
+/** Units that did not complete: unproductive, failed, timed out or abandoned. */
 export function unfinishedOf(outcomes: Record<UnitRecordOutcome, number>): number {
-  return outcomes.failed + outcomes["timed-out"] + outcomes.abandoned;
+  return (
+    (outcomes.unproductive ?? 0) + outcomes.failed + outcomes["timed-out"] + outcomes.abandoned
+  );
 }
 
 /** The part of a summary window or a page's totals a cost reads off. */
@@ -284,7 +287,12 @@ export const TOKENS_ONLY_NOTE = "None of these units reported a cost. Their toke
 // ───────────────────────────── needs a look ─────────────────────────────
 
 /** The outcomes the overview's "Needs a look" feed lists. */
-export const NOT_COMPLETED: readonly UnitRecordOutcome[] = ["failed", "timed-out", "abandoned"];
+export const NOT_COMPLETED: readonly UnitRecordOutcome[] = [
+  "unproductive",
+  "failed",
+  "timed-out",
+  "abandoned",
+];
 
 /** How many units the feed lists at most. */
 export const FEED_SIZE = 6;

@@ -1054,11 +1054,11 @@ describe("the file a workspace with many tenants writes", () => {
     const fiveHundred = fleetOf(500);
 
     // Ten times the tenants is not ten times the file: the fleet matrix grows
-    // with the fleet, the config section does not. A cell is about 2 KiB
-    // written out, most of it the history summary (#929): fixed per cell, never
-    // growing with the units behind it.
+    // with the fleet, the config section does not. A cell is a little over
+    // 2 KiB written out, most of it the history summary (#929, #985): fixed per
+    // cell, never growing with the units behind it.
     expect(fifty).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 256 * 1024);
-    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 1024 * 1024);
+    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 1280 * 1024);
     expect(fiveHundred).toBeLessThan(fifty * 2);
   });
 });

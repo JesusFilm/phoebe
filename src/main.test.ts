@@ -4778,37 +4778,47 @@ describe("a claim whose run throws before any PR accrues to quarantine", () => {
     };
   }
 
-  test("the K-th pass writes the quarantine label and the escalation comment", async () => {
-    const { writes, overrides } = labelWriteRecorder();
-    // The world each pass sees, advanced by the pass itself. Passes 1–3 hand
-    // the member out and lose it in the scaffolding; each of passes 2–4 opens
-    // by finding the claim it left behind and re-arming it. Everything after
-    // that is the fixed point: nothing claimed, and a member selection skips.
-    let pass = 0;
+  test("the K-th run writes the quarantine label and the escalation comment", async () => {
+    const writes: string[] = [];
+    const records: UnitRecordInput[] = [];
+    // The world, advanced by the writes the engine makes. The claim is on from
+    // a run's label add until the re-arm takes it off, and each timeout marker
+    // posted is the one the next count reads back. Each claim is settled as its
+    // run settles (#985), so the sweep that opens the next pass finds nothing.
+    let claimed = false;
+    let markers = 0;
+    let quarantined = false;
     const engine = concurrentEngine({
       kinds: [],
       concurrency: 1,
       workOrder: ["issues"],
+      recordUnit: (record) => records.push(record),
       github: {
-        ...overrides,
         listQuarantinedIssues: () => [],
         listNativelyStackedPrs: () => [],
         listFeatureIntegrationPrs: () => [],
-        // The stranded sweep's listing is the first GitHub read of every pass,
-        // so it is where the pass counter turns over.
-        listLabeledIssues: () => {
-          pass += 1;
-          return pass > 1 && pass <= RUNS + 1
-            ? [anIssue(MEMBER, { labels: ["ready-for-agent", "processing"] })]
-            : [];
+        addIssueLabel: (issueNumber, label) => {
+          writes.push(`add-label issue #${issueNumber} ${label}`);
+          if (label === "processing") claimed = true;
         },
+        removeIssueLabel: (issueNumber, label) => {
+          writes.push(`remove-label issue #${issueNumber} ${label}`);
+          if (label === "processing") claimed = false;
+        },
+        createLabel: (name) => {
+          writes.push(`create-label ${name}`);
+        },
+        listLabeledIssues: () =>
+          claimed ? [anIssue(MEMBER, { labels: ["ready-for-agent", "processing"] })] : [],
+        issueState: () => ({ state: "open", stateReason: null, closedAt: null }),
+        issueLabels: () => (claimed ? ["ready-for-agent", "processing"] : ["ready-for-agent"]),
         blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
         issueTimeoutInputs: () => ({
           comments:
-            pass > 2
+            markers > 0
               ? [
                   {
-                    body: buildUnitTimeoutMarker(pass - 2),
+                    body: buildUnitTimeoutMarker(markers),
                     createdAt: "2026-01-01T00:00:00Z",
                     authorLogin: PHOEBE_LOGIN,
                   },
@@ -4819,17 +4829,19 @@ describe("a claim whose run throws before any PR accrues to quarantine", () => {
         }),
         addUnitLabel: (target, label) => {
           writes.push(`add-label ${target.objectType} #${target.id} ${label}`);
+          if (label === PHOEBE_QUARANTINE_LABEL) quarantined = true;
         },
         postUnitComment: (target, body) => {
           writes.push(`comment issue #${target.id} ${body}`);
+          if (body === buildUnitTimeoutMarker(markers + 1)) markers += 1;
         },
         listReadyIssues: () => [
           anIssue(MEMBER, {
-            labels:
-              pass > RUNS ? ["ready-for-agent", PHOEBE_QUARANTINE_LABEL] : ["ready-for-agent"],
+            labels: quarantined
+              ? ["ready-for-agent", PHOEBE_QUARANTINE_LABEL]
+              : ["ready-for-agent"],
           }),
         ],
-        issueLabels: () => ["ready-for-agent"],
         issueGraphNode: (issueNumber) =>
           issueNumber === MEMBER
             ? graphNode(MEMBER, { parentNumber: FEATURE })
@@ -4844,10 +4856,7 @@ describe("a claim whose run throws before any PR accrues to quarantine", () => {
     });
     const loop = engine.loop();
 
-    await waitUntil(
-      () => writes.includes(`add-label issue #${MEMBER} ${PHOEBE_QUARANTINE_LABEL}`),
-      "the member to be quarantined",
-    );
+    await waitUntil(() => records.length === RUNS, "the member's third run to be recorded");
 
     // The whole route, in order: three claims that die in the scaffolding, a
     // re-arm and a marker after each, and the quarantine on the K-th of them —
@@ -4879,6 +4888,160 @@ describe("a claim whose run throws before any PR accrues to quarantine", () => {
     expect(
       engine.lines.filter((line) => line.includes(`Failed executing issue #${MEMBER}`)),
     ).toHaveLength(RUNS);
+    // And the history says which run did it (#985).
+    expect(records.map((record) => [record.outcome, record.quarantined])).toEqual([
+      ["failed", false],
+      ["failed", false],
+      ["failed", true],
+    ]);
+
+    engine.drain.request();
+    await loop;
+  });
+});
+
+// #985: a run that returns without throwing but leaves its issue claimed with no
+// PR used to read `completed`, and the sweep's count and quarantine landed on no
+// record at all. The claim is now settled as the unit settles, and the record
+// carries what the count made of it. A custom issue-keyed kind stands in for
+// `issues`, whose no-commit route needs a real worktree.
+describe("an issue-keyed run that ends with its claim on and no PR", () => {
+  const TICKET = 12;
+  const BASELINE = "body:aabbcc";
+
+  function claimingEngine(opts: { state: "open" | "closed"; priorMarkers: number }) {
+    const writes: string[] = [];
+    const records: UnitRecordInput[] = [];
+    let offered = true;
+    let claimed = false;
+    const kind: LoadedCustomKind = {
+      name: "tickets",
+      options: undefined,
+      definition: {
+        name: "tickets",
+        oneShotEligible: true,
+        promptFile: "prompts/tickets.md",
+        workspace: "scratch",
+        unitKey: "issue",
+        unitLabel: "tickets",
+        report: { noun: "ticket(s)", describe: (unit: { ref: string }) => unit.ref },
+        fetch: () => Promise.resolve({}),
+        select: () => ({
+          unit: offered
+            ? { ref: `issue:${TICKET}`, github: { objectType: "issue", id: TICKET } }
+            : null,
+          skipped: [],
+          total: offered ? 1 : 0,
+        }),
+        // Claims the ticket, then returns having opened nothing.
+        run: (_unit: unknown, ctx: WorkKindRunCtx) => {
+          offered = false;
+          ctx.github.addIssueLabel(TICKET, "processing");
+          return Promise.resolve();
+        },
+      } as AnyWorkKindDefinition,
+    };
+    const engine = concurrentEngine({
+      kinds: [{ kind }],
+      concurrency: 1,
+      recordUnit: (record) => records.push(record),
+      github: {
+        listQuarantinedIssues: () => [],
+        listNativelyStackedPrs: () => [],
+        listFeatureIntegrationPrs: () => [],
+        addIssueLabel: (issueNumber, label) => {
+          writes.push(`add-label issue #${issueNumber} ${label}`);
+          if (label === "processing") claimed = true;
+        },
+        removeIssueLabel: (issueNumber, label) => {
+          writes.push(`remove-label issue #${issueNumber} ${label}`);
+          if (label === "processing") claimed = false;
+        },
+        listLabeledIssues: () =>
+          claimed && opts.state === "open"
+            ? [anIssue(TICKET, { labels: ["tickets", "processing"] })]
+            : [],
+        issueState: () => ({ state: opts.state, stateReason: null, closedAt: null }),
+        issueLabels: () => (claimed ? ["tickets", "processing"] : ["tickets"]),
+        blockerPrState: () => ({ hasOpenPr: false, hasMergedPr: false }),
+        issueTimeoutInputs: () => ({
+          comments:
+            opts.priorMarkers > 0
+              ? [
+                  {
+                    body: buildUnitTimeoutMarker(opts.priorMarkers),
+                    createdAt: "2026-01-01T00:00:00Z",
+                    authorLogin: PHOEBE_LOGIN,
+                  },
+                ]
+              : [],
+          extraActivityAt: null,
+          baseline: BASELINE,
+        }),
+        addUnitLabel: (target, label) => {
+          writes.push(`add-label ${target.objectType} #${target.id} ${label}`);
+        },
+        postUnitComment: (target, body) => {
+          writes.push(`comment issue #${target.id} ${body}`);
+        },
+      },
+    });
+    return { engine, writes, records };
+  }
+
+  test("is recorded unproductive, and re-armed and counted as it settles", async () => {
+    const { engine, writes, records } = claimingEngine({ state: "open", priorMarkers: 0 });
+    const loop = engine.loop();
+    await waitUntil(() => records.length === 1, "the run to be recorded");
+
+    expect(records[0]).toMatchObject({
+      unit: { kind: "tickets", id: `issue:${TICKET}` },
+      outcome: "unproductive",
+      quarantined: false,
+      detail: "ended with no PR",
+    });
+    expect(writes).toEqual([
+      `add-label issue #${TICKET} processing`,
+      `remove-label issue #${TICKET} processing`,
+      `comment issue #${TICKET} ${buildUnitTimeoutMarker(1)}`,
+    ]);
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("the run that reaches K is the record that says quarantined", async () => {
+    const { engine, writes, records } = claimingEngine({ state: "open", priorMarkers: 2 });
+    const loop = engine.loop();
+    await waitUntil(() => records.length === 1, "the run to be recorded");
+
+    expect(records[0]).toMatchObject({ outcome: "unproductive", quarantined: true });
+    expect(writes).toEqual([
+      `add-label issue #${TICKET} processing`,
+      `remove-label issue #${TICKET} processing`,
+      `comment issue #${TICKET} ${buildUnitTimeoutMarker(3)}`,
+      `add-label issue #${TICKET} ${PHOEBE_QUARANTINE_LABEL}`,
+      `comment issue #${TICKET} ` +
+        buildQuarantineComment({
+          kind: "tickets",
+          id: TICKET,
+          k: 3,
+          baseline: BASELINE,
+          cause: "unproductive",
+        }),
+    ]);
+
+    engine.drain.request();
+    await loop;
+  });
+
+  test("a ticket the run closed is completed, and its claim is left alone", async () => {
+    const { engine, writes, records } = claimingEngine({ state: "closed", priorMarkers: 0 });
+    const loop = engine.loop();
+    await waitUntil(() => records.length === 1, "the run to be recorded");
+
+    expect(records[0]).toMatchObject({ outcome: "completed", quarantined: false });
+    expect(writes).toEqual([`add-label issue #${TICKET} processing`]);
 
     engine.drain.request();
     await loop;

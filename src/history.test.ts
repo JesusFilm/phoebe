@@ -291,7 +291,7 @@ describe("summarizeHistory", () => {
     ]);
     expect(totals).toEqual({
       units: 4,
-      byOutcome: { completed: 1, failed: 1, "timed-out": 1, abandoned: 1 },
+      byOutcome: { completed: 1, unproductive: 0, failed: 1, "timed-out": 1, abandoned: 1 },
       quarantined: 1,
       costUsd: { api: 1.5, subscriptionEstimate: 2 },
       unitsWithoutCost: 2,
