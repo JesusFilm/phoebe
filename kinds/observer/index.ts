@@ -12,10 +12,15 @@
 //   - one unit, ref `observer`. `fetch` reads the observer's own unit history
 //     and offers the unit once `every` has passed since its last completed
 //     run. The history is on disk, so a restart does not reset the clock.
-//     With no `every` it never offers one;
+//     With no `every` it never offers one on its own;
+//   - a manual run (#937: `phoebe observe`, `POST /api/observe`) arrives
+//     through `ctx.takeManualRun`. `fetch` offers the unit for it whatever
+//     `every` says, carrying the run's own `lookback` when it named one;
 //   - `run` reads every other pipeline's history, read-only, and flags units
-//     from their records alone. The agent sees only those units and the
-//     proposals already filed, and writes its findings to scratch;
+//     from their records and from what became of their PRs (#935,
+//     pr-outcomes.ts). A unit on an observer proposal is never flagged. The
+//     agent sees only the flagged units and the proposals already filed, and
+//     writes its findings to scratch;
 //   - code files from the findings, each labelled `phoebe:observer`, never
 //     the ready label, and carrying
 //     `<!-- phoebe-observer finding=<category>:<target> -->`. In PR mode (the
@@ -31,6 +36,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
 import type { PhoebeConfig } from "../../src/config-schema.ts";
+import { defaultGit, type GitRunner } from "../../src/git-model.ts";
 import { readUnitHistory } from "../../src/history.ts";
 import { asPrNumber } from "../../src/branded.ts";
 import {
@@ -61,16 +67,25 @@ import {
   flagUnits,
   observerGate,
   renderCoverage,
+  unitsSince,
   type FlaggedUnit,
   type PipelineHistory,
 } from "./evidence.ts";
 import { FINDINGS_FILE, parseFindings, type Category, type Finding } from "./findings.ts";
 import { everyMs, resolveObserverOptions, type ObserverOptions } from "./options.ts";
 import {
+  gatherPrOutcomes,
+  isProposalUnit,
+  parseRevertLog,
+  phoebeIdentityFrom,
+  type RevertCommit,
+} from "./pr-outcomes.ts";
+import {
   decideFinding,
   listedUnitKeys,
   MARKER_TEXT,
   parseFindingMarker,
+  PROPOSAL_LABEL,
   type Proposal,
 } from "./proposals.ts";
 import { proposeByPr } from "./pr-proposal.ts";
@@ -82,18 +97,29 @@ export const OBSERVER_PROMPT_FILE = join(import.meta.dirname, "prompt.md");
 
 /** The label every proposal wears. Never the ready label: a person decides. */
 export const OBSERVER_LABEL: PhoebeLabel = {
-  name: "phoebe:observer",
+  name: PROPOSAL_LABEL,
   description: "Proposed by Phoebe's observer; a person decides whether it becomes work",
 };
 
-/** The observer's one unit. `revision` moves when a run completes. */
-export type ObserverUnit = { ref: string; revision: string };
+/**
+ * The observer's one unit. `revision` moves when a run completes. A manual
+ * run carries who asked and, when they named one, its own lookback.
+ */
+export type ObserverUnit = {
+  ref: string;
+  revision: string;
+  manual?: { by: string; lookback: string | null };
+};
 
 export type ObserverGathered = { unit: ObserverUnit | null };
 
-/** Test seams: where unit history is read from, and the runtime root. */
+/**
+ * Test seams: where unit history is read from, the git that reads revert
+ * commits, and the runtime root.
+ */
 export type ObserverKindDeps = {
   readHistory?: (dir: string) => UnitRecord[];
+  git?: GitRunner;
   /**
    * Where the governing config and `prompts/` live: the process cwd, as for
    * every prompt the engine loads.
@@ -179,9 +205,12 @@ export function createObserverKind(
   const at = `kinds.${OBSERVER_KIND_NAME}`;
   const ownPipeline = observerPipelineOf(config, at);
   const readHistory = deps.readHistory ?? ((dir: string) => readUnitHistory(dir));
+  const git = deps.git ?? defaultGit;
   const runtimeRoot = deps.runtimeRoot ?? process.cwd();
   const historyDir = (pipeline: string): string => join(config.paths.stateDir, pipeline);
-  const lookbackMs = everyMs(options.lookback);
+
+  /** The lookback a unit runs over: its manual run's own, else the configured one. */
+  const lookbackOf = (unit: ObserverUnit): string => unit.manual?.lookback ?? options.lookback;
 
   /** Every other pipeline's history, in declaration order. */
   function otherHistories(): PipelineHistory[] {
@@ -208,11 +237,40 @@ export function createObserverKind(
         detail: record.detail,
         provider: record.provider,
         model: record.model,
-        prNumber: record.prNumber,
+        prNumber: unit.pr?.number ?? record.prNumber,
+        pr: unit.pr,
       };
     });
     writeFileSync(path, `${JSON.stringify(rows, null, 2)}\n`);
     return byId;
+  }
+
+  /**
+   * Revert commits on the default branch since `since`, from the run's own
+   * read-only checkout: no API call. A revert made with `git revert` says
+   * "This reverts commit <sha>". When git cannot answer, the revert PR search
+   * still stands, so this logs and reads none.
+   */
+  function revertCommitsSince(ctx: WorkKindRunCtx, since: Date): RevertCommit[] {
+    try {
+      const output = git(
+        [
+          "-C",
+          ctx.workspace.dir,
+          "log",
+          `--since=${since.toISOString()}`,
+          "--grep=This reverts commit",
+          "--format=%H%x1f%B%x1e",
+        ],
+        { stdio: "pipe" },
+      );
+      return parseRevertLog(output);
+    } catch (error) {
+      ctx.log(
+        `could not read revert commits from the checkout, so only revert PRs count. ${message(error)}`,
+      );
+      return [];
+    }
   }
 
   function writeProposals(path: string, proposals: readonly Proposal[]): void {
@@ -256,6 +314,7 @@ export function createObserverKind(
     ctx: WorkKindCtx,
     finding: Finding,
     units: readonly FlaggedUnit[],
+    lookback: string,
     regressionOf: number | null,
     attempt?: EditAttemptNote,
   ): number {
@@ -264,7 +323,7 @@ export function createObserverKind(
       body: renderBody({
         finding,
         units,
-        lookback: options.lookback,
+        lookback,
         regressionOf,
         ...(attempt !== undefined ? { attempt } : {}),
       }),
@@ -282,11 +341,16 @@ export function createObserverKind(
     ctx: WorkKindRunCtx,
     finding: Finding,
     units: readonly FlaggedUnit[],
+    lookback: string,
     regressionOf: number | null,
     slot: number,
   ): Promise<{ number: number; pr: boolean; note: string }> {
     if (options.mode !== "pr" || !PR_CATEGORIES.has(finding.category)) {
-      return { number: fileIssue(ctx, finding, units, regressionOf), pr: false, note: "" };
+      return {
+        number: fileIssue(ctx, finding, units, lookback, regressionOf),
+        pr: false,
+        note: "",
+      };
     }
     const title = renderTitle(finding);
     const outcome = await proposeByPr({
@@ -295,7 +359,7 @@ export function createObserverKind(
       slot,
       branch: proposalBranch(ctx.config.branchPrefix, finding.key),
       title,
-      body: renderBody({ finding, units, lookback: options.lookback, regressionOf, as: "pr" }),
+      body: renderBody({ finding, units, lookback, regressionOf, as: "pr" }),
       runtimeRoot,
       evidence: units.map(evidenceLine).join("\n"),
     });
@@ -303,7 +367,7 @@ export function createObserverKind(
       label(ctx, finding, outcome.number, true);
       return { number: outcome.number, pr: true, note: ` as a PR on ${outcome.branch}` };
     }
-    const number = fileIssue(ctx, finding, units, regressionOf, outcome.attempt);
+    const number = fileIssue(ctx, finding, units, lookback, regressionOf, outcome.attempt);
     return { number, pr: false, note: ` as an issue: ${ATTEMPT_LOG[outcome.attempt.reason]}` };
   }
 
@@ -314,10 +378,24 @@ export function createObserverKind(
     workspace: "readonly",
     report: {
       noun: "observer run(s)",
-      describe: () => `observer run over the last ${options.lookback}`,
+      describe: (unit) =>
+        `${unit.manual === undefined ? "observer" : "manual observer"} run over the last ${lookbackOf(unit)}`,
     },
 
     async fetch(ctx) {
+      // A manual run skips the `every` gate. It is taken here whatever happens
+      // next, so one that finds a run in flight is dropped by `select`, never
+      // queued.
+      const manual = ctx.takeManualRun?.() ?? null;
+      if (manual !== null) {
+        return {
+          unit: {
+            ref: OBSERVER_KIND_NAME,
+            revision: `manual:${manual.at}`,
+            manual: { by: manual.by, lookback: manual.lookback },
+          },
+        };
+      }
       if (options.every === null) return { unit: null };
       const gate = observerGate(
         readHistory(historyDir(ownPipeline)),
@@ -333,30 +411,59 @@ export function createObserverKind(
       const candidate = gathered.unit;
       if (candidate === null) return { unit: null, skipped: [], total: 0 };
       if (ctx.inFlight.has(candidate.ref)) {
+        if (candidate.manual !== undefined) {
+          ctx.log(
+            `manual run asked for by ${candidate.manual.by} dropped: a run is already in flight.`,
+          );
+        }
         return { unit: null, skipped: [{ reason: "in flight", count: 1 }], total: 1 };
       }
-      if (ctx.quarantined.has(candidate.ref)) {
+      // An operator who asks for a run gets one: its revision is new, which is
+      // the engine's own exit from an in-memory quarantine.
+      if (ctx.quarantined.has(candidate.ref) && candidate.manual === undefined) {
         return { unit: null, skipped: [{ reason: "quarantined in memory", count: 1 }], total: 1 };
       }
       return { unit: candidate, skipped: [], total: 1 };
     },
 
-    async run(_unit, ctx): Promise<WorkKindRunResult> {
+    async run(unit, ctx): Promise<WorkKindRunResult> {
       const now = ctx.clock.now();
+      const lookback = lookbackOf(unit);
+      const lookbackMs = everyMs(lookback);
+      if (unit.manual !== undefined) {
+        ctx.log(`manual run asked for by ${unit.manual.by}, over the last ${lookback}.`);
+      }
       const histories = otherHistories();
       const coverage = renderCoverage(
         histories.map((history) => coverageOf(history, now, lookbackMs)),
-        options.lookback,
+        lookback,
       );
-      const flagged = flagUnits(histories, new Date(now.getTime() - lookbackMs));
+      const units = unitsSince(histories, new Date(now.getTime() - lookbackMs));
       const tally: RunTally = { filed: [], foldedInto: [], skipped: 0 };
-      if (flagged.length === 0) {
+      const nothingFlagged = (): WorkKindRunResult => {
         const summary = `no flagged units, ${renderSummary(tally, coverage)}`;
         ctx.log(summary);
         return { summary };
-      }
+      };
+      if (units.length === 0) return nothingFlagged();
 
       const proposals = proposalsOf(ctx);
+      const proposalIssues = new Set(proposals.map((proposal) => proposal.number));
+      const outcomes = gatherPrOutcomes({
+        units,
+        github: ctx.github,
+        revertCommits: (since) => revertCommitsSince(ctx, since),
+        proposalIssues,
+        phoebe: phoebeIdentityFrom(ctx.env),
+        repoSlug: config.repoSlug,
+        ignoredBranches: new Set([config.defaultBranch, `${config.branchPrefix}workspace`]),
+        now,
+      });
+      const flagged = flagUnits(units, {
+        onProposal: (unit) => isProposalUnit(unit.record, proposalIssues),
+        prOutcome: (unit) => outcomes.get(unit.key),
+      });
+      if (flagged.length === 0) return nothingFlagged();
       const scratch = ctx.workspace.scratch;
       const flaggedPath = join(scratch, "flagged.json");
       const proposalsPath = join(scratch, "proposals.json");
@@ -366,7 +473,7 @@ export function createObserverKind(
 
       await ctx.agent.run({
         promptArgs: {
-          OBSERVER_LOOKBACK: options.lookback,
+          OBSERVER_LOOKBACK: lookback,
           OBSERVER_COVERAGE: coverage,
           FLAGGED_COUNT: String(flagged.length),
           FLAGGED_JSON: flaggedPath,
@@ -447,6 +554,7 @@ export function createObserverKind(
           ctx,
           finding,
           evidence,
+          lookback,
           regression?.number ?? null,
           tally.filed.length + 1,
         );

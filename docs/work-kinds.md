@@ -1034,7 +1034,7 @@ pipelines: {
 
 | Option         | Default | Meaning                                                                                                  |
 | -------------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `every`        | none    | How long after its last completed run it runs again. Without it the observer never runs.                 |
+| `every`        | none    | How long after its last completed run it runs again. Without it the observer runs only when asked.       |
 | `lookback`     | `"14d"` | How far back a run reads the other pipelines' history.                                                   |
 | `mode`         | `"pr"`  | Where proposals go. `"pr"` opens a PR for a convention or factory finding; `"issues"` files only issues. |
 | `maxProposals` | `3`     | The most new proposals one run files. New evidence added to an open proposal does not count.             |
@@ -1051,10 +1051,41 @@ its last completed run. The history is on disk, so a restart inside the window
 waits like any other poll. A failed or timed-out run is tried again an hour
 later, or after `every` if that is shorter.
 
+**Manual runs.** `phoebe observe` ([`operating.md`](operating.md)) and
+`POST /api/observe` ([`remote.md`](remote.md)) start a run now. The
+bootstrapper sends the ask to the observer's pipeline over IPC, which ends that
+pipeline's idle wait, and the next fetch offers the unit whether or not
+`every` is set or due. `lookback` given with the ask applies to that run only.
+The bootstrapper refuses the ask with a reason, and queues nothing, when the
+fleet is stopped, when the tenant does not declare the observer, or when a run
+is already in flight there. A manual run counts as the last completed run for
+`every`.
+
 **A run** reads `state/<pipeline>/units.jsonl` of every other pipeline the
 tenant declares, read-only, and flags each unit that started inside `lookback`
-and failed, timed out, was abandoned or was quarantined. With nothing flagged it
-stops there and spends no agent run. Otherwise one read-only agent run sees the
+and failed, timed out, was abandoned or was quarantined. It also flags a unit
+by what became of its pull request once that PR merged or closed:
+
+| Flag                | When                                                                            |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `changes-requested` | a review requested changes                                                      |
+| `review-threads`    | the PR has review threads                                                       |
+| `outside-commits`   | another git identity pushed a content commit, not a merge, after Phoebe's first |
+| `closed-unmerged`   | it closed without merging                                                       |
+| `reverted`          | a merged revert PR names it, or a revert commit on the default branch does      |
+| `actions-failed`    | a GitHub Actions run on its branch failed while it was open                     |
+| `slow-merge`        | it took more than seven days to merge                                           |
+
+A record that has no PR number is matched to a PR by its branch. Phoebe's git
+identity is the engine's `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`, or the PR's
+first commit when those are unset. Only Actions runs count, since no credential
+arm can read other checks or `statusCheckRollup`. Reverts are found from the
+revert side: one search for PRs titled "Revert", and `git log` on the run's
+read-only checkout. For 20 PRs the reads are about four GraphQL queries and one
+REST call per settled PR. A unit on an observer proposal is never flagged: one
+that ran on a proposal issue, or on a PR that carries `phoebe:observer`, the
+marker, or closes a proposal. With nothing flagged the run stops there and
+spends no agent run. Otherwise one read-only agent run sees the
 flagged units and the proposals already filed, and writes findings to scratch.
 Each finding has a title, the problem, a suggested fix, the units that show it,
 a target (a file such as `AGENTS.md`, or a short slug), and one of four
@@ -1313,6 +1344,9 @@ resolve. Everything arrives on `ctx` (types via `import type` from
   `select` the way you filter `ctx.inFlight`. Empty for every kind whose units
   carry `github` — those take the label path. See [Units the engine cannot
   see](#units-the-engine-cannot-see).
+- `ctx.takeManualRun?.()` returns the manual run the bootstrapper forwarded
+  for this kind and removes it, or null. Only the observer is ever asked
+  (`phoebe observe`), and the member is absent outside a supervised engine.
 - `ctx.log(message)` — logs with the uniform `[phoebe][<kind> <ref>]` prefix.
 
 `run` receives the same surface widened with:

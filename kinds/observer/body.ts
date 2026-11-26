@@ -30,7 +30,8 @@ function code(text: string): string {
 /** One evidence line: where, what, how it ended, when, and the record's own words. */
 export function evidenceLine(unit: FlaggedUnit): string {
   const { record } = unit;
-  const pr = record.prNumber === null ? "" : ` (PR #${record.prNumber})`;
+  const prNumber = unit.pr?.number ?? record.prNumber;
+  const pr = prNumber === null ? "" : ` (PR #${prNumber})`;
   const when = record.startedAt.slice(0, 16).replace("T", " ");
   const detail =
     record.detail === null ? "" : `: ${defang(oneLine(record.detail, EVIDENCE_DETAIL_MAX))}`;

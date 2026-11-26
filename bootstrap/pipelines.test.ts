@@ -276,6 +276,7 @@ describe("the pipeline matrix vocabulary", () => {
           concurrency: 1,
           needsClone: true,
           env: [],
+          kinds: [],
           fingerprint,
         },
         enumerated: fingerprint !== null,
@@ -387,6 +388,38 @@ describe("a pipeline's declared `env` (#425)", () => {
 
   test("a malformed `env` is a tenant fault, not a silent empty scrub", () => {
     expect(() => pipelinesOf(withEnv("SLACK_BOT_TOKEN"))).toThrow(PipelineEnumerationError);
+  });
+});
+
+describe("a pipeline's scheduled `kinds` (#937)", () => {
+  const withKinds = (kinds: unknown): string =>
+    `${JSON.stringify({
+      version: 1,
+      pipelines: [
+        {
+          name: "observe",
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          kinds,
+          fingerprint: "fp-observe",
+        },
+      ],
+    })}\n`;
+  const pipelinesOf = (stdout: string) =>
+    createPipelineEnumerator({
+      entry: "/engine/src/cli.ts",
+      run: engineReturning(stdout).run,
+    }).pipelinesFor({ configPath: "/t/phoebe.config.ts", fingerprint: "a" });
+
+  test("come back as names, and an engine too old to say runs none", () => {
+    expect(pipelinesOf(withKinds(["observer"]))[0]?.kinds).toEqual(["observer"]);
+    expect(pipelinesOf(withKinds(undefined))[0]?.kinds).toEqual([]);
+  });
+
+  test("malformed `kinds` is a tenant fault", () => {
+    expect(() => pipelinesOf(withKinds("observer"))).toThrow(PipelineEnumerationError);
   });
 });
 

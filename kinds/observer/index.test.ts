@@ -8,7 +8,9 @@ import { basename, join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
 import { resolveConfig, type PhoebeUserConfig } from "../../src/config-schema.ts";
-import type { MentioningIssue } from "../../src/github-client.ts";
+import { asBranchRef, asPrNumber, asSha } from "../../src/branded.ts";
+import type { GitRunner } from "../../src/git-model.ts";
+import type { MentioningIssue, ObservedPr } from "../../src/github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "../../src/github-stub.ts";
 import { selectPipeline } from "../../src/pipeline.ts";
 import type { WorkKindCtx, WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
@@ -150,9 +152,10 @@ describe("the schedule", () => {
     const kind = createObserverKind(config(), resolveObserverOptions(options, "kinds.observer"), {
       readHistory: history.readHistory,
     });
-    const ctx = { ...baseCtx({}, []), ...ctxExtra };
+    const logged: string[] = [];
+    const ctx = { ...baseCtx({}, logged), ...ctxExtra };
     const selection = kind.select(await kind.fetch(ctx), ctx);
-    return { selection, reads: history.reads };
+    return { selection, reads: history.reads, logged };
   }
 
   const observerRun = (overrides: Partial<UnitRecord>) =>
@@ -181,6 +184,65 @@ describe("the schedule", () => {
     });
   });
 
+  describe("a manual run (#937)", () => {
+    const manual = (lookback: string | null) => {
+      let waiting: ReturnType<NonNullable<WorkKindCtx["takeManualRun"]>> = {
+        kind: "observer",
+        by: "shell",
+        at: "2026-11-25T11:59:00.000Z",
+        lookback,
+      };
+      return () => {
+        const run = waiting;
+        waiting = null;
+        return run;
+      };
+    };
+
+    test("is offered with no `every`, and carries its own lookback", async () => {
+      const { selection, reads } = await pick({}, [], { takeManualRun: manual("3d") });
+      expect(selection.unit).toEqual({
+        ref: "observer",
+        revision: "manual:2026-11-25T11:59:00.000Z",
+        manual: { by: "shell", lookback: "3d" },
+      });
+      // No gate was read: the schedule is not asked.
+      expect(reads).toEqual([]);
+    });
+
+    test("skips the `every` gate inside the window", async () => {
+      const own = [observerRun({ settledAt: daysAgo(1) })];
+      expect((await pick({ every: "7d" }, own)).selection.unit).toBeNull();
+      const { selection } = await pick({ every: "7d" }, own, { takeManualRun: manual(null) });
+      expect(selection.unit).toEqual({
+        ref: "observer",
+        revision: "manual:2026-11-25T11:59:00.000Z",
+        manual: { by: "shell", lookback: null },
+      });
+    });
+
+    test("is dropped, not queued, when a run is already in flight", async () => {
+      const takeManualRun = manual(null);
+      const { selection, logged } = await pick({}, [], {
+        takeManualRun,
+        inFlight: new Set(["observer"]),
+      });
+      expect(selection.unit).toBeNull();
+      expect(logged).toEqual([
+        "manual run asked for by shell dropped: a run is already in flight.",
+      ]);
+      expect(takeManualRun()).toBeNull();
+    });
+
+    test("is offered even while the scheduled run is quarantined in memory", async () => {
+      const { selection } = await pick({ every: "7d" }, [], {
+        takeManualRun: manual(null),
+        quarantined: new Set(["observer"]),
+      });
+      expect(selection.unit?.manual).toEqual({ by: "shell", lookback: null });
+    });
+  });
+
   test("a run already in flight is not offered again", async () => {
     const { selection } = await pick({ every: "7d" }, [], { inFlight: new Set(["observer"]) });
     expect(selection).toEqual({
@@ -200,6 +262,9 @@ describe("a run in issue mode", () => {
     proposals?: MentioningIssue[];
     comments?: Record<number, string[]>;
     findings?: (flagged: Array<{ id: string; ref: string }>) => unknown;
+    unit?: ObserverUnit;
+    github?: GitHubStubOverrides;
+    git?: GitRunner;
   }) {
     const scratch = mkdtempSync(join(tmpdir(), "observer-test-"));
     const history = histories(opts.byPipeline);
@@ -225,6 +290,7 @@ describe("a run in issue mode", () => {
         postUnitComment: (target, body) => {
           posted.push({ id: target.id, body });
         },
+        ...opts.github,
       },
       logged,
     );
@@ -258,9 +324,9 @@ describe("a run in issue mode", () => {
         { mode: "issues", ...(opts.options ?? { every: "7d" }) },
         "kinds.observer",
       ),
-      { readHistory: history.readHistory },
+      { readHistory: history.readHistory, ...(opts.git ? { git: opts.git } : {}) },
     );
-    const unit: ObserverUnit = { ref: "observer", revision: "never" };
+    const unit: ObserverUnit = opts.unit ?? { ref: "observer", revision: "never" };
     return {
       run: () => kind.run(unit, ctx),
       reads: history.reads,
@@ -350,6 +416,131 @@ describe("a run in issue mode", () => {
     ]);
     expect(h.agentCalls[0]!["OBSERVER_COVERAGE"]).toBe("coverage work 14d, intake 9d");
     expect(result).toEqual({ summary: "nothing filed; coverage work 14d, intake 9d" });
+  });
+
+  test("a manual run's lookback narrows what it reads for that run only", async () => {
+    const h = harness({
+      byPipeline: byPipeline(),
+      findings: () => ({ findings: [] }),
+      unit: {
+        ref: "observer",
+        revision: "manual:2026-11-25T11:59:00.000Z",
+        manual: { by: "shell", lookback: "3d" },
+      },
+    });
+    const result = await h.run();
+    const flagged = JSON.parse(readFileSync(h.agentCalls[0]!["FLAGGED_JSON"]!, "utf8")) as Array<{
+      ref: string;
+    }>;
+    // issue:3 started three days ago to the millisecond, on the edge; issue:2 and issue:1 are older.
+    expect(flagged.map((unit) => unit.ref)).toEqual(["t:2", "issue:4", "issue:3"]);
+    expect(h.agentCalls[0]!["OBSERVER_LOOKBACK"]).toBe("3d");
+    expect(h.logged[0]).toBe("manual run asked for by shell, over the last 3d.");
+    expect(result).toEqual({ summary: "nothing filed; coverage work 3d, intake 3d" });
+
+    // The next scheduled run is back on the configured window.
+    const scheduled = harness({ byPipeline: byPipeline(), findings: () => ({ findings: [] }) });
+    await scheduled.run();
+    expect(scheduled.agentCalls[0]!["OBSERVER_LOOKBACK"]).toBe("14d");
+  });
+
+  test("flags units from what became of their PRs, and never a unit on a proposal", async () => {
+    const observed = (overrides: Partial<ObservedPr>): ObservedPr => ({
+      number: asPrNumber(70),
+      state: "merged",
+      createdAt: daysAgo(3),
+      mergedAt: daysAgo(2.9),
+      closedAt: daysAgo(2.9),
+      headRefName: asBranchRef("phoebe/issue-6"),
+      mergeCommitOid: asSha("e".repeat(40)),
+      body: "Closes #6",
+      labels: [],
+      closingIssues: [6],
+      changesRequested: 0,
+      reviewThreads: 0,
+      commits: [],
+      commitsTruncated: false,
+      ...overrides,
+    });
+    const prs = [
+      observed({}),
+      observed({ number: asPrNumber(71), state: "closed", mergedAt: null, closingIssues: [7] }),
+      observed({ number: asPrNumber(72), closingIssues: [41], mergeCommitOid: null }),
+    ];
+    const gitCalls: string[][] = [];
+    const h = harness({
+      byPipeline: {
+        work: [
+          // Opened #70 on its branch; the record has no PR number.
+          unitRecord({
+            unit: { kind: "issues", id: "issue:6" },
+            branch: "phoebe/issue-6",
+            startedAt: daysAgo(3.1),
+            settledAt: daysAgo(3),
+          }),
+          unitRecord({
+            unit: { kind: "reviews", id: "pr:71" },
+            prNumber: 71,
+            startedAt: daysAgo(2),
+          }),
+          // Works proposal #41 and failed: still not evidence.
+          unitRecord({
+            unit: { kind: "checks", id: "pr:72" },
+            prNumber: 72,
+            outcome: "failed",
+            startedAt: daysAgo(1),
+          }),
+          unitRecord({
+            unit: { kind: "issues", id: "issue:41" },
+            outcome: "failed",
+            startedAt: daysAgo(1),
+          }),
+        ],
+        intake: [],
+      },
+      proposals: [
+        {
+          number: 41,
+          body: renderFindingMarker("ticket:acceptance-criteria"),
+          state: "open",
+          stateReason: null,
+          closedAt: null,
+          labels: ["phoebe:observer"],
+        },
+      ],
+      github: {
+        branchPrs: (branches) =>
+          new Map(
+            branches.map((branch) => [
+              branch,
+              branch === "phoebe/issue-6"
+                ? [{ number: asPrNumber(70), createdAt: daysAgo(3), closedAt: daysAgo(2.9) }]
+                : [],
+            ]),
+          ),
+        observedPrs: (numbers) => prs.filter((pr) => numbers.includes(pr.number)),
+        revertPrs: () => [],
+        branchWorkflowRuns: () => [],
+      },
+      git: (args) => {
+        gitCalls.push(args);
+        return `${"f".repeat(40)}\x1fRevert\n\nThis reverts commit ${"e".repeat(40)}.\n\x1e`;
+      },
+      findings: () => ({ findings: [] }),
+    });
+    await h.run();
+    expect(gitCalls[0]?.slice(2, 3)).toEqual(["log"]);
+    const flagged = JSON.parse(readFileSync(h.agentCalls[0]!["FLAGGED_JSON"]!, "utf8")) as Array<{
+      ref: string;
+      flags: string[];
+      prNumber: number | null;
+      pr: { revertedBy: string | null } | null;
+    }>;
+    expect(flagged.map((unit) => [unit.ref, unit.flags, unit.prNumber])).toEqual([
+      ["pr:71", ["closed-unmerged"], 71],
+      ["issue:6", ["reverted"], 70],
+    ]);
+    expect(flagged[1]!.pr?.revertedBy).toBe("fffffff");
   });
 
   test("files each finding as an issue with the label and the marker", async () => {

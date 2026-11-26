@@ -253,6 +253,39 @@ out.
 directly, so it works while the bootstrapper is down. On the host it runs
 itself in the container with the same flags.
 
+## Starting an observer run: `phoebe observe`
+
+The [`observer`](work-kinds.md) kind runs on its `every` schedule, or never
+when `every` is unset. `phoebe observe` starts a run now:
+
+```sh
+phoebe observe
+phoebe observe --tenant acme/widget --lookback 30d
+```
+
+`--tenant <owner/repo>` is needed only when more than one tenant declares the
+observer. `--lookback <period>` sets how far back this run reads, and the
+configured `lookback` stays as it is for later runs.
+
+The verb drops an ask under `state/observe/`, and the bootstrapper answers it
+within a second or two. When it accepts, it passes the ask to the observer's
+pipeline, whose next pass starts the run without waiting out the poll interval.
+The verb prints the tenant and returns. The run itself takes minutes, and its
+record appears in `phoebe history --kind observer` when it settles.
+
+The bootstrapper refuses, and nothing is queued, in these cases:
+
+- the fleet is stopped, by `POST /api/fleet/stop` or from a console;
+- no tenant declares the observer, or the tenant named with `--tenant` does not;
+- more than one tenant declares it and `--tenant` is missing;
+- an observer run is already in flight for that tenant. The refusal gives the
+  time it started;
+- that tenant's observer pipeline is restarting.
+
+The verb then exits 1 with the reason. On the host it runs itself in the
+container with the same flags. `POST /api/observe` reaches the same handler
+from a paired device ([`remote.md`](remote.md)).
+
 ## Picking issues to benchmark: `phoebe bench select`
 
 `phoebe bench select` builds a suite of fixtures for the offline replay
@@ -600,6 +633,7 @@ with its value, the thing that supplied it, and whatever it beat. See
 | See the deployment from another machine       | Add a `remote` block, `phoebe stop`, `phoebe start`, then `phoebe pair` and paste the link into the companion ([`remote.md`](remote.md)).                                       |
 | See who is paired, or end a session           | `phoebe sessions`; `phoebe sessions revoke <id>` or `--all`.                                                                                                                    |
 | See which units ran, failed, or cost the most | `phoebe history`, with `--outcome failed`, `--since <date>` or `--json`.                                                                                                        |
+| Run the observer now, outside its schedule    | `phoebe observe`, with `--tenant <owner/repo>` when several tenants declare it and `--lookback <period>` for this run only.                                                     |
 | Pick solved issues to benchmark against       | `phoebe bench select --issues 12,34`, or `--since <date> --limit <n>`, to stdout as JSON.                                                                                       |
 
 ## Running many repos in one container

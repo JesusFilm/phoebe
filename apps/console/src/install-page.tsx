@@ -51,6 +51,7 @@ import type {
 } from "phoebe-agent/contracts";
 import { DeploymentTabPanel, ReceiptPanel } from "./deployment-tabs.tsx";
 import { localHistory } from "./history.ts";
+import { localObserve } from "./observer.ts";
 import {
   configSetRequest,
   dockerReading,
@@ -291,7 +292,11 @@ export function InstallPage({
               }}
               config={config}
               now={now}
-              history={{ reader: localHistory(bridge, install.dir), scope: install.dir }}
+              history={{
+                reader: localHistory(bridge, install.dir),
+                scope: install.dir,
+                observe: localObserve(bridge, install.dir),
+              }}
               onTab={setTab}
               overview={
                 <LocalDevices

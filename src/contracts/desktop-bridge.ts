@@ -68,6 +68,7 @@ import type {
   RevokeOutcome,
   SessionRow,
 } from "./remote-record.ts";
+import type { ObserveRequest, ObserveResponse } from "./remote-protocol.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 
 /** What was right-clicked, as much as the menu needs to know. */
@@ -212,6 +213,15 @@ export type DesktopBridge = {
      * no container to ask.
      */
     history: (dir: string, query: HistoryQuery) => Promise<HistoryPage | null>;
+    /**
+     * Start an observer run on the install (#938): `phoebe observe` exec'd in
+     * its running container, which asks the bootstrapper what
+     * `POST /api/observe` asks it. A refusal is an answer, `outcome: "refused"`
+     * with the bootstrapper's reason. Null when the container's phoebe-agent
+     * predates the verb. Rejects `container-not-running` when there is no
+     * container to ask.
+     */
+    observe: (dir: string, request: ObserveRequest) => Promise<ObserveResponse | null>;
   };
   /** The verb runs — see verb-run.ts for the three rules they hold to. */
   runs: {
