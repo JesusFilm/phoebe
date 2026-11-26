@@ -18,10 +18,12 @@ import type {
   FleetVerbResponse,
   HistoryPage,
   HistoryQuery,
+  ObserveResponse,
   RemoteResponse,
   SessionRow,
 } from "phoebe-agent/contracts";
 import { historyPath, type HistoryFetch } from "./history.ts";
+import type { ObserveFetch, ObserveRunner } from "./observer.ts";
 import { NEEDS_OPERATE } from "./remote-routes.ts";
 
 /** What `/api/secrets` answered. */
@@ -78,6 +80,11 @@ export type RemoteClient = {
    * route, which has no history to give: "too old", not an error.
    */
   history: (query: HistoryQuery) => Promise<HistoryFetch>;
+  /**
+   * Start an observer run (#938). A refusal is an answer; a 404 is a
+   * deployment from before the route (#937): "too old", not an error.
+   */
+  observe: ObserveRunner;
 };
 
 export function createRemoteClient(bridge: DesktopBridge, deploymentId: string): RemoteClient {
@@ -132,6 +139,15 @@ export function createRemoteClient(bridge: DesktopBridge, deploymentId: string):
           throw new Error("the deployment answered with something that is not a history page");
         }
         return { kind: "page", page: response.body };
+      } catch (error) {
+        if (error instanceof RemoteRequestError && error.status === 404) return { kind: "too-old" };
+        throw error;
+      }
+    },
+    async observe(request): Promise<ObserveFetch> {
+      try {
+        const response = await send("POST", REMOTE_ROUTES.observe, request);
+        return { kind: "answer", answer: response.body as ObserveResponse };
       } catch (error) {
         if (error instanceof RemoteRequestError && error.status === 404) return { kind: "too-old" };
         throw error;

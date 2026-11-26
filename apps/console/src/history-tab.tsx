@@ -7,6 +7,11 @@
 // deployment page hands down (history.ts). Every filter change asks again; the
 // tab never narrows a page it already holds. "Show more" asks for the page
 // after the last one, under the same filters.
+//
+// A deployment with a tenant that declares the observer has a "Run observer"
+// button in the header (#938, run-observer.tsx). The run it starts lands here
+// like any unit; the tab asks again when the report shows it settled, and the
+// drawer links every `#N` in a unit's summary to the tenant's repo.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
@@ -29,6 +34,7 @@ import {
   HISTORY_OUTCOMES,
   historyQueryOf,
   recordKey,
+  repoOf,
   retainedSince,
   runCost,
   unitCost,
@@ -41,6 +47,8 @@ import {
   type HistoryFilters,
   type HistoryReader,
 } from "./history.ts";
+import { summaryPieces, type ObserveRunner, type ObserverTarget } from "./observer.ts";
+import { RunObserver } from "./run-observer.tsx";
 
 type Loaded = {
   records: HistoryRecord[];
@@ -60,6 +68,7 @@ export function HistoryTab({
   scope,
   cells,
   now,
+  observer,
 }: {
   /** How this deployment's pages are read: the arm's own. */
   reader: HistoryReader;
@@ -71,6 +80,11 @@ export function HistoryTab({
   /** The report's cells, for the pipeline filter. */
   cells: readonly FleetCell[];
   now: Date;
+  /**
+   * The tenants that declare the observer, and how this arm starts a run
+   * (#938). Without it, or with no targets, the header has no button.
+   */
+  observer?: { targets: readonly ObserverTarget[]; run: ObserveRunner };
 }) {
   const [filters, setFilters] = useState<HistoryFilters>({});
   const [state, setState] = useState<TabState>({ kind: "loading" });
@@ -156,13 +170,27 @@ export function HistoryTab({
   }
 
   const choices = filterChoices(seen, filters);
+  const head =
+    observer === undefined || observer.targets.length === 0 ? (
+      <h2>History</h2>
+    ) : (
+      <div className="history-head">
+        <h2>History</h2>
+        <RunObserver
+          targets={observer.targets}
+          run={observer.run}
+          now={now}
+          onSettled={() => setAttempt((n) => n + 1)}
+        />
+      </div>
+    );
   const tenants = new Set(cells.map((cell) => cell.tenant.id));
   const pipelineName = (cell: FleetCell): string =>
     tenants.size > 1 ? `${cell.tenant.slug ?? cell.tenant.path} ${cell.pipeline}` : cell.pipeline;
 
   return (
     <section className="history">
-      <h2>History</h2>
+      {head}
       <div className="history-filters" role="group" aria-label="Filter the units">
         <select
           aria-label="Pipeline"
@@ -480,7 +508,11 @@ export function UnitDrawer({
         </span>{" "}
         · <Cost view={unitCost(record)} />
       </p>
-      {record.detail === null ? null : <p className="unit-detail">{record.detail}</p>}
+      {record.detail === null ? null : (
+        <p className="unit-detail">
+          <Summary text={record.detail} repo={repoOf(record)} />
+        </p>
+      )}
       <dl className="pairs">
         <dt>On GitHub</dt>
         <dd>
@@ -536,6 +568,32 @@ export function UnitDrawer({
       <h3>Agent runs</h3>
       <AgentRuns record={record} />
     </aside>
+  );
+}
+
+/**
+ * A unit's summary with each `#N` a link into the repo. `/issues/N` serves a
+ * PR too, since GitHub redirects it. Without a repo the text stands as it is.
+ */
+function Summary({ text, repo }: { text: string; repo: string | null }) {
+  if (repo === null) return <>{text}</>;
+  return (
+    <>
+      {summaryPieces(text).map((piece, index) =>
+        "text" in piece ? (
+          <span key={index}>{piece.text}</span>
+        ) : (
+          <a
+            key={index}
+            href={`https://github.com/${repo}/issues/${piece.ref}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            #{piece.ref}
+          </a>
+        ),
+      )}
+    </>
   );
 }
 

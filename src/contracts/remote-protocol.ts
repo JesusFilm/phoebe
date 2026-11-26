@@ -146,6 +146,13 @@ export type FleetVerbResponse = {
 };
 
 /**
+ * `POST /api/observe`'s body (#937), and what the console's "Run observer"
+ * asks for (#938). `tenant` is needed only when more than one tenant declares
+ * the observer; `lookback` is a period like `14d` that holds for this run only.
+ */
+export type ObserveRequest = { tenant?: string; lookback?: string };
+
+/**
  * `POST /api/observe`'s answer, and what `phoebe observe` prints. `started`
  * means the observer's pipeline has the ask and will run it on its next pass;
  * `refused` says why not in `detail`. Nothing is queued either way.

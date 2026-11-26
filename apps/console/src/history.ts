@@ -213,12 +213,18 @@ export function unitLabel(record: HistoryRecord): string {
  * a unit whose id names neither, or a tenant that is not `owner/repo`.
  */
 export function githubHref(record: HistoryRecord): string | null {
-  if (!/^[^/\s]+\/[^/\s]+$/.test(record.tenant)) return null;
-  const base = `https://github.com/${record.tenant}`;
+  const repo = repoOf(record);
+  if (repo === null) return null;
+  const base = `https://github.com/${repo}`;
   if (record.prNumber !== null) return `${base}/pull/${record.prNumber}`;
   const ref = numberedRef(record.unit.id);
   if (ref === null) return null;
   return `${base}/${ref.type === "pr" ? "pull" : "issues"}/${ref.number}`;
+}
+
+/** The record's tenant when it is `owner/repo`, the repo its links point into; else null. */
+export function repoOf(record: HistoryRecord): string | null {
+  return /^[^/\s]+\/[^/\s]+$/.test(record.tenant) ? record.tenant : null;
 }
 
 /** A stable key for one record: a unit runs more than once, so its start is part of it. */

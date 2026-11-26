@@ -174,6 +174,7 @@ export {
   type ForbiddenBody,
   type LogsBacklog,
   type LogsLineEvent,
+  type ObserveRequest,
   type ObserveResponse,
   type PairRequest,
   type PairResponse,
