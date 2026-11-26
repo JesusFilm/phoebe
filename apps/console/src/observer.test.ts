@@ -226,4 +226,11 @@ describe("a summary's references", () => {
     expect(summaryPieces("nothing to link")).toEqual([{ text: "nothing to link" }]);
     expect(summaryPieces("#7")).toEqual([{ ref: 7 }]);
   });
+
+  test("a number that is not a positive safe integer stays text", () => {
+    expect(summaryPieces("see #0 and #9007199254740993")).toEqual([
+      { text: "see #0 and #9007199254740993" },
+    ]);
+    expect(summaryPieces("#0 then #5")).toEqual([{ text: "#0 then " }, { ref: 5 }]);
+  });
 });

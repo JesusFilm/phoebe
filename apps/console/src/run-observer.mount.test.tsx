@@ -10,10 +10,20 @@ import type { ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HistoryQuery, ObserveRequest } from "phoebe-agent/contracts";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
+import { DeploymentTabPanel } from "./deployment-tabs.tsx";
 import { HistoryTab } from "./history-tab.tsx";
 import type { HistoryReader } from "./history.ts";
 import type { ObserveFetch, ObserveRunner, ObserverTarget } from "./observer.ts";
-import { cell, historyPage, historyRecord, NOW } from "./test-fixture.ts";
+import {
+  ago,
+  cell,
+  configReport,
+  effectiveConfig,
+  historyPage,
+  historyRecord,
+  NOW,
+  report,
+} from "./test-fixture.ts";
 
 const roots: Root[] = [];
 
@@ -254,5 +264,41 @@ describe("the drawer", () => {
     expect(box.querySelector(".unit-detail")?.textContent).toBe(
       "Filed #12 and added evidence to #7.",
     );
+  });
+});
+
+describe("the deployment's History tab", () => {
+  test("shows the button for a deployment whose report declares the observer", async () => {
+    const declared = effectiveConfig({
+      tenant: "JesusFilm/youtube-studio",
+      fields: {
+        pipelines: {
+          observe: {
+            concurrency: { value: 1, source: "default", reader: "engine" },
+            kinds: {
+              observer: { runBudgetMs: { value: null, source: "default", reader: "engine" } },
+            },
+          },
+        },
+      },
+    });
+    const { read } = reader();
+    const { run } = runner(STARTED);
+    const { box } = await mount(
+      <DeploymentTabPanel
+        tab="history"
+        reading={{
+          kind: "read",
+          receivedAt: ago(2),
+          report: report({ config: configReport({ tenants: [declared] }) }),
+        }}
+        connection={{ arm: "local install", detail: "/repos/youtube-studio", note: "read here" }}
+        config={null}
+        now={NOW}
+        empty={<p>nothing</p>}
+        history={{ reader: read, scope: "/repos/youtube-studio", observe: run }}
+      />,
+    );
+    expect(button(box)).toBeDefined();
   });
 });

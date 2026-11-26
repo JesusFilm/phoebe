@@ -89,6 +89,14 @@ export function DeploymentTabPanel({
         scope={history.scope}
         cells={reading.kind === "read" ? cellsOf(reading.report) : []}
         now={now}
+        {...(history.observe === undefined || reading.kind !== "read"
+          ? {}
+          : {
+              observer: {
+                targets: observerTargetsOf(reading.report),
+                run: history.observe,
+              },
+            })}
       />
     );
     return frozen && reading.kind === "read" ? <div className="greyed">{records}</div> : records;

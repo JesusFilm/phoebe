@@ -141,8 +141,10 @@ export function summaryPieces(text: string): SummaryPiece[] {
   const pieces: SummaryPiece[] = [];
   let from = 0;
   for (const match of text.matchAll(/(?<![\w/&#])#(\d+)\b/g)) {
+    const ref = Number(match[1]);
+    if (!Number.isSafeInteger(ref) || ref < 1) continue;
     if (match.index > from) pieces.push({ text: text.slice(from, match.index) });
-    pieces.push({ ref: Number(match[1]) });
+    pieces.push({ ref });
     from = match.index + match[0].length;
   }
   if (from < text.length) pieces.push({ text: text.slice(from) });
