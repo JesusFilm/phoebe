@@ -239,6 +239,8 @@ describe("the host arm", () => {
 
   test("run refuses a suite the container cannot see", async () => {
     expect(containerSuitePath("/srv/deploy", "/srv/deploy", "bench/s.json")).toBe("bench/s.json");
+    expect(containerSuitePath("/srv/deploy", "/srv/deploy", "..s.json")).toBe("..s.json");
+    expect(containerSuitePath("/srv/deploy", "/srv/deploy", "./-s.json")).toBe("./-s.json");
     expect(() => containerSuitePath("/srv/deploy", "/srv/deploy", "../s.json")).toThrow(
       /outside the deployment directory/,
     );

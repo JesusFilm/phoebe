@@ -54,10 +54,22 @@ export const REMOTE_ROUTES = {
    * redacted before it leaves.
    */
   logs: "/api/logs",
+  /**
+   * GET, read — one page of unit history (#930): a `HistoryPage` for the
+   * filters in the query string (`cell`, `kind`, `outcome`, `provider`,
+   * `model`, `since`, `before`, `limit`).
+   */
+  history: "/api/history",
   /** POST, operate — drain every pipeline and hold the fleet down. */
   fleetStop: "/api/fleet/stop",
   /** POST, operate — release the hold and bring the fleet back up. */
   fleetStart: "/api/fleet/start",
+  /**
+   * POST, operate — start an observer run now (#937). The body is
+   * `{ tenant?, lookback? }`, the answer an {@link ObserveResponse}. A
+   * deployment from before the route answers 404, so it moves no protocol.
+   */
+  observe: "/api/observe",
 } as const;
 
 /** What a session may do: `read` sees, `operate` changes files or the store. */
@@ -131,6 +143,27 @@ export type DoctorRunResponse = { outcome: "started" | "joined" | "refused"; det
 export type FleetVerbResponse = {
   outcome: "stopped" | "started" | "unchanged" | "refused";
   detail?: string;
+};
+
+/**
+ * `POST /api/observe`'s body (#937), and what the console's "Run observer"
+ * asks for (#938). `tenant` is needed only when more than one tenant declares
+ * the observer; `lookback` is a period like `14d` that holds for this run only.
+ */
+export type ObserveRequest = { tenant?: string; lookback?: string };
+
+/**
+ * `POST /api/observe`'s answer, and what `phoebe observe` prints. `started`
+ * means the observer's pipeline has the ask and will run it on its next pass;
+ * `refused` says why not in `detail`. Nothing is queued either way.
+ */
+export type ObserveResponse = {
+  outcome: "started" | "refused";
+  detail: string;
+  /** The tenant the run is for, once one was settled on. */
+  tenant?: string;
+  /** With a refusal because a run is in flight: when that run started. */
+  runningSince?: string;
 };
 
 /**

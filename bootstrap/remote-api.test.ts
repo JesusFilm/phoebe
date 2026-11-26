@@ -3,11 +3,14 @@
 // the bearer gate's answers, the pair exchange and its budget, the stream, the
 // body cap, the operate handlers and who they say `by` is.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
+import type { HistoryPage, HistoryQuery } from "../src/contracts/history.ts";
+import { parseHistoryQuery, queryHistory, type HistorySource } from "../src/history.ts";
+import type { ObserveAsk } from "./observe.ts";
 import { CODE_LIFETIME_MS, createPendingCodes, hashCode } from "./pairing-codes.ts";
 import {
   byOf,
@@ -53,7 +56,12 @@ type Harness = {
 };
 
 async function harness(
-  opts: { verbs?: RemoteVerbs; keepAliveMs?: number; maxStreams?: number } = {},
+  opts: {
+    verbs?: RemoteVerbs;
+    keepAliveMs?: number;
+    maxStreams?: number;
+    history?: (query: HistoryQuery) => HistoryPage;
+  } = {},
 ): Promise<Harness> {
   const base = mkdtempSync(join(tmpdir(), "phoebe-api-"));
   dirs.push(base);
@@ -82,6 +90,7 @@ async function harness(
       return () => reports.listeners.delete(listener);
     },
     verbs: opts.verbs ?? {},
+    ...(opts.history !== undefined ? { history: opts.history } : {}),
     now: () => clock.now,
     log: (line) => logged.push(line),
     newId: () => "req_1",
@@ -297,6 +306,91 @@ describe("the reads", () => {
       report: unknown;
     };
     expect(again.report).toBeNull();
+  });
+
+  test("GET /api/history answers the query's page for the filters in the query string", async () => {
+    const base = mkdtempSync(join(tmpdir(), "phoebe-api-history-"));
+    dirs.push(base);
+    mkdirSync(join(base, "work"));
+    const line = (id: string, startedAt: string, outcome: string): string =>
+      `${JSON.stringify({
+        v: 1,
+        tenant: "acme/widget",
+        pipeline: "work",
+        unit: { kind: "issues", id },
+        outcome,
+        quarantined: false,
+        detail: null,
+        startedAt,
+        settledAt: null,
+        durationMs: null,
+        runBudgetMs: null,
+        provider: "claude",
+        model: "claude-opus-5-5",
+        effort: null,
+        branch: null,
+        headSha: null,
+        prNumber: null,
+        engineCommit: null,
+        agentRuns: [],
+      })}\n`;
+    writeFileSync(
+      join(base, "work", "units.jsonl"),
+      line("1", "2026-10-16T10:00:00.000Z", "failed") +
+        line("2", "2026-10-16T11:00:00.000Z", "completed") +
+        line("3", "2026-10-16T11:30:00.000Z", "failed"),
+    );
+    const sources: HistorySource[] = [{ cell: "/etc/phoebe#work", dir: join(base, "work") }];
+    const h = await harness({ history: (query) => queryHistory(sources, query) });
+    const token = await paired(h, ["read"]);
+
+    const response = await fetch(
+      `${h.url}/api/history?outcome=failed&cell=${encodeURIComponent("/etc/phoebe#work")}&limit=1`,
+      { headers: auth(token) },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const page = (await response.json()) as HistoryPage;
+    expect(page).toEqual(
+      queryHistory(
+        sources,
+        parseHistoryQuery({ outcome: "failed", cell: "/etc/phoebe#work", limit: "1" }),
+      ),
+    );
+    expect(page.records.map((record) => record.unit.id)).toEqual(["3"]);
+    expect(page.summary.units).toBe(2);
+    expect(page.retained).toEqual({ "/etc/phoebe#work": "2026-10-16T10:00:00.000Z" });
+
+    const next = (await (
+      await fetch(
+        `${h.url}/api/history?outcome=failed&limit=1&before=${encodeURIComponent(page.nextBefore!)}`,
+        { headers: auth(token) },
+      )
+    ).json()) as HistoryPage;
+    expect(next.records.map((record) => record.unit.id)).toEqual(["1"]);
+    expect(next.nextBefore).toBeNull();
+  });
+
+  test("GET /api/history refuses a session without read, a bad filter, and is 404 where no history is served", async () => {
+    const h = await harness({ history: (query) => queryHistory([], query) });
+    expect((await fetch(`${h.url}/api/history`)).status).toBe(401);
+    const operateOnly = await paired(h, ["operate"]);
+    const forbidden = await fetch(`${h.url}/api/history`, { headers: auth(operateOnly) });
+    expect(forbidden.status).toBe(403);
+    expect(await forbidden.json()).toEqual({ error: "forbidden", needs: "read" });
+
+    const token = await paired(h, ["read"], "Reader");
+    const bad = await fetch(`${h.url}/api/history?outcome=skipped`, { headers: auth(token) });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("bad-request");
+    expect(
+      (await fetch(`${h.url}/api/history`, { method: "POST", headers: auth(token) })).status,
+    ).toBe(405);
+
+    const old = await harness();
+    const oldToken = await paired(old, ["read"]);
+    const missing = await fetch(`${old.url}/api/history`, { headers: auth(oldToken) });
+    expect(missing.status).toBe(404);
   });
 
   test("GET /api/session is this session's own facts", async () => {
@@ -613,7 +707,7 @@ describe("the operate handlers", () => {
   test("a read session gets 403 on every operate route", async () => {
     const h = await harness();
     const token = await paired(h, ["read"]);
-    for (const path of ["/api/config-set", "/api/doctor-run", "/api/secrets"]) {
+    for (const path of ["/api/config-set", "/api/doctor-run", "/api/secrets", "/api/observe"]) {
       const response = await fetch(`${h.url}${path}`, {
         method: "POST",
         headers: auth(token),
@@ -893,6 +987,85 @@ describe("the console and the fleet over the API (map #690)", () => {
     expect(await response.json()).toEqual({
       outcome: "refused",
       detail: "this deployment takes no fleet stop over the API",
+    });
+  });
+});
+
+describe("POST /api/observe (#937)", () => {
+  test("needs operate, stamps `by` from the session, and answers the handler's own words", async () => {
+    const asked: ObserveAsk[] = [];
+    const h = await harness({
+      verbs: {
+        observe: (ask) => {
+          asked.push(ask);
+          return ask.tenant === "acme/other"
+            ? { outcome: "refused", detail: "acme/other does not declare the observer kind." }
+            : { outcome: "started", tenant: "acme/widget", detail: "observer run started." };
+        },
+      },
+    });
+    const reader = await paired(h, ["read"], "reader");
+    const denied = await fetch(`${h.url}/api/observe`, { method: "POST", headers: auth(reader) });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: "forbidden", needs: "operate" });
+    expect(asked).toEqual([]);
+
+    const operator = await paired(h, ["read", "operate"], "operator");
+    const started = await fetch(`${h.url}/api/observe`, {
+      method: "POST",
+      headers: { ...auth(operator), "content-type": "application/json" },
+      body: JSON.stringify({ lookback: "3d" }),
+    });
+    expect(await started.json()).toEqual({
+      outcome: "started",
+      tenant: "acme/widget",
+      detail: "observer run started.",
+    });
+    const refused = await fetch(`${h.url}/api/observe`, {
+      method: "POST",
+      headers: { ...auth(operator), "content-type": "application/json" },
+      body: JSON.stringify({ tenant: "acme/other" }),
+    });
+    expect(await refused.json()).toEqual({
+      outcome: "refused",
+      detail: "acme/other does not declare the observer kind.",
+    });
+    // An empty body is every default.
+    await fetch(`${h.url}/api/observe`, { method: "POST", headers: auth(operator) });
+    expect(asked).toEqual([
+      { tenant: null, lookback: "3d", by: "device:operator" },
+      { tenant: "acme/other", lookback: null, by: "device:operator" },
+      { tenant: null, lookback: null, by: "device:operator" },
+    ]);
+    expect(h.logged.join("\n")).toContain("device:operator asked for an observer run — refused");
+  });
+
+  test("a body with `by` or a field of the wrong type is 400, and GET is 405", async () => {
+    const h = await harness({
+      verbs: { observe: () => ({ outcome: "started", detail: "started" }) },
+    });
+    const operator = await paired(h, ["read", "operate"]);
+    for (const body of [{ by: "someone else" }, { tenant: 7 }, { lookback: ["3d"] }, []]) {
+      const response = await fetch(`${h.url}/api/observe`, {
+        method: "POST",
+        headers: { ...auth(operator), "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect((await fetch(`${h.url}/api/observe`, { headers: auth(operator) })).status).toBe(405);
+  });
+
+  test("a deployment with no handler refuses in its own words", async () => {
+    const h = await harness();
+    const operator = await paired(h, ["read", "operate"]);
+    const response = await fetch(`${h.url}/api/observe`, {
+      method: "POST",
+      headers: auth(operator),
+    });
+    expect(await response.json()).toEqual({
+      outcome: "refused",
+      detail: "this deployment takes no observer runs over the API",
     });
   });
 });

@@ -31,6 +31,7 @@ import type {
 import type { CompanionUpdate } from "./companion-update.ts";
 import type { GithubAppCreated, GithubAppRequest } from "./github-app.ts";
 import type { GithubTokenVerdict } from "./github-token.ts";
+import type { HistoryPage, HistoryQuery } from "./history.ts";
 import type { LogLine, LogsEnded } from "./container-logs.ts";
 import type {
   CompanionEnvironment,
@@ -67,6 +68,7 @@ import type {
   RevokeOutcome,
   SessionRow,
 } from "./remote-record.ts";
+import type { ObserveRequest, ObserveResponse } from "./remote-protocol.ts";
 import type { RunExit, RunLine, VerbRun, VerbRunRequest } from "./verb-run.ts";
 
 /** What was right-clicked, as much as the menu needs to know. */
@@ -202,6 +204,24 @@ export type DesktopBridge = {
      * moment, and the moment is over.
      */
     alerts: (onAlert: (event: LocalAlertEvent) => void) => () => void;
+    /**
+     * One page of the install's unit history (#931): `phoebe history --json`
+     * exec'd in its running container, the same `HistoryPage` a remote's
+     * `GET /api/history` answers. Null when the container's phoebe-agent
+     * predates the verb, so the tab can say the install is too old rather
+     * than draw an empty table. Rejects `container-not-running` when there is
+     * no container to ask.
+     */
+    history: (dir: string, query: HistoryQuery) => Promise<HistoryPage | null>;
+    /**
+     * Start an observer run on the install (#938): `phoebe observe` exec'd in
+     * its running container, which asks the bootstrapper what
+     * `POST /api/observe` asks it. A refusal is an answer, `outcome: "refused"`
+     * with the bootstrapper's reason. Null when the container's phoebe-agent
+     * predates the verb. Rejects `container-not-running` when there is no
+     * container to ask.
+     */
+    observe: (dir: string, request: ObserveRequest) => Promise<ObserveResponse | null>;
   };
   /** The verb runs — see verb-run.ts for the three rules they hold to. */
   runs: {

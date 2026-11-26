@@ -330,8 +330,10 @@ Everything is JSON. The descriptor is open; everything under `/api` takes
 | `POST /api/doctor-run`               | `operate` | `{ outcome: "started" \| "joined" \| "refused", detail? }`                                                                 |
 | `POST /api/secrets`                  | `operate` | `{ outcome, tenant, key, editId?, detail }` for `{ tenant, key, value \| null }`                                           |
 | `GET /api/logs`                      | `read`    | Server-sent events: a `backlog` event `{ lines }`, then one `line` event `{ line }` per line printed, a comment every 25 s |
+| `GET /api/history`                   | `read`    | One `HistoryPage` for the query string's `cell`, `kind`, `outcome`, `provider`, `model`, `since`, `before`, `limit`        |
 | `POST /api/fleet/stop`               | `operate` | `{ outcome: "stopped" \| "unchanged" \| "refused", detail? }`                                                              |
 | `POST /api/fleet/start`              | `operate` | `{ outcome: "started" \| "unchanged" \| "refused", detail? }`                                                              |
+| `POST /api/observe`                  | `operate` | `{ outcome: "started" \| "refused", detail, tenant?, runningSince? }` for `{ tenant?, lookback? }`                         |
 
 The pair body is `{ code, client: { label, deviceType: "desktop" | "mobile", os } }`.
 A missing, malformed, unknown, revoked or expired bearer is
@@ -344,7 +346,9 @@ Sixteen streams may be open at once; the seventeenth gets 503. No body carries
 Serve supplied one and `device:<label>` otherwise.
 
 `protocol` is the integer that moves only for a change an older client would
-misread. A client that finds a newer one than it knows stops and says so.
+misread. A client that finds a newer one than it knows stops and says so. A new
+route does not move it. `POST /api/observe` came later than the rest, and a
+deployment from before it answers 404.
 
 ### The console, and what never leaves
 

@@ -2332,3 +2332,388 @@ a.button {
 .rail-entry.remote.current {
   background: var(--chip);
 }
+
+/* ── the History tab (#931) ────────────────────────────────────────────── */
+
+.history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.run-observer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.run-observer-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.run-observer-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.run-observer-confirm input {
+  font: inherit;
+  padding: 2px 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.run-observer p {
+  margin: 0;
+  max-width: 460px;
+}
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0 10px;
+}
+
+.history-filters select {
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.history-summary,
+.history-foot {
+  font-size: 12px;
+}
+
+.history-row {
+  cursor: pointer;
+}
+
+.history-row:hover td,
+.history-row:focus-within td {
+  background: var(--chip);
+}
+
+.history-open {
+  padding: 0;
+  text-align: left;
+  font: inherit;
+}
+
+.chip.ok {
+  background: var(--ok);
+  color: #fff;
+}
+
+.chip.outcome-chip {
+  margin-left: 0;
+}
+
+/* A subscription estimate's "est." and a cost nobody reported: present, quiet. */
+.est,
+.cost-none {
+  color: var(--muted);
+}
+
+.unit-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 100vw);
+  overflow: auto;
+  padding: 18px 20px 40px;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgb(0 0 0 / 18%);
+  z-index: 900;
+}
+
+.unit-drawer h2 {
+  margin-top: 0;
+}
+
+.unit-drawer-close {
+  float: right;
+}
+
+.unit-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── history on the overview and pipelines tabs (#932) ─────────────────── */
+
+.week-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  margin: 6px 0 4px;
+}
+
+.week-tile .muted {
+  font-size: 12px;
+}
+
+.week-figure {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.week-figure.unfinished {
+  color: var(--fail);
+}
+
+.week-asof {
+  font-size: 12px;
+}
+
+.feed-detail {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.quiet.expander {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.breakdown-row > td {
+  background: var(--panel);
+}
+
+.pipeline-breakdown table th[scope="row"] {
+  font-weight: normal;
+  color: var(--muted);
+  text-align: left;
+}
+
+.outcome-bar {
+  display: flex;
+  height: 8px;
+  max-width: 360px;
+  margin: 4px 0 10px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--chip);
+}
+
+.outcome-bar span {
+  display: block;
+  height: 100%;
+}
+
+.outcome-bar .completed {
+  background: var(--ok);
+}
+
+.outcome-bar .failed {
+  background: var(--fail);
+}
+
+.outcome-bar .timed-out {
+  background: var(--warn);
+}
+
+.outcome-bar .abandoned {
+  background: var(--muted);
+}
+
+/* ── the stats button and the fleet stats page (#933) ──────────────────── */
+
+/* The gear and the chart icon side by side, each in the same 28 px box. */
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+button.rail-settings {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.rail-settings[aria-expanded="true"] {
+  background: var(--chip);
+  color: inherit;
+}
+
+.stats-card {
+  position: fixed;
+  left: 12px;
+  bottom: 52px;
+  width: min(440px, calc(100vw - 24px));
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 25%);
+  font-size: 13px;
+  z-index: 950;
+}
+
+.stats-card-head,
+.stats-page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.stats-card-head .stats-range,
+.stats-page-head .stats-range {
+  margin: 0 0 0 auto;
+}
+
+.stats-page-head h1 {
+  margin: 0;
+}
+
+.stats-figures {
+  display: flex;
+  gap: 22px;
+  margin: 10px 0;
+}
+
+.stats-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 8px 0 14px;
+}
+
+.stats-tiles .stats-figure {
+  min-width: 180px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stats-tiles h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stats-big {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.stats-bad {
+  color: var(--fail);
+}
+
+.stats-label,
+.stats-note {
+  font-size: 12px;
+}
+
+.stats-card .stats-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+
+.stats-troubles {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.fleet-stats h2 {
+  margin-top: 22px;
+}
+
+.stats-chart {
+  margin: 10px 0 4px;
+}
+
+.stats-columns {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.stats-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 40px;
+  font-size: 11px;
+}
+
+/* The column's stack: bars grow up from the baseline, a 2 px gap between them. */
+.stats-bars {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  width: 24px;
+  height: 90px;
+}
+
+.stats-bar {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+}
+
+.stats-bars .stats-bar:first-child {
+  border-radius: 4px 4px 0 0;
+}
+
+.stats-bar.ok,
+.stats-swatch.ok {
+  background: var(--ok);
+}
+
+.stats-bar.bad,
+.stats-swatch.bad {
+  background: var(--fail);
+}
+
+.stats-count {
+  margin-top: 4px;
+}
+
+.stats-legend {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.stats-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin: 0 2px 0 6px;
+  border-radius: 2px;
+}

@@ -43,6 +43,7 @@ export type {
   WorkKindOrigin,
   WorkKindReport,
   WorkKindRunCtx,
+  WorkKindRunResult,
   WorkKindSelection,
   WorkKindSkip,
   WorkspaceHandle,

@@ -59,7 +59,7 @@ describe("answerGh: reads", () => {
     });
   });
 
-  test("--jq goes through jq when there is one, and prints the JSON when there is not", () => {
+  test("--jq goes through jq when there is one, and fails when there is not", () => {
     const seen: string[] = [];
     const filtered = answerGh(
       ["issue", "view", "7", "--json", "title", "--jq", ".title"],
@@ -79,8 +79,22 @@ describe("answerGh: reads", () => {
       SNAPSHOT,
       io(),
     );
-    expect(JSON.parse(unfiltered.stdout)).toEqual({ title: "Make the widget spin" });
+    expect(unfiltered.code).toBe(1);
+    expect(unfiltered.stdout).toBe("");
     expect(unfiltered.stderr).toMatch(/no jq/);
+  });
+
+  test("a repository is matched literally, with or without the host", () => {
+    const view = (...extra: string[]) => answerGh(["issue", "view", "7", ...extra], SNAPSHOT, io());
+    expect(view("-R", "github.com/acme/widget").code).toBe(0);
+    expect(view("-R", "ghe.example.com/acme/widget").code).not.toBe(0);
+    const url = (value: string) => answerGh(["issue", "view", value], SNAPSHOT, io());
+    expect(url("https://github.com/acme/widget/issues/7").code).toBe(0);
+    expect(url("https://ghe.example.com/acme/widget/issues/7").code).not.toBe(0);
+    const dotted = { ...SNAPSHOT, repo: "acme/widget.js" };
+    const api = (path: string) => answerGh(["api", path], dotted, io());
+    expect(api("repos/acme/widget.js/issues/7").code).toBe(0);
+    expect(api("repos/acme/widgetXjs/issues/7").code).not.toBe(0);
   });
 
   test("the plain view prints title, body and, with --comments, the comments", () => {

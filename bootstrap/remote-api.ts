@@ -42,6 +42,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { chmodSync, existsSync, rmSync } from "node:fs";
 import type { ConfigEdit, ConfigEditValue, EditReceipt } from "../src/contracts/config-edit.ts";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
+import type { HistoryPage, HistoryQuery } from "../src/contracts/history.ts";
+import { parseHistoryQuery, type RawHistoryQuery } from "../src/history.ts";
 import {
   API_SOCKET_PATH,
   REMOTE_ROUTES,
@@ -49,6 +51,7 @@ import {
   type FleetVerbResponse,
   type LogsBacklog,
   type LogsLineEvent,
+  type ObserveResponse,
   type PairResponse,
   type RemoteDescriptor,
   type RemoteDeviceType,
@@ -57,6 +60,7 @@ import {
 } from "../src/contracts/remote-protocol.ts";
 import { REMOTE_CONTAINER_PORT } from "../src/config-schema.ts";
 import type { SecretOutcome } from "../src/contracts/secrets.ts";
+import { parseObserveBody, type ObserveAsk } from "./observe.ts";
 import { hashCode, normalizeCode, type PendingCodes } from "./pairing-codes.ts";
 import { bearerToken, type Sessions } from "./remote-sessions.ts";
 
@@ -100,6 +104,8 @@ export type RemoteVerbs = {
   fleetStop?: (by: string) => FleetVerbResponse;
   /** Release the hold and bring the fleet back. */
   fleetStart?: (by: string) => FleetVerbResponse;
+  /** Start an observer run now (#937), or say why not. The handler `phoebe observe` reaches. */
+  observe?: (ask: ObserveAsk) => ObserveResponse;
 };
 
 /**
@@ -120,6 +126,12 @@ export type RemoteApiDeps = {
   report: () => { report: DeploymentReport | null; builtAt: string | null };
   /** Called with a function to run on every report write; returns the unsubscribe. */
   onReport: (listener: () => void) => () => void;
+  /**
+   * One page of unit history (#930), from the same query `phoebe history`
+   * runs. Without it `/api/history` answers 404, as a deployment from before
+   * the route would.
+   */
+  history?: (query: HistoryQuery) => HistoryPage;
   /** The output to serve. Without it `/api/logs` answers 404: this deployment keeps none. */
   logs?: ApiLogs;
   verbs?: RemoteVerbs;
@@ -373,6 +385,36 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
     json(response, 200, answer);
   }
 
+  /** Start an observer run. The body is `{ tenant?, lookback? }`; `by` is the session's. */
+  async function observe(
+    request: IncomingMessage,
+    response: ServerResponse,
+    caller: Caller,
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    if (body === "too-large") return json(response, 413, { error: "body-too-large" });
+    if (typeof body === "object" && body !== null && "by" in (body as object)) {
+      return json(response, 400, { error: "bad-request" });
+    }
+    const ask = parseObserveBody(body);
+    if (ask === null) return json(response, 400, { error: "bad-request" });
+    let answer: ObserveResponse;
+    if (deps.verbs?.observe === undefined) {
+      answer = {
+        outcome: "refused",
+        detail: "this deployment takes no observer runs over the API",
+      };
+    } else {
+      try {
+        answer = deps.verbs.observe({ ...ask, by: caller.by });
+      } catch (error) {
+        answer = { outcome: "refused", detail: messageOf(error) };
+      }
+    }
+    log(`[phoebe] remote: ${caller.by} asked for an observer run — ${answer.outcome}.`);
+    json(response, 200, answer);
+  }
+
   async function configSet(
     request: IncomingMessage,
     response: ServerResponse,
@@ -577,6 +619,24 @@ export function createRemoteApi(deps: RemoteApiDeps): RemoteApi {
       if (deps.logs === undefined) return json(response, 404, { error: "no-logs" });
       return logsStream(request, response, caller, deps.logs);
     }
+    if (path === REMOTE_ROUTES.history) {
+      if (method !== "GET") return json(response, 405, { error: "method-not-allowed" });
+      if (gate(request, response, "read") === null) return;
+      if (deps.history === undefined) return json(response, 404, { error: "not-found" });
+      let query: HistoryQuery;
+      try {
+        query = parseHistoryQuery(historyParams(url.searchParams));
+      } catch (error) {
+        return json(response, 400, { error: "bad-request", detail: messageOf(error) });
+      }
+      return json(response, 200, deps.history(query));
+    }
+    if (path === REMOTE_ROUTES.observe) {
+      if (method !== "POST") return json(response, 405, { error: "method-not-allowed" });
+      const caller = gate(request, response, "operate");
+      if (caller === null) return;
+      return observe(request, response, caller);
+    }
     if (path === REMOTE_ROUTES.fleetStop || path === REMOTE_ROUTES.fleetStart) {
       if (method !== "POST") return json(response, 405, { error: "method-not-allowed" });
       const caller = gate(request, response, "operate");
@@ -709,6 +769,25 @@ function refusal(edit: ConfigEdit, why: string, at: number): EditReceipt {
     at: new Date(at).toISOString(),
     ...(edit.by !== undefined ? { by: edit.by } : {}),
   };
+}
+
+/** The history filters a query string carries; anything else in it is ignored. */
+export function historyParams(params: URLSearchParams): RawHistoryQuery {
+  const raw: RawHistoryQuery = {};
+  for (const name of [
+    "cell",
+    "kind",
+    "outcome",
+    "provider",
+    "model",
+    "since",
+    "before",
+    "limit",
+  ] as const) {
+    const value = params.get(name);
+    if (value !== null) raw[name] = value;
+  }
+  return raw;
 }
 
 /** The body as JSON, `{}` for none, or `"too-large"` past the cap. */

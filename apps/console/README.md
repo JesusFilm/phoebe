@@ -27,7 +27,7 @@ each with an **install tab** that takes one from nothing to running with buttons
 reducers, and [`src/install-page.tsx`](src/install-page.tsx) renders them. A
 browser has no bridge, so it has no installs to list.
 
-An install's other five tabs are overview, pipelines, doctor, secrets and config.
+An install's other six tabs are overview, pipelines, history, doctor, secrets and config.
 Main's local read loop execs `status --json` in the container and emits a `report`
 event ([#556](https://github.com/JesusFilm/phoebe/issues/556)), so
 [`src/deployment-tabs.tsx`](src/deployment-tabs.tsx) takes a narrowed report and

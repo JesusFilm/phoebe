@@ -1,7 +1,7 @@
-// The engine's side of the deployment report (#532) — two messages up the IPC
+// The engine's side of the deployment report (#532) — three messages up the IPC
 // channel it already has (bootstrap/engine-report-ipc.ts on the other end).
 //
-// The bootstrapper keeps one read model for the whole deployment, and two facts
+// The bootstrapper keeps one read model for the whole deployment, and three facts
 // in it are the engine's to tell:
 //
 //   - **pass** — this loop pass is over. The bootstrapper holds the arrival time
@@ -15,8 +15,12 @@
 //   - **status** — the `status.json` this pass just wrote, so the report's copy
 //     of the snapshot moves when the file does. Over IPC rather than `fs.watch`,
 //     which #501 rejected: the channel is already there and already ordered.
+//   - **record** — a unit record just landed in this pipeline's `units.jsonl`
+//     (#929). It carries nothing: the bootstrapper re-reads the file, which is
+//     the only copy that counts, and recomputes the history summary from it so
+//     the report shows the unit without waiting for the hourly recompute.
 //
-// Both are fire-and-forget. Nothing the engine does waits on them, an
+// All three are fire-and-forget. Nothing the engine does waits on them, an
 // unsupervised engine (no channel) gets a null client and sends nothing, and a
 // send that fails because the supervisor went away is swallowed — the engine's
 // work must never depend on being watched.
@@ -28,12 +32,16 @@ import type { ParentChannel } from "./slot-client.ts";
 export const REPORT_PASS = "phoebe:report:pass";
 /** This engine rewrote its `status.json`; the new snapshot rides along. */
 export const REPORT_STATUS = "phoebe:report:status";
+/** This engine appended a unit record to its history. */
+export const REPORT_RECORD = "phoebe:report:record";
 
 export type ReportClient = {
   /** Report a completed loop pass, with the cadence the next one is due on. */
   pass(pollIntervalMs: number): void;
   /** Report the snapshot as it now stands on disk. */
   snapshot(snapshot: StatusSnapshot): void;
+  /** Report that a unit record was appended to this pipeline's history. */
+  record(): void;
 };
 
 /**
@@ -59,5 +67,6 @@ export function createReportClient(parent: ParentChannel): ReportClient | null {
   return {
     pass: (pollIntervalMs) => send({ type: REPORT_PASS, pollIntervalMs }),
     snapshot: (snapshot) => send({ type: REPORT_STATUS, snapshot }),
+    record: () => send({ type: REPORT_RECORD }),
   };
 }
