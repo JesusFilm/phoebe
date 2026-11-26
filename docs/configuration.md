@@ -547,8 +547,9 @@ kinds: {
   root, not the config's directory, and the block is otherwise an ordinary
   path block — knobs, options, env vars and all. The catalog today is
   [`sentry`](work-kinds.md#sentry-triage-production-errors-opt-in) and the
-  three [dependency kinds](#the-dependency-kinds), and
-  [`skill-updates`](work-kinds.md#skill-updates-propose-newer-upstream-skills-opt-in).
+  three [dependency kinds](#the-dependency-kinds),
+  [`skill-updates`](work-kinds.md#skill-updates-propose-newer-upstream-skills-opt-in),
+  and [`observer`](work-kinds.md#observer-propose-fixes-for-what-keeps-going-wrong-opt-in).
 - **Options are the block's own root fields.** Everything beside `path` and
   the tuning knobs reaches the kind unvalidated as `ctx.options` (the kind
   validates); `path` and the knob names are reserved words a kind's options
