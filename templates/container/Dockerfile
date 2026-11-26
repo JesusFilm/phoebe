@@ -37,8 +37,9 @@
 # to compile from source, which needs the compilers and Python this full image
 # has and the slim one below does not. npm drops a failed `re2` silently, so
 # the `test -f` turns that into a failed build. Renovate's `engines` field
-# does not list Node 26 yet, so it logs an error about the version and would
-# exit 1; the engine's Renovate config remaps that one message to a warning.
+# lists Node 26 only from 26.13.0. On an older Node 26 it logs an error about
+# the version and would exit 1; the engine's Renovate config remaps that one
+# message to a warning.
 #
 # Keep this at the version the engine ships with, and bump it together with the
 # engine ref. The engine's report parser is tested against a report recorded
@@ -46,7 +47,7 @@
 # local platform experimental. Bumping it in this repo means recording that
 # report again (kinds/dependencies/sources/renovate.test.ts says how).
 FROM node:26-bookworm AS renovate-build
-ARG RENOVATE_VERSION=44.210.0
+ARG RENOVATE_VERSION=44.263.5
 RUN npm install -g --allow-scripts=re2 "renovate@${RENOVATE_VERSION}" \
  && test -f /usr/local/lib/node_modules/renovate/node_modules/re2/build/Release/re2.node
 
