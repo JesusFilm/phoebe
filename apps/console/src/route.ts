@@ -20,6 +20,7 @@ export type Route =
   | { page: "home" }
   | { page: "add" }
   | { page: "settings" }
+  | { page: "stats" }
   | { page: "setup" }
   /**
    * `console` is the remote's console (console-view.tsx), `#/r/<id>/console`:
@@ -57,6 +58,14 @@ export const SETTINGS_ROUTE: Route = { page: "settings" };
 
 export const SETTINGS_HREF = "#/settings";
 
+/**
+ * Every deployment's units and cost (#933), behind the chart icon beside the
+ * gear: the fleet stats page.
+ */
+export const STATS_ROUTE: Route = { page: "stats" };
+
+export const STATS_HREF = "#/stats";
+
 /** The hash for one remote route, and optionally one of its tabs. */
 export function remoteHref(deploymentId: string, tab?: DeploymentTab): string {
   return `#/r/${encodeURIComponent(deploymentId)}${tab === undefined ? "" : `/${tab}`}`;
@@ -87,6 +96,7 @@ export function parseRoute(hash: string): Route {
     .filter((segment) => segment !== "");
   if (segments[0] === "add" && segments[1] === undefined) return ADD_ROUTE;
   if (segments[0] === "settings" && segments[1] === undefined) return SETTINGS_ROUTE;
+  if (segments[0] === "stats" && segments[1] === undefined) return STATS_ROUTE;
   if (segments[0] === "r" && segments[1] !== undefined) {
     const tab = segments[2];
     const deploymentId = decodeURIComponent(segments[1]);

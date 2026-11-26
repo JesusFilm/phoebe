@@ -3,6 +3,7 @@
 // marker, so neither can be left out or forged by the grouping run.
 
 import type { FlaggedUnit } from "./evidence.ts";
+import { ALLOWLIST_TEXT } from "./edit.ts";
 import { CATEGORY_TEXT, type Finding } from "./findings.ts";
 import { renderFindingMarker, renderUnitsMarker } from "./proposals.ts";
 
@@ -29,7 +30,8 @@ function code(text: string): string {
 /** One evidence line: where, what, how it ended, when, and the record's own words. */
 export function evidenceLine(unit: FlaggedUnit): string {
   const { record } = unit;
-  const pr = record.prNumber === null ? "" : ` (PR #${record.prNumber})`;
+  const prNumber = unit.pr?.number ?? record.prNumber;
+  const pr = prNumber === null ? "" : ` (PR #${prNumber})`;
   const when = record.startedAt.slice(0, 16).replace("T", " ");
   const detail =
     record.detail === null ? "" : `: ${defang(oneLine(record.detail, EVIDENCE_DETAIL_MAX))}`;
@@ -43,18 +45,27 @@ export function renderTitle(finding: Finding): string {
   return `Observer: ${finding.title}`;
 }
 
-/** The issue a new proposal opens with. */
+/**
+ * The body a new proposal opens with: an issue, or a PR when PR mode opened
+ * one. `attempt` is set on an issue PR mode meant to be a PR.
+ */
 export function renderBody(opts: {
   finding: Finding;
   units: readonly FlaggedUnit[];
   lookback: string;
   regressionOf: number | null;
+  as?: "issue" | "pr";
+  attempt?: EditAttemptNote;
 }): string {
   const { finding, units } = opts;
+  const pr = opts.as === "pr";
   const lines: string[] = [renderFindingMarker(finding.key), ""];
   lines.push(
-    "> Proposed by Phoebe's observer from its unit history. Phoebe does not work this " +
-      "until a person decides it should and gives it the ready label.",
+    pr
+      ? "> Proposed by Phoebe's observer from its unit history. A person reviews it and " +
+          "decides whether it merges."
+      : "> Proposed by Phoebe's observer from its unit history. Phoebe does not work this " +
+          "until a person decides it should and gives it the ready label.",
     "",
   );
   if (opts.regressionOf !== null) {
@@ -74,8 +85,9 @@ export function renderBody(opts: {
     "",
   );
   if (finding.fix !== "") {
-    lines.push("## Suggested fix", "", defang(finding.fix), "");
+    lines.push(pr ? "## The fix" : "## Suggested fix", "", defang(finding.fix), "");
   }
+  if (opts.attempt !== undefined) lines.push(...renderAttempt(opts.attempt));
   lines.push(
     "## Evidence",
     "",
@@ -129,4 +141,69 @@ export function renderSummary(tally: RunTally, coverage: string): string {
   if (tally.skipped > 0) parts.push(`${tally.skipped} skipped`);
   if (parts.length === 0) parts.push("nothing filed");
   return `${parts.join(", ")}; ${coverage}`;
+}
+/** Why a finding PR mode would have opened as a PR was filed as an issue instead. */
+export type EditAttemptNote =
+  | { reason: "empty" }
+  | { reason: "outside"; changed: readonly string[]; outside: readonly string[] }
+  | { reason: "untracked"; untracked: readonly string[]; diff: string };
+
+/** The most characters of a suggested diff an issue quotes. */
+export const DIFF_MAX = 40_000;
+
+/** Break only the markers this kind reads, so a quoted diff stays applicable. */
+function defangMarkers(text: string): string {
+  return text.replace(/<!--(\s*phoebe-observer)/g, "&lt;!--$1");
+}
+
+/** A fenced block longer than any backtick run inside it. */
+function fenced(text: string, lang: string): string {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}${lang}\n${text.endsWith("\n") ? text : `${text}\n`}${fence}`;
+}
+
+function pathList(paths: readonly string[]): string[] {
+  return paths.map((path) => `- ${code(path)}`);
+}
+
+/** The section an issue that PR mode fell back to opens its account with. */
+export function renderAttempt(note: EditAttemptNote): string[] {
+  const lines = ["## Why this is an issue and not a PR", ""];
+  if (note.reason === "empty") {
+    lines.push("The edit run for this finding changed nothing, so there was no PR to open.", "");
+    return lines;
+  }
+  if (note.reason === "outside") {
+    lines.push(
+      "The edit run for this finding changed paths an observer PR may not touch, so " +
+        "nothing was pushed. Outside the allowlist:",
+      "",
+      ...pathList(note.outside),
+      "",
+      "Every path it changed:",
+      "",
+      ...pathList(note.changed),
+      "",
+      `An observer PR may change only ${ALLOWLIST_TEXT.join(", ")}.`,
+      "",
+    );
+    return lines;
+  }
+  const diff =
+    note.diff.length > DIFF_MAX
+      ? `${note.diff.slice(0, DIFF_MAX)}\n… cut at ${DIFF_MAX} of ${note.diff.length} characters\n`
+      : note.diff;
+  lines.push(
+    "The fix edits files this repository does not track at these paths, so a PR here " +
+      "would change files nothing reads:",
+    "",
+    ...pathList(note.untracked),
+    "",
+    "Apply the suggested diff where the governing files live:",
+    "",
+    fenced(defangMarkers(diff), "diff"),
+    "",
+  );
+  return lines;
 }

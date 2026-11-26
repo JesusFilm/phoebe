@@ -11,7 +11,9 @@ import {
   renderCoverage,
   RETRY_AFTER_FAILURE_MS,
   unitKeyOf,
+  unitsSince,
 } from "./evidence.ts";
+import type { PrSignals } from "./pr-outcomes.ts";
 
 function unitRecord(overrides: Partial<UnitRecord> = {}): UnitRecord {
   return {
@@ -55,36 +57,113 @@ describe("flags", () => {
 
   test("only units inside the lookback count, newest first", () => {
     const flagged = flagUnits(
+      unitsSince(
+        [
+          {
+            pipeline: "work",
+            records: [
+              unitRecord({ outcome: "failed", startedAt: daysAgo(20) }),
+              unitRecord({
+                outcome: "failed",
+                startedAt: daysAgo(3),
+                unit: { kind: "issues", id: "a" },
+              }),
+              unitRecord({ startedAt: daysAgo(2) }),
+            ],
+          },
+          {
+            pipeline: "intake",
+            records: [
+              unitRecord({
+                outcome: "timed-out",
+                startedAt: daysAgo(1),
+                unit: { kind: "sentry", id: "b" },
+              }),
+            ],
+          },
+        ],
+        new Date(now.getTime() - 14 * DAY),
+      ),
+    );
+    expect(flagged.map((unit) => [unit.pipeline, unit.record.unit.id, unit.flags])).toEqual([
+      ["intake", "b", ["timed-out"]],
+      ["work", "a", ["failed"]],
+    ]);
+  });
+
+  test("a settled PR's flags join the record's, and carry its signals", () => {
+    const signals: PrSignals = {
+      number: 7,
+      state: "closed",
+      changesRequested: 0,
+      reviewThreads: 0,
+      outsideCommits: 0,
+      failedRuns: 0,
+      hoursToMerge: null,
+      revertedBy: null,
+    };
+    const units = unitsSince(
       [
         {
           pipeline: "work",
           records: [
-            unitRecord({ outcome: "failed", startedAt: daysAgo(20) }),
             unitRecord({
               outcome: "failed",
               startedAt: daysAgo(3),
-              unit: { kind: "issues", id: "a" },
+              unit: { kind: "checks", id: "pr:7" },
             }),
-            unitRecord({ startedAt: daysAgo(2) }),
+            unitRecord({ startedAt: daysAgo(2), unit: { kind: "issues", id: "issue:6" } }),
+            unitRecord({ startedAt: daysAgo(1), unit: { kind: "issues", id: "issue:9" } }),
           ],
         },
+      ],
+      new Date(now.getTime() - 14 * DAY),
+    );
+    const flagged = flagUnits(units, {
+      onProposal: () => false,
+      prOutcome: (unit) =>
+        unit.record.unit.id === "issue:9"
+          ? undefined
+          : { proposal: false, signals, flags: ["closed-unmerged"] },
+    });
+    expect(flagged.map((unit) => [unit.record.unit.id, unit.flags, unit.pr?.number])).toEqual([
+      ["issue:6", ["closed-unmerged"], 7],
+      ["pr:7", ["failed", "closed-unmerged"], 7],
+    ]);
+  });
+
+  test("a unit on an observer proposal is never flagged, whatever its record or PR says", () => {
+    const units = unitsSince(
+      [
         {
-          pipeline: "intake",
+          pipeline: "work",
           records: [
             unitRecord({
+              outcome: "failed",
+              startedAt: daysAgo(3),
+              unit: { kind: "issues", id: "issue:41" },
+            }),
+            unitRecord({
               outcome: "timed-out",
+              startedAt: daysAgo(2),
+              unit: { kind: "reviews", id: "pr:42" },
+            }),
+            unitRecord({
+              outcome: "failed",
               startedAt: daysAgo(1),
-              unit: { kind: "sentry", id: "b" },
+              unit: { kind: "issues", id: "issue:5" },
             }),
           ],
         },
       ],
       new Date(now.getTime() - 14 * DAY),
     );
-    expect(flagged.map((unit) => [unit.pipeline, unit.record.unit.id, unit.flags])).toEqual([
-      ["intake", "b", ["timed-out"]],
-      ["work", "a", ["failed"]],
-    ]);
+    const flagged = flagUnits(units, {
+      onProposal: (unit) => unit.record.unit.id === "issue:41",
+      prOutcome: (unit) =>
+        unit.record.unit.id === "pr:42" ? { proposal: true, signals: null, flags: [] } : undefined,
+    });
+    expect(flagged.map((unit) => unit.record.unit.id)).toEqual(["issue:5"]);
   });
 
   test("a unit's key is stable, and differs for another run of the same ref", () => {

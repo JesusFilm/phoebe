@@ -23,13 +23,22 @@
 // and renders through one component here (#527 §11, §16), so a refusal reads the
 // same either way — which is the point of the fingerprint being on both arms.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { EditReceipt } from "phoebe-agent/contracts";
 import { age } from "./facts.ts";
+import { NeedsALook, PipelineBreakdown, PipelineWeek, WeekCard } from "./history-glance.tsx";
 import { HistoryTab } from "./history-tab.tsx";
 import type { HistoryReader } from "./history.ts";
 import { observerTargetsOf, type ObserveRunner } from "./observer.ts";
-import { bootstrapperOf, cellsOf, childrenOf, tenantsOf, type ReportReading } from "./report.ts";
+import {
+  bootstrapperOf,
+  cellsOf,
+  childrenOf,
+  fleetHistoryOf,
+  historyOf,
+  tenantsOf,
+  type ReportReading,
+} from "./report.ts";
 import type { ConfigReading, ConnectionCard, DeploymentTab } from "./tabs.ts";
 
 export function DeploymentTabPanel({
@@ -42,6 +51,7 @@ export function DeploymentTabPanel({
   writes = {},
   overview,
   history,
+  onTab,
   frozen = false,
 }: {
   tab: DeploymentTab;
@@ -66,6 +76,8 @@ export function DeploymentTabPanel({
    * only with it, and only for a tenant the report says declares the observer.
    */
   history?: { reader: HistoryReader; scope: string; observe?: ObserveRunner };
+  /** Switches the page to another tab: the overview's feed links to the History tab. */
+  onTab?: (tab: DeploymentTab) => void;
   /** The report is the last one received, not a current one: grey it (map #690). */
   frozen?: boolean;
 }) {
@@ -101,12 +113,18 @@ export function DeploymentTabPanel({
       case "overview":
         return (
           <>
+            <OverviewHistory
+              reading={reading}
+              now={now}
+              {...(history === undefined ? {} : { history })}
+              {...(onTab === undefined ? {} : { onHistory: () => onTab("history") })}
+            />
             <OverviewTab reading={reading} connection={connection} now={now} />
             {overview}
           </>
         );
       case "pipelines":
-        return <PipelinesTab reading={reading} />;
+        return <PipelinesTab reading={reading} now={now} />;
       case "history":
         return history === undefined ? (
           <section>
@@ -148,9 +166,45 @@ const TAB_HEADINGS: Record<DeploymentTab, string> = {
 };
 
 /**
+ * The top of the overview (#932): the 7-day card off the report's summary, and
+ * under it the units that need a look, which is the one part that reads records.
+ * A report with no summary gets the card's own word for that and no feed, since
+ * a deployment that cannot sum its units cannot list them either.
+ */
+function OverviewHistory({
+  reading,
+  now,
+  history,
+  onHistory,
+}: {
+  reading: Extract<ReportReading, { kind: "read" }>;
+  now: Date;
+  history?: { reader: HistoryReader; scope: string };
+  onHistory?: () => void;
+}) {
+  const summary = fleetHistoryOf(reading.report);
+  return (
+    <>
+      <WeekCard summary={summary} now={now} />
+      {summary === null || history === undefined ? null : (
+        <NeedsALook
+          reader={history.reader}
+          scope={history.scope}
+          asOf={summary.asOf}
+          now={now}
+          showTenant={tenantsOf(reading.report).length > 1}
+          {...(onHistory === undefined ? {} : { onHistory })}
+        />
+      )}
+    </>
+  );
+}
+
+/**
  * The overview: where this deployment is reached, what engine it is running, and
- * where it stands with a relay. The connection card comes first because it is
- * the question an operator who just opened the page is asking.
+ * where it stands with a relay. Under the history card, the connection card
+ * comes first because it is the question an operator who just opened the page
+ * is asking.
  */
 function OverviewTab({
   reading,
@@ -237,10 +291,30 @@ function OverviewTab({
  * One row per (tenant × pipeline) cell — the same matrix the fleet page draws as
  * a bar, with the words spelled out. Every value is a fact the deployment
  * derived and wrote down (#501); nothing here is recomputed.
+ *
+ * Each row's last three columns are its unit history over 7 days, and the row
+ * opens into the full breakdown the report carries for it (#932). The first
+ * row arrives open.
  */
-function PipelinesTab({ reading }: { reading: Extract<ReportReading, { kind: "read" }> }) {
+function PipelinesTab({
+  reading,
+  now,
+}: {
+  reading: Extract<ReportReading, { kind: "read" }>;
+  now: Date;
+}) {
   const cells = cellsOf(reading.report);
   const children = childrenOf(reading.report);
+  // Null until the operator opens or closes a row: until then the first row is
+  // open, whenever the cells arrive.
+  const [chosen, setChosen] = useState<ReadonlySet<string> | null>(null);
+  const open = chosen ?? new Set(cells[0] === undefined ? [] : [cells[0].id]);
+  const toggle = (id: string): void => {
+    const after = new Set(open);
+    if (after.has(id)) after.delete(id);
+    else after.add(id);
+    setChosen(after);
+  };
 
   if (cells.length === 0) {
     return (
@@ -261,16 +335,31 @@ function PipelinesTab({ reading }: { reading: Extract<ReportReading, { kind: "re
             <th>Pipeline</th>
             <th>State</th>
             <th>Child</th>
+            <th>Units, 7 days</th>
+            <th>Did not complete</th>
+            <th>Cost, 7 days</th>
           </tr>
         </thead>
         <tbody>
           {cells.map((cell) => {
             const child = children.get(cell.id);
-            return (
+            const summary = historyOf(cell);
+            const expanded = open.has(cell.id);
+            const breakdown = `breakdown-${cell.id}`;
+            return [
               <tr key={cell.id}>
                 <td className="mono">{cell.tenant?.path ?? cell.tenant?.id ?? "—"}</td>
                 <td>
-                  {cell.pipeline}
+                  <button
+                    type="button"
+                    className="quiet expander"
+                    aria-expanded={expanded}
+                    aria-controls={breakdown}
+                    title={expanded ? "Hide its history" : "Show its history"}
+                    onClick={() => toggle(cell.id)}
+                  >
+                    {expanded ? "▾" : "▸"} {cell.pipeline}
+                  </button>
                   {cell.disabled ? <span className="chip">disabled</span> : null}
                 </td>
                 <td>
@@ -292,8 +381,16 @@ function PipelinesTab({ reading }: { reading: Extract<ReportReading, { kind: "re
                     </>
                   )}
                 </td>
-              </tr>
-            );
+                <PipelineWeek summary={summary} />
+              </tr>,
+              expanded ? (
+                <tr key={`${cell.id}-history`} id={breakdown} className="breakdown-row">
+                  <td colSpan={7}>
+                    <PipelineBreakdown summary={summary} now={now} />
+                  </td>
+                </tr>
+              ) : null,
+            ];
           })}
         </tbody>
       </table>

@@ -256,8 +256,8 @@ install's own page: the install tab, and six more.
 
 | Tab           | What it answers                                                                                                                                                                                          |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Overview**  | The engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                                                                                        |
-| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause.                                                                                        |
+| **Overview**  | The last 7 days and the units that need a look, then the engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                                   |
+| **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause, its last 7 days. A row opens into its unit history.                                    |
 | **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit. **Run observer** starts an observer run when a tenant declares the kind. |
 | **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                                                                                              |
 | **Secrets**   | Which keys each tenant reads, whether each is set, and where the value came from. Never a value.                                                                                                         |
@@ -320,6 +320,43 @@ run started. When the run settles the tab reads its page again, and the run
 appears like any other unit. The drawer shows its summary, with each `#N`
 linked to that issue or PR. A deployment from before manual observer runs says
 it is too old to run the observer.
+
+The overview opens with a card for the last 7 days. It shows how many units
+ran and how many a day, what they cost, and how many did not complete. The
+card reads the history summary the report carries, so drawing it fetches no
+records. Under it, "Needs a look" lists up to six units from the last 7 days
+that failed, timed out or were abandoned, newest first. Each one opens the
+same drawer as the History tab, and the link under the list opens the History
+tab. The list is the one part of the overview that reads records. It asks
+again when the report's summary moves, which happens when a unit is recorded.
+
+On the pipelines tab each row shows its units, how many did not complete and
+its cost over the last 7 days. The pipeline's name opens a breakdown of the
+last 24 hours beside the last 7 days: each outcome, cost, tokens, and the
+units with no cost reported or partial usage. The first pipeline arrives
+open. A pipeline whose units reported no cost reads "tokens only".
+
+A chart icon sits beside the settings gear at the foot of the rail. Rest the
+pointer on it for half a second and a card opens with totals across every
+deployment the console knows: API spend, the subscription estimate, units, and
+units that did not complete, for the last 24 hours or the last 7 days, with one
+line per deployment. The card stays open while the pointer moves onto it, and
+closes 300 ms after the pointer leaves both.
+
+Clicking the icon opens the fleet stats page, at `#/stats`. It has the same four
+figures as tiles, a chart of units per day over the week, a table by deployment,
+a table by model, and the five most expensive units. Each of those units opens
+the drawer the History tab uses. Choosing an install on the rail leaves the page.
+
+The totals and the table by deployment add up each deployment's report summary.
+The console never recomputes them. A deployment whose report has no summary runs
+an engine from before unit history. It is listed as too old and left out of the
+totals, because counting it as zero would say it ran nothing. A folder on this
+machine that is also paired is counted once. The chart, the table by model and
+the most expensive units need the records themselves, so the page reads each
+deployment's history for the window when it opens, up to 1,000 units each. API
+spend and the subscription estimate sit side by side on the card, the tiles and
+every table, and are never added together.
 
 ## Alerting
 
@@ -392,8 +429,7 @@ machine that holds the folder.
 
 ## Not here yet
 
-The unit history overview card, the per-pipeline breakdown and the fleet stats
-page, and a mobile companion, which will scan the same QR and speak the same
-API as the desktop one. Recorded against
+A mobile companion, which will scan the same QR and speak the same API as the
+desktop one. Recorded against
 [the console map](https://github.com/JesusFilm/phoebe/issues/497) and
 [the remote-access map](https://github.com/JesusFilm/phoebe/issues/690).

@@ -29,6 +29,8 @@ import type {
   HistoryPage,
   HistoryQuery,
   HistoryRecord,
+  HistorySummary,
+  HistoryWindow,
   ObserveRequest,
   ObserveResponse,
   InstallDirectoryFacts,
@@ -653,5 +655,35 @@ export function historyPage(
     nextBefore: null,
     retained: { "/etc/phoebe#work": ago(30 * 86_400) },
     ...overrides,
+  };
+}
+
+/** One window of a unit history summary: ten units, one of them failed, on an API key. */
+export function historyWindow(overrides: Partial<HistoryWindow> = {}): HistoryWindow {
+  return {
+    units: 10,
+    outcomes: { completed: 9, failed: 1, "timed-out": 0, abandoned: 0 },
+    quarantined: 0,
+    costUsd: { api: 4.2, subscriptionEstimate: 0 },
+    unitsWithoutCost: 0,
+    unitsWithPartialUsage: 0,
+    tokens: { input: 123_000, output: 45_000, cacheRead: 2_100_000, cacheWrite: 80_000 },
+    ...overrides,
+  };
+}
+
+/** A unit history summary (#929) as the report carries it, summed an hour ago. */
+export function historySummary(
+  overrides: { last24h?: Partial<HistoryWindow>; last7d?: Partial<HistoryWindow> } = {},
+): HistorySummary {
+  return {
+    asOf: ago(3600),
+    last24h: historyWindow({
+      units: 2,
+      outcomes: { completed: 2, failed: 0, "timed-out": 0, abandoned: 0 },
+      costUsd: { api: 0.84, subscriptionEstimate: 0 },
+      ...overrides.last24h,
+    }),
+    last7d: historyWindow(overrides.last7d),
   };
 }

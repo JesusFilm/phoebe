@@ -1436,6 +1436,37 @@ describe("issue filing surface (sentry kind)", () => {
     );
   });
 
+  test("createPullRequest streams the body on stdin and reads the number off the printed URL", () => {
+    const { github, calls } = clientWith(["https://github.com/acme/widget/pull/57\n"]);
+    expect(
+      github.createPullRequest({
+        head: "phoebe/observer/x",
+        base: "main",
+        title: "Observer: x",
+        body: "the body",
+      }),
+    ).toBe(57);
+    expect(calls[0]?.args).toEqual([
+      "pr",
+      "create",
+      "--head",
+      "phoebe/observer/x",
+      "--base",
+      "main",
+      "--title",
+      "Observer: x",
+      "--body-file",
+      "-",
+      "-R",
+      "acme/widget",
+    ]);
+    expect(calls[0]?.input).toBe("the body");
+    const silent = clientWith(["nothing useful"]);
+    expect(() =>
+      silent.github.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
+    ).toThrow("did not print a PR URL");
+  });
+
   test("issueState reads the REST close reason", () => {
     const { github, calls } = clientWith([
       JSON.stringify({
@@ -1499,18 +1530,25 @@ describe("issue filing surface (sentry kind)", () => {
             number: 7,
             body: "m",
             state: "closed",
+            closed_at: "2026-09-02T00:00:00Z",
             pull_request: { merged_at: "2026-09-02T00:00:00Z" },
           },
-          { number: 8, body: null, state: "closed", pull_request: { merged_at: null } },
+          {
+            number: 8,
+            body: null,
+            state: "closed",
+            closed_at: "2026-09-03T00:00:00Z",
+            pull_request: { merged_at: null },
+          },
           { number: 9, body: "o", state: "open", pull_request: {} },
           { number: 10, body: "issue", state: "open" },
         ],
       }),
     ]);
     expect(github.listPrsMentioning("phoebe-dependencies")).toEqual([
-      { number: 7, body: "m", state: "closed", merged: true },
-      { number: 8, body: "", state: "closed", merged: false },
-      { number: 9, body: "o", state: "open", merged: false },
+      { number: 7, body: "m", state: "closed", merged: true, closedAt: "2026-09-02T00:00:00Z" },
+      { number: 8, body: "", state: "closed", merged: false, closedAt: "2026-09-03T00:00:00Z" },
+      { number: 9, body: "o", state: "open", merged: false, closedAt: null },
     ]);
     expect(calls[0]?.args[1]).toBe(
       `search/issues?q=${encodeURIComponent('repo:acme/widget "phoebe-dependencies" in:body is:pr')}&per_page=100&page=1&sort=created&order=desc`,
@@ -1631,5 +1669,159 @@ describe("the bench selection reads (#939)", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0]?.args).not.toContain("cursor=c1");
     expect(calls[1]?.args).toContain("cursor=c1");
+  });
+});
+
+describe("the observer's PR outcome reads (#935)", () => {
+  const rawPr = (number: number) => ({
+    number,
+    state: number % 2 === 0 ? "MERGED" : "CLOSED",
+    createdAt: "2026-11-02T00:00:00Z",
+    mergedAt: number % 2 === 0 ? "2026-11-03T00:00:00Z" : null,
+    closedAt: "2026-11-03T00:00:00Z",
+    headRefName: `phoebe/issue-${number}`,
+    body: null,
+    mergeCommit: number % 2 === 0 ? { oid: "e".repeat(40) } : null,
+    labels: { nodes: [{ name: "phoebe:observer" }] },
+    closingIssuesReferences: { nodes: [{ number: 5 }] },
+    reviews: { totalCount: 1 },
+    reviewThreads: { totalCount: 4 },
+    commits: {
+      totalCount: 2,
+      nodes: [
+        {
+          commit: {
+            oid: "a".repeat(40),
+            author: { name: "Phoebe", email: "p@example.com" },
+            parents: { totalCount: 1 },
+          },
+        },
+      ],
+    },
+  });
+  const batch = (numbers: number[]) =>
+    JSON.stringify({
+      data: {
+        repository: Object.fromEntries(
+          numbers.map((number, index) => [`p${index}`, rawPr(number)]),
+        ),
+      },
+    });
+  const argOf = (args: readonly string[], name: string): string | undefined =>
+    args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
+
+  test("observedPrs reads ten PRs per GraphQL query, so twenty cost two", () => {
+    const numbers = Array.from({ length: 20 }, (_, index) => 100 + index);
+    const { github, calls } = clientWith([batch(numbers.slice(0, 10)), batch(numbers.slice(10))]);
+    const prs = github.observedPrs(numbers);
+    expect(calls).toHaveLength(2);
+    expect(prs.map((pr) => pr.number)).toEqual(numbers);
+    expect(argOf(calls[0]!.args, "n9")).toBe("109");
+    expect(argOf(calls[1]!.args, "n0")).toBe("110");
+    expect(argOf(calls[0]!.args, "query")).toContain("p9: pullRequest(number:$n9) { ...O }");
+    expect(argOf(calls[0]!.args, "query")).not.toContain("statusCheckRollup");
+    expect(prs[0]).toEqual({
+      number: 100,
+      state: "merged",
+      createdAt: "2026-11-02T00:00:00Z",
+      mergedAt: "2026-11-03T00:00:00Z",
+      closedAt: "2026-11-03T00:00:00Z",
+      headRefName: "phoebe/issue-100",
+      mergeCommitOid: "e".repeat(40),
+      body: "",
+      labels: ["phoebe:observer"],
+      closingIssues: [5],
+      changesRequested: 1,
+      reviewThreads: 4,
+      commits: [
+        { oid: "a".repeat(40), authorName: "Phoebe", authorEmail: "p@example.com", parents: 1 },
+      ],
+      commitsTruncated: true,
+    });
+    expect(prs[1]?.state).toBe("closed");
+  });
+
+  test("branchPrs asks for every branch in one query, as variables", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify({
+        data: {
+          r0: {
+            pullRequests: {
+              nodes: [{ number: 7, createdAt: "2026-11-02T00:00:00Z", closedAt: null }],
+            },
+          },
+          r1: { pullRequests: { nodes: [] } },
+        },
+      }),
+    ]);
+    const found = github.branchPrs(["phoebe/issue-6", 'odd"branch']);
+    expect(calls).toHaveLength(1);
+    expect(argOf(calls[0]!.args, "b1")).toBe('odd"branch');
+    expect(argOf(calls[0]!.args, "query")).not.toContain("odd");
+    expect([...found]).toEqual([
+      ["phoebe/issue-6", [{ number: 7, createdAt: "2026-11-02T00:00:00Z", closedAt: null }]],
+      ['odd"branch', []],
+    ]);
+  });
+
+  test("revertPrs is one search of this repo's PRs titled Revert", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify({
+        data: {
+          search: {
+            nodes: [
+              {
+                number: 57,
+                title: 'Revert "x"',
+                body: "Reverts acme/widget#7",
+                headRefName: "revert-7-phoebe/issue-6",
+                merged: true,
+              },
+              {},
+            ],
+          },
+        },
+      }),
+    ]);
+    expect(github.revertPrs("2026-11-01")).toEqual([
+      {
+        number: 57,
+        title: 'Revert "x"',
+        body: "Reverts acme/widget#7",
+        headRefName: "revert-7-phoebe/issue-6",
+        merged: true,
+      },
+    ]);
+    expect(argOf(calls[0]!.args, "q")).toBe(
+      "repo:acme/widget is:pr Revert in:title created:>=2026-11-01",
+    );
+    expect(argOf(calls[0]!.args, "owner")).toBeUndefined();
+  });
+
+  test("branchWorkflowRuns is one REST call per branch", () => {
+    const { github, calls } = clientWith([
+      JSON.stringify({
+        workflow_runs: [
+          {
+            name: "ready",
+            head_sha: "a".repeat(40),
+            conclusion: "failure",
+            created_at: "2026-11-02T01:00:00Z",
+          },
+        ],
+      }),
+    ]);
+    expect(github.branchWorkflowRuns("phoebe/issue-6")).toEqual([
+      {
+        name: "ready",
+        headSha: "a".repeat(40),
+        conclusion: "failure",
+        createdAt: "2026-11-02T01:00:00Z",
+      },
+    ]);
+    expect(calls[0]?.args).toEqual([
+      "api",
+      "repos/acme/widget/actions/runs?branch=phoebe%2Fissue-6&per_page=100",
+    ]);
   });
 });

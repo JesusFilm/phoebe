@@ -297,6 +297,7 @@ export function InstallPage({
                 scope: install.dir,
                 observe: localObserve(bridge, install.dir),
               }}
+              onTab={setTab}
               overview={
                 <LocalDevices
                   install={install}

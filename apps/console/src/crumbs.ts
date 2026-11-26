@@ -40,6 +40,7 @@ export function routeCrumbs(input: {
     return ["This machine", open.name, tenant === null ? "Console" : tenant.split("/").pop()!];
   }
   if (route.page === "settings") return ["Settings"];
+  if (route.page === "stats") return ["Every deployment"];
   if (route.page === "setup") return ["Set up this machine"];
   return ["Home"];
 }

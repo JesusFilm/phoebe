@@ -184,6 +184,7 @@ export function RemotePage({
             scope: record.deploymentId,
             observe: client.observe,
           }}
+          onTab={onTab}
           empty={
             <p className="muted">
               {row.tone === "blocked"
