@@ -137,6 +137,17 @@ describe("URL credentials", () => {
     const line = "https://git@github.com/a/b.git and https://sentry.io/acme/issues/9/";
     expect(redactSecretShapes(line)).toBe(line);
   });
+
+  test("an empty username still loses its password", () => {
+    expect(redactSecretShapes(`https://:${FAKE_OPAQUE}@host/repo`)).toBe(
+      `https://${REDACTED}@host/repo`,
+    );
+  });
+
+  test("an @ in a query or fragment is not read as userinfo", () => {
+    const line = "https://example.com:443?email=alice@example.net/help and https://h:1#a:b@c";
+    expect(redactSecretShapes(line)).toBe(line);
+  });
 });
 
 describe("redactSecretShapes", () => {

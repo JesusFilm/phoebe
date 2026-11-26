@@ -53,9 +53,11 @@ const AUTHORIZATION = /\b([Aa]uthorization:\s*(?:[A-Za-z]+\s+)?)[A-Za-z0-9._~+/=
  * `https://user:secret@host` — a credential carried in a URL, which is how git
  * is handed a token (`x-access-token:<token>@github.com`) and how a failed git
  * command then quotes it back in its error. The scheme and host stay, the whole
- * userinfo goes: whatever shape the secret has, it sits before the `@`.
+ * userinfo goes: whatever shape the secret has, it sits before the `@`. The
+ * username may be empty (`https://:secret@host`); neither half spans a `/`,
+ * `?` or `#`, so an `@` in a query (`host:443?email=a@b`) is not read as one.
  */
-const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:]*:[^\s/?#@]+@/gi;
 
 /** `SOME_TOKEN=value` printed outright: the key stays, the value goes. */
 const ASSIGNMENT =

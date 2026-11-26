@@ -269,6 +269,19 @@ describe("secrets never leave in a report", () => {
     expect(sent).toContain("@github.com/a/b.git");
   });
 
+  test("the error class, context tags and release are scrubbed too", () => {
+    const error = new Error("x");
+    error.name = `Leak ${pat}`;
+    const payload = buildCrashPayload(
+      { phase: "boot", level: "error", error, tenant: `t-${pat}` },
+      { ...context, engineRef: `https://u:${opaque}@h/r`, engineSha: pat },
+      { includeRef: true, now: NOW, eventId: "e1" },
+    );
+    const sent = JSON.stringify(payload);
+    expect(sent).not.toContain(pat);
+    expect(sent).not.toContain(opaque);
+  });
+
   test("a secret value this process holds is scrubbed in any shape", async () => {
     const posts: string[] = [];
     const fetchFn: FetchLike = async (_url, init) => {

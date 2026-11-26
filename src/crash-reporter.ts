@@ -168,12 +168,15 @@ export function buildCrashPayload(
     credentialArm: context.credentialArm ?? "unknown",
     tenant: opts.includeRef ? (event.tenant ?? "none") : "redacted",
   };
-  if (opts.includeRef && event.ref !== undefined) tags["ref"] = redact(event.ref);
+  if (opts.includeRef && event.ref !== undefined) tags["ref"] = event.ref;
   for (const [key, raw] of Object.entries(event.tags ?? {})) {
     if (raw === undefined || raw === null) continue;
-    tags[key] = redact(String(raw));
+    tags[key] = String(raw);
   }
-  const exception: Record<string, unknown> = { type, value: redact(value) };
+  // Every tag, the process ones included: a ref or version string is only
+  // trusted not to hold a secret until the day one does.
+  for (const key of Object.keys(tags)) tags[key] = redact(tags[key]!);
+  const exception: Record<string, unknown> = { type: redact(type), value: redact(value) };
   if (stack !== null) {
     exception["stacktrace"] = { frames: parseStackFrames(redact(stack)) };
   }
@@ -183,7 +186,7 @@ export function buildCrashPayload(
     platform: "node",
     logger: "phoebe",
     level: event.level,
-    ...(context.engineSha !== null ? { release: context.engineSha } : {}),
+    ...(context.engineSha !== null ? { release: redact(context.engineSha) } : {}),
     tags,
     exception: { values: [exception] },
   };
