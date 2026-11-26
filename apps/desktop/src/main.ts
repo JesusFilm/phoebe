@@ -56,6 +56,10 @@ import type {
   HarnessReport,
   HarnessUpdate,
   HarnessUpdateOutcome,
+  HistoryPage,
+  HistoryQuery,
+  ObserveRequest,
+  ObserveResponse,
   ToolAddOutcome,
 } from "phoebe-agent/contracts";
 import { createCompanionAlerts } from "./alerting.ts";
@@ -88,6 +92,8 @@ import { repoSlugArg, verifyGithubToken } from "./github-token.ts";
 import { CONTAINER_UID, grantEnvAccess } from "./env-access.ts";
 import { tenantFilesOf } from "./tenant-files.ts";
 import { createHarness } from "./harness.ts";
+import { readContainerHistory } from "./history-read.ts";
+import { runContainerObserve } from "./observe-run.ts";
 import { allInstallFacts, directoryFactsWithAccess, installFacts } from "./install-facts.ts";
 import { createLocalReads } from "./local-read.ts";
 import { createRemoteArm, type RemoteArm } from "./remote-arm.ts";
@@ -96,6 +102,8 @@ import {
   defaultCommandRunner,
   formatResolveFailure,
   resolveDeploymentCompose,
+  type CommandRunner,
+  type DeploymentCompose,
 } from "../../../src/deployment-compose.ts";
 import { findTailscaleCli, parseTailscaleStatus } from "../../../src/tailscale-serve.ts";
 import { CHECK_EVERY_MS, createCompanionUpdates, type UpdaterControls } from "./updates.ts";
@@ -733,6 +741,53 @@ app.whenReady().then(
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRefresh, (_event, dir: string) =>
       answering<LocalReportEvent>(() => reads.refresh(dir)),
+    );
+
+    /**
+     * The compose of an install whose container is up, and the runner that
+     * reaches its Docker: what an exec into the running container needs.
+     * `reads` finishes "… is read from the running container" in the refusal.
+     */
+    const runningContainer = async (
+      dir: string,
+      reads: string,
+    ): Promise<{ deployment: DeploymentCompose; runner?: CommandRunner }> => {
+      const install = await heldInstall(dir);
+      if (install.state !== "running") {
+        throw new BridgeRefusal({
+          code: "container-not-running",
+          message: `${reads} the running container, and this install's is not up.`,
+        });
+      }
+      const deployment = resolveDeploymentCompose(deploymentDirOf(install.dir).dir);
+      if ("kind" in deployment) {
+        throw new BridgeRefusal({
+          code: "not-initialised",
+          message: "This install has no container/compose.yml yet.",
+        });
+      }
+      // A WSL install's container is the distro's Docker's, as for the read loop.
+      const wsl = wslLocationOf(install.dir);
+      return {
+        deployment,
+        ...(wsl === null ? {} : { runner: wslRunner(wsl, defaultCommandRunner) }),
+      };
+    };
+
+    ipcMain.handle(BRIDGE_CHANNELS.installsHistory, (_event, dir: string, query: HistoryQuery) =>
+      answering<HistoryPage | null>(async () => {
+        const container = await runningContainer(dir, "History is read from");
+        return readContainerHistory({ ...container, query: query ?? {} });
+      }),
+    );
+
+    ipcMain.handle(
+      BRIDGE_CHANNELS.installsObserve,
+      (_event, dir: string, request: ObserveRequest) =>
+        answering<ObserveResponse | null>(async () => {
+          const container = await runningContainer(dir, "An observer run is asked for through");
+          return runContainerObserve({ ...container, request: request ?? {} });
+        }),
     );
 
     ipcMain.handle(BRIDGE_CHANNELS.installsRepair, (_event, dir: string, repair: InstallRepair) =>

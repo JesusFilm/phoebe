@@ -1,4 +1,4 @@
-// A remote route's page: the same five tabs a local install has, fed by the
+// A remote route's page: the same six tabs a local install has, fed by the
 // record's last report, with the connection card saying how the facts got
 // here and the Devices panel under it (map #690; #696, #697, #699).
 //
@@ -179,6 +179,12 @@ export function RemotePage({
           config={config}
           now={now}
           frozen={row.frozen || row.tone === "disconnected"}
+          history={{
+            reader: client.history,
+            scope: record.deploymentId,
+            observe: client.observe,
+          }}
+          onTab={onTab}
           empty={
             <p className="muted">
               {row.tone === "blocked"

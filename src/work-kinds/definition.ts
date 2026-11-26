@@ -19,6 +19,7 @@ import type { BranchRef, PrNumber, Sha } from "../branded.ts";
 import type { PhoebeConfig } from "../config-schema.ts";
 import type { Feature } from "../feature-branch.ts";
 import type { CycleGitHubClient, GitHubClient } from "../github-client.ts";
+import type { ManualRun } from "../manual-run.ts";
 import type { BlockerPrState, Issue } from "../orchestrator.ts";
 
 /**
@@ -189,6 +190,15 @@ export type WorkKindCtx = {
    * of ignoring it is a stalled kind rather than a burnt run budget.
    */
   quarantined: ReadonlySet<string>;
+  /**
+   * The manual run waiting for this kind (#937), removed as it is read: an
+   * operator's `phoebe observe` or `POST /api/observe`, forwarded by the
+   * bootstrapper. Call it from `fetch`, and offer a unit for it whatever the
+   * kind's own schedule says. Nothing queues it: an ask taken and not acted on
+   * is gone. Absent outside a supervised engine loop; only the observer kind is
+   * ever asked.
+   */
+  takeManualRun?: () => ManualRun | null;
   /** Log with the uniform `[phoebe][<kind> <ref>]` prefix (ref once known). */
   log(message: string): void;
 };
@@ -396,8 +406,8 @@ export type WorkKindReport<G, U> = {
  * The failure contract (adopted from docs/research/cycle-record-seam.md):
  * per-unit errors are absorbed inside the kind's `fetch` (warn, drop); a
  * thrown `fetch` propagates, kills the cycle, and the bootstrapper's restart
- * loop is the recovery — identically for custom kinds. `run` returns void;
- * throw = failure. All kind-specific consequences (push, failure comment,
+ * loop is the recovery — identically for custom kinds. `run` resolves on
+ * success, optionally with a {@link WorkKindRunResult}; throw = failure. All kind-specific consequences (push, failure comment,
  * watermark) stay inside the kind; the engine's interest is limited to unit
  * events, quarantine, and duration.
  */
@@ -460,8 +470,20 @@ export type WorkKindDefinition<G = unknown, U extends WorkUnitShape = WorkUnitSh
   report: WorkKindReport<G, U>;
   fetch(ctx: WorkKindCtx): Promise<G>;
   select(gathered: G, ctx: WorkKindCtx): WorkKindSelection<U>;
-  run(unit: U, ctx: WorkKindRunCtx): Promise<void>;
+  run(unit: U, ctx: WorkKindRunCtx): Promise<void | WorkKindRunResult>;
 };
+
+/**
+ * What a `run` that completed may hand back (#934). Resolving with nothing is
+ * the same as resolving with `{}`.
+ *
+ * `summary` is one line saying what the unit did ("2 proposals filed (#41,
+ * #42)") and becomes the `detail` of the unit's record in its pipeline's
+ * history, the field a failed unit's error text goes in. Line breaks fold to
+ * spaces and the record cuts it to 500 characters. A `run` that throws has no
+ * summary: its record carries the error.
+ */
+export type WorkKindRunResult = { summary?: string };
 
 /**
  * A definition as the registry holds it: type-erased. `any` rather than

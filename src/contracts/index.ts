@@ -72,6 +72,7 @@ export type {
 } from "./doctor.ts";
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
+export type { HistoryCost, HistorySummary, HistoryTokens, HistoryWindow } from "./unit-record.ts";
 export {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,
@@ -142,6 +143,14 @@ export type {
 } from "./bench.ts";
 export type { BenchGateRate, BenchReport, BenchReportRow } from "./bench-report.ts";
 export type {
+  AgentRunRecord,
+  AgentRunUsage,
+  CostBasis,
+  UnitRecord,
+  UnitRecordOutcome,
+} from "./unit-record.ts";
+export type { HistoryPage, HistoryQuery, HistoryRecord, HistoryTotals } from "./history.ts";
+export type {
   BlockedReason,
   PairResult,
   Reachability,
@@ -181,6 +190,8 @@ export {
   type ForbiddenBody,
   type LogsBacklog,
   type LogsLineEvent,
+  type ObserveRequest,
+  type ObserveResponse,
   type PairRequest,
   type PairResponse,
   type RemoteDescriptor,

@@ -66,6 +66,20 @@ export function capDetail(detail: string | null): string | null {
   return detail.length > UNIT_RECORD_DETAIL_MAX ? detail.slice(0, UNIT_RECORD_DETAIL_MAX) : detail;
 }
 
+/**
+ * The `detail` a completed unit's record carries (#934): the summary its kind's
+ * `run` resolved with, on one line, or `null` when it gave none. A kind is
+ * authored code, so anything but a `{ summary: string }` is no summary rather
+ * than an error.
+ */
+export function completedDetail(result: unknown): string | null {
+  if (typeof result !== "object" || result === null) return null;
+  const summary = (result as { summary?: unknown }).summary;
+  if (typeof summary !== "string") return null;
+  const line = summary.replace(/\s+/g, " ").trim();
+  return line.length === 0 ? null : line;
+}
+
 /** SHA-256 of a prompt template, taken before any placeholder is filled. */
 export function promptShaOf(template: string): string {
   return createHash("sha256").update(template).digest("hex");
@@ -163,6 +177,13 @@ export type UnitHistoryDeps = {
   engineCommit: string | null;
   log?: (line: string) => void;
   append?: (path: string, line: string) => void;
+  /**
+   * A record landed. The engine tells its supervisor here (#929), so the
+   * deployment report's history summary moves with the unit rather than on the
+   * next hourly recompute. Not called when the append failed: there is nothing
+   * new to read.
+   */
+  onAppended?: () => void;
 };
 
 /**
@@ -189,6 +210,8 @@ export function createRecordUnit(deps: UnitHistoryDeps): RecordUnit {
         `${unitTag(deps.deployment, deps.tenant, deps.pipeline)} could not append to ` +
           `${UNITS_FILE} for ${input.unit.kind} ${input.unit.id} — ${String(error)}`,
       );
+      return;
     }
+    deps.onAppended?.();
   };
 }

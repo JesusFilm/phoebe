@@ -18,8 +18,9 @@
 // from the engine but types, so a call costs one Node start.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { BenchFixture, BenchWouldHave } from "./contracts/bench.ts";
 
 /** What the shim knows: the repo, and the fixture whose issue it serves. */
@@ -200,6 +201,38 @@ function issueArg(arg: string | undefined): number | null {
   return match === null ? null : Number(match[1]);
 }
 
+/** The `owner/repo` an issue URL names, or null for a bare number. */
+function urlRepo(arg: string | undefined): string | null {
+  const match = /^https?:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+/.exec(arg ?? "");
+  return match === null ? null : match[1]!;
+}
+
+/** Whether an argument is a URL rather than a bare number. */
+function isUrl(arg: string | undefined): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(arg ?? "");
+}
+
+/** `-R` values come as `owner/repo` or `HOST/owner/repo`; only github.com is the snapshot's host. */
+function repoSlug(value: string): string | null {
+  const parts = value.split("/");
+  if (parts.length === 2) return value;
+  if (parts.length === 3 && parts[0]!.toLowerCase() === "github.com")
+    return `${parts[1]}/${parts[2]}`;
+  return null;
+}
+
+/** Whether `-R`/`--repo` and an issue URL, when given, name the snapshot's repository. */
+function namesSnapshotRepo(parsed: ParsedGh, snapshot: GhShimSnapshot): boolean {
+  const arg = parsed.positionals[2];
+  if (isUrl(arg) && urlRepo(arg) === null) return false;
+  const flagged = flag(parsed, "-R", "--repo");
+  const named = [flagged === undefined ? undefined : (repoSlug(flagged) ?? ""), urlRepo(arg)];
+  return named.every(
+    (repo) =>
+      repo === undefined || repo === null || repo.toLowerCase() === snapshot.repo.toLowerCase(),
+  );
+}
+
 function issueUrl(snapshot: GhShimSnapshot, number: number): string {
   return `https://github.com/${snapshot.repo}/issues/${number}`;
 }
@@ -243,9 +276,10 @@ function jsonOutput(value: unknown, parsed: ParsedGh, io: GhShimIo): GhShimAnswe
   const ran = io.jq(json, filter);
   if (ran === null) {
     return {
-      stdout: `${JSON.stringify(value, null, 2)}\n`,
-      stderr: "gh (bench): no jq here to apply --jq; printing the JSON unfiltered.\n",
-      code: 0,
+      stdout: "",
+      stderr:
+        "gh (bench): no jq here to apply --jq, so this read fails rather than print unfiltered JSON.\n",
+      code: 1,
     };
   }
   return { stdout: ran.stdout, stderr: "", code: ran.code };
@@ -359,7 +393,7 @@ function answerApi(
   const hasFields =
     flagValues(parsed, "-f", "--raw-field", "-F", "--field").length > 0 ||
     flag(parsed, "--input") !== undefined;
-  const isWrite = method !== "" ? method !== "GET" : hasFields;
+  const isWrite = method !== "" ? method !== "GET" && method !== "HEAD" : hasFields;
   if (isWrite) {
     return {
       stdout: writeOutput(snapshot, "api", "", parsed),
@@ -369,10 +403,14 @@ function answerApi(
     };
   }
   const path = (parsed.positionals[1] ?? "").replace(/^\//, "");
-  const issuePath = new RegExp(
-    `^repos/(?:${snapshot.repo}|\\{owner\\}/\\{repo\\})/issues/(\\d+)(/comments)?$`,
-  );
-  const match = issuePath.exec(path);
+  const issuePath = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)(\/comments)?$/;
+  const parsedPath = issuePath.exec(path);
+  const match =
+    parsedPath !== null &&
+    (parsedPath[1] === "{owner}/{repo}" ||
+      parsedPath[1]!.toLowerCase() === snapshot.repo.toLowerCase())
+      ? [parsedPath[0], parsedPath[2], parsedPath[3]]
+      : null;
   if (match !== null && Number(match[1]) === snapshot.fixture.issue.number) {
     const issue = issueJson(snapshot);
     const rest =
@@ -424,7 +462,9 @@ export function answerGh(
     const number = issueArg(parsed.positionals[2]);
     if (number === null)
       return { stdout: "", stderr: "gh: issue view needs an issue number\n", code: 1 };
-    if (number !== snapshot.fixture.issue.number) return notFoundIssue(number);
+    if (number !== snapshot.fixture.issue.number || !namesSnapshotRepo(parsed, snapshot)) {
+      return notFoundIssue(number);
+    }
     const fields = flag(parsed, "--json");
     if (fields !== undefined) return jsonOutput(pick(issueJson(snapshot), fields), parsed, io);
     return {
@@ -469,12 +509,46 @@ function systemJq(json: string, filter: string): { stdout: string; code: number 
   return { stdout: ran.stdout, code: ran.status ?? 1 };
 }
 
-function readOrNull(path: string): string | null {
+/**
+ * The first `BODY_FILE_MAX` bytes of a file, never the whole of it. A stream
+ * (`drain`) is read to its end with the rest dropped, so the writer can finish.
+ */
+function readPrefix(path: string, drain: boolean): string | null {
+  let fd: number;
   try {
-    return readFileSync(path, "utf8");
+    fd = openSync(path, "r");
   } catch {
     return null;
   }
+  try {
+    const kept = Buffer.alloc(BODY_FILE_MAX);
+    const scratch = Buffer.alloc(64 * 1024);
+    let filled = 0;
+    for (;;) {
+      const room = BODY_FILE_MAX - filled;
+      const target = room > 0 ? kept : scratch;
+      const read = readSync(
+        fd,
+        target,
+        room > 0 ? filled : 0,
+        room > 0 ? room : scratch.length,
+        null,
+      );
+      if (read === 0) break;
+      if (room > 0) filled += read;
+      else if (!drain) break;
+      if (!drain && BODY_FILE_MAX - filled === 0) break;
+    }
+    return kept.subarray(0, filled).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readOrNull(path: string): string | null {
+  return readPrefix(path, false);
 }
 
 /** The shim's process: read the snapshot, answer, record a write, exit with gh's code. */
@@ -486,7 +560,7 @@ export function runGhShim(stateDir: string, argv: readonly string[]): number {
     now: () => new Date(),
     cwd: process.cwd(),
     readFile: readOrNull,
-    readStdin: () => readOrNull("/dev/stdin") ?? "",
+    readStdin: () => readPrefix("/dev/stdin", true) ?? "",
     jq: systemJq,
   });
   if (answer.wouldHave !== undefined) {
@@ -500,7 +574,17 @@ export function runGhShim(stateDir: string, argv: readonly string[]): number {
   return answer.code;
 }
 
-if (import.meta.main) {
+function isEntrypoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
   const [stateDir, ...argv] = process.argv.slice(2);
   if (stateDir === undefined) {
     process.stderr.write("usage: bench-gh-shim.ts <stateDir> <gh argv…>\n");

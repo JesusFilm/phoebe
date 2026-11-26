@@ -18,6 +18,7 @@
 // records every call, so "no worktree, no push" is an assertion rather than a
 // hope.
 
+import { EventEmitter } from "node:events";
 import { describe, expect, onTestFinished, test } from "vite-plus/test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,6 +59,7 @@ import type { DrainSignal } from "./drain.ts";
 import { CredentialRefreshBlockedError, type CredentialClient } from "./credential-client.ts";
 import type { SlotClient } from "./slot-client.ts";
 import type { ReportClient } from "./report-client.ts";
+import { createManualRunInbox, MANUAL_RUN, type ManualRunInbox } from "./manual-run.ts";
 import {
   createEmitUnitEvent,
   createForgetInherited,
@@ -68,6 +70,7 @@ import {
 import type {
   AnyWorkKindDefinition,
   WorkKindRunCtx,
+  WorkKindRunResult,
   WorkspaceMode,
   WorkUnitGitHubTarget,
 } from "./work-kinds/definition.ts";
@@ -2893,7 +2896,10 @@ describe("the unit history", () => {
   }
 
   /** A scratch kind whose run is one agent run, then whatever `after` does. */
-  function agentKind(promptFile: string, after: () => void = () => {}): LoadedCustomKind {
+  function agentKind(
+    promptFile: string,
+    after: () => void | WorkKindRunResult = () => {},
+  ): LoadedCustomKind {
     const definition: AnyWorkKindDefinition = {
       name: "nudge",
       oneShotEligible: true,
@@ -2920,7 +2926,7 @@ describe("the unit history", () => {
       },
       run: async (_unit, ctx: WorkKindRunCtx) => {
         await ctx.agent.run();
-        after();
+        return after();
       },
     };
     return { name: "nudge", definition, options: undefined };
@@ -2931,7 +2937,7 @@ describe("the unit history", () => {
     agent: SpawnAgent;
     env?: NodeJS.ProcessEnv;
     config?: Partial<PhoebeUserConfig>;
-    after?: () => void;
+    after?: () => void | WorkKindRunResult;
     github?: GitHubStubOverrides;
   }): Promise<{ records: UnitRecordInput[]; error: unknown }> {
     const dataBase = tenantRoot();
@@ -3003,6 +3009,19 @@ describe("the unit history", () => {
         toolCalls: { Bash: 1 },
       },
     ]);
+  });
+
+  test("a completed unit's summary becomes its record's detail, on one line", async () => {
+    const { records } = await unitRecords({
+      agent: scriptedAgent([resultLine], 0),
+      env: { ANTHROPIC_API_KEY: "sk-test" },
+      after: () => ({ summary: "2 proposals filed (#41, #42),\n1 skipped" }),
+    });
+
+    expect(records[0]).toMatchObject({
+      outcome: "completed",
+      detail: "2 proposals filed (#41, #42), 1 skipped",
+    });
   });
 
   test("a subscription token marks Claude's cost as an estimate", async () => {
@@ -3684,6 +3703,8 @@ function concurrentEngine(opts: {
   env?: NodeJS.ProcessEnv;
   /** The `status.json` this engine boots on — what a previous child left (#670). */
   inherited?: StatusSnapshot;
+  /** Manual runs the bootstrapper forwards (#937). */
+  manualRuns?: ManualRunInbox;
   /** The unit history writer, wired the way the entry point wires it (#928). */
   recordUnit?: RecordUnit;
 }): {
@@ -3736,6 +3757,7 @@ function concurrentEngine(opts: {
     slotClient: opts.slotClient ?? null,
     credentialClient: opts.credentialClient ?? null,
     reportClient: opts.reportClient ?? null,
+    manualRuns: opts.manualRuns ?? null,
     emitUnitEvent: createEmitUnitEvent(snapshotWriter),
     forgetInherited: createForgetInherited(snapshotWriter, (abandoned) =>
       opts.recordUnit?.(abandonedRecord(abandoned)),
@@ -3794,6 +3816,7 @@ describe("the deployment report's rail", () => {
       reportClient: {
         pass: (pollIntervalMs) => passes.push(pollIntervalMs),
         snapshot: () => {},
+        record: () => {},
       },
     });
     const loop = engine.loop();
@@ -3804,6 +3827,55 @@ describe("the deployment report's rail", () => {
     expect(passes.length).toBeGreaterThan(0);
     expect(new Set(passes)).toEqual(new Set([1_000]));
 
+    engine.drain.request();
+    await loop;
+  });
+});
+
+describe("manual runs (#937)", () => {
+  test("an arrival ends the idle wait, and the kind takes the run in its fetch", async () => {
+    // The test drain never times out on its own, so a loop that only woke on
+    // the poll interval would sit idle here for good.
+    const gated = gatedKind({ refs: [] });
+    const taken: unknown[] = [];
+    const definition = gated.kind.definition;
+    const manualKind: LoadedCustomKind = {
+      ...gated.kind,
+      definition: {
+        ...definition,
+        fetch: (ctx) => {
+          const run = ctx.takeManualRun?.() ?? null;
+          taken.push(run);
+          if (run !== null) gated.offer(1);
+          return definition.fetch(ctx);
+        },
+      },
+    };
+    const channel = new EventEmitter();
+    const inbox = createManualRunInbox(
+      { on: (event, listener) => channel.on(event, listener) },
+      { schedules: (kind) => kind === "gated", log: () => {} },
+    )!;
+    const engine = concurrentEngine({
+      kinds: [{ kind: manualKind }],
+      concurrency: 1,
+      manualRuns: inbox,
+    });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual([]);
+    expect(taken).toEqual([null]);
+
+    const run = { kind: "gated", by: "shell", at: "2026-08-19T00:00:00.000Z", lookback: "3d" };
+    channel.emit("message", { type: MANUAL_RUN, run });
+    await settle();
+
+    expect(taken).toEqual([null, run]);
+    expect(gated.started).toEqual(["u:1"]);
+    // Taken once: the inbox holds nothing for the next pass.
+    expect(inbox.take("gated")).toBeNull();
+
+    await gated.release("u:1");
     engine.drain.request();
     await loop;
   });
@@ -3839,7 +3911,11 @@ describe("a snapshot inherited from a child that is gone", () => {
       kinds: [gated],
       concurrency: 1,
       inherited: abandonedConflicts,
-      reportClient: { pass: () => {}, snapshot: (snapshot) => reported.push(snapshot) },
+      reportClient: {
+        pass: () => {},
+        snapshot: (snapshot) => reported.push(snapshot),
+        record: () => {},
+      },
     });
     const loop = engine.loop();
     await settle();

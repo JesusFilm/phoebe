@@ -456,10 +456,18 @@ describe("a local install's page", () => {
     expect(markup).toContain(">Change…</button>");
   });
 
-  test("carries the same six tabs whatever the install is doing", () => {
+  test("carries the same seven tabs whatever the install is doing", () => {
     const markup = page();
 
-    for (const name of ["install", "overview", "pipelines", "doctor", "secrets", "config"]) {
+    for (const name of [
+      "install",
+      "overview",
+      "pipelines",
+      "history",
+      "doctor",
+      "secrets",
+      "config",
+    ]) {
       expect(markup, name).toContain(`>${name}<`);
     }
   });
@@ -509,7 +517,7 @@ describe("a local install's page", () => {
 
     expect(markup).not.toContain("1/2 in use");
     expect(markup).not.toContain("Slots");
-    for (const name of ["overview", "pipelines", "doctor", "secrets"]) {
+    for (const name of ["overview", "pipelines", "history", "doctor", "secrets"]) {
       expect(markup, name).toMatch(
         new RegExp(`disabled="" title="Needs a running container\\.">${name}<`),
       );

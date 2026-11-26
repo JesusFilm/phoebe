@@ -18,7 +18,9 @@
 //
 // **Fixed size.** Every section is a bounded set of current facts — never a log,
 // never a history. What happened before now is the engine's stdout, which the
-// host collects; nothing here grows with time or with uptime (#73).
+// host collects; nothing here grows with time or with uptime (#73). The unit
+// history summary (#929) is counts and sums over fixed windows, not the records
+// themselves, so it keeps to the rule.
 //
 // `schema` is the integer a reader checks before trusting the rest. It moves
 // when a field's meaning changes in a way an older reader would misread; adding
@@ -32,6 +34,7 @@ import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-st
 import type { FleetStop, RemoteReport } from "./remote-protocol.ts";
 import type { SecretsSection } from "./secrets.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
+import type { HistorySummary } from "./unit-record.ts";
 
 /** The report shape this engine writes. Bump on a breaking change, never on an addition. */
 export const DEPLOYMENT_SCHEMA = 1;
@@ -204,6 +207,14 @@ export type FleetCell = {
   wedged: WedgedVerdict;
   /** The raw `status.json` as the engine last wrote it; null when there is none. */
   snapshot: StatusSnapshot | null;
+  /**
+   * This pipeline's unit history, summed (#929). Counts and sums only, so the
+   * report stays a bounded set of current facts. Absent on a report from a
+   * bootstrapper that predates it, which a reader states as "not reported"
+   * rather than as "no units"; an addition, so it does not move
+   * {@link DEPLOYMENT_SCHEMA}.
+   */
+  history?: HistorySummary;
 };
 
 export type FleetReport = {
@@ -216,6 +227,12 @@ export type FleetReport = {
   tenants: TenantFacts[];
   /** The (tenant × pipeline) matrix, one entry per cell. */
   cells: FleetCell[];
+  /**
+   * Every cell's unit history summed as one, over the same windows and at the
+   * same `asOf` as the cells' own (#929). Absent on an older report, like
+   * {@link FleetCell.history}.
+   */
+  history?: HistorySummary;
   updatedAt: string;
 };
 
