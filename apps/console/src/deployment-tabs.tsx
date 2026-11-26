@@ -67,6 +67,17 @@ export function DeploymentTabPanel({
   frozen?: boolean;
 }) {
   if (tab === "config") return <ConfigTab config={config} writes={writes.config} />;
+  if (tab === "history" && history !== undefined) {
+    const records = (
+      <HistoryTab
+        reader={history.reader}
+        scope={history.scope}
+        cells={reading.kind === "read" ? cellsOf(reading.report) : []}
+        now={now}
+      />
+    );
+    return frozen && reading.kind === "read" ? <div className="greyed">{records}</div> : records;
+  }
   if (reading.kind !== "read") {
     return (
       <section>
