@@ -391,6 +391,29 @@ describe("run", () => {
     expect(h.logged.at(-1)).toBe("sentry:9: filed #77 (ready).");
   });
 
+  test("a credential in the crash never reaches the filed issue or the duplicate comment", async () => {
+    // Built at runtime so no credential-shaped literal sits in the source.
+    const pat = `github_pat_${"x".repeat(30)}_${"y".repeat(40)}`;
+    const leaky: SentryUnit = {
+      ...unit,
+      group: group("9", {
+        title: `Error: Command failed: git ls-remote https://x-access-token:${pat}@github.com/a/b.git v1`,
+        culprit: "",
+      }),
+    };
+    const h = harness({
+      draft: JSON.stringify({ verdict: "not-ready", cause: `quotes ${pat}`, duplicateOf: 12 }),
+    });
+    await kind().run(leaky, h.ctx);
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]?.title).not.toContain(pat);
+    expect(h.created[0]?.title).toContain("@github.com/a/b.git");
+    expect(h.created[0]?.body).not.toContain(pat);
+    expect(parseMarker(h.created[0]!.body)).toBe("9");
+    expect(h.comments).toHaveLength(1);
+    expect(h.comments[0]?.body).not.toContain(pat);
+  });
+
   test("with applyReadyLabel the ready label goes on directly, created when the repo lacks it", async () => {
     const h = harness({
       draft: JSON.stringify({ verdict: "ready", cause: "c", change: "h", test: "t" }),
