@@ -227,7 +227,16 @@ describe("the observe handler", () => {
       const { dispatcher } = harness([
         {
           pipeline: widget,
-          running: [{ unit: { kind: "observer", id: "observer" }, startedAt, runBudgetMs: null }],
+          running: [
+            {
+              unit: { kind: "observer", id: "observer" },
+              startedAt,
+              runBudgetMs: null,
+              provider: null,
+              model: null,
+              effort: null,
+            },
+          ],
         },
       ]);
       const child = new FakeChild();
