@@ -64,6 +64,17 @@ const MERGEABLE_RETRY_COUNT = 3;
 // retries, 2s then 8s: enough to outlive a blip, short enough that a real
 // outage still fails this cycle rather than stalling the loop.
 const TRANSIENT_RETRY_SCHEDULE_MS = [2_000, 8_000];
+// The observer's PR reads (#935). #916 measured ten full PRs per GraphQL query
+// at about 3 seconds, against GitHub's 10-second limit; a branch lookup reads
+// three fields per PR, so fifty fit.
+const OBSERVED_PRS_PER_QUERY = 10;
+const BRANCH_PRS_PER_QUERY = 50;
+
+function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let at = 0; at < items.length; at += size) chunks.push(items.slice(at, at + size));
+  return chunks;
+}
 
 // ---------------------------------------------------------------------------
 // Data the loop reads
@@ -238,6 +249,51 @@ export type BenchIssueFacts = {
   labelsEverAdded: string[];
   /** Every comment, oldest first. */
   comments: GhComment[];
+};
+
+/** A PR a branch has had, as the observer matches a unit record to one (#935). */
+export type BranchPr = { number: PrNumber; createdAt: string; closedAt: string | null };
+
+/** One commit on a PR as the observer reads it: who wrote it, and whether it is a merge. */
+export type ObservedCommit = PrCommitAuthor & { parents: number };
+
+/** What the observer reads about one PR to flag the units that worked it (#935). */
+export type ObservedPr = {
+  number: PrNumber;
+  state: "open" | "closed" | "merged";
+  createdAt: string;
+  mergedAt: string | null;
+  closedAt: string | null;
+  headRefName: BranchRef;
+  mergeCommitOid: Sha | null;
+  body: string;
+  labels: string[];
+  /** The issues the PR closes on merge. */
+  closingIssues: number[];
+  /** Reviews whose state is CHANGES_REQUESTED. */
+  changesRequested: number;
+  reviewThreads: number;
+  /** Oldest first, as far as one page reads. */
+  commits: ObservedCommit[];
+  commitsTruncated: boolean;
+};
+
+/** A pull request whose title starts "Revert", from one search. */
+export type RevertPr = {
+  number: PrNumber;
+  title: string;
+  body: string;
+  headRefName: string;
+  merged: boolean;
+};
+
+/** One GitHub Actions run on a branch, latest attempt only. */
+export type BranchWorkflowRun = {
+  name: string;
+  headSha: Sha;
+  /** `null` while the run is still going. */
+  conclusion: string | null;
+  createdAt: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -436,6 +492,16 @@ export type GitHubClient = {
   mergedPrsForBranch(branch: BranchRef): MergedPrRef[];
   benchPrFacts(prNumber: PrNumber): BenchPrFacts;
   benchIssueFacts(issueNumber: number): BenchIssueFacts;
+
+  // Observer PR outcomes (#935, cost measured in #916) — reads only
+  /** The PRs each branch has had, newest first. Up to 50 branches per GraphQL query. */
+  branchPrs(branches: readonly string[]): Map<string, BranchPr[]>;
+  /** What became of each PR, ten per GraphQL query. A number GitHub does not know is left out. */
+  observedPrs(numbers: readonly number[]): ObservedPr[];
+  /** PRs titled "Revert …" created on or after `since` (`YYYY-MM-DD`), one search. */
+  revertPrs(since: string): RevertPr[];
+  /** Every Actions run on `branch`, newest first, as far as one page of 100 reads. */
+  branchWorkflowRuns(branch: string): BranchWorkflowRun[];
 
   // Cycle scope
   forCycle(): CycleGitHubClient;
@@ -723,8 +789,12 @@ export function createGitHubClient({
    */
   function ghGraphql<T>(query: string, vars: Record<string, string | number | null> = {}): T {
     const [owner, repo] = config.repoSlug.split("/");
-    const args = ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`];
-    args.push("-f", `repo=${repo}`);
+    return ghGraphqlQuery<T>(query, { owner: owner ?? "", repo: repo ?? "", ...vars });
+  }
+
+  /** A GraphQL read with exactly the variables given, for a query not rooted at the repository. */
+  function ghGraphqlQuery<T>(query: string, vars: Record<string, string | number | null>): T {
+    const args = ["api", "graphql", "-f", `query=${query}`];
     for (const [name, value] of Object.entries(vars)) {
       if (value === null) continue;
       args.push(typeof value === "number" ? "-F" : "-f", `${name}=${value}`);
@@ -1880,6 +1950,179 @@ export function createGitHubClient({
           comments,
         };
       }
+    },
+
+    branchPrs: (branches) => {
+      type Raw = {
+        data: Record<
+          string,
+          {
+            pullRequests: {
+              nodes: Array<{ number: number; createdAt: string; closedAt: string | null }>;
+            };
+          }
+        >;
+      };
+      const found = new Map<string, BranchPr[]>();
+      for (const chunk of chunksOf(branches, BRANCH_PRS_PER_QUERY)) {
+        const vars: Record<string, string> = {};
+        const decls: string[] = ["$owner:String!", "$repo:String!"];
+        const fields = chunk.map((branch, index) => {
+          vars[`b${index}`] = branch;
+          decls.push(`$b${index}:String!`);
+          return (
+            `r${index}: repository(owner:$owner,name:$repo) { pullRequests(headRefName:$b${index}, ` +
+            `first:10, orderBy:{field:CREATED_AT,direction:DESC}) { nodes { number createdAt closedAt } } }`
+          );
+        });
+        const query = `query(${decls.join(",")}) {\n${fields.join("\n")}\n}`;
+        const { data } = ghGraphql<Raw>(query, vars);
+        chunk.forEach((branch, index) => {
+          const nodes = data[`r${index}`]?.pullRequests.nodes ?? [];
+          found.set(
+            branch,
+            nodes.map((node) => ({
+              number: asPrNumber(node.number),
+              createdAt: node.createdAt,
+              closedAt: node.closedAt,
+            })),
+          );
+        });
+      }
+      return found;
+    },
+
+    observedPrs: (numbers) => {
+      type RawPr = {
+        number: number;
+        state: "OPEN" | "CLOSED" | "MERGED";
+        createdAt: string;
+        mergedAt: string | null;
+        closedAt: string | null;
+        headRefName: string;
+        body: string | null;
+        mergeCommit: { oid: string } | null;
+        labels: { nodes: Array<{ name: string }> };
+        closingIssuesReferences: { nodes: Array<{ number: number }> };
+        reviews: { totalCount: number };
+        reviewThreads: { totalCount: number };
+        commits: {
+          totalCount: number;
+          nodes: Array<{
+            commit: {
+              oid: string;
+              author: { name: string | null; email: string | null } | null;
+              parents: { totalCount: number };
+            };
+          }>;
+        };
+      };
+      type Raw = { data: { repository: Record<string, RawPr | null> } };
+      const fragment = `fragment O on PullRequest {
+  number state createdAt mergedAt closedAt headRefName body
+  mergeCommit { oid }
+  labels(first:50) { nodes { name } }
+  closingIssuesReferences(first:20) { nodes { number } }
+  reviews(first:1, states:[CHANGES_REQUESTED]) { totalCount }
+  reviewThreads(first:1) { totalCount }
+  commits(first:100) { totalCount nodes { commit { oid author { name email } parents(first:2) { totalCount } } } }
+}`;
+      const observed: ObservedPr[] = [];
+      for (const chunk of chunksOf([...new Set(numbers)], OBSERVED_PRS_PER_QUERY)) {
+        const vars: Record<string, number> = {};
+        const decls: string[] = ["$owner:String!", "$repo:String!"];
+        const fields = chunk.map((number, index) => {
+          vars[`n${index}`] = number;
+          decls.push(`$n${index}:Int!`);
+          return `p${index}: pullRequest(number:$n${index}) { ...O }`;
+        });
+        const query =
+          `query(${decls.join(",")}) {\n  repository(owner:$owner,name:$repo) {\n    ` +
+          `${fields.join("\n    ")}\n  }\n}\n${fragment}`;
+        const { repository } = ghGraphql<Raw>(query, vars).data;
+        for (let index = 0; index < chunk.length; index += 1) {
+          const pr = repository[`p${index}`];
+          if (pr === null || pr === undefined) continue;
+          observed.push({
+            number: asPrNumber(pr.number),
+            state: pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open",
+            createdAt: pr.createdAt,
+            mergedAt: pr.mergedAt,
+            closedAt: pr.closedAt,
+            headRefName: asBranchRef(pr.headRefName),
+            mergeCommitOid: pr.mergeCommit === null ? null : asSha(pr.mergeCommit.oid),
+            body: pr.body ?? "",
+            labels: pr.labels.nodes.map((label) => label.name),
+            closingIssues: pr.closingIssuesReferences.nodes.map((node) => node.number),
+            changesRequested: pr.reviews.totalCount,
+            reviewThreads: pr.reviewThreads.totalCount,
+            commits: pr.commits.nodes.map(({ commit }) => ({
+              oid: asSha(commit.oid),
+              authorName: commit.author?.name ?? "",
+              authorEmail: commit.author?.email ?? "",
+              parents: commit.parents.totalCount,
+            })),
+            commitsTruncated: pr.commits.totalCount > pr.commits.nodes.length,
+          });
+        }
+      }
+      return observed;
+    },
+
+    revertPrs: (since) => {
+      type Raw = {
+        data: {
+          search: {
+            nodes: Array<{
+              number?: number;
+              title?: string;
+              body?: string | null;
+              headRefName?: string;
+              merged?: boolean;
+            }>;
+          };
+        };
+      };
+      const query = `query($q:String!) {
+  search(query:$q, type:ISSUE, first:100) {
+    nodes { ... on PullRequest { number title body headRefName merged } }
+  }
+}`;
+      const q = `repo:${config.repoSlug} is:pr Revert in:title created:>=${since}`;
+      const { nodes } = ghGraphqlQuery<Raw>(query, { q }).data.search;
+      return nodes.flatMap((node) =>
+        typeof node.number === "number"
+          ? [
+              {
+                number: asPrNumber(node.number),
+                title: node.title ?? "",
+                body: node.body ?? "",
+                headRefName: node.headRefName ?? "",
+                merged: node.merged === true,
+              },
+            ]
+          : [],
+      );
+    },
+
+    branchWorkflowRuns: (branch) => {
+      type Raw = {
+        workflow_runs: Array<{
+          name: string | null;
+          head_sha: string;
+          conclusion: string | null;
+          created_at: string;
+        }>;
+      };
+      const { workflow_runs: runs } = ghApiJson<Raw>(
+        `repos/${config.repoSlug}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=100`,
+      );
+      return runs.map((run) => ({
+        name: run.name ?? "",
+        headSha: asSha(run.head_sha),
+        conclusion: run.conclusion,
+        createdAt: run.created_at,
+      }));
     },
 
     forCycle: () => {

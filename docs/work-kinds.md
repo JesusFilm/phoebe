@@ -1053,8 +1053,29 @@ later, or after `every` if that is shorter.
 
 **A run** reads `state/<pipeline>/units.jsonl` of every other pipeline the
 tenant declares, read-only, and flags each unit that started inside `lookback`
-and failed, timed out, was abandoned or was quarantined. With nothing flagged it
-stops there and spends no agent run. Otherwise one read-only agent run sees the
+and failed, timed out, was abandoned or was quarantined. It also flags a unit
+by what became of its pull request once that PR merged or closed:
+
+| Flag                | When                                                                            |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `changes-requested` | a review requested changes                                                      |
+| `review-threads`    | the PR has review threads                                                       |
+| `outside-commits`   | another git identity pushed a content commit, not a merge, after Phoebe's first |
+| `closed-unmerged`   | it closed without merging                                                       |
+| `reverted`          | a merged revert PR names it, or a revert commit on the default branch does      |
+| `actions-failed`    | a GitHub Actions run on its branch failed while it was open                     |
+| `slow-merge`        | it took more than seven days to merge                                           |
+
+A record that has no PR number is matched to a PR by its branch. Phoebe's git
+identity is the engine's `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`, or the PR's
+first commit when those are unset. Only Actions runs count, since no credential
+arm can read other checks or `statusCheckRollup`. Reverts are found from the
+revert side: one search for PRs titled "Revert", and `git log` on the run's
+read-only checkout. For 20 PRs the reads are about four GraphQL queries and one
+REST call per settled PR. A unit on an observer proposal is never flagged: one
+that ran on a proposal issue, or on a PR that carries `phoebe:observer`, the
+marker, or closes a proposal. With nothing flagged the run stops there and
+spends no agent run. Otherwise one read-only agent run sees the
 flagged units and the proposals already filed, and writes findings to scratch.
 Each finding has a title, the problem, a suggested fix, the units that show it,
 a target (a file such as `AGENTS.md`, or a short slug), and one of four
