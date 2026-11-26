@@ -247,3 +247,58 @@ describe("createCrashReporter", () => {
     ]);
   });
 });
+
+describe("secrets never leave in a report", () => {
+  // Built at runtime so no credential-shaped literal sits in the source.
+  const pat = `github_pat_${"x".repeat(30)}_${"y".repeat(40)}`;
+  const opaque = "an-opaque-secret-value-123";
+
+  test("the payload scrubs a token-bearing git URL from the message, stack and tags", () => {
+    const error = new Error(
+      `Command failed: git ls-remote https://x-access-token:${pat}@github.com/a/b.git v1`,
+    );
+    error.stack = `${error.message}\n    at f (/opt/x.ts:1:1)`;
+    const payload = buildCrashPayload(
+      { phase: "boot", level: "error", error, tags: { url: `https://u:${opaque}@h/x` } },
+      context,
+      { includeRef: false, now: NOW, eventId: "e1" },
+    );
+    const sent = JSON.stringify(payload);
+    expect(sent).not.toContain(pat);
+    expect(sent).not.toContain(opaque);
+    expect(sent).toContain("@github.com/a/b.git");
+  });
+
+  test("the error class, context tags and release are scrubbed too", () => {
+    const error = new Error("x");
+    error.name = `Leak ${pat}`;
+    const payload = buildCrashPayload(
+      { phase: "boot", level: "error", error, tenant: `t-${pat}` },
+      { ...context, engineRef: `https://u:${opaque}@h/r`, engineSha: pat },
+      { includeRef: true, now: NOW, eventId: "e1" },
+    );
+    const sent = JSON.stringify(payload);
+    expect(sent).not.toContain(pat);
+    expect(sent).not.toContain(opaque);
+  });
+
+  test("a secret value this process holds is scrubbed in any shape", async () => {
+    const posts: string[] = [];
+    const fetchFn: FetchLike = async (_url, init) => {
+      posts.push(typeof init?.body === "string" ? init.body : "");
+      return new Response("", { status: 200 });
+    };
+    const reporter = createCrashReporter({
+      reporting: { maintainers: true },
+      context,
+      fetchFn,
+      now: () => NOW,
+      maintainersDsn: "https://k@o1.ingest.sentry.io/1",
+      env: { GH_TOKEN: opaque, HOME: "/home/phoebe" },
+    });
+    await reporter.report({ phase: "boot", level: "error", error: new Error(`saw ${opaque} raw`) });
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).not.toContain(opaque);
+    expect(posts[0]).toContain("saw [redacted] raw");
+  });
+});
