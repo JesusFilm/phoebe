@@ -3,13 +3,22 @@
 // and where a unit's GitHub link points.
 
 import { describe, expect, test } from "vite-plus/test";
-import type { RemotePassthrough } from "phoebe-agent/contracts";
+import type {
+  HistoryQuery,
+  HistoryRecord,
+  RemotePassthrough,
+  UnitRecordOutcome,
+} from "phoebe-agent/contracts";
 import {
   filterChoices,
   githubHref,
   historyPath,
   historyQueryOf,
   localHistory,
+  readNeedsALook,
+  summaryCost,
+  unfinishedOf,
+  type HistoryReader,
   NO_CHOICES,
   retainedSince,
   runCost,
@@ -179,5 +188,86 @@ describe("one unit", () => {
       }),
     ).toBe("2026-09-01T00:00:00.000Z");
     expect(retainedSince({ retained: { a: null } })).toBeNull();
+  });
+});
+
+describe("a summed cost (#932)", () => {
+  const summed = (api: number, subscriptionEstimate: number, units = 3, unitsWithoutCost = 0) => ({
+    units,
+    unitsWithoutCost,
+    costUsd: { api, subscriptionEstimate },
+  });
+
+  test("reads by basis, and leaves out a basis with nothing on it", () => {
+    expect(summaryCost(summed(1.25, 0))).toEqual({ kind: "cost", api: 1.25, estimate: null });
+    expect(summaryCost(summed(0, 3))).toEqual({ kind: "cost", api: null, estimate: 3 });
+    expect(summaryCost(summed(1, 2))).toEqual({ kind: "cost", api: 1, estimate: 2 });
+  });
+
+  test("units that reported no cost read as tokens only, and no units as nothing", () => {
+    expect(summaryCost(summed(0, 0, 3, 3))).toEqual({ kind: "tokens-only" });
+    expect(summaryCost(summed(0, 0, 3, 0))).toEqual({ kind: "cost", api: 0, estimate: null });
+    expect(summaryCost(summed(0, 0, 0))).toEqual({ kind: "no-units" });
+  });
+
+  test("did not complete counts failed, timed out and abandoned", () => {
+    expect(unfinishedOf({ completed: 9, failed: 1, "timed-out": 2, abandoned: 3 })).toBe(6);
+  });
+});
+
+describe("the units that need a look (#932)", () => {
+  const SINCE = "2026-09-11T12:00:00.000Z";
+
+  test("asks once per outcome that did not complete, and keeps the newest six of all three", async () => {
+    const asked: HistoryQuery[] = [];
+    const at = (hours: number) => new Date(Date.UTC(2026, 8, 18, 12 - hours)).toISOString();
+    const of = (outcome: UnitRecordOutcome, hours: number[]) =>
+      hours.map((h) =>
+        historyRecord({ outcome, startedAt: at(h), unit: { kind: "issues", id: `issue:${h}` } }),
+      );
+    const pages: Record<string, HistoryRecord[]> = {
+      failed: of("failed", [1, 4, 7, 8, 9, 10]),
+      "timed-out": of("timed-out", [2, 5]),
+      abandoned: of("abandoned", [3]),
+    };
+    const read: HistoryReader = (query) => {
+      asked.push(query);
+      const records = pages[query.outcome!]!;
+      return Promise.resolve({
+        kind: "page",
+        page: historyPage(records, {
+          summary: { ...historyPage(records).summary, units: records.length + 1 },
+        }),
+      });
+    };
+
+    const fetched = await readNeedsALook(read, SINCE);
+
+    expect(asked).toEqual([
+      { outcome: "failed", since: SINCE, limit: 6 },
+      { outcome: "timed-out", since: SINCE, limit: 6 },
+      { outcome: "abandoned", since: SINCE, limit: 6 },
+    ]);
+    expect(fetched.kind).toBe("units");
+    if (fetched.kind !== "units") return;
+    expect(fetched.records.map((record) => record.unit.id)).toEqual([
+      "issue:1",
+      "issue:2",
+      "issue:3",
+      "issue:4",
+      "issue:5",
+      "issue:7",
+    ]);
+    expect(fetched.total).toBe(12);
+  });
+
+  test("a deployment too old for one read is too old for the feed", async () => {
+    const read: HistoryReader = (query) =>
+      Promise.resolve(
+        query.outcome === "abandoned"
+          ? { kind: "too-old" }
+          : { kind: "page", page: historyPage([]) },
+      );
+    expect(await readNeedsALook(read, SINCE)).toEqual({ kind: "too-old" });
   });
 });
