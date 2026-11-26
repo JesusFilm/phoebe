@@ -92,7 +92,14 @@ describe("which tenants declare the observer", () => {
         tenant: "JesusFilm/youtube-studio",
         pipeline: "observe",
         currentUnits: [
-          { unit: { kind: "observer", id: "observer" }, startedAt: ago(90), runBudgetMs: null },
+          {
+            unit: { kind: "observer", id: "observer" },
+            startedAt: ago(90),
+            runBudgetMs: null,
+            provider: null,
+            model: null,
+            effort: null,
+          },
         ],
         waitingForSlot: false,
         lastError: null,
@@ -120,7 +127,14 @@ describe("which tenants declare the observer", () => {
         tenant: "acme/widget",
         pipeline: "watch",
         currentUnits: [
-          { unit: { kind: "observer", id: "observer" }, startedAt: ago(30), runBudgetMs: null },
+          {
+            unit: { kind: "observer", id: "observer" },
+            startedAt: ago(30),
+            runBudgetMs: null,
+            provider: null,
+            model: null,
+            effort: null,
+          },
         ],
         waitingForSlot: false,
         lastError: null,
