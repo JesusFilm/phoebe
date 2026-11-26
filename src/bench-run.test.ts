@@ -32,7 +32,14 @@ import { resolveConfig, type PhoebeConfig } from "./config-schema.ts";
 import type { BenchRunConfig, BenchRunSummary, BenchSuite, BenchTrial } from "./contracts/bench.ts";
 import type { SpawnAgent } from "./providers/run-agent.ts";
 
-const IDENTITY = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"];
+const IDENTITY = [
+  "-c",
+  "user.name=Fixture",
+  "-c",
+  "user.email=fixture@example.invalid",
+  "-c",
+  "commit.gpgSign=false",
+];
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", [...IDENTITY, ...args], {
@@ -222,7 +229,7 @@ describe("runBench", () => {
 
     expect(Object.keys(inside.env).filter(isGitHubCredentialKey)).toEqual([]);
     expect(inside.env["ANTHROPIC_API_KEY"]).toBe("provider-key-for-test");
-    expect(inside.env["HOME"]).toContain(join(WORK_DIR, "issue-7-tenant-0", "home"));
+    expect(inside.env["HOME"]).toContain(join(WORK_DIR, "f0-issue-7-tenant-0", "home"));
     expect(inside.env["GIT_CONFIG_NOSYSTEM"]).toBe("1");
     expect(inside.remotes).toBe("");
     expect(inside.credentialHelper).toEqual({ failed: 1 });
@@ -250,7 +257,7 @@ describe("runBench", () => {
       tenant: "acme/widget",
       pipeline: "bench",
       unit: { kind: "issues", id: "issue:7" },
-      outcome: "completed",
+      outcome: "failed",
       detail: "testCommand exited 3",
       provider: "claude",
       engineCommit: "e".repeat(40),
@@ -261,7 +268,7 @@ describe("runBench", () => {
       repeat: 0,
       change: "committed",
       diff: { commits: 1, filesChanged: 1, insertions: 1, deletions: 0 },
-      patch: "patches/issue-7-tenant-0.patch",
+      patch: "patches/f0-issue-7-tenant-0.patch",
     });
     expect(fixed!.gates.install).toMatchObject({ command: "true", exitCode: 0 });
     expect(fixed!.gates.check).toMatchObject({ command: "test -f fixed.txt", exitCode: 0 });
@@ -281,7 +288,7 @@ describe("runBench", () => {
       patch: null,
       gates: { check: null, test: null },
     });
-    expect(readdirSync(join(runDir, "patches"))).toEqual(["issue-7-tenant-0.patch"]);
+    expect(readdirSync(join(runDir, "patches"))).toEqual(["f0-issue-7-tenant-0.patch"]);
 
     // The trees went with their trials.
     expect(existsSync(join(runDir, WORK_DIR))).toBe(false);
@@ -302,7 +309,7 @@ describe("runBench", () => {
       interrupted: false,
       planned: 2,
       recorded: 2,
-      outcomes: { completed: 2, failed: 0, timedOut: 0, noChange: 1 },
+      outcomes: { completed: 1, failed: 1, timedOut: 0, noChange: 1 },
     });
   });
 
@@ -337,7 +344,7 @@ describe("runBench", () => {
     );
     expect(trials.map((trial) => [trial.fixture.issue, trial.outcome])).toEqual([
       [8, "timed-out"],
-      [7, "completed"],
+      [7, "failed"],
     ]);
     expect(trials[0]!.runBudgetMs).toBe(1500);
     expect(trials[0]!.gates.check).toBeNull();
@@ -354,7 +361,7 @@ describe("runBench", () => {
     });
     expect(result.trials.map((trial) => [trial.fixture.issue, trial.outcome])).toEqual([
       [9, "failed"],
-      [7, "completed"],
+      [7, "failed"],
     ]);
     expect(result.trials[0]!.detail).toMatch(/could not set up the trial/);
   });
@@ -430,16 +437,32 @@ describe("pieces", () => {
       pr: { number: 8, headSha: "a".repeat(40), mergeSha: "b".repeat(40) },
       baseSha: "c".repeat(40),
     };
-    const suite = JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [fixture], skipped: [] });
+    const selectedAt = "2026-11-25T00:00:00.000Z";
+    const suite = JSON.stringify({
+      v: 1,
+      repo: "acme/widget",
+      selectedAt,
+      fixtures: [fixture],
+      skipped: [],
+    });
     expect(() =>
-      parseSuite(JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [{}] }), "acme/widget"),
+      parseSuite(
+        JSON.stringify({ v: 1, repo: "acme/widget", selectedAt, fixtures: [{}] }),
+        "acme/widget",
+      ),
     ).toThrow(/Fixture 0 .* no issue/);
     expect(parseSuite(suite, "acme/widget").repo).toBe("acme/widget");
     expect(() => parseSuite(suite, "acme/gadget")).toThrow(/for acme\/widget, not acme\/gadget/);
     expect(() => parseSuite("{", "acme/widget")).toThrow(/not JSON/);
     expect(() => parseSuite('{"v":2}', "acme/widget")).toThrow(/expected `v: 1`/);
     expect(() =>
-      parseSuite(JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [] }), "acme/widget"),
+      parseSuite(
+        JSON.stringify({ v: 1, repo: "acme/widget", selectedAt, fixtures: [] }),
+        "acme/widget",
+      ),
     ).toThrow(/no fixtures/);
+    expect(() =>
+      parseSuite(JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [fixture] }), "acme/widget"),
+    ).toThrow(/selectedAt/);
   });
 });

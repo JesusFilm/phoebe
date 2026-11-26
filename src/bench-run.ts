@@ -209,6 +209,9 @@ export function parseSuite(text: string, repoSlug: string): BenchSuite {
   if (s.repo !== repoSlug) {
     throw new Error(`The suite is for ${String(s.repo)}, not ${repoSlug}.`);
   }
+  if (typeof s.selectedAt !== "string" || Number.isNaN(Date.parse(s.selectedAt))) {
+    throw new Error("The suite has no valid `selectedAt` timestamp.");
+  }
   if (s.fixtures.length === 0) throw new Error("The suite has no fixtures.");
   s.fixtures.forEach((fixture, index) => {
     const problem = fixtureProblem(fixture);
@@ -355,7 +358,13 @@ function trialGateEnv(
 ): NodeJS.ProcessEnv {
   const env = buildInstallCommandEnv(withoutGitHub(parentEnv), Object.values(config.providerEnv));
   const path = env["PATH"];
-  return { ...env, PATH: path !== undefined && path !== "" ? `${dirs.bin}:${path}` : dirs.bin };
+  return {
+    ...env,
+    GH_CONFIG_DIR: join(dirs.home, ".config", "gh"),
+    GIT_CONFIG_GLOBAL: join(dirs.home, ".gitconfig"),
+    GIT_CONFIG_NOSYSTEM: "1",
+    PATH: path !== undefined && path !== "" ? `${dirs.bin}:${path}` : dirs.bin,
+  };
 }
 
 function gitIdentity(git: GitRunner, repoDir: string): { name: string; email: string } {
@@ -463,7 +472,13 @@ function prepareTrial(opts: {
 function readWouldHave(ghDir: string): BenchWouldHave[] {
   const path = join(ghDir, GH_SHIM_WOULD_HAVE_FILE);
   if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  return text
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .flatMap((line) => {
@@ -524,14 +539,15 @@ async function runTrial(opts: {
   plan: TrialPlan;
   fixture: BenchFixture;
   repeat: number;
+  fixtureIndex: number;
   signal: AbortSignal;
   deps: Required<Omit<BenchRunDeps, "engineCommit">>;
 }): Promise<BenchTrial | null> {
-  const { plan, fixture, repeat, signal, deps } = opts;
+  const { plan, fixture, fixtureIndex, repeat, signal, deps } = opts;
   const { config, contender } = plan;
   const { git, now } = deps;
   const issue = fixture.issue.number;
-  const trialId = `issue-${issue}-${contender.name}-${repeat}`;
+  const trialId = `f${fixtureIndex}-issue-${issue}-${contender.name}-${repeat}`;
   const tag = `[phoebe] bench [issue:${issue} ${contender.name}#${repeat}]`;
   const echo = (line: string): void => deps.log(`${tag} ${line}`);
   const startedAt = now();
@@ -672,6 +688,7 @@ async function runTrial(opts: {
                 ? "testCommand"
                 : null;
             if (failed !== null) {
+              outcome = "failed";
               detail = `${failed} exited ${(failed === "checkCommand" ? gates.check : gates.test)?.exitCode ?? "without a code"}`;
             }
           }
@@ -915,10 +932,10 @@ export async function runBench(opts: {
   };
   const trials: BenchTrial[] = [];
   const planned = suite.fixtures.length * repeat;
-  for (const fixture of suite.fixtures) {
+  for (const [fixtureIndex, fixture] of suite.fixtures.entries()) {
     for (let index = 0; index < repeat; index++) {
       if (signal.aborted) break;
-      const trial = await runTrial({ plan, fixture, repeat: index, signal, deps });
+      const trial = await runTrial({ plan, fixture, fixtureIndex, repeat: index, signal, deps });
       if (trial === null) break;
       trials.push(trial);
       appendFileSync(join(runDir, TRIALS_FILE), `${JSON.stringify(trial)}\n`);

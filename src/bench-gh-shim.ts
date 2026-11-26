@@ -203,13 +203,30 @@ function issueArg(arg: string | undefined): number | null {
 
 /** The `owner/repo` an issue URL names, or null for a bare number. */
 function urlRepo(arg: string | undefined): string | null {
-  const match = /github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+/.exec(arg ?? "");
+  const match = /^https?:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+/.exec(arg ?? "");
   return match === null ? null : match[1]!;
+}
+
+/** Whether an argument is a URL rather than a bare number. */
+function isUrl(arg: string | undefined): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(arg ?? "");
+}
+
+/** `-R` values come as `owner/repo` or `HOST/owner/repo`; only github.com is the snapshot's host. */
+function repoSlug(value: string): string | null {
+  const parts = value.split("/");
+  if (parts.length === 2) return value;
+  if (parts.length === 3 && parts[0]!.toLowerCase() === "github.com")
+    return `${parts[1]}/${parts[2]}`;
+  return null;
 }
 
 /** Whether `-R`/`--repo` and an issue URL, when given, name the snapshot's repository. */
 function namesSnapshotRepo(parsed: ParsedGh, snapshot: GhShimSnapshot): boolean {
-  const named = [flag(parsed, "-R", "--repo"), urlRepo(parsed.positionals[2])];
+  const arg = parsed.positionals[2];
+  if (isUrl(arg) && urlRepo(arg) === null) return false;
+  const flagged = flag(parsed, "-R", "--repo");
+  const named = [flagged === undefined ? undefined : (repoSlug(flagged) ?? ""), urlRepo(arg)];
   return named.every(
     (repo) =>
       repo === undefined || repo === null || repo.toLowerCase() === snapshot.repo.toLowerCase(),
@@ -259,9 +276,10 @@ function jsonOutput(value: unknown, parsed: ParsedGh, io: GhShimIo): GhShimAnswe
   const ran = io.jq(json, filter);
   if (ran === null) {
     return {
-      stdout: `${JSON.stringify(value, null, 2)}\n`,
-      stderr: "gh (bench): no jq here to apply --jq; printing the JSON unfiltered.\n",
-      code: 0,
+      stdout: "",
+      stderr:
+        "gh (bench): no jq here to apply --jq, so this read fails rather than print unfiltered JSON.\n",
+      code: 1,
     };
   }
   return { stdout: ran.stdout, stderr: "", code: ran.code };
@@ -385,10 +403,14 @@ function answerApi(
     };
   }
   const path = (parsed.positionals[1] ?? "").replace(/^\//, "");
-  const issuePath = new RegExp(
-    `^repos/(?:${snapshot.repo}|\\{owner\\}/\\{repo\\})/issues/(\\d+)(/comments)?$`,
-  );
-  const match = issuePath.exec(path);
+  const issuePath = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)(\/comments)?$/;
+  const parsedPath = issuePath.exec(path);
+  const match =
+    parsedPath !== null &&
+    (parsedPath[1] === "{owner}/{repo}" ||
+      parsedPath[1]!.toLowerCase() === snapshot.repo.toLowerCase())
+      ? [parsedPath[0], parsedPath[2], parsedPath[3]]
+      : null;
   if (match !== null && Number(match[1]) === snapshot.fixture.issue.number) {
     const issue = issueJson(snapshot);
     const rest =
@@ -515,6 +537,7 @@ function readPrefix(path: string, drain: boolean): string | null {
       if (read === 0) break;
       if (room > 0) filled += read;
       else if (!drain) break;
+      if (!drain && BODY_FILE_MAX - filled === 0) break;
     }
     return kept.subarray(0, filled).toString("utf8");
   } catch {
