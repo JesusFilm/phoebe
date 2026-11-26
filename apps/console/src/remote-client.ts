@@ -128,13 +128,42 @@ export function createRemoteClient(bridge: DesktopBridge, deploymentId: string):
     async history(query) {
       try {
         const response = await send("GET", historyPath(query));
-        return { kind: "page", page: response.body as HistoryPage };
+        if (!isHistoryPage(response.body)) {
+          throw new Error("the deployment answered with something that is not a history page");
+        }
+        return { kind: "page", page: response.body };
       } catch (error) {
         if (error instanceof RemoteRequestError && error.status === 404) return { kind: "too-old" };
         throw error;
       }
     },
   };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isHistoryPage(body: unknown): body is HistoryPage {
+  if (!isObject(body)) return false;
+  const { records, summary, retained, nextBefore } = body;
+  return (
+    Array.isArray(records) &&
+    records.every(
+      (record) =>
+        isObject(record) &&
+        typeof record["cell"] === "string" &&
+        isObject(record["unit"]) &&
+        typeof record["unit"]["kind"] === "string",
+    ) &&
+    isObject(summary) &&
+    typeof summary["units"] === "number" &&
+    isObject(summary["byOutcome"]) &&
+    isObject(summary["costUsd"]) &&
+    isObject(summary["tokens"]) &&
+    isObject(retained) &&
+    (nextBefore === null || typeof nextBefore === "string")
+  );
 }
 
 /** A fresh edit id: the same id twice is the same edit, so each press is its own. */
