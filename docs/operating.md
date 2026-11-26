@@ -309,7 +309,8 @@ budget. Each replay is a trial.
 phoebe bench run bench/suite.json
 ```
 
-A trial cannot reach GitHub:
+A trial has no GitHub credentials and no git remote. The bench container sets no
+network restriction, so unauthenticated requests to github.com are not blocked:
 
 - The agent works in a fresh repository that holds history up to `baseSha` and
   nothing later, so the merged PR is not in it. The repository has no remote.

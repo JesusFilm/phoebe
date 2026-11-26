@@ -18,8 +18,9 @@
 // from the engine but types, so a call costs one Node start.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { BenchFixture, BenchWouldHave } from "./contracts/bench.ts";
 
 /** What the shim knows: the repo, and the fixture whose issue it serves. */
@@ -200,6 +201,21 @@ function issueArg(arg: string | undefined): number | null {
   return match === null ? null : Number(match[1]);
 }
 
+/** The `owner/repo` an issue URL names, or null for a bare number. */
+function urlRepo(arg: string | undefined): string | null {
+  const match = /github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+/.exec(arg ?? "");
+  return match === null ? null : match[1]!;
+}
+
+/** Whether `-R`/`--repo` and an issue URL, when given, name the snapshot's repository. */
+function namesSnapshotRepo(parsed: ParsedGh, snapshot: GhShimSnapshot): boolean {
+  const named = [flag(parsed, "-R", "--repo"), urlRepo(parsed.positionals[2])];
+  return named.every(
+    (repo) =>
+      repo === undefined || repo === null || repo.toLowerCase() === snapshot.repo.toLowerCase(),
+  );
+}
+
 function issueUrl(snapshot: GhShimSnapshot, number: number): string {
   return `https://github.com/${snapshot.repo}/issues/${number}`;
 }
@@ -359,7 +375,7 @@ function answerApi(
   const hasFields =
     flagValues(parsed, "-f", "--raw-field", "-F", "--field").length > 0 ||
     flag(parsed, "--input") !== undefined;
-  const isWrite = method !== "" ? method !== "GET" : hasFields;
+  const isWrite = method !== "" ? method !== "GET" && method !== "HEAD" : hasFields;
   if (isWrite) {
     return {
       stdout: writeOutput(snapshot, "api", "", parsed),
@@ -424,7 +440,9 @@ export function answerGh(
     const number = issueArg(parsed.positionals[2]);
     if (number === null)
       return { stdout: "", stderr: "gh: issue view needs an issue number\n", code: 1 };
-    if (number !== snapshot.fixture.issue.number) return notFoundIssue(number);
+    if (number !== snapshot.fixture.issue.number || !namesSnapshotRepo(parsed, snapshot)) {
+      return notFoundIssue(number);
+    }
     const fields = flag(parsed, "--json");
     if (fields !== undefined) return jsonOutput(pick(issueJson(snapshot), fields), parsed, io);
     return {
@@ -469,12 +487,45 @@ function systemJq(json: string, filter: string): { stdout: string; code: number 
   return { stdout: ran.stdout, code: ran.status ?? 1 };
 }
 
-function readOrNull(path: string): string | null {
+/**
+ * The first `BODY_FILE_MAX` bytes of a file, never the whole of it. A stream
+ * (`drain`) is read to its end with the rest dropped, so the writer can finish.
+ */
+function readPrefix(path: string, drain: boolean): string | null {
+  let fd: number;
   try {
-    return readFileSync(path, "utf8");
+    fd = openSync(path, "r");
   } catch {
     return null;
   }
+  try {
+    const kept = Buffer.alloc(BODY_FILE_MAX);
+    const scratch = Buffer.alloc(64 * 1024);
+    let filled = 0;
+    for (;;) {
+      const room = BODY_FILE_MAX - filled;
+      const target = room > 0 ? kept : scratch;
+      const read = readSync(
+        fd,
+        target,
+        room > 0 ? filled : 0,
+        room > 0 ? room : scratch.length,
+        null,
+      );
+      if (read === 0) break;
+      if (room > 0) filled += read;
+      else if (!drain) break;
+    }
+    return kept.subarray(0, filled).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readOrNull(path: string): string | null {
+  return readPrefix(path, false);
 }
 
 /** The shim's process: read the snapshot, answer, record a write, exit with gh's code. */
@@ -486,7 +537,7 @@ export function runGhShim(stateDir: string, argv: readonly string[]): number {
     now: () => new Date(),
     cwd: process.cwd(),
     readFile: readOrNull,
-    readStdin: () => readOrNull("/dev/stdin") ?? "",
+    readStdin: () => readPrefix("/dev/stdin", true) ?? "",
     jq: systemJq,
   });
   if (answer.wouldHave !== undefined) {
@@ -500,7 +551,17 @@ export function runGhShim(stateDir: string, argv: readonly string[]): number {
   return answer.code;
 }
 
-if (import.meta.main) {
+function isEntrypoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
   const [stateDir, ...argv] = process.argv.slice(2);
   if (stateDir === undefined) {
     process.stderr.write("usage: bench-gh-shim.ts <stateDir> <gh argv…>\n");

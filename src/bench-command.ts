@@ -14,8 +14,8 @@
 //     arguments, and passes its stdout through untouched. It takes none of the
 //     fleet's slots and needs the long-lived container neither up nor down.
 //
-// Selection reads GitHub and never writes to it. A run never reaches GitHub at
-// all: its trials have no credential and no remote.
+// Selection reads GitHub and never writes to it. A run's trials have no
+// credential and no remote, but the container does not restrict network access.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -90,8 +90,8 @@ settings, offline. Each trial gets a fresh repository at baseSha with no
 remote, a HOME of its own, no GitHub credential, and a gh that serves the issue
 from the suite and records every write it would have made. Bench runs
 installCommand, the agent, then checkCommand and testCommand itself, stopping at
-the first failure; a trial whose agent left no commits is "no change" and runs
-no gates. Each run lands in bench/<runId>/ under the tenant's data directory:
+the first failure; a trial whose agent left no commits is "no change" and skips
+checkCommand and testCommand (installCommand still runs, before the agent). Each run lands in bench/<runId>/ under the tenant's data directory:
 config.json, trials.jsonl, one patch per trial with commits, and report.json.
 Only the last 10 runs are kept. Ctrl-C drops the trial in flight and writes a
 partial report.
@@ -529,13 +529,14 @@ export async function runBenchRunInContainer(
 export function containerSuitePath(deploymentDir: string, cwd: string, suitePath: string): string {
   const absolute = resolve(cwd, suitePath);
   const rel = relative(deploymentDir, absolute);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(
       `The suite ${suitePath} is outside the deployment directory ${deploymentDir}, so the ` +
         "one-off container cannot see it. Save it there, e.g. bench/suite.json.",
     );
   }
-  return rel.split(sep).join("/");
+  const forwarded = rel.split(sep).join("/");
+  return forwarded.startsWith("-") ? `./${forwarded}` : forwarded;
 }
 
 /**

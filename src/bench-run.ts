@@ -108,10 +108,22 @@ export function isGitHubCredentialKey(key: string): boolean {
   );
 }
 
+/** Env names that point git at a config or credential helper other than the trial's. */
+function isGitConfigInjection(key: string): boolean {
+  return (
+    key === "GIT_ASKPASS" ||
+    key === "GIT_CONFIG_GLOBAL" ||
+    key === "GIT_CONFIG_COUNT" ||
+    key === "GIT_CONFIG_PARAMETERS" ||
+    key.startsWith("GIT_CONFIG_KEY_") ||
+    key.startsWith("GIT_CONFIG_VALUE_")
+  );
+}
+
 function withoutGitHub(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
-    if (!isGitHubCredentialKey(key)) out[key] = value;
+    if (!isGitHubCredentialKey(key) && !isGitConfigInjection(key)) out[key] = value;
   }
   return out;
 }
@@ -120,6 +132,9 @@ function withoutGitHub(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export function benchRoot(config: Pick<PhoebeConfig, "paths">): string {
   return join(dirname(config.paths.stateDir), BENCH_DIR);
 }
+
+/** What `newRunId` writes; `bench/` also holds suite files and anything else an operator saves. */
+const RUN_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 
 /** A run id that sorts by start time: `2026-11-25T12-00-00-000Z`. */
 export function newRunId(now: Date): string {
@@ -134,12 +149,45 @@ export function newRunId(now: Date): string {
 export function pruneRuns(root: string, keep: number = BENCH_RUNS_KEPT): string[] {
   if (!existsSync(root)) return [];
   const runs = readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && RUN_ID_PATTERN.test(entry.name))
     .map((entry) => entry.name)
     .sort();
   const doomed = runs.slice(0, Math.max(0, runs.length - (keep - 1)));
   for (const name of doomed) rmSync(join(root, name), { recursive: true, force: true });
   return doomed;
+}
+
+const isCount = (value: unknown): boolean =>
+  typeof value === "number" && Number.isInteger(value) && value > 0;
+const isText = (value: unknown): boolean => typeof value === "string";
+const isSha = (value: unknown): boolean =>
+  typeof value === "string" && /^[0-9a-f]{7,64}$/i.test(value);
+
+/** What is wrong with a fixture, in the fields a trial and the shim read; `null` when nothing is. */
+function fixtureProblem(fixture: unknown): string | null {
+  const f = fixture as Partial<BenchFixture> | null;
+  if (f === null || typeof f !== "object") return "not an object";
+  const { issue, pr } = f;
+  if (issue === undefined || issue === null || typeof issue !== "object") return "no issue";
+  if (!isCount(issue.number)) return "issue.number is not a positive integer";
+  if (!isText(issue.title) || !isText(issue.body))
+    return "issue.title and issue.body must be strings";
+  if (!Array.isArray(issue.comments)) return "issue.comments is not a list";
+  for (const comment of issue.comments as unknown[]) {
+    const c = comment as { body?: unknown; createdAt?: unknown; author?: unknown } | null;
+    if (c === null || typeof c !== "object" || !isText(c.body) || !isText(c.createdAt)) {
+      return "an issue comment lacks a body or createdAt";
+    }
+    if (c.author !== null && c.author !== undefined && !isText(c.author)) {
+      return "an issue comment's author is not a string";
+    }
+  }
+  if (pr === undefined || pr === null || typeof pr !== "object") return "no pr";
+  if (!isCount(pr.number)) return "pr.number is not a positive integer";
+  if (!isSha(pr.headSha) || !isSha(pr.mergeSha))
+    return "pr.headSha and pr.mergeSha must be commit ids";
+  if (!isSha(f.baseSha)) return "baseSha is not a commit id";
+  return null;
 }
 
 /** Read a suite file, refusing one this engine would misread. */
@@ -162,6 +210,11 @@ export function parseSuite(text: string, repoSlug: string): BenchSuite {
     throw new Error(`The suite is for ${String(s.repo)}, not ${repoSlug}.`);
   }
   if (s.fixtures.length === 0) throw new Error("The suite has no fixtures.");
+  s.fixtures.forEach((fixture, index) => {
+    const problem = fixtureProblem(fixture);
+    if (problem !== null)
+      throw new Error(`Fixture ${index} in the suite is malformed: ${problem}.`);
+  });
   return s as BenchSuite;
 }
 
@@ -274,6 +327,7 @@ function trialOverlay(
     XDG_CONFIG_HOME: join(dirs.home, ".config"),
     GH_CONFIG_DIR: join(dirs.home, ".config", "gh"),
     PATH: path !== undefined && path !== "" ? `${dirs.bin}:${path}` : dirs.bin,
+    GIT_CONFIG_GLOBAL: join(dirs.home, ".gitconfig"),
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
   };
@@ -421,11 +475,11 @@ function readWouldHave(ghDir: string): BenchWouldHave[] {
     });
 }
 
-function commitCount(git: GitRunner, repo: string, baseSha: string): number {
+function commitCount(git: GitRunner, repo: string, baseSha: string, ref: string): number {
   try {
     return (
       Number(
-        git(["rev-list", "--count", `${baseSha}..HEAD`], { cwd: repo, stdio: "pipe" }).trim(),
+        git(["rev-list", "--count", `${baseSha}..${ref}`], { cwd: repo, stdio: "pipe" }).trim(),
       ) || 0
     );
   } catch {
@@ -600,7 +654,12 @@ async function runTrial(opts: {
         }
         checkInterrupt();
 
-        commits = commitCount(git, trialDirs.repo, fixture.baseSha);
+        head = headOf(git, trialDirs.repo);
+        commits = commitCount(git, trialDirs.repo, fixture.baseSha, head.sha ?? "HEAD");
+        if (outcome === "completed" && run.exitCode !== null && run.exitCode !== 0) {
+          outcome = "failed";
+          detail = `the agent exited ${run.exitCode}`;
+        }
         if (outcome === "completed") {
           if (commits === 0) {
             echo("the agent left no commits: no change, no gates.");
@@ -619,23 +678,33 @@ async function runTrial(opts: {
         }
       }
 
-      head = headOf(git, trialDirs.repo);
-      if (commits > 0) {
+      if (head.sha === null) head = headOf(git, trialDirs.repo);
+      if (commits > 0 && head.sha !== null) {
         diff = parseShortstat(
-          git(["diff", "--shortstat", fixture.baseSha, "HEAD"], {
+          git(["diff", "--shortstat", fixture.baseSha, head.sha], {
             cwd: trialDirs.repo,
             stdio: "pipe",
           }),
           commits,
         );
-        patch = join(PATCHES_DIR, `${trialId}.patch`);
-        writeFileSync(
-          join(plan.runDir, patch),
-          git(["format-patch", "--stdout", `${fixture.baseSha}..HEAD`], {
+        // One tree diff, not a patch series: a merge commit the agent made to
+        // resolve a conflict has no patch of its own, and git writes the file
+        // itself so its size is not bounded by a buffer.
+        const patchPath = join(PATCHES_DIR, `${trialId}.patch`);
+        git(
+          [
+            "diff",
+            "--binary",
+            `--output=${join(plan.runDir, patchPath)}`,
+            fixture.baseSha,
+            head.sha,
+          ],
+          {
             cwd: trialDirs.repo,
             stdio: "pipe",
-          }),
+          },
         );
+        patch = patchPath;
       }
       wouldHave = readWouldHave(trialDirs.gh);
     }
@@ -647,6 +716,7 @@ async function runTrial(opts: {
     outcome = "failed";
     detail = errorText(error);
     echo(`failed: ${detail}`);
+    if (dirs !== null && wouldHave.length === 0) wouldHave = readWouldHave(dirs.gh);
   } finally {
     rmSync(join(plan.runDir, WORK_DIR, trialId), { recursive: true, force: true });
   }

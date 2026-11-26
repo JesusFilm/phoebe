@@ -395,9 +395,15 @@ describe("pieces", () => {
   test("pruneRuns keeps the newest, leaving room for one more", () => {
     const dir = mkdtempSync(join(tmpdir(), "phoebe-bench-prune-"));
     try {
-      for (const name of ["a", "b", "c", "d"]) mkdirSync(join(dir, name));
-      expect(pruneRuns(dir, 3)).toEqual(["a", "b"]);
-      expect(readdirSync(dir).sort()).toEqual(["c", "d"]);
+      const ids = [
+        "2026-01-01T00-00-00-000Z",
+        "2026-01-02T00-00-00-000Z",
+        "2026-01-03T00-00-00-000Z",
+        "2026-01-04T00-00-00-000Z",
+      ];
+      for (const name of [...ids, ".cache", "2025-fixtures"]) mkdirSync(join(dir, name));
+      expect(pruneRuns(dir, 3)).toEqual(ids.slice(0, 2));
+      expect(readdirSync(dir).sort()).toEqual([".cache", "2025-fixtures", ...ids.slice(2)]);
       expect(pruneRuns(join(dir, "missing"))).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -419,7 +425,15 @@ describe("pieces", () => {
   });
 
   test("parseSuite refuses a suite for another repo, or none at all", () => {
-    const suite = JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [{}], skipped: [] });
+    const fixture = {
+      issue: { number: 7, title: "t", body: "b", comments: [] },
+      pr: { number: 8, headSha: "a".repeat(40), mergeSha: "b".repeat(40) },
+      baseSha: "c".repeat(40),
+    };
+    const suite = JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [fixture], skipped: [] });
+    expect(() =>
+      parseSuite(JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [{}] }), "acme/widget"),
+    ).toThrow(/Fixture 0 .* no issue/);
     expect(parseSuite(suite, "acme/widget").repo).toBe("acme/widget");
     expect(() => parseSuite(suite, "acme/gadget")).toThrow(/for acme\/widget, not acme\/gadget/);
     expect(() => parseSuite("{", "acme/widget")).toThrow(/not JSON/);
