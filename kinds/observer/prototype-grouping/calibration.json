@@ -30,27 +30,24 @@
     },
     {
       "id": "P2",
-      "cause": "Two tests on main used a fixed clock (2026-10-16) that had passed the 30-day session expiry, so `ready` was red for every unit whatever it changed.",
+      "cause": "A run that finds nothing to change ends with no PR and no comment, so it looks like silence and is re-run.",
       "category": "engine",
-      "target": "bootstrap/remote-sessions.ts",
+      "target": "silent-no-pr-runs",
       "acceptTargets": [
-        "clock",
-        "remote-sessions",
-        "remote-api",
-        "session",
-        "red-main",
-        "main"
+        "no-pr",
+        "silent",
+        "no-comment",
+        "unproductive",
+        "stranded"
       ],
       "refs": [
-        870,
         871,
         876
       ],
       "diagnosedIn": [
-        871,
-        872
+        906
       ],
-      "notes": "In this repo the product is the engine, so a red main reads as engine. A checks run that says 'main fails the same' is also a factory/engine gap of its own."
+      "notes": "Relabelled on #980: the fixed clock (#872) was already fixed before #871 and #876 ran; their runs found nothing to change (#906)."
     },
     {
       "id": "P3",
