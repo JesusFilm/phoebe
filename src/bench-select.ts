@@ -15,11 +15,24 @@
 //   - blocked mid-way — the run that finished saw a conversation the replay
 //     cannot reproduce turn by turn
 //
+// A fixture is also only worth replaying if its answer key still passes. Before
+// pinning one, selection runs its baseline (#988): the merged PR's head through
+// install, check and test with no agent (src/bench-run.ts). One that fails is
+// skipped with the gate that failed; one that passes records when.
+// `--no-baseline` skips the check for a quick selection.
+//
 // Selection reads GitHub and never writes to it. The one local write is a
 // `git fetch` into the hub clone, which `baseSha` needs when the PR's head is no
 // longer on any branch.
 
-import type { BenchComment, BenchFixture, BenchSkip, BenchSuite } from "./contracts/bench.ts";
+import type {
+  BenchComment,
+  BenchFixture,
+  BenchGates,
+  BenchSkip,
+  BenchSuite,
+} from "./contracts/bench.ts";
+import { baselineFailure, describeBaselineFailure } from "./bench-report.ts";
 import { hasBlockedMarker, PHOEBE_BLOCKED_LABEL } from "./blocked.ts";
 import { asBranchRef, type PrNumber, type Sha } from "./branded.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
@@ -223,13 +236,21 @@ function errorText(error: unknown): string {
 /** One issue judged: a fixture, or the reason it is not one. */
 type Judged = { fixture: BenchFixture } | { skip: BenchSkip };
 
-function judge(opts: {
+/**
+ * Runs a fixture's baseline and returns its gates; throws when the merged
+ * head cannot be checked out.
+ */
+export type BenchSelectBaseline = (fixture: BenchFixture) => Promise<BenchGates>;
+
+async function judge(opts: {
   issueNumber: number;
   pr: MergedPrRef;
   github: BenchSelectGitHub;
   config: BenchSelectConfig;
   baseShaOf: (pr: BenchPrFacts) => string;
-}): Judged {
+  baseline: BenchSelectBaseline | null;
+  now: () => Date;
+}): Promise<Judged> {
   const { issueNumber, config } = opts;
   const skip = (reason: string): Judged => ({
     skip: { issue: issueNumber, pr: opts.pr.number, reason },
@@ -251,13 +272,24 @@ function judge(opts: {
   } catch (error) {
     return skip(`could not compute baseSha in the hub clone: ${errorText(error)}`);
   }
-  return {
-    fixture: {
-      issue: issueSnapshot(issue, facts.createdAt),
-      pr: { number: facts.number, headSha: facts.headRefOid, mergeSha: facts.mergeCommitOid! },
-      baseSha,
-    },
+  const fixture: BenchFixture = {
+    issue: issueSnapshot(issue, facts.createdAt),
+    pr: { number: facts.number, headSha: facts.headRefOid, mergeSha: facts.mergeCommitOid! },
+    baseSha,
   };
+  if (opts.baseline === null) return { fixture };
+
+  let gates: BenchGates;
+  try {
+    gates = await opts.baseline(fixture);
+  } catch (error) {
+    return skip(`its baseline could not run: ${errorText(error)}`);
+  }
+  const failure = baselineFailure(gates);
+  if (failure !== null) {
+    return skip(`its merged PR no longer passes: ${describeBaselineFailure(failure)}`);
+  }
+  return { fixture: { ...fixture, baselinePassedAt: opts.now().toISOString() } };
 }
 
 /**
@@ -265,15 +297,31 @@ function judge(opts: {
  * `<branchPrefix>issue-<n>`. A query walks merged PRs on issue branches, newest
  * merge first, until `limit` fixtures qualify; the issues it skipped on the way
  * are listed, the ones it never reached are not.
+ *
+ * With `baseline`, each candidate that passes every other check runs its
+ * baseline, one at a time, and only one that passes is pinned. `null` pins
+ * without running gates, and the fixtures carry no `baselinePassedAt`.
  */
-export function selectSuite(opts: {
+export async function selectSuite(opts: {
   github: BenchSelectGitHub;
   config: BenchSelectConfig;
   request: BenchSelectRequest;
   baseShaOf: (pr: BenchPrFacts) => string;
+  baseline: BenchSelectBaseline | null;
   now?: () => Date;
-}): BenchSuite {
+}): Promise<BenchSuite> {
   const { github, config, request } = opts;
+  const now = opts.now ?? (() => new Date());
+  const judgeOne = (issueNumber: number, pr: MergedPrRef): Promise<Judged> =>
+    judge({
+      issueNumber,
+      pr,
+      github,
+      config,
+      baseShaOf: opts.baseShaOf,
+      baseline: opts.baseline,
+      now,
+    });
   const fixtures: BenchFixture[] = [];
   const skipped: BenchSkip[] = [];
   const take = (judged: Judged): void => {
@@ -307,7 +355,7 @@ export function selectSuite(opts: {
       } else if (prs.length > 1) {
         skipped.push(ambiguous(issueNumber, prs));
       } else {
-        take(judge({ issueNumber, pr: prs[0]!, github, config, baseShaOf: opts.baseShaOf }));
+        take(await judgeOne(issueNumber, prs[0]!));
       }
     }
   } else {
@@ -323,14 +371,14 @@ export function selectSuite(opts: {
         skipped.push(ambiguous(issueNumber, prs));
         continue;
       }
-      take(judge({ issueNumber, pr: prs[0]!, github, config, baseShaOf: opts.baseShaOf }));
+      take(await judgeOne(issueNumber, prs[0]!));
     }
   }
 
   return {
     v: 1,
     repo: config.repoSlug,
-    selectedAt: (opts.now?.() ?? new Date()).toISOString(),
+    selectedAt: now().toISOString(),
     selection:
       request.by === "issues"
         ? { by: "issues", issues: [...new Set(request.issues)] }

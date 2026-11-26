@@ -8,7 +8,14 @@
 //
 // `v` moves only when an existing reader would misread a report.
 
-import type { BenchContender, BenchJudge, BenchRunConfig, BenchVerdict } from "./bench.ts";
+import type {
+  BenchBaselineGate,
+  BenchContender,
+  BenchGates,
+  BenchJudge,
+  BenchRunConfig,
+  BenchVerdict,
+} from "./bench.ts";
 
 /**
  * How many of a contender's trials passed one gate. `of` counts every trial the
@@ -39,6 +46,25 @@ export type BenchJudgeUsage = BenchJudge & {
   tokens: number | null;
   apiCostUsd: number | null;
   subscriptionEstimateUsd: number | null;
+};
+
+/** Where a baseline failed, and how. */
+export type BenchBaselineFailure = {
+  gate: BenchBaselineGate;
+  /** `null` when the gate never exited on its own, and always for `checkout`. */
+  exitCode: number | null;
+};
+
+/**
+ * A fixture whose baseline failed in this run (#988): its merged PR's head no
+ * longer passes the gates with no agent, so none of its trials ran and no rate
+ * counts it.
+ */
+export type BenchUnstableFixture = BenchBaselineFailure & {
+  issue: number;
+  pr: number;
+  /** From the suite, so drift since pinning shows; `null` when it was pinned without a baseline. */
+  baselinePassedAt: string | null;
 };
 
 /** One contender's results across every fixture and repeat. */
@@ -82,7 +108,14 @@ export type BenchReport = {
   benchConfig: string | null;
   repeat: number;
   concurrency: number;
-  /** Trials the run meant to make, and the ones it recorded. */
+  /**
+   * Each fixture's baseline gates, keyed by issue number: the merged PR's head
+   * run through install, check and test with no agent, before any trial.
+   */
+  baselines: Record<string, BenchGates>;
+  /** Fixtures whose baseline failed, in suite order. Their trials never ran. */
+  unstable: BenchUnstableFixture[];
+  /** Trials the run meant to make, for stable fixtures only, and the ones it recorded. */
   planned: number;
   recorded: number;
   /** Across every contender. */

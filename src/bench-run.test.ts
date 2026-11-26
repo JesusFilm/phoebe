@@ -30,6 +30,7 @@ import {
   TRIALS_FILE,
   WORK_DIR,
 } from "./bench-run.ts";
+import { renderBenchReport } from "./bench-report.ts";
 import { resolveConfig, type PhoebeConfig } from "./config-schema.ts";
 import type { BenchConfig, BenchRunConfig, BenchSuite, BenchTrial } from "./contracts/bench.ts";
 import type { BenchReport } from "./contracts/bench-report.ts";
@@ -65,6 +66,7 @@ const seen = {
   remotes: sh("git remote"),
   credentialHelper: sh("git config --get credential.helper"),
   hasFuture: sh("git cat-file -e " + futureSha + "^{commit}"),
+  allCommits: sh("git rev-list --all"),
   issue: JSON.parse(sh("gh issue view " + issue + " --json number,title,body")),
   prCreate: sh("gh pr create --base main --title t --body 'Closes #" + issue + "'"),
   push: sh("git push origin HEAD"),
@@ -99,6 +101,10 @@ console.log(JSON.stringify({
 }));
 `;
 
+// The merged PR's head passes it, so every fixture's baseline does; the fake
+// agent's fix does not.
+const TEST_COMMAND = "grep -q merged fixed.txt || exit 3";
+
 describe("runBench", () => {
   let root: string;
   let runtimeRoot: string;
@@ -106,6 +112,8 @@ describe("runBench", () => {
   let config: PhoebeConfig;
   let baseSha: string;
   let futureSha: string;
+  /** A merged head that fails `testCommand`. */
+  let brokenSha: string;
   let agentScript: string;
   let judgeScript: string;
   let reportsDir: string;
@@ -133,7 +141,7 @@ describe("runBench", () => {
       repo: "acme/widget",
       selectedAt: "2026-11-25T00:00:00.000Z",
       selection: { by: "issues", issues },
-      fixtures: issues.map(fixture),
+      fixtures: issues.map((issue) => fixture(issue)),
       skipped: [],
     };
   }
@@ -169,6 +177,7 @@ describe("runBench", () => {
     remotes: string;
     credentialHelper: unknown;
     hasFuture: unknown;
+    allCommits: unknown;
     issue: { number: number; title: string };
     prCreate: string;
     push: unknown;
@@ -201,7 +210,7 @@ describe("runBench", () => {
         repoUrl: "https://github.com/acme/widget.git",
         installCommand: "true",
         checkCommand: "test -f fixed.txt",
-        testCommand: "exit 3",
+        testCommand: TEST_COMMAND,
       },
       { dataBase: join(root, "data") },
     );
@@ -216,6 +225,12 @@ describe("runBench", () => {
     git(hub, "add", ".");
     git(hub, "commit", "-q", "-m", "Phoebe: the merged fix");
     futureSha = git(hub, "rev-parse", "HEAD");
+    git(hub, "checkout", "-q", "-b", "broken", baseSha);
+    writeFileSync(join(hub, "fixed.txt"), "rotted\n");
+    git(hub, "add", ".");
+    git(hub, "commit", "-q", "-m", "Phoebe: a fix that no longer passes");
+    brokenSha = git(hub, "rev-parse", "HEAD");
+    git(hub, "checkout", "-q", "main");
 
     const promptPath = join(runtimeRoot, config.promptFiles.issue);
     mkdirSync(dirname(promptPath), { recursive: true });
@@ -240,6 +255,8 @@ describe("runBench", () => {
     modes: Record<number, string>,
     extra: {
       env?: NodeJS.ProcessEnv;
+      /** Replaces each fixture's fields, by issue. */
+      fixtures?: Record<number, Partial<BenchSuite["fixtures"][number]>>;
       signal?: AbortSignal;
       onSpawn?: (issue: number) => void;
       benchConfig?: BenchConfig;
@@ -269,7 +286,10 @@ describe("runBench", () => {
     const result = await runBench({
       config,
       env: { ...PARENT_ENV, ...extra.env },
-      suite: suite(...issues),
+      suite: {
+        ...suite(...issues),
+        fixtures: issues.map((issue) => ({ ...fixture(issue), ...extra.fixtures?.[issue] })),
+      },
       suitePath: "bench/suite.json",
       runtimeRoot,
       ...(extra.signal !== undefined ? { signal: extra.signal } : {}),
@@ -336,7 +356,7 @@ describe("runBench", () => {
     });
     expect(fixed!.gates.install).toMatchObject({ command: "true", exitCode: 0 });
     expect(fixed!.gates.check).toMatchObject({ command: "test -f fixed.txt", exitCode: 0 });
-    expect(fixed!.gates.test).toMatchObject({ command: "exit 3", exitCode: 3 });
+    expect(fixed!.gates.test).toMatchObject({ command: TEST_COMMAND, exitCode: 3 });
     for (const gate of [fixed!.gates.install, fixed!.gates.check, fixed!.gates.test]) {
       expect(gate!.durationMs).toBeGreaterThanOrEqual(0);
     }
@@ -367,7 +387,7 @@ describe("runBench", () => {
       repeat: 1,
       installCommand: "true",
       checkCommand: "test -f fixed.txt",
-      testCommand: "exit 3",
+      testCommand: TEST_COMMAND,
     });
     expect(report).toMatchObject({
       interrupted: false,
@@ -388,8 +408,78 @@ describe("runBench", () => {
     });
   });
 
+  test("the baseline runs the merged head in a tree of its own, and none of it reaches a trial", async () => {
+    const { report, lines } = await run([7], { 7: "commit" });
+    // The baseline saw the merged answer: fixed.txt is only there at the head.
+    expect(report.baselines["7"]).toMatchObject({
+      install: { command: "true", exitCode: 0 },
+      check: { command: "test -f fixed.txt", exitCode: 0 },
+      test: { command: TEST_COMMAND, exitCode: 0 },
+    });
+    expect(report.unstable).toEqual([]);
+    expect(lines.some((line) => line.includes("[issue:7 baseline] $ true"))).toBe(true);
+    // The trial still holds the history up to baseSha and nothing past it.
+    const inside = seen(7);
+    expect(inside.allCommits).toBe(baseSha);
+    expect(inside.hasFuture).toMatchObject({ failed: expect.any(Number) });
+  });
+
+  test("a fixture whose baseline fails is unstable: no trial, not planned, in no rate", async () => {
+    const spawned: number[] = [];
+    const { trials, report, runDir } = await run(
+      [7, 8],
+      { 7: "commit", 8: "commit" },
+      {
+        fixtures: {
+          8: {
+            pr: { number: 80, headSha: brokenSha, mergeSha: brokenSha },
+            baselinePassedAt: "2026-11-20T00:00:00.000Z",
+          },
+        },
+        onSpawn: (issue) => spawned.push(issue),
+      },
+    );
+    expect(spawned).toEqual([7]);
+    expect(trials.map((trial) => trial.fixture.issue)).toEqual([7]);
+    expect(report.baselines["8"]).toMatchObject({
+      install: { exitCode: 0 },
+      check: { exitCode: 0 },
+      test: { exitCode: 3 },
+    });
+    expect(report.unstable).toEqual([
+      { issue: 8, pr: 80, gate: "test", exitCode: 3, baselinePassedAt: "2026-11-20T00:00:00.000Z" },
+    ]);
+    expect(report).toMatchObject({ planned: 1, recorded: 1 });
+    expect(report.contenders[0]).toMatchObject({
+      trials: 1,
+      check: { passed: 1, of: 1 },
+      test: { passed: 0, of: 1 },
+    });
+    expect(renderBenchReport(report).trimEnd().split("\n").at(-1)).toBe(
+      "1 fixture(s) unstable, not scored: #8 (test exited 3)",
+    );
+    expect(JSON.parse(readFileSync(join(runDir, REPORT_FILE), "utf8"))).toEqual(report);
+    expect(existsSync(join(runDir, WORK_DIR))).toBe(false);
+  });
+
+  test("a merged head that cannot be checked out is unstable at checkout", async () => {
+    const { trials, report } = await run(
+      [7],
+      { 7: "commit" },
+      {
+        fixtures: { 7: { pr: { number: 70, headSha: "1".repeat(40), mergeSha: futureSha } } },
+      },
+    );
+    expect(trials).toEqual([]);
+    expect(report.unstable).toEqual([
+      { issue: 7, pr: 70, gate: "checkout", exitCode: null, baselinePassedAt: null },
+    ]);
+    expect(report.baselines["7"]).toEqual({ install: null, check: null, test: null });
+    expect(report.planned).toBe(0);
+  });
+
   test("stops the gates at the first failure", async () => {
-    config = { ...config, checkCommand: "exit 2" };
+    config = { ...config, checkCommand: "grep -q merged fixed.txt || exit 2" };
     const { trials } = await run([7], { 7: "commit" });
     expect(trials[0]!.gates.check).toMatchObject({ exitCode: 2 });
     expect(trials[0]!.gates.test).toBeNull();

@@ -302,7 +302,8 @@ phoebe bench select --since 2026-10-01 --limit 30 > bench/suite.json
 `<branchPrefix>issue-<n>` branches, newest merge first, and stops once
 `--limit` fixtures qualify. The default limit is 20. `--since` keeps only PRs
 merged on or after that date. In a workspace, `--tenant <owner/repo>` picks the
-tenant.
+tenant. `--no-baseline` pins fixtures without running their baselines. See
+[Baselines and unstable fixtures](#baselines-and-unstable-fixtures).
 
 An issue qualifies when exactly one PR came from its branch, that PR merged into
 the default branch, and every commit on it has the same git author. The verb
@@ -325,6 +326,13 @@ Each fixture pins three things:
 - `baseSha`, the merge-base of the PR head and the merge commit's first parent.
   The verb computes it in the tenant's hub clone, so checking out `baseSha` gives
   the tree the PR started from, or the default branch it last merged in.
+
+Before it pins an issue that qualifies, the verb runs the issue's baseline:
+the merged PR's head goes through `installCommand`, `checkCommand` and
+`testCommand` with no agent. If a gate fails, the verb skips the issue with a
+reason such as `its merged PR no longer passes: test exited 1`. A fixture that
+passes records the time in `baselinePassedAt`. With `--no-baseline` no gate
+runs, and the fixtures have no `baselinePassedAt`.
 
 On the host the verb starts a one-off container from the deployment's image
 with `docker compose run --rm`. The long-lived container does not need to be
@@ -380,8 +388,11 @@ and that its provider key (the variable `providerEnv` names) is set, and that
 the judge's provider key is set too. A trial
 has its own HOME, so a provider's on-disk login is not available to it.
 
-A trial has no GitHub credentials and no git remote. The bench container sets no
-network restriction, so unauthenticated requests to github.com are not blocked:
+"Offline" means cut off from GitHub: no git remote, no GitHub credential, and
+the `gh` shim. It does not mean cut off from the network. Trials keep outbound
+network, because the provider API and the package registry need it. Bench sets
+no egress allowlist, so an unauthenticated request to github.com is not
+blocked. Here is what a trial gets:
 
 - The agent works in a fresh repository that holds history up to `baseSha` and
   nothing later, so the merged PR is not in it. The repository has no remote.
@@ -397,6 +408,35 @@ Bench runs the gates itself, in this order: `installCommand`, the agent,
 `checkCommand`, `testCommand`. It records each gate's exit code and duration,
 and the first failure stops the rest. If the agent made no commits, the trial
 is recorded as "no change" and the check and test gates are skipped.
+
+### Baselines and unstable fixtures
+
+A fixture's baseline checks that its merged PR still passes. Bench checks out
+the merged PR's head, `pr.headSha`, from the hub clone into a fresh tree. It runs
+`installCommand`, `checkCommand` and `testCommand` there with no agent, and
+the first failure stops the rest. The gates get the same environment, the same
+10-minute ceiling per gate and the same shared package store as a trial's
+gates. The baseline tree is a separate repository. The trial's repository
+still holds history only up to `baseSha`, so the agent never sees the answer.
+
+`bench select` runs each fixture's baseline before pinning it.
+`bench run` runs every fixture's baseline again before the first trial,
+`--concurrency` at a time, because a fixture can break after it is pinned. A
+certificate expires, a test depends on the date, or a package is unpublished.
+Each baseline runs once. A test that fails now and then hits every contender
+alike, and `repeat` covers that.
+
+A fixture whose baseline fails in a run is unstable for that run. None of its
+trials run, so no agent time is spent on a result nobody can score. Bench does
+nothing to rescue it. It uses no fake clock and no registry snapshot. The
+report lists the unstable fixtures, and the table ends with a line like this:
+
+```
+2 fixture(s) unstable, not scored: #412 (test exited 1), #430 (install exited 1)
+```
+
+If bench cannot check out the merged PR's head at all, the fixture is unstable at
+`checkout`.
 
 Each run writes to `bench/<runId>/` in the tenant's data directory, beside
 `state/`:
@@ -433,6 +473,8 @@ opus-high       6          0   100%   83%       9m 05s           2.6M     $9.80 
 - **check** and **test** are pass rates over all of the contender's trials. A
   trial with no change, a failure, a timeout, or one stopped by an earlier gate
   counts as not passing.
+- An unstable fixture is in no rate, and `planned` counts only the trials of
+  stable fixtures.
 - **median time** is the whole trial: install, agent and gates.
 - **median tokens** adds input, output and cache tokens across the trial's
   agent runs.
@@ -443,6 +485,10 @@ opus-high       6          0   100%   83%       9m 05s           2.6M     $9.80 
 
 `--json` prints the report as JSON instead: a `BenchReport` (`v: 1`, exported
 from `phoebe-agent/contracts`). `report.json` holds the same JSON.
+`baselines` maps each fixture's issue number to its baseline gates.
+`unstable` lists each unstable fixture with its issue, PR, the gate that
+failed, that gate's exit code, and the fixture's `baselinePassedAt` from the
+suite, so you can see how long ago it last passed.
 `phoebe bench report <runId>` prints a saved run's report again, as the table or
 with `--json`. The run id is the directory name under `bench/`.
 
@@ -451,9 +497,10 @@ phoebe bench report 2026-11-25T12-00-00-000Z --json
 ```
 
 The exit code is 0 when every trial ran, however the trials scored. Failing
-gates never change it. Bench exits non-zero only when it could not do its job:
-a bad suite or bench config, a missing prompt file, or a contender or judge
-whose provider key is unset.
+gates never change it. When every fixture is unstable, bench prints the report,
+says `no stable fixture: nothing to compare`, and exits 1. Otherwise bench
+exits non-zero only when it could not do its job: a bad suite or bench config,
+a missing prompt file, or a contender or judge whose provider key is unset.
 
 ### The judge
 
