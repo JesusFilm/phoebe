@@ -13,7 +13,7 @@
 # the version equal to the template's: the engine's report parser is tested
 # against a report recorded from exactly that version.
 FROM node:26-bookworm AS renovate-build
-ARG RENOVATE_VERSION=44.210.0
+ARG RENOVATE_VERSION=44.263.5
 RUN npm install -g --allow-scripts=re2 "renovate@${RENOVATE_VERSION}" \
  && test -f /usr/local/lib/node_modules/renovate/node_modules/re2/build/Release/re2.node
 

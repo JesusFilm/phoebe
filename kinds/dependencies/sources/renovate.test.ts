@@ -32,9 +32,9 @@ function pinnedVersion(): string {
 // the source's global config, and the source's flags, over a scratch repo
 // holding a package.json, a Cargo.toml with its Cargo.lock, a
 // requirements.txt, a Dockerfile and one workflow. The install had no
-// compiler, so re2 was dropped and the top-level `problems` carry that warning
-// beside the remapped Node version one. Bumping the pin means recording this
-// again under the new version's name, from the same scratch repo:
+// compiler, so re2 was dropped and the top-level `problems` carry that
+// warning. Bumping the pin means recording this again under the new version's
+// name, from the same scratch repo:
 //
 //   npm install -g --prefix "$prefix" "renovate@$version"
 //   env -i PATH="$prefix/bin:$PATH" HOME="$home" LOG_FORMAT=json \
@@ -85,7 +85,7 @@ describe("parseRenovateReport on the recorded report", () => {
         manager: "dockerfile",
         package: "node",
         current: "22.11.0",
-        target: "22.23.4",
+        target: "22.23.5",
         workspace: "Dockerfile",
         repositoryUrl: "https://github.com/nodejs/node",
       }),
@@ -93,7 +93,7 @@ describe("parseRenovateReport on the recorded report", () => {
         manager: "dockerfile",
         package: "node",
         current: "22.11.0",
-        target: "26.13.0",
+        target: "26.13.1",
         updateType: "major",
         workspace: "Dockerfile",
         repositoryUrl: "https://github.com/nodejs/node",

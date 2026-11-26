@@ -23,6 +23,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { redactSecretShapes } from "../../bootstrap/redact-output.ts";
 import type { PhoebeConfig, ProviderName } from "../../src/config-schema.ts";
 import { addLabelCreatingIfMissing, type PhoebeLabel } from "../../src/labels.ts";
 import {
@@ -293,9 +294,13 @@ export function createSentryKind(
         options,
         regressionOf: unit.regressionOf,
       };
+      // A crash's text is whatever the crashing process put in it, and a
+      // reporter older than its own scrub (or someone else's) can quote a
+      // credential. The issue may be on a public tracker, so nothing is filed
+      // with a secret shape left in it.
       const issueNumber = ctx.github.createIssue({
-        title: renderTitle(unit.group),
-        body: renderBody(symptom, triage),
+        title: redactSecretShapes(renderTitle(unit.group)),
+        body: redactSecretShapes(renderBody(symptom, triage)),
       });
       // From here the issue exists and carries the marker, so the group is
       // filed whatever happens next: a throw now would make the next cycle
@@ -326,7 +331,9 @@ export function createSentryKind(
         if (ctx.github.issueState(duplicateOf).state === "open") {
           ctx.github.postUnitComment(
             { objectType: "issue", id: duplicateOf },
-            renderDuplicateComment({ ...symptom, filedIssueNumber: issueNumber }),
+            redactSecretShapes(
+              renderDuplicateComment({ ...symptom, filedIssueNumber: issueNumber }),
+            ),
           );
           ctx.log(`${unit.ref}: noted on the open duplicate #${duplicateOf}.`);
         } else {
