@@ -153,7 +153,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 # This is deliberately NOT the `curl https://cursor.com/install | bash` one-liner
 # Cursor documents. Cursor publishes no checksums and no `latest` indirection,
 # but its installer does resolve to a plain versioned artifact, which is what we
-# pin to. The digests below are ours, computed on 2026-11-15 by fetching both
+# pin to. The digests below are ours, computed on 2026-11-26 by fetching both
 # architectures' tarballs from the URL below — they pin the build, they are not
 # a vendor attestation.
 #
@@ -182,9 +182,9 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 # /proc/<pid>/environ and lift the keyring. One chmod covers all three entry
 # points, since they funnel through this same `node`. Execute-only ELFs run
 # fine (the loader maps the image; the readable .node addons load normally).
-ARG CURSOR_AGENT_VERSION=2026.11.13-eacade1
-ARG CURSOR_AGENT_SHA256_X64=c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f
-ARG CURSOR_AGENT_SHA256_ARM64=e4ba0611045a24d1cf78f021d34c19461680fc7234c19c1f981f1cc169f70cdc
+ARG CURSOR_AGENT_VERSION=2026.11.22-e9042b2
+ARG CURSOR_AGENT_SHA256_X64=7663b1c5d1b56e095ef8e23bef38d66df6cfd665c4873470214e0e411f0f97b3
+ARG CURSOR_AGENT_SHA256_ARM64=7b7dd0020fb9a2a9e1e7e3f39e2f9f512d1dd9577174ecda8aa82ac31dbc9565
 # Set by BuildKit; the fallback keeps the classic builder working.
 ARG TARGETARCH
 RUN set -eux; \
