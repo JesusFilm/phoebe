@@ -53,6 +53,8 @@ import {
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
 import { createReportClient, type ReportClient } from "./report-client.ts";
 import { createManualRunInbox, type ManualRunInbox } from "./manual-run.ts";
+import { createSpendHoldState, type SpendHoldState } from "./spend-hold.ts";
+import { describeSpendHold } from "./spend.ts";
 import {
   RunTimeoutError,
   resolveRunTimeoutMs,
@@ -396,6 +398,12 @@ export type EngineOptions = {
    */
   manualRuns?: ManualRunInbox | null;
   /**
+   * The spend hold the bootstrapper sends (#990), or null when nothing is
+   * supervising this engine. While it holds, a pass admits no unit; a release
+   * ends the wait for the next pass.
+   */
+  spendHold?: SpendHoldState | null;
+  /**
    * How an agent child is spawned. Defaults to the real `child_process.spawn`
    * (src/providers/run-agent.ts). A cycle test hands in a fake so what the
    * engine puts on an agent's lines — its tenant, its pipeline, its unit — is
@@ -441,6 +449,7 @@ export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const reportClient = options.reportClient ?? null;
   const manualRuns = options.manualRuns ?? null;
+  const spendHold = options.spendHold ?? null;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
   // `--run-once` means one unit, so it pins the pipeline's concurrency to 1 rather
   // than honouring a declaration that would have it admit several and then
@@ -728,8 +737,8 @@ export function createEngine(options: EngineOptions): Engine {
   /**
    * Record one whole-unit timeout toward the poison-unit quarantine (#75) for
    * PR-shaped units (`conflicts`, `checks`, `reviews`). Issue-shaped units are
-   * counted by the stranded-unit sweep instead (#367), which owns the counter
-   * for anything that carries a queue label. Best-effort — a GitHub write
+   * counted by their claim instead (#367): `settleUnitClaim` as the unit
+   * settles, or the stranded-unit sweep after a crash. Best-effort — a GitHub write
    * failure here is logged and swallowed so it can never take the daemon down.
    *
    * The write target is the unit's structural `github` field (#352): a unit
@@ -765,9 +774,9 @@ export function createEngine(options: EngineOptions): Engine {
       return quarantined;
     }
     const target: UnitTarget = ghTarget;
-    // Issue-shaped units (issues/research) carry processingLabel, which the
-    // stranded-unit sweep detects and counts. PR-shaped units do not, so they
-    // are counted here on timeout.
+    // Issue-shaped units (issues/research) carry processingLabel, and their
+    // claim is what gets counted (settleUnitClaim, or the stranded-unit sweep).
+    // PR-shaped units do not, so they are counted here on timeout.
     if (target.objectType === "issue") return false;
     let quarantineLabelled = false;
     try {
@@ -1193,69 +1202,126 @@ export function createEngine(options: EngineOptions): Engine {
       // accrue a timeout against a run that succeeded, so it is left alone
       // before any read or write (#485).
       if (isLandedMember(issue, config.mergedLabel)) continue;
-      const label = `issue #${issue.number}`;
-      let hasPr: boolean;
-      try {
-        const state = github.blockerPrState(issue.number);
-        hasPr = state.hasOpenPr || state.hasMergedPr;
-      } catch (error) {
-        log.fail(
-          `Could not check PR state for ${label} in the stranded-unit sweep — ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-        continue;
-      }
-      if (hasPr) continue;
-      try {
-        const target: UnitTarget = { objectType: "issue", id: issue.number };
-        const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
-        const inputs = github.issueTimeoutInputs(issue.number);
-        // A run that said it needs a human is not a crashed one (#817): label it
-        // `phoebe:blocked`, which selection skips, rather than re-arm it
-        // and count it unproductive. Add first, remove second, as the landed
-        // swap does, so a failure between the two never leaves it queued.
-        if (hasLiveBlockedMarker(inputs.comments, login)) {
-          addLabelCreatingIfMissing(github, issue.number, PHOEBE_BLOCKED, (line) => log.say(line));
-          github.removeIssueLabel(issue.number, config.processingLabel);
-          github.postUnitComment(target, buildBlockedComment());
-          log.say(`Labelled ${label} ${PHOEBE_BLOCKED_LABEL} — its run says it needs a human.`);
-          continue;
-        }
-        // Dropping the claim is the whole re-arm: the ticket still wears its
-        // owner's queue label, which is how it was found to be the owner's. No
-        // label is added, so a ticket never lands on another kind's queue.
-        github.removeIssueLabel(issue.number, config.processingLabel);
-        const k = resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);
-        const { count, quarantine } = decideTimeoutRecord({
-          comments: inputs.comments,
-          phoebeLogin: login,
-          extraActivityAt: inputs.extraActivityAt,
-          k,
-        });
-        github.postUnitComment(target, buildUnitTimeoutMarker(count));
-        if (quarantine) {
-          addUnitLabelCreatingIfMissing(github, target, quarantineLabelOf(), (line) =>
-            log.say(line),
-          );
-          github.postUnitComment(
-            target,
-            buildQuarantineComment({
-              kind: "issues",
-              id: issue.number,
-              k: count,
-              baseline: inputs.baseline,
-              cause: "unproductive",
-            }),
-          );
-        }
-        log.say(`Re-armed ${label} — stranded with no PR.`);
-      } catch (error) {
-        log.fail(
-          `Could not re-arm ${label} in the stranded-unit sweep — ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      settleStrandedClaim(issue.number, owner.kind, "the stranded-unit sweep");
     }
+  }
+
+  /**
+   * What settling one claim did. `left` is a claim with a PR behind it, or one
+   * whose reads failed before anything was written; `blocked` traded the claim
+   * for `phoebe:blocked`; a re-arm counted one unproductive run, and says
+   * whether that run was the one that quarantined the issue.
+   */
+  type ClaimSettlement = "left" | "blocked" | { rearmed: true; quarantined: boolean };
+
+  /**
+   * Settle one claimed issue with no open or merged PR: block it when its run
+   * left a live `phoebe-blocked` marker, otherwise re-arm it and count the run
+   * toward quarantine. The stranded-unit sweep runs this over every claim it
+   * finds, and a settled issue-keyed unit runs it over its own (#985), so the
+   * unit's record can say what the count made of the run. `where` names the
+   * caller in the log lines. Best-effort: a failure is one log line, and the
+   * settlement says how far it got.
+   */
+  function settleStrandedClaim(issueNumber: number, kind: string, where: string): ClaimSettlement {
+    const label = `issue #${issueNumber}`;
+    let hasPr: boolean;
+    try {
+      const state = github.blockerPrState(issueNumber);
+      hasPr = state.hasOpenPr || state.hasMergedPr;
+    } catch (error) {
+      log.fail(
+        `Could not check PR state for ${label} in ${where} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return "left";
+    }
+    if (hasPr) return "left";
+    let settled: ClaimSettlement = "left";
+    try {
+      const target: UnitTarget = { objectType: "issue", id: issueNumber };
+      const login = github.resolveLogin(env["PHOEBE_GH_LOGIN"]);
+      const inputs = github.issueTimeoutInputs(issueNumber);
+      // A run that said it needs a human is not a crashed one (#817): label it
+      // `phoebe:blocked`, which selection skips, rather than re-arm it
+      // and count it unproductive. Add first, remove second, as the landed
+      // swap does, so a failure between the two never leaves it queued.
+      if (hasLiveBlockedMarker(inputs.comments, login)) {
+        addLabelCreatingIfMissing(github, issueNumber, PHOEBE_BLOCKED, (line) => log.say(line));
+        github.removeIssueLabel(issueNumber, config.processingLabel);
+        settled = "blocked";
+        github.postUnitComment(target, buildBlockedComment());
+        log.say(`Labelled ${label} ${PHOEBE_BLOCKED_LABEL} — its run says it needs a human.`);
+        return settled;
+      }
+      // Dropping the claim is the whole re-arm: the ticket still wears its
+      // owner's queue label, which is how it was found to be the owner's. No
+      // label is added, so a ticket never lands on another kind's queue.
+      github.removeIssueLabel(issueNumber, config.processingLabel);
+      settled = { rearmed: true, quarantined: false };
+      const k = resolveMaxUnproductiveRuns(env, config.maxUnproductiveRuns);
+      const { count, quarantine } = decideTimeoutRecord({
+        comments: inputs.comments,
+        phoebeLogin: login,
+        extraActivityAt: inputs.extraActivityAt,
+        k,
+      });
+      github.postUnitComment(target, buildUnitTimeoutMarker(count));
+      if (quarantine) {
+        addUnitLabelCreatingIfMissing(github, target, quarantineLabelOf(), (line) => log.say(line));
+        settled = { rearmed: true, quarantined: true };
+        github.postUnitComment(
+          target,
+          buildQuarantineComment({
+            kind,
+            id: issueNumber,
+            k: count,
+            baseline: inputs.baseline,
+            cause: "unproductive",
+          }),
+        );
+      }
+      log.say(`Re-armed ${label} — stranded with no PR.`);
+    } catch (error) {
+      log.fail(
+        `Could not re-arm ${label} in ${where} — ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return settled;
+  }
+
+  /**
+   * Settle a settling unit's own claim (#985), the way the stranded-unit sweep
+   * would on the next pass, so the unit's record carries what the sweep's count
+   * made of the run. Only an issue-keyed unit on an issue has a claim. One that
+   * closed, dropped its claim, or landed on its feature has nothing to settle;
+   * neither has one whose state cannot be read, which the sweep then picks up.
+   * Returns `null` when nothing was re-armed.
+   */
+  function settleUnitClaim(picked: PickedWorkUnit): { quarantined: boolean } | null {
+    const target = picked.unit.github;
+    if (picked.definition.unitKey !== "issue" || target?.objectType !== "issue") return null;
+    const label = `issue #${target.id}`;
+    let labels: string[];
+    try {
+      if (github.issueState(target.id).state !== "open") return null;
+      labels = github.issueLabels(target.id);
+    } catch (error) {
+      log.warn(
+        `Could not read ${label} to settle its claim — ` +
+          `${error instanceof Error ? error.message : String(error)}; ` +
+          `the stranded-unit sweep will.`,
+      );
+      return null;
+    }
+    if (!labels.includes(config.processingLabel)) return null;
+    if (isLandedMember({ labels }, config.mergedLabel)) return null;
+    // An operator who pulled the ticket off its queue mid-run leaves it with no
+    // owner; the sweep leaves such a claim alone, and so does this.
+    if (scope.issueOwner(labels)?.kind !== picked.kind) return null;
+    const settled = settleStrandedClaim(target.id, picked.kind, `settling its unit`);
+    return typeof settled === "object" ? { quarantined: settled.quarantined } : null;
   }
 
   /**
@@ -2066,6 +2132,8 @@ export function createEngine(options: EngineOptions): Engine {
   // A manual run (#937) ends the wait the same way a settle does: the next
   // pass is the one whose fetch takes it.
   manualRuns?.onArrival(announceSettled);
+  // So does a spend hold letting go (#990): admission resumes on the next pass.
+  spendHold?.onRelease(announceSettled);
 
   /**
    * Wait for the next pass: whichever comes first of a unit settling, a manual
@@ -2178,7 +2246,14 @@ export function createEngine(options: EngineOptions): Engine {
     try {
       const result = await runPickedUnit(picked, ctx, scope);
       emitUnitEvent({ unit: ref, event: "completed" });
-      record("completed", completedDetail(result));
+      // A run that returned but left its issue claimed with no PR is the one the
+      // sweep counts as unproductive (#985): settled here, its record says so.
+      const claim = settleUnitClaim(picked);
+      if (claim === null) {
+        record("completed", completedDetail(result));
+      } else {
+        record("unproductive", completedDetail(result) ?? "ended with no PR", claim.quarantined);
+      }
     } catch (error) {
       if (error instanceof WorktreeLeasedError) {
         // Not a failure: someone else is working the tree this unit needs — a
@@ -2198,7 +2273,10 @@ export function createEngine(options: EngineOptions): Engine {
         // Count this timeout on the unit and, at K consecutive, quarantine it so
         // a genuinely poisonous unit stops being re-picked forever (#75).
         const quarantined = recordUnitTimeout(picked, emitUnitEvent);
-        record("timed-out", detail, quarantined);
+        // Issue-shaped units are counted by their claim instead, which settles
+        // here rather than a pass later so the record can carry its quarantine.
+        const claim = settleUnitClaim(picked);
+        record("timed-out", detail, quarantined || (claim?.quarantined ?? false));
       } else {
         // A non-timeout failure: drop the unit from the snapshot and record the
         // error so `phoebe list` shows it (the durable record is still the
@@ -2206,7 +2284,8 @@ export function createEngine(options: EngineOptions): Engine {
         // at-a-glance snapshot).
         const detail = error instanceof Error ? error.message : String(error);
         emitUnitEvent({ unit: ref, event: "failed", detail });
-        record("failed", detail);
+        const claim = settleUnitClaim(picked);
+        record("failed", detail, claim?.quarantined ?? false);
       }
       if (runOnce) throw error;
       log.fail(
@@ -2278,6 +2357,14 @@ export function createEngine(options: EngineOptions): Engine {
       slotClient?.release();
       log.say("Drain requested before starting the next unit — exiting 0.");
       return "drain";
+    }
+
+    // A spend hold that arrived while awaiting the slot also stops this unit.
+    // Not a drain: a hold must not exit a persistent engine, so give the slot
+    // back and let the next pass see the hold.
+    if (spendHold?.current() != null) {
+      slotClient?.release();
+      return "refused";
     }
 
     emitUnitEvent({
@@ -2371,6 +2458,9 @@ export function createEngine(options: EngineOptions): Engine {
    * unit — so the first idle pass after work always reports.
    */
   let lastIdleReport: string | null = null;
+
+  /** The spend-hold line this process last printed (#990), so a hold is said once. */
+  let lastSpendHoldLine: string | null = null;
 
   /**
    * Explain an idle cycle from the record the selection walk produced, so the
@@ -2588,6 +2678,27 @@ export function createEngine(options: EngineOptions): Engine {
         sweepStaleNativeStacks();
         sweepFeatureCloses();
       }
+
+      // Spend hold (#990): a ceiling covering this pipeline is reached, so this
+      // pass admits no unit. Units already running finish on their own terms; the
+      // hold lets go when the bootstrapper sees the window fall back under the
+      // ceiling, or the ceiling raised or removed. Said once per hold, not once
+      // per pass.
+      const held = spendHold?.current() ?? null;
+      if (held !== null) {
+        const line =
+          `Spend ceiling reached — admitting no unit this cycle: ` +
+          `${describeSpendHold(held, pipeline)}.`;
+        if (runOnce || dryRun) {
+          log.warn(line);
+          break;
+        }
+        if (lastSpendHoldLine !== line) log.warn(line);
+        lastSpendHoldLine = line;
+        await waitForNextPass();
+        continue;
+      }
+      lastSpendHoldLine = null;
 
       // Rolling top-up (#422): a pass admits at most as many units as the pipeline
       // has free slots. With none free there is nothing selection could do with
@@ -2878,6 +2989,10 @@ export async function runEngine(
     schedules: (kind) => workOrder.includes(kind),
     log: (line) => log.say(line),
   });
+  // The spend hold (#990): the bootstrapper says when a ceiling covering this
+  // pipeline is reached and when it lets go. Null when standalone, where nothing
+  // weighs this pipeline's spend.
+  const spendHold = createSpendHoldState(ipcChannel, { log: (line) => log.say(line) });
 
   // Per-repo observability (#73): one tagged `[<deployment>:<slug>:<pipeline>]` line
   // per unit event + a `status.json` snapshot under this pipeline's own dir in
@@ -2922,6 +3037,7 @@ export async function runEngine(
       credentialClient,
       reportClient,
       manualRuns,
+      spendHold,
       emitUnitEvent,
       // Each unit a dead predecessor left in the snapshot becomes one
       // `abandoned` record in the history (#928). `forgetInherited` never

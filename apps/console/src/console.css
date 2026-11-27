@@ -2549,6 +2549,11 @@ button.quiet.expander {
   background: var(--ok);
 }
 
+.outcome-bar .unproductive {
+  background: var(--warn);
+  opacity: 0.6;
+}
+
 .outcome-bar .failed {
   background: var(--fail);
 }

@@ -55,6 +55,40 @@ describe("flags", () => {
     ]);
   });
 
+  // #985: a run that returned with its issue still claimed and no PR used to
+  // read `completed`, so a unit that re-ran into quarantine never reached here.
+  test("an unproductive unit is flagged, and so is the run that quarantined it", () => {
+    expect(flagsOf(unitRecord({ outcome: "unproductive" }))).toEqual(["unproductive"]);
+    expect(flagsOf(unitRecord({ outcome: "unproductive", quarantined: true }))).toEqual([
+      "unproductive",
+      "quarantined",
+    ]);
+    expect(flagsOf(unitRecord({ outcome: "failed", quarantined: true }))).toEqual([
+      "failed",
+      "quarantined",
+    ]);
+
+    const flagged = flagUnits(
+      unitsSince(
+        [
+          {
+            pipeline: "work",
+            records: [
+              unitRecord({ outcome: "unproductive", startedAt: daysAgo(3) }),
+              unitRecord({ outcome: "unproductive", quarantined: true, startedAt: daysAgo(1) }),
+              unitRecord({ startedAt: daysAgo(2), unit: { kind: "issues", id: "issue:2" } }),
+            ],
+          },
+        ],
+        new Date(now.getTime() - 14 * DAY),
+      ),
+    );
+    expect(flagged.map((unit) => unit.flags)).toEqual([
+      ["unproductive", "quarantined"],
+      ["unproductive"],
+    ]);
+  });
+
   test("only units inside the lookback count, newest first", () => {
     const flagged = flagUnits(
       unitsSince(

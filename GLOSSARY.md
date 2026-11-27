@@ -429,6 +429,11 @@ A work unit a pipeline process started and never settled, because the process en
 mid-unit. The next process for that pipeline finds it at boot.
 _Avoid_: stranded (that is a claim with no pull request), orphaned, crashed
 
+**Unproductive unit**:
+An issue-keyed work unit whose run returned normally and whose claim Phoebe re-armed
+because it produced no pull request.
+_Avoid_: completed, no-op, empty run
+
 ### History
 
 **Unit record**:
@@ -441,6 +446,13 @@ verb run), log entry, trace, event (that is the rail)
 One pipeline's bounded collection of unit records, oldest dropped first. Structured records,
 never logs: the container keeps no logs.
 _Avoid_: run log, log, audit trail
+
+**Spend limit**:
+A limit on what a tenant or one pipeline spends over the last 24 hours or 7 days, counted
+as API dollars or as input plus output tokens. A **warning limit** is reported when
+reached. A **ceiling** holds admission on the pipelines it covers until the window falls
+back under it or a config edit raises it; units already running finish.
+_Avoid_: budget (that is the run budget), quota, cap (that is the slot cap)
 
 ### Observing
 

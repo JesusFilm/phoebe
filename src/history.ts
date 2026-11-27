@@ -38,6 +38,7 @@ export { HISTORY_MAX_LIMIT };
 /** Every outcome a record can carry, in the order a summary lists them. */
 export const UNIT_RECORD_OUTCOMES: readonly UnitRecordOutcome[] = [
   "completed",
+  "unproductive",
   "failed",
   "timed-out",
   "abandoned",
@@ -122,7 +123,7 @@ export function readUnitHistory(dir: string, read: ReadText = readText): UnitRec
 export function emptyHistoryTotals(): HistoryTotals {
   return {
     units: 0,
-    byOutcome: { completed: 0, failed: 0, "timed-out": 0, abandoned: 0 },
+    byOutcome: { completed: 0, unproductive: 0, failed: 0, "timed-out": 0, abandoned: 0 },
     quarantined: 0,
     costUsd: { api: 0, subscriptionEstimate: 0 },
     unitsWithoutCost: 0,

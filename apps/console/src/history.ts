@@ -30,6 +30,7 @@ import {
   historyExportLines,
   REMOTE_ROUTES,
 } from "phoebe-agent/contracts";
+import { RemoteRequestError } from "./remote-client.ts";
 
 /** What one ask for a page came to. */
 export type HistoryFetch =
@@ -61,6 +62,7 @@ export function historyPath(query: HistoryQuery): string {
 /** Every outcome a record can carry, in the order the filter lists them. */
 export const HISTORY_OUTCOMES: readonly UnitRecordOutcome[] = [
   "completed",
+  "unproductive",
   "failed",
   "timed-out",
   "abandoned",
@@ -318,9 +320,11 @@ export function retainedSince(page: Pick<HistoryPage, "retained">): string | nul
 
 // ───────────────────────────── summaries ─────────────────────────────
 
-/** Units that did not complete: failed, timed out or abandoned. */
+/** Units that did not complete: unproductive, failed, timed out or abandoned. */
 export function unfinishedOf(outcomes: Record<UnitRecordOutcome, number>): number {
-  return outcomes.failed + outcomes["timed-out"] + outcomes.abandoned;
+  return (
+    (outcomes.unproductive ?? 0) + outcomes.failed + outcomes["timed-out"] + outcomes.abandoned
+  );
 }
 
 /** The part of a summary window or a page's totals a cost reads off. */
@@ -356,7 +360,12 @@ export const TOKENS_ONLY_NOTE = "None of these units reported a cost. Their toke
 // ───────────────────────────── needs a look ─────────────────────────────
 
 /** The outcomes the overview's "Needs a look" feed lists. */
-export const NOT_COMPLETED: readonly UnitRecordOutcome[] = ["failed", "timed-out", "abandoned"];
+export const NOT_COMPLETED: readonly UnitRecordOutcome[] = [
+  "unproductive",
+  "failed",
+  "timed-out",
+  "abandoned",
+];
 
 /** How many units the feed lists at most. */
 export const FEED_SIZE = 6;
@@ -373,6 +382,20 @@ export type NeedsALookFetch =
   | { kind: "too-old" };
 
 /**
+ * Whether a rejection is an engine turning down the `outcome` filter itself,
+ * which is how one that predates `unproductive` answers. The remote API
+ * answers 400 and the local exec's error carries the same sentence; a network
+ * failure, another status or a malformed page says nothing of the filter.
+ */
+export function rejectsOutcomeFilter(error: unknown): boolean {
+  const said = (text: unknown) => typeof text === "string" && text.includes("`outcome` is one of");
+  if (error instanceof RemoteRequestError) {
+    return error.status === 400 && said((error.body as { detail?: unknown } | null)?.detail);
+  }
+  return error instanceof Error && said(error.message);
+}
+
+/**
  * The newest units since `since` that did not complete. One read per outcome,
  * since a query takes one, each capped at the feed's size: the newest six of
  * the three together are among the newest six of each. The total is the three
@@ -384,10 +407,21 @@ export async function readNeedsALook(
   since: string,
 ): Promise<NeedsALookFetch> {
   const fetched = await Promise.all(
-    NOT_COMPLETED.map((outcome) => reader({ outcome, since, limit: FEED_SIZE })),
+    NOT_COMPLETED.map((outcome) => {
+      const read = reader({ outcome, since, limit: FEED_SIZE });
+      // An engine older than the outcome rejects the filter. Only that read
+      // may fail quietly: the feed still lists the outcomes it knows.
+      return outcome === "unproductive"
+        ? read.catch((error: unknown): null => {
+            if (rejectsOutcomeFilter(error)) return null;
+            throw error;
+          })
+        : read;
+    }),
   );
   const pages: HistoryPage[] = [];
   for (const one of fetched) {
+    if (one === null) continue;
     if (one.kind === "too-old") return { kind: "too-old" };
     pages.push(one.page);
   }

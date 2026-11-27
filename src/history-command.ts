@@ -52,7 +52,7 @@ Filters (all optional, combined with AND):
   --pipeline <name>       One pipeline, in every tenant that has it
   --cell <id>             One cell, by the report's <tenantId>#<pipeline>
   --kind <kind>           issues, reviews, checks, ...
-  --outcome <outcome>     completed, failed, timed-out or abandoned
+  --outcome <outcome>     completed, unproductive, failed, timed-out or abandoned
   --provider <name>       claude, cursor or codex
   --model <model>         The model the unit was configured to run on
   --since <date>          Units that started at or after a date or ISO timestamp
@@ -279,6 +279,7 @@ export function formatHistoryTotals(totals: HistoryTotals): string {
     ...(
       [
         ["completed", "completed"],
+        ["unproductive", "unproductive"],
         ["failed", "failed"],
         ["timed-out", "timed out"],
         ["abandoned", "abandoned"],

@@ -18,7 +18,7 @@ import {
   parseHistoryArgs,
   runHistoryCli,
 } from "./history-command.ts";
-import { historySourcesOf, parseHistoryQuery, queryHistory } from "./history.ts";
+import { historySourcesOf, parseHistoryQuery, queryHistory, summarizeHistory } from "./history.ts";
 import { unitsPathFor } from "./unit-record.ts";
 
 const NOW = Date.parse("2026-11-25T12:00:00.000Z");
@@ -317,6 +317,27 @@ describe("the flags", () => {
     expect(() => parseHistoryArgs(["--export"])).toThrow(/needs a value/);
     expect(() => parseHistoryArgs(["--export", "csv", "--json"])).toThrow(/pick one/);
     expect(() => parseHistoryArgs(["--export", "csv", "--limit", "5"])).toThrow(/no `--limit`/);
+  });
+
+  test("an unproductive unit shows its own count, never a completed one, and its quarantine (#985)", () => {
+    const records = [
+      { ...record({ outcome: "unproductive", quarantined: true }), cell: "/etc/phoebe#work" },
+      { ...record({ unit: { kind: "issues", id: "2" } }), cell: "/etc/phoebe#work" },
+    ];
+    expect(parseHistoryQuery({ outcome: "unproductive" })).toEqual({ outcome: "unproductive" });
+    const text = formatHistoryPage(
+      {
+        records,
+        summary: summarizeHistory(records),
+        nextBefore: null,
+        retained: {},
+      },
+      NOW,
+    );
+    expect(text).toMatch(/issues #1\s+unproductive \(quarantined\)\s+claude-opus-5-5/);
+    expect(text).toContain(
+      "[phoebe] matched   2 units, 1 completed, 1 unproductive, 1 quarantined  $0.84 api",
+    );
   });
 
   test("the footer offers the next page when there is one", () => {

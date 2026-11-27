@@ -203,8 +203,8 @@ function Headline({
 }
 
 function OutcomeLine({ window }: { window: HistoryWindow }) {
-  const parts = (["failed", "timed-out", "abandoned"] as const)
-    .filter((outcome) => window.outcomes[outcome] > 0)
+  const parts = (["unproductive", "failed", "timed-out", "abandoned"] as const)
+    .filter((outcome) => (window.outcomes[outcome] ?? 0) > 0)
     .map((outcome) => `${window.outcomes[outcome]} ${outcome}`);
   return <>{parts.length === 0 ? "every unit completed" : parts.join(" · ")}</>;
 }
