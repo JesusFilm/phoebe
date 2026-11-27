@@ -31,6 +31,7 @@
 // here or listed below as a deployment fact.
 
 import { PROVIDER_NAMES, WORK_KIND_NAMES } from "./config-schema.ts";
+import { SPEND_LEVELS, SPEND_LIMIT_KEYS } from "./spend.ts";
 
 /**
  * Who reads a setting: the engine's work loop, or the bootstrapper (`phoebe
@@ -288,6 +289,20 @@ export const SETTINGS: readonly Setting[] = [
     type: "number",
     overlay: "none",
   }),
+  // The tenant's spend limits (#990). The bootstrapper evaluates them, against
+  // the limits the engine's enumeration prints after the overlay has written
+  // these onto the block. A pipeline's own `spend` block is file-only, like
+  // every other pipeline knob.
+  ...SPEND_LEVELS.flatMap((level) =>
+    SPEND_LIMIT_KEYS.map((key) =>
+      setting({
+        path: `spend.${level}.${key}`,
+        reader: "bootstrapper",
+        type: "number",
+        overlay: "all",
+      }),
+    ),
+  ),
 ];
 
 /**

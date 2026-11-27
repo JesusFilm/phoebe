@@ -34,6 +34,7 @@ import type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-st
 import type { FleetStop, RemoteReport } from "./remote-protocol.ts";
 import type { SecretsSection } from "./secrets.ts";
 import type { StatusSnapshot } from "./status-snapshot.ts";
+import type { CellSpend } from "./spend.ts";
 import type { HistorySummary } from "./unit-record.ts";
 
 /** The report shape this engine writes. Bump on a breaking change, never on an addition. */
@@ -215,6 +216,13 @@ export type FleetCell = {
    * {@link DEPLOYMENT_SCHEMA}.
    */
   history?: HistorySummary;
+  /**
+   * The spend limits on this cell (#990): the ceiling holding it, if one does,
+   * and the warning limits it has reached. Present only on a live cell that a
+   * tenant or pipeline `spend` block covers. An addition, so it does not move
+   * {@link DEPLOYMENT_SCHEMA}.
+   */
+  spend?: CellSpend;
 };
 
 export type FleetReport = {

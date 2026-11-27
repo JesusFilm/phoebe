@@ -1065,7 +1065,9 @@ describe("superviseFleet — solo's one pipeline", () => {
 function declaredPipeline(
   name: string,
   fingerprint: string | null,
-  knobs: Partial<Pick<Pipeline, "disabled" | "priority" | "concurrency">> = {},
+  knobs: Partial<
+    Pick<Pipeline, "disabled" | "priority" | "concurrency" | "spend" | "tenantSpend">
+  > = {},
 ): Pipeline {
   return {
     name,
@@ -1452,6 +1454,32 @@ describe("superviseFleet — the (tenant × pipeline) matrix", () => {
     expect(
       last.pipelines.find((pipeline) => pipeline.pipeline.name === "intake")?.pipeline.priority,
     ).toBe(5);
+  });
+
+  test("a spend limit edit is hot: no pipeline relaunches, and the matrix carries it (#990)", async () => {
+    const h = matrixHarness({ pipelines: TWO_PIPELINES });
+    await settle();
+    const initial = [...h.spawned];
+
+    h.setPipelines({
+      [WIDGET]: [
+        declaredPipeline("work", "w1", { tenantSpend: { ceiling: { usd24h: 50 } } }),
+        declaredPipeline("intake", "i1", {
+          spend: { warn: { tokens7d: 1e6 } },
+          tenantSpend: { ceiling: { usd24h: 50 } },
+        }),
+      ],
+    });
+    h.setSamples([sample("acme/widget", "fp2")]);
+    h.tick();
+    await settle();
+
+    for (const s of initial) expect(s.fake.kills).toEqual([]);
+    expect(h.spawned).toHaveLength(2);
+    const last = h.matrices[h.matrices.length - 1]!;
+    const intake = last.pipelines.find((pipeline) => pipeline.pipeline.name === "intake");
+    expect(intake?.pipeline.spend).toEqual({ warn: { tokens7d: 1e6 } });
+    expect(intake?.pipeline.tenantSpend).toEqual({ ceiling: { usd24h: 50 } });
   });
 
   test("a pipeline whose cold config also moved still relaunches", async () => {
