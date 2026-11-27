@@ -1417,6 +1417,12 @@ describe("createGhExecutor", () => {
     expect(exec(["api", "--input", "-"], { input: '{"ref":"x"}' })).toBe('{"ref":"x"}');
   });
 
+  posix("captures a response larger than Node's 1 MiB default buffer", () => {
+    const exec = createGhExecutor(fakeGhOnPath());
+    const big = "x".repeat(8 * 1024 * 1024);
+    expect(exec(["api", "--input", "-"], { input: big })).toHaveLength(big.length);
+  });
+
   posix("forwards input on the inherit path without throwing", () => {
     const exec = createGhExecutor(fakeGhOnPath());
     expect(() => exec(["api", "--input", "-"], { input: "{}", inherit: true })).not.toThrow();
@@ -1809,18 +1815,16 @@ describe("the observer's PR outcome reads (#935)", () => {
     expect(argOf(calls[0]!.args, "owner")).toBeUndefined();
   });
 
-  test("branchWorkflowRuns is one REST call per branch", () => {
+  test("branchWorkflowRuns is one REST call per branch, projected to the fields it reads", () => {
     const { github, calls } = clientWith([
-      JSON.stringify({
-        workflow_runs: [
-          {
-            name: "ready",
-            head_sha: "a".repeat(40),
-            conclusion: "failure",
-            created_at: "2026-11-02T01:00:00Z",
-          },
-        ],
-      }),
+      JSON.stringify([
+        {
+          name: "ready",
+          head_sha: "a".repeat(40),
+          conclusion: "failure",
+          created_at: "2026-11-02T01:00:00Z",
+        },
+      ]),
     ]);
     expect(github.branchWorkflowRuns("phoebe/issue-6")).toEqual([
       {
@@ -1833,6 +1837,8 @@ describe("the observer's PR outcome reads (#935)", () => {
     expect(calls[0]?.args).toEqual([
       "api",
       "repos/acme/widget/actions/runs?branch=phoebe%2Fissue-6&per_page=100",
+      "--jq",
+      "[.workflow_runs[] | {name, head_sha, conclusion, created_at}]",
     ]);
   });
 });
