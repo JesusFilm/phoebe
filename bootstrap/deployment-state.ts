@@ -69,6 +69,7 @@ import type {
   FleetCell,
   ReconcileState,
   SlotReport,
+  TelemetryReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
@@ -169,6 +170,12 @@ export type DeploymentStateDeps = {
    * field then is too, which a reader takes as running.
    */
   fleetStop?: () => FleetStop | null;
+  /**
+   * The OTLP forwarder's counters (#993), read at publish time; null when
+   * forwarding is off. Absent for a bootstrapper with no forwarder wired — the
+   * field then is too.
+   */
+  telemetry?: () => TelemetryReport | null;
   /**
    * The root config an edit checks itself against (#503), read at publish time.
    * Cheap on a steady deployment: the hash is re-taken only when the file's stat
@@ -719,6 +726,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           children: livenessOf(at),
           slots: deps.slots(),
           ...(deps.fleetStop === undefined ? {} : { stopped: deps.fleetStop() }),
+          ...(deps.telemetry === undefined ? {} : { telemetry: deps.telemetry() }),
         },
         remote,
         fleet: withHistory(buildFleet(at), at),

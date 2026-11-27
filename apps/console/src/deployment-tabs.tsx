@@ -288,6 +288,23 @@ function OverviewTab({
                 : ` · stopped by ${bootstrapper.stopped.by} ${age(bootstrapper.stopped.at, now)} ago`
             }`}
           />
+          {bootstrapper?.telemetry == null ? null : (
+            <>
+              <dt>Telemetry</dt>
+              <dd>
+                {`OpenTelemetry: ${bootstrapper.telemetry.sent} sent, ${bootstrapper.telemetry.dropped} dropped${
+                  bootstrapper.telemetry.lastSentAt === null
+                    ? ""
+                    : `, last sent ${age(bootstrapper.telemetry.lastSentAt, now)} ago`
+                }`}
+                {bootstrapper.telemetry.lastError === null ? null : (
+                  <span className="chip warn" title={bootstrapper.telemetry.lastError}>
+                    sends failing
+                  </span>
+                )}
+              </dd>
+            </>
+          )}
           <Pair label="Report" value={`read ${age(reading.receivedAt, now)} ago`} />
         </dl>
       </section>

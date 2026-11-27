@@ -1,0 +1,5 @@
+---
+"phoebe-agent": minor
+---
+
+`phoebe bench` now runs a baseline for each fixture. A baseline checks out the merged PR's head in a fresh tree and runs `installCommand`, `checkCommand` and `testCommand` there with no agent, under the same environment and limits as a trial's gates. `bench select` runs it before pinning a fixture. It skips a fixture whose merged PR fails, with a reason such as `its merged PR no longer passes: test exited 1`. Each fixture it keeps records `baselinePassedAt`. `--no-baseline` pins without running the gates. `bench run` runs every fixture's baseline again before the first trial. A fixture that fails is unstable for that run, and none of its trials run. `BenchReport` gains `baselines` (each fixture's baseline gates) and `unstable` (issue, PR, failing gate, exit code and `baselinePassedAt`). `planned` and every pass rate leave unstable fixtures out, and the table ends with a line naming them. `BenchSuite` and `BenchReport` stay at `v: 1`. A run in which every fixture is unstable now exits 1 with `no stable fixture: nothing to compare`. The docs now say that "offline" means cut off from GitHub, and that trials keep outbound network.

@@ -28,6 +28,7 @@ import {
   tenantRow,
   tenantTokenCheck,
   remoteCheck,
+  telemetryCheck,
   scanDeclaredEnv,
   providerKeyCheck,
   scanProviderKeys,
@@ -1542,6 +1543,54 @@ describe("reading one tenant's store (#504)", () => {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, "secrets.json"), "not json");
     expect(readTenantSecretStore("acme/widget", dataBase, {}).values).toBeNull();
+  });
+});
+
+describe("telemetryCheck (#993)", () => {
+  test("no OTLP variable: forwarding is off, and that is fine", () => {
+    const check = telemetryCheck({ OTEL_EXPORTER_OTLP_ENDPOINT: "" });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toMatch(/^off\. /);
+  });
+
+  test("on: says where it sends, names the headers and never prints their values", () => {
+    const check = telemetryCheck({
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.com:4318",
+      OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20collector-secret",
+    });
+    expect(check.state).toBe("ok");
+    expect(check.detail).toContain("https://collector.example.com:4318/v1/traces");
+    expect(check.detail).toContain("from OTEL_EXPORTER_OTLP_ENDPOINT");
+    expect(check.detail).toContain("authorization");
+    expect(check.detail).not.toContain("collector-secret");
+  });
+
+  test("the traces endpoint is used as given, and its query string is not printed", () => {
+    const check = telemetryCheck({
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://other.example.com",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example.com/ingest?key=secret",
+    });
+    expect(check.detail).toContain("https://collector.example.com/ingest ");
+    expect(check.detail).not.toContain("secret");
+  });
+
+  test.each(["grpc", "http/protobuf"])("flags %s as unsupported", (protocol) => {
+    const check = telemetryCheck({
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+      OTEL_EXPORTER_OTLP_PROTOCOL: protocol,
+    });
+    expect(check.state).toBe("warn");
+    expect(check.detail).toContain(`\`${protocol}\``);
+    expect(check.detail).toContain("http/json");
+  });
+
+  test("the traces protocol wins over the general one", () => {
+    const check = telemetryCheck({
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc",
+      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: "http/json",
+    });
+    expect(check.state).toBe("ok");
   });
 });
 

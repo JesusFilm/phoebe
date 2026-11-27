@@ -72,7 +72,7 @@ function reasonFor(pr: BenchPrFacts, issue: BenchIssueFacts = issueFacts(7)): st
   return skipReason({ issueNumber: 7, pr, issue, config: CONFIG });
 }
 
-describe("which PRs qualify", () => {
+describe("which PRs qualify", async () => {
   test("a merged issues PR of only Phoebe's commits into the default branch is a fixture", () => {
     expect(reasonFor(prFacts(7))).toBeNull();
   });
@@ -175,7 +175,7 @@ describe("selectSuite", () => {
   });
   const now = () => new Date("2026-11-25T00:00:00Z");
 
-  test("--issues judges each named issue by its one merged PR, and lists every skip", () => {
+  test("--issues judges each named issue by its one merged PR, and lists every skip", async () => {
     const facts: Record<number, BenchPrFacts> = {
       107: prFacts(7),
       108: prFacts(8, { baseRefName: "phoebe/feature-3" }),
@@ -191,11 +191,12 @@ describe("selectSuite", () => {
       benchIssueFacts: (issue) => issueFacts(issue),
     });
 
-    const suite = selectSuite({
+    const suite = await selectSuite({
       github,
       config: CONFIG,
       request: { by: "issues", issues: [7, 8, 9, 10, 7] },
       baseShaOf: (pr) => `base-of-${pr.number}`,
+      baseline: null,
       now,
     });
 
@@ -232,7 +233,7 @@ describe("selectSuite", () => {
     ]);
   });
 
-  test("the query walks merged issue PRs newest first until --limit fixtures qualify", () => {
+  test("the query walks merged issue PRs newest first until --limit fixtures qualify", async () => {
     const listed: Array<{ since: string | null; limit: number }> = [];
     const github = stubGitHub({
       listMergedPrs: (opts) => {
@@ -255,11 +256,12 @@ describe("selectSuite", () => {
       benchIssueFacts: (issue) => issueFacts(issue),
     });
 
-    const suite = selectSuite({
+    const suite = await selectSuite({
       github,
       config: CONFIG,
       request: { by: "query", since: "2026-11-01", limit: 2 },
       baseShaOf: () => "base",
+      baseline: null,
       now,
     });
 
@@ -275,7 +277,7 @@ describe("selectSuite", () => {
     ]);
   });
 
-  test("a PR that cannot be read or pinned is a skip with the reason, not a failed suite", () => {
+  test("a PR that cannot be read or pinned is a skip with the reason, not a failed suite", async () => {
     const github = stubGitHub({
       mergedPrsForBranch: (branch) => [
         ref(Number(branch.split("-").at(-1)), "2026-11-04T00:00:00Z"),
@@ -287,13 +289,14 @@ describe("selectSuite", () => {
       benchIssueFacts: (issue) => issueFacts(issue),
     });
 
-    const suite = selectSuite({
+    const suite = await selectSuite({
       github,
       config: CONFIG,
       request: { by: "issues", issues: [1, 2] },
       baseShaOf: () => {
         throw new Error("fatal: bad object");
       },
+      baseline: null,
       now,
     });
 
@@ -305,6 +308,72 @@ describe("selectSuite", () => {
         pr: 102,
         reason: "could not compute baseSha in the hub clone: fatal: bad object",
       },
+    ]);
+  });
+
+  test("a baseline that fails skips the fixture with the gate; one that passes records when", async () => {
+    const github = stubGitHub({
+      mergedPrsForBranch: (branch) => [
+        ref(Number(branch.split("-").at(-1)), "2026-11-04T00:00:00Z"),
+      ],
+      benchPrFacts: (pr) => prFacts(Number(pr) - 100),
+      benchIssueFacts: (issue) => issueFacts(issue),
+    });
+    const pass = { command: "c", exitCode: 0, durationMs: 1 };
+    const checked: number[] = [];
+    const suite = await selectSuite({
+      github,
+      config: CONFIG,
+      request: { by: "issues", issues: [1, 2, 3] },
+      baseShaOf: () => "base",
+      baseline: (fixture) => {
+        checked.push(fixture.issue.number);
+        if (fixture.issue.number === 3) return Promise.reject(new Error("fatal: bad object"));
+        return Promise.resolve(
+          fixture.issue.number === 2
+            ? { install: pass, check: pass, test: { command: "t", exitCode: 1, durationMs: 1 } }
+            : { install: pass, check: pass, test: pass },
+        );
+      },
+      now,
+    });
+
+    expect(checked).toEqual([1, 2, 3]);
+    expect(suite.fixtures.map((fixture) => fixture.issue.number)).toEqual([1]);
+    expect(suite.fixtures[0]!.baselinePassedAt).toBe("2026-11-25T00:00:00.000Z");
+    expect(suite.skipped).toEqual([
+      { issue: 2, pr: 102, reason: "its merged PR no longer passes: test exited 1" },
+      { issue: 3, pr: 103, reason: "its baseline could not run: fatal: bad object" },
+    ]);
+  });
+
+  test("a query keeps walking past a fixture whose baseline fails", async () => {
+    const github = stubGitHub({
+      listMergedPrs: () => [
+        ref(3, "2026-11-04T00:00:00Z"),
+        ref(2, "2026-11-03T00:00:00Z"),
+        ref(1, "2026-11-02T00:00:00Z"),
+      ],
+      benchPrFacts: (pr) => prFacts(Number(pr) - 100),
+      benchIssueFacts: (issue) => issueFacts(issue),
+    });
+    const pass = { command: "c", exitCode: 0, durationMs: 1 };
+    const suite = await selectSuite({
+      github,
+      config: CONFIG,
+      request: { by: "query", since: null, limit: 2 },
+      baseShaOf: () => "base",
+      baseline: (fixture) =>
+        Promise.resolve({
+          install: fixture.issue.number === 3 ? { ...pass, exitCode: 2 } : pass,
+          check: null,
+          test: null,
+        }),
+      now,
+    });
+    expect(suite.fixtures.map((fixture) => fixture.issue.number)).toEqual([2, 1]);
+    expect(suite.skipped).toEqual([
+      { issue: 3, pr: 103, reason: "its merged PR no longer passes: install exited 2" },
     ]);
   });
 });

@@ -119,7 +119,7 @@ import {
   type AgentRunTrack,
   type RecordUnit,
 } from "./unit-record.ts";
-import type { UnitRecordOutcome } from "./contracts/unit-record.ts";
+import type { UnitRecord, UnitRecordOutcome } from "./contracts/unit-record.ts";
 import { moduleDirOf } from "./package-resource.ts";
 import type { Provider } from "./providers/types.ts";
 import {
@@ -3021,7 +3021,9 @@ export async function runEngine(
     unitsPath: unitsPathFor(config.paths.stateDir, pipelineName),
     engineCommit: readEngineCommit(moduleDirOf(import.meta.url)),
     // The report's history summary moves with the unit, not on the hourly tick (#929).
-    ...(reportClient !== null ? { onAppended: () => reportClient.record() } : {}),
+    ...(reportClient !== null
+      ? { onAppended: (record: UnitRecord) => reportClient.record(record) }
+      : {}),
   });
 
   const drain = installDrainSignal();
