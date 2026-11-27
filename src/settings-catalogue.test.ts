@@ -116,12 +116,34 @@ describe("the catalogue", () => {
   });
 
   test("the three host knobs live on the deployment block", () => {
-    const hostKnobs = SETTINGS.filter((entry) => entry.reader === "bootstrapper");
+    const hostKnobs = SETTINGS.filter(
+      (entry) => entry.reader === "bootstrapper" && !entry.path.startsWith("spend."),
+    );
     expect(hostKnobs.map((entry) => entry.path)).toEqual([
       "deployment.slotCap",
       "deployment.slotFloorBudget",
       "deployment.reconcileIntervalMs",
     ]);
+  });
+
+  test("every tenant spend limit is catalogued, and read by the bootstrapper (#990)", () => {
+    const spend = SETTINGS.filter((entry) => entry.path.startsWith("spend."));
+    expect(spend.map((entry) => entry.path)).toEqual([
+      "spend.warn.usd24h",
+      "spend.warn.usd7d",
+      "spend.warn.tokens24h",
+      "spend.warn.tokens7d",
+      "spend.ceiling.usd24h",
+      "spend.ceiling.usd7d",
+      "spend.ceiling.tokens24h",
+      "spend.ceiling.tokens7d",
+    ]);
+    for (const entry of spend) {
+      expect(entry.reader).toBe("bootstrapper");
+      expect(entry.type).toBe("number");
+    }
+    expect(settingAt("spend.ceiling.usd24h").env).toBe("PHOEBE_SPEND_CEILING_USD24H");
+    expect(settingAt("spend.warn.tokens7d").env).toBe("PHOEBE_SPEND_WARN_TOKENS7D");
   });
 
   test("the engine-dir and data-dir names are facts, not settings", () => {

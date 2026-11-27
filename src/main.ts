@@ -53,6 +53,8 @@ import {
 import { createSlotClient, type SlotClient } from "./slot-client.ts";
 import { createReportClient, type ReportClient } from "./report-client.ts";
 import { createManualRunInbox, type ManualRunInbox } from "./manual-run.ts";
+import { createSpendHoldState, type SpendHoldState } from "./spend-hold.ts";
+import { describeSpendHold } from "./spend.ts";
 import {
   RunTimeoutError,
   resolveRunTimeoutMs,
@@ -396,6 +398,12 @@ export type EngineOptions = {
    */
   manualRuns?: ManualRunInbox | null;
   /**
+   * The spend hold the bootstrapper sends (#990), or null when nothing is
+   * supervising this engine. While it holds, a pass admits no unit; a release
+   * ends the wait for the next pass.
+   */
+  spendHold?: SpendHoldState | null;
+  /**
    * How an agent child is spawned. Defaults to the real `child_process.spawn`
    * (src/providers/run-agent.ts). A cycle test hands in a fake so what the
    * engine puts on an agent's lines — its tenant, its pipeline, its unit — is
@@ -441,6 +449,7 @@ export function createEngine(options: EngineOptions): Engine {
   const { config, env, drain, slotClient, credentialClient, emitUnitEvent } = options;
   const reportClient = options.reportClient ?? null;
   const manualRuns = options.manualRuns ?? null;
+  const spendHold = options.spendHold ?? null;
   const { runOnce, dryRun, pollIntervalMs } = options.run;
   // `--run-once` means one unit, so it pins the pipeline's concurrency to 1 rather
   // than honouring a declaration that would have it admit several and then
@@ -2066,6 +2075,8 @@ export function createEngine(options: EngineOptions): Engine {
   // A manual run (#937) ends the wait the same way a settle does: the next
   // pass is the one whose fetch takes it.
   manualRuns?.onArrival(announceSettled);
+  // So does a spend hold letting go (#990): admission resumes on the next pass.
+  spendHold?.onRelease(announceSettled);
 
   /**
    * Wait for the next pass: whichever comes first of a unit settling, a manual
@@ -2280,6 +2291,14 @@ export function createEngine(options: EngineOptions): Engine {
       return "drain";
     }
 
+    // A spend hold that arrived while awaiting the slot also stops this unit.
+    // Not a drain: a hold must not exit a persistent engine, so give the slot
+    // back and let the next pass see the hold.
+    if (spendHold?.current() != null) {
+      slotClient?.release();
+      return "refused";
+    }
+
     emitUnitEvent({
       unit: ref,
       event: "started",
@@ -2371,6 +2390,9 @@ export function createEngine(options: EngineOptions): Engine {
    * unit — so the first idle pass after work always reports.
    */
   let lastIdleReport: string | null = null;
+
+  /** The spend-hold line this process last printed (#990), so a hold is said once. */
+  let lastSpendHoldLine: string | null = null;
 
   /**
    * Explain an idle cycle from the record the selection walk produced, so the
@@ -2588,6 +2610,27 @@ export function createEngine(options: EngineOptions): Engine {
         sweepStaleNativeStacks();
         sweepFeatureCloses();
       }
+
+      // Spend hold (#990): a ceiling covering this pipeline is reached, so this
+      // pass admits no unit. Units already running finish on their own terms; the
+      // hold lets go when the bootstrapper sees the window fall back under the
+      // ceiling, or the ceiling raised or removed. Said once per hold, not once
+      // per pass.
+      const held = spendHold?.current() ?? null;
+      if (held !== null) {
+        const line =
+          `Spend ceiling reached — admitting no unit this cycle: ` +
+          `${describeSpendHold(held, pipeline)}.`;
+        if (runOnce || dryRun) {
+          log.warn(line);
+          break;
+        }
+        if (lastSpendHoldLine !== line) log.warn(line);
+        lastSpendHoldLine = line;
+        await waitForNextPass();
+        continue;
+      }
+      lastSpendHoldLine = null;
 
       // Rolling top-up (#422): a pass admits at most as many units as the pipeline
       // has free slots. With none free there is nothing selection could do with
@@ -2878,6 +2921,10 @@ export async function runEngine(
     schedules: (kind) => workOrder.includes(kind),
     log: (line) => log.say(line),
   });
+  // The spend hold (#990): the bootstrapper says when a ceiling covering this
+  // pipeline is reached and when it lets go. Null when standalone, where nothing
+  // weighs this pipeline's spend.
+  const spendHold = createSpendHoldState(ipcChannel, { log: (line) => log.say(line) });
 
   // Per-repo observability (#73): one tagged `[<deployment>:<slug>:<pipeline>]` line
   // per unit event + a `status.json` snapshot under this pipeline's own dir in
@@ -2922,6 +2969,7 @@ export async function runEngine(
       credentialClient,
       reportClient,
       manualRuns,
+      spendHold,
       emitUnitEvent,
       // Each unit a dead predecessor left in the snapshot becomes one
       // `abandoned` record in the history (#928). `forgetInherited` never

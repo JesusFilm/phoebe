@@ -11,7 +11,7 @@
 //
 // Nothing is queued. The handler refuses, with the reason, when the fleet is
 // stopped, when no tenant (or not the named one) declares the observer, when a
-// run is already in flight there, or when that pipeline's child is not up to
+// spend ceiling holds that pipeline (#990), when a run is already in flight there, or when that pipeline's child is not up to
 // hear the ask. Which pipeline runs the observer is the enumeration's `kinds`;
 // whether a run is in flight is the pipeline's last snapshot in the report.
 
@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { DeploymentReport, FleetCell } from "../src/contracts/deployment.ts";
 import type { FleetStop, ObserveResponse } from "../src/contracts/remote-protocol.ts";
 import { isPeriod, MANUAL_RUN, type ManualRun } from "../src/manual-run.ts";
+import { describeSpendHold } from "../src/spend.ts";
 import type { BrokerChild } from "./broker-ipc.ts";
 import { watchDrop, type DropWatcher } from "./file-drop.ts";
 import type { SupervisedPipeline } from "./pipelines.ts";
@@ -135,6 +136,16 @@ export function createObserveDispatcher(deps: {
       }
 
       const { entry, cell } = byTenant.get(tenant)!;
+      // A held observer counts toward its limits like any other pipeline, so a
+      // manual run is refused under the same ceiling its schedule is (#990).
+      const hold = cell?.spend?.hold ?? null;
+      if (hold !== null) {
+        return refused(
+          `the observer pipeline for ${tenant} (${entry.pipeline.pipeline.name}) is held: ` +
+            `${describeSpendHold(hold, entry.pipeline.pipeline.name)}.`,
+          { tenant },
+        );
+      }
       const running = cell?.snapshot?.currentUnits.find((unit) => unit.unit.kind === OBSERVER_KIND);
       if (running !== undefined) {
         return refused(
