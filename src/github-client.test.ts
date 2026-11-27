@@ -287,6 +287,17 @@ const ARGV_CASES: ArgvCase[] = [
     replies: [""],
   },
   {
+    name: "listLabeledPrs",
+    call: (g) => void g.listLabeledPrs("phoebe:bench"),
+    replies: ["[]"],
+    fields: "number,title,headRefName,headRefOid",
+  },
+  {
+    name: "removeUnitLabel",
+    call: (g) => g.removeUnitLabel({ objectType: "pr", id: 1 }, "phoebe:bench"),
+    replies: [""],
+  },
+  {
     name: "removeQuarantineLabel",
     call: (g) => g.removeQuarantineLabel({ objectType: "pr", id: 1 }),
     replies: [""],

@@ -251,6 +251,17 @@ export type BenchIssueFacts = {
   comments: GhComment[];
 };
 
+/**
+ * An open PR carrying a label, as the bench kind lists the PRs a person asked it
+ * to measure (#989). Any author and any base: the label is the whole filter.
+ */
+export type LabeledPr = {
+  number: PrNumber;
+  title: string;
+  headRefName: BranchRef;
+  headSha: Sha;
+};
+
 /** A PR a branch has had, as the observer matches a unit record to one (#935). */
 export type BranchPr = { number: PrNumber; createdAt: string; closedAt: string | null };
 
@@ -356,6 +367,8 @@ export type GitHubClient = {
    * of them through the same `isPrInScope` filter.
    */
   listOpenPhoebePrs(): OpenPhoebePr[];
+  /** Open PRs carrying `label`, oldest first, whatever `prScope` says. */
+  listLabeledPrs(label: string): LabeledPr[];
   /**
    * A PR's merge state, read fresh every call. The cycle client's `mergeInfo` is
    * the one to use during discovery; this is for the re-check after an agent has
@@ -417,6 +430,8 @@ export type GitHubClient = {
    */
   addUnitLabel(target: UnitTarget, label: string): void;
   removeQuarantineLabel(target: UnitTarget): void;
+  /** Remove `label` from an issue or PR. */
+  removeUnitLabel(target: UnitTarget, label: string): void;
   /**
    * Add `label` to an issue. Uses a captured (non-inherited) exec so the
    * caller can inspect the error with `isLabelNotFoundError` when the label
@@ -1349,6 +1364,29 @@ export function createGitHubClient({
       return prs;
     },
 
+    listLabeledPrs: (label) => {
+      type GhLabeledPr = { number: number; title: string; headRefName: string; headRefOid: string };
+      return ghJson<GhLabeledPr[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--label",
+        label,
+        "--limit",
+        "100",
+        "--search",
+        "sort:created-asc",
+        "--json",
+        "number,title,headRefName,headRefOid",
+      ]).map((pr) => ({
+        number: asPrNumber(pr.number),
+        title: pr.title,
+        headRefName: asBranchRef(pr.headRefName),
+        headSha: asSha(pr.headRefOid),
+      }));
+    },
+
     currentMergeInfo,
 
     prCommentBodies: (prNumber) => {
@@ -1666,6 +1704,10 @@ export function createGitHubClient({
         "--remove-label",
         PHOEBE_QUARANTINE_LABEL,
       ]);
+    },
+
+    removeUnitLabel: (target, label) => {
+      ghWrite([target.objectType, "edit", String(target.id), "--remove-label", label]);
     },
 
     issueLabels: (issueNumber) =>

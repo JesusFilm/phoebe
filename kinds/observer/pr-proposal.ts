@@ -16,11 +16,13 @@ import { dirname, join, relative } from "node:path";
 import { SKILL_LOCK_FILE } from "../../src/skill-lock.ts";
 import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { git, originSha } from "../skill-updates/upstream.ts";
+import { BENCH_LABEL } from "../bench/label.ts";
 import type { EditAttemptNote } from "./body.ts";
 import {
   ALLOWLIST_TEXT,
   checkEdit,
   GOVERNING_CONFIG,
+  isFactoryPath,
   PROMPTS_DIR,
   vendoredSkills,
 } from "./edit.ts";
@@ -32,6 +34,16 @@ export const EDIT_PROMPT_FILE = join(import.meta.dirname, "edit-prompt.md");
 export type EditOutcome =
   | { action: "pr"; number: number; branch: string }
   | { action: "issue"; attempt: EditAttemptNote };
+
+/**
+ * What a PR that edits a prompt or the governing config adds to its body
+ * (#989). A suggestion only: the observer never adds the label, because a
+ * bench spends tokens and a person decides that.
+ */
+export const BENCH_HINT =
+  `To measure this change before merging, add the \`${BENCH_LABEL}\` label. A deployment ` +
+  "that runs the `bench` kind then replays its suite with this PR's prompts and settings " +
+  "beside the default branch's, and comments the comparison here.\n";
 
 /** Every file under `dir`, relative to it. */
 function filesUnder(dir: string): string[] {
@@ -196,7 +208,7 @@ export async function proposeByPr(opts: {
       head: opts.branch,
       base: defaultBranch,
       title: opts.title,
-      body: opts.body,
+      body: verdict.changed.some(isFactoryPath) ? `${opts.body}\n${BENCH_HINT}` : opts.body,
     });
     return { action: "pr", number, branch: opts.branch };
   } finally {

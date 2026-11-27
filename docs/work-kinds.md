@@ -16,7 +16,7 @@ A kind is one registered **definition** — name, prompt, eligibility, reporting
 and a `fetch`/`select`/`run` triple. Five ship built-in: three **janitors** that
 keep open PRs moving (`conflicts`, `checks`, `reviews`) and two **producers**
 that start new work (`issues`, and `research` for wayfinder research tickets).
-Six more ship as **catalog kinds**, registered only when a tenant declares them:
+Seven more ship as **catalog kinds**, registered only when a tenant declares them:
 [`sentry`](#sentry-triage-production-errors-opt-in), which turns production
 errors into agent-ready issues,
 [`dependency-updates`](#dependency-updates-file-dependency-tickets-opt-in), which
@@ -27,7 +27,9 @@ files the severe advisories among them, and
 them, and [`skill-updates`](#skill-updates-propose-newer-upstream-skills-opt-in),
 which opens PRs for newer upstream skills, and
 [`observer`](#observer-propose-fixes-for-what-keeps-going-wrong-opt-in), which
-reads unit history and files proposals for what keeps going wrong. A tenant may
+reads unit history and files proposals for what keeps going wrong, and
+[`bench`](#bench-measure-a-prs-prompt-and-model-against-the-default-branch-opt-in),
+which benches a labelled PR's prompt and model against the default branch's. A tenant may
 register more directly under
 [`pipelines.<pipeline>.kinds`](configuration.md#custom-work-kinds)
 (see [Writing your own kind](#writing-your-own-kind)). Field references point at
@@ -1145,7 +1147,10 @@ the real files, and the diff in the issue applies where they live.
 
 A PR carries one commit with the edit alone, based on the default branch. It
 is an ordinary Phoebe PR, so `reviews`, `checks` and `conflicts` work it, and
-Phoebe never merges it. A run that opens three PRs makes four agent runs: the
+Phoebe never merges it. When the edit changes `prompts/**` or the governing
+config, the PR body ends with a line saying that the `phoebe:bench` label
+measures the change with the [`bench`](#bench-measure-a-prs-prompt-and-model-against-the-default-branch-opt-in)
+kind. The observer never adds that label itself. A run that opens three PRs makes four agent runs: the
 grouping run and one edit run each. With `mode: "issues"` every finding is an
 issue and a run makes one agent run.
 
@@ -1159,6 +1164,104 @@ what it did:
 Coverage names each pipeline it read and how far back that history reaches,
 which is less than `lookback` when the pipeline is new or its older units have
 rotated out.
+
+## `bench`, measure a PR's prompt and model against the default branch (opt-in)
+
+When a person adds the `phoebe:bench` label to an open PR, the kind replays the
+deployment's bench suite twice: once with the default branch's `issues` prompt
+and settings, and once with the PR head's. It then comments the two sets of
+figures on the PR. It runs in a pipeline of its own:
+
+```ts
+pipelines: {
+  bench: {
+    kinds: {
+      bench: {
+        path: "phoebe-agent/kinds/bench",
+        suite: "bench/suite.json",
+        // maxFixtures: 10, repeat: 1, judge: { provider: "claude", model: "claude-opus-5-5" },
+      },
+    },
+  },
+},
+// A bench replays up to maxFixtures × 2 × repeat trials in one unit.
+workKinds: { bench: { runTimeoutMs: 12 * 60 * 60 * 1000 } },
+```
+
+| Option        | Default | Env                                                       | Meaning                                                                                             |
+| ------------- | ------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `suite`       | none    | `PHOEBE_BENCH_SUITE`                                      | The suite file, relative to the deployment directory. Required.                                     |
+| `maxFixtures` | `10`    | `PHOEBE_BENCH_MAX_FIXTURES`                               | How many fixtures a bench replays. It takes the newest, by PR number.                               |
+| `repeat`      | `1`     | `PHOEBE_BENCH_REPEAT`                                     | How many times each fixture and contender pair is replayed.                                         |
+| `judge`       | off     | `PHOEBE_BENCH_JUDGE_PROVIDER`, `PHOEBE_BENCH_JUDGE_MODEL` | A provider and a model that judge each trial with commits. See [The judge](operating.md#the-judge). |
+
+An env name beats the file, as for every catalogued setting. A judge needs both
+its provider and its model, from either place. An unknown option fails
+registration. So does declaring the kind in a pipeline that runs any other
+kind, and so does a `concurrency` above 1. The kind never takes a slot the work
+pipeline wanted. The kind sets no run budget of its own, so the 45-minute default
+applies until you raise it with `PHOEBE_BENCH_RUN_TIMEOUT_MS` or
+`workKinds.bench.runTimeoutMs`. Set it high enough for a whole bench, since the
+deadline covers the bench, not one trial. A bench that outruns it is aborted and
+the label stays, so every retry fails the same way. Each trial still uses
+the tenant's `issues` run budget.
+
+**Fetch and select.** Each poll lists the open PRs that carry the label. Each
+one is a unit, ref `pr:<n>`, whose revision is the PR's head. A PR already in
+flight is skipped.
+
+**A run** does one of four things:
+
+| What the run finds                                                                       | What it does                                                                       |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| no file at `suite`                                                                       | comments `phoebe bench select > bench/suite.json`, removes the label, runs nothing |
+| a suite that does not parse                                                              | comments the error, removes the label, runs nothing                                |
+| the PR head's `issues` prompt, provider, model and effort all match the default branch's | comments that there is nothing to measure, removes the label, runs nothing         |
+| anything else                                                                            | runs the bench, posts a new comment, removes the label                             |
+
+The bench has two contenders. `main` uses the default branch's `issues`
+prompt, provider, model and effort. `pr` uses the PR head's. Bench reads each
+prompt as text through `git show` in the hub clone. It gets each side's
+settings by evaluating that commit's governing config in a child process. The
+child's environment is the agent allowlist with every GitHub credential and
+every provider key taken out, and a HOME of its own. Only the resolved
+settings come back, as JSON. The child reads the config file alone, with no
+`PHOEBE_*` names applied, so both sides are read the same way. A commit that
+does not track the governing config leaves that side on the deployment's own
+settings.
+
+Bench looks for the governing config and the prompt in the repository under the
+path the deployment reads them from. When the deployment directory sits inside
+a git work tree, bench tries the path relative to that tree's root first. Then
+it tries the path relative to the repository root, the layout the observer's
+PR proposals assume.
+
+The run then calls `runBench`, the same function `phoebe bench run` uses. It
+passes the newest `maxFixtures` fixtures, both contenders, `repeat` and the
+judge, and records the run under `bench/<runId>/` like any bench run.
+Baselines and unstable fixtures work as described in
+[Baselines and unstable fixtures](operating.md#baselines-and-unstable-fixtures).
+Bench stores no reference report between runs.
+
+**The comment** is a new one for every bench. It names the head SHA and the
+`runId`, and puts `main` and `pr` side by side: settings, prompt, trials, test
+pass rate, no-change count, median tokens, median cost per trial, and judge
+verdicts when the judge is on. Under the table it lists the unstable fixtures,
+which no score counts, and gives the bench's total cost. When the PR also
+changes `AGENTS.md` or a skill, the comment says that bench does not measure
+those yet. Trials read both from the fixture's own tree at `baseSha`, so the
+PR's version never reaches a trial. The comment sets no check status and fails
+nothing.
+
+**The label.** Bench removes the label after it posts the comment, so adding
+the label again runs a new bench. A new push does not start one. When the deployment
+restarts or the run deadline expires mid-bench, the label stays on, and the
+next poll runs the bench again.
+
+**Spend.** The kind never starts an agent of its own, so its unit record in
+`units.jsonl` carries no agent runs. The trials and the judge's runs go to
+`bench/<runId>/trials.jsonl`, which nothing that totals unit history reads, so
+no spend figure counts them.
 
 ## Watermarks
 

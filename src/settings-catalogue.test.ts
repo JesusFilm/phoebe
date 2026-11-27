@@ -69,9 +69,30 @@ describe("the catalogue", () => {
 
   test("the derived name is the convention every non-overridden entry follows", () => {
     // `PHOEBE_BASE` is the one entry whose name predates the convention and is
-    // kept because an operator's `.env` holds it.
+    // kept because an operator's `.env` holds it. The bench kind's options take
+    // the per-kind convention instead, because their block sits under a pipeline.
     const overridden = SETTINGS.filter((entry) => entry.env !== deriveEnvName(entry.path));
-    expect(overridden.map((entry) => entry.env)).toEqual(["PHOEBE_BASE"]);
+    expect(overridden.map((entry) => entry.env)).toEqual([
+      "PHOEBE_BASE",
+      "PHOEBE_BENCH_SUITE",
+      "PHOEBE_BENCH_MAX_FIXTURES",
+      "PHOEBE_BENCH_REPEAT",
+      "PHOEBE_BENCH_JUDGE_PROVIDER",
+      "PHOEBE_BENCH_JUDGE_MODEL",
+    ]);
+  });
+
+  test("the bench kind's options are named the way the kind's own knobs are", () => {
+    for (const [path, name] of [
+      ["kinds.bench.suite", "PHOEBE_BENCH_SUITE"],
+      ["kinds.bench.maxFixtures", "PHOEBE_BENCH_MAX_FIXTURES"],
+      ["kinds.bench.repeat", "PHOEBE_BENCH_REPEAT"],
+      ["kinds.bench.judge.provider", "PHOEBE_BENCH_JUDGE_PROVIDER"],
+      ["kinds.bench.judge.model", "PHOEBE_BENCH_JUDGE_MODEL"],
+    ] as const) {
+      expect(settingAt(path).env).toBe(name);
+    }
+    expect(() => assertNoEnvNameCollisions([...WORK_KIND_NAMES, "bench"])).not.toThrow();
   });
 
   test("the renames are permanent aliases, not deprecations", () => {
