@@ -154,6 +154,7 @@ describe("fetch", () => {
       listIssuesMentioning: () => [
         {
           number: 10,
+          title: "",
           body: renderMarker("3"),
           state: "open",
           stateReason: null,
@@ -162,6 +163,7 @@ describe("fetch", () => {
         },
         {
           number: 11,
+          title: "",
           body: renderMarker("4"),
           state: "closed",
           stateReason: "completed",
@@ -170,6 +172,7 @@ describe("fetch", () => {
         },
         {
           number: 12,
+          title: "",
           body: renderMarker("6"),
           state: "closed",
           stateReason: "not_planned",
@@ -178,6 +181,7 @@ describe("fetch", () => {
         },
         {
           number: 13,
+          title: "",
           body: "no marker at all",
           state: "open",
           stateReason: null,

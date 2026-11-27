@@ -307,7 +307,7 @@ const THREE: FindingSpec[] = [
     category: "convention",
     target: "release",
     title: "The release skill omits the changeset",
-    units: ["issue:6"],
+    units: ["issue:6", "issue:1"],
   },
 ];
 
@@ -431,8 +431,18 @@ describe("PR mode", () => {
   test("ticket and engine findings stay issues with no edit run", async () => {
     const h = harness({
       findings: [
-        { category: "ticket", target: "acceptance-criteria", title: "T", units: ["issue:1"] },
-        { category: "engine", target: "worktree-cleanup", title: "E", units: ["issue:2"] },
+        {
+          category: "ticket",
+          target: "acceptance-criteria",
+          title: "T",
+          units: ["issue:1", "issue:2"],
+        },
+        {
+          category: "engine",
+          target: "worktree-cleanup",
+          title: "E",
+          units: ["issue:2", "issue:3"],
+        },
       ],
     });
     await h.run();
@@ -457,6 +467,7 @@ describe("PR mode", () => {
       prProposals: [
         {
           number: 50,
+          title: "",
           body: `${renderFindingMarker("convention:AGENTS.md")}\n${renderUnitsMarker([listed])}`,
           state: "open",
           merged: false,
@@ -481,6 +492,7 @@ describe("PR mode", () => {
       prProposals: [
         {
           number: 50,
+          title: "",
           body: renderFindingMarker("convention:AGENTS.md"),
           state: "closed",
           merged: true,
@@ -488,6 +500,7 @@ describe("PR mode", () => {
         },
         {
           number: 51,
+          title: "",
           body: renderFindingMarker("factory:prompts/issues-prompt.md"),
           state: "closed",
           merged: false,

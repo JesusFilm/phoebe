@@ -1512,6 +1512,7 @@ describe("issue filing surface (sentry kind)", () => {
         items: [
           {
             number: 200,
+            title: "Sentry: boom",
             body: "x",
             state: "closed",
             state_reason: "completed",
@@ -1526,6 +1527,7 @@ describe("issue filing surface (sentry kind)", () => {
     expect(hits).toHaveLength(101);
     expect(hits[100]).toEqual({
       number: 200,
+      title: "Sentry: boom",
       body: "x",
       state: "closed",
       stateReason: "completed",
@@ -1545,6 +1547,7 @@ describe("issue filing surface (sentry kind)", () => {
         items: [
           {
             number: 7,
+            title: "Bump x",
             body: "m",
             state: "closed",
             closed_at: "2026-09-02T00:00:00Z",
@@ -1563,9 +1566,23 @@ describe("issue filing surface (sentry kind)", () => {
       }),
     ]);
     expect(github.listPrsMentioning("phoebe-dependencies")).toEqual([
-      { number: 7, body: "m", state: "closed", merged: true, closedAt: "2026-09-02T00:00:00Z" },
-      { number: 8, body: "", state: "closed", merged: false, closedAt: "2026-09-03T00:00:00Z" },
-      { number: 9, body: "o", state: "open", merged: false, closedAt: null },
+      {
+        number: 7,
+        title: "Bump x",
+        body: "m",
+        state: "closed",
+        merged: true,
+        closedAt: "2026-09-02T00:00:00Z",
+      },
+      {
+        number: 8,
+        title: "",
+        body: "",
+        state: "closed",
+        merged: false,
+        closedAt: "2026-09-03T00:00:00Z",
+      },
+      { number: 9, title: "", body: "o", state: "open", merged: false, closedAt: null },
     ]);
     expect(calls[0]?.args[1]).toBe(
       `search/issues?q=${encodeURIComponent('repo:acme/widget "phoebe-dependencies" in:body is:pr')}&per_page=100&page=1&sort=created&order=desc`,

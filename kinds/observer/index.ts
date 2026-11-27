@@ -19,9 +19,11 @@
 //   - `run` reads every other pipeline's history, read-only, and flags units
 //     from their records and from what became of their PRs (#935,
 //     pr-outcomes.ts). A unit on an observer proposal is never flagged. The
-//     agent sees only the flagged units and the proposals already filed, and
-//     writes its findings to scratch;
-//   - code files from the findings, each labelled `phoebe:observer`, never
+//     agent sees only the flagged units and the proposals already filed. It
+//     writes its findings to scratch, with the problems it left out as
+//     already fixed under `omitted`;
+//   - code drops a finding whose units ran on fewer than two issues or PRs
+//     (#980), then files from the rest, each labelled `phoebe:observer`, never
 //     the ready label, and carrying
 //     `<!-- phoebe-observer finding=<category>:<target> -->`. In PR mode (the
 //     default, #936) a convention or factory finding gets one edit run in a
@@ -54,6 +56,7 @@ import {
 } from "../../src/work-kinds/definition.ts";
 import {
   evidenceLine,
+  problemParagraph,
   renderBody,
   renderFoldComment,
   renderSummary,
@@ -65,7 +68,10 @@ import { proposalBranch } from "./edit.ts";
 import {
   coverageOf,
   flagUnits,
+  issuesByPr,
+  MIN_REFS,
   observerGate,
+  refsOf,
   renderCoverage,
   unitsSince,
   type FlaggedUnit,
@@ -171,6 +177,7 @@ function proposalsOf(ctx: WorkKindCtx): Proposal[] {
       number: hit.number,
       pr: false,
       key,
+      title: hit.title,
       body: hit.body,
       state: hit.state,
       stateReason: hit.stateReason,
@@ -184,6 +191,7 @@ function proposalsOf(ctx: WorkKindCtx): Proposal[] {
       number: hit.number,
       pr: true,
       key,
+      title: hit.title,
       body: hit.body,
       state: hit.state,
       stateReason: hit.state === "open" ? null : hit.merged ? "completed" : "not_planned",
@@ -273,15 +281,24 @@ export function createObserverKind(
     }
   }
 
+  /**
+   * Every proposal filed before, with its title and the first paragraph of its
+   * problem, so the grouping run can tell whether the same fix would cover new
+   * units before it reuses a key.
+   */
   function writeProposals(path: string, proposals: readonly Proposal[]): void {
-    const rows = proposals.map(({ number, pr, key, state, stateReason, closedAt }) => ({
-      number,
-      pr,
-      key,
-      state,
-      stateReason,
-      closedAt,
-    }));
+    const rows = proposals.map(
+      ({ number, pr, key, title, body, state, stateReason, closedAt }) => ({
+        number,
+        pr,
+        key,
+        state,
+        stateReason,
+        closedAt,
+        title,
+        problem: problemParagraph(body),
+      }),
+    );
     writeFileSync(path, `${JSON.stringify(rows, null, 2)}\n`);
   }
 
@@ -490,9 +507,31 @@ export function createObserverKind(
       }
       const parsed = parseFindings(readFileSync(findingsPath, "utf8"), new Set(byId.keys()));
       for (const line of parsed.dropped) ctx.log(`dropped ${line}.`);
+      for (const omission of parsed.omitted) {
+        ctx.log(
+          `omitted as fixed by ${omission.fixedBy}: ${omission.cause}` +
+            (omission.units.length > 0 ? ` (${omission.units.join(", ")})` : ""),
+        );
+      }
+
+      // A finding needs units on at least MIN_REFS issues or PRs; a PR's
+      // units count as the issue it was opened for.
+      const issueOfPr = issuesByPr([...units, ...flagged]);
+      const supported = parsed.findings.filter((finding) => {
+        const refs = refsOf(
+          finding.units.map((id) => byId.get(id)!),
+          issueOfPr,
+        );
+        if (refs.size >= MIN_REFS) return true;
+        ctx.log(
+          `${finding.key}: dropped, its units ran on ${refs.size} issue or PR ` +
+            `(${[...refs].join(", ")}) and a finding needs ${MIN_REFS}.`,
+        );
+        return false;
+      });
 
       // The best-supported findings file first, so `maxProposals` keeps those.
-      const findings = [...parsed.findings].sort((a, b) => b.units.length - a.units.length);
+      const findings = [...supported].sort((a, b) => b.units.length - a.units.length);
       for (const finding of findings) {
         const units = finding.units.map((id) => byId.get(id)!);
         const decision = decideFinding(
@@ -520,7 +559,7 @@ export function createObserverKind(
           }
           ctx.github.postUnitComment(
             { objectType: into.pr ? "pr" : "issue", id: into.number },
-            renderFoldComment(fresh),
+            renderFoldComment(finding, fresh),
           );
           tally.foldedInto.push(into.number);
           ctx.log(`${finding.key}: ${fresh.length} new unit(s) added to #${into.number}.`);
@@ -565,7 +604,7 @@ export function createObserverKind(
         );
       }
 
-      const summary = renderSummary(tally, coverage);
+      const summary = renderSummary(tally, coverage, parsed.omitted);
       ctx.log(summary);
       return { summary };
     },

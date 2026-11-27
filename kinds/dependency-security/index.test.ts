@@ -332,6 +332,7 @@ describe("run", () => {
     ]);
     issues.push({
       number: 100,
+      title: "",
       body: bodies.get(100)!,
       state: "open",
       stateReason: null,
@@ -368,6 +369,7 @@ describe("run", () => {
     );
     const stripped: MentioningIssue = {
       number: 100,
+      title: "",
       body: first.bodies.get(100)!,
       state: "open",
       stateReason: null,
@@ -390,6 +392,7 @@ describe("run", () => {
     );
     const closed: MentioningIssue = {
       number: 100,
+      title: "",
       body: first.bodies.get(100)!,
       state: "closed",
       stateReason: "not_planned",
@@ -415,6 +418,7 @@ describe("run", () => {
   test("the cap counts security bundles alone, not what dependency-updates has open", async () => {
     const open: MentioningIssue[] = Array.from({ length: 8 }, (_, i) => ({
       number: i + 1,
+      title: "",
       body: `<!-- phoebe-dependencies bundle=npm%3Aprod%3Apackage%3Ax${i} fingerprint=abc -->`,
       state: "open",
       stateReason: null,
@@ -464,6 +468,7 @@ describe("run", () => {
       const { bodies } = await scan(native);
       return {
         number,
+        title: "",
         body: bodies.get(100)!,
         state: "open",
         stateReason: null,
@@ -536,6 +541,7 @@ describe("run", () => {
       const issue = await filedBundle(40, native, { state: "closed", stateReason: "completed" });
       const pr: MentioningPr = {
         number: 41,
+        title: "",
         state: "closed",
         merged: true,
         closedAt: "2026-11-01T00:00:00Z",
@@ -561,6 +567,7 @@ describe("run", () => {
       const marker = issue.body.trim().split("\n").at(-1)!;
       const pr: MentioningPr = {
         number: 41,
+        title: "",
         state: "closed",
         merged: true,
         closedAt: "2026-11-01T00:00:00Z",
@@ -779,6 +786,7 @@ describe("an open routed issue the plan no longer covers", () => {
     await kindWith(block, { native }).run(unit, ctxFor(github, clock));
     return {
       number,
+      title: "",
       body: bodies.get(100)!,
       state: "open",
       stateReason: null,
@@ -925,6 +933,7 @@ describe("an open routed issue the plan no longer covers", () => {
     const lodash = await filed(41, [direct("lodash")]);
     const pr = (body: string): MentioningPr => ({
       number: 42,
+      title: "",
       body,
       state: "open",
       merged: false,
@@ -1021,6 +1030,7 @@ describe("an open routed issue the plan no longer covers", () => {
       const bundle = await filed(40, native, whole, { labels: [...routed, "processing"] });
       const pr: MentioningPr = {
         number: 41,
+        title: "",
         body: "Closes #40",
         state: "open",
         merged: false,
@@ -1064,6 +1074,7 @@ describe("a not-affected verdict", () => {
     const { bodies } = await scan(native);
     return {
       number: 40,
+      title: "",
       body: bodies.get(100)!,
       state: "open",
       stateReason: null,
@@ -1170,6 +1181,7 @@ describe("a not-affected verdict", () => {
     const { bodies } = await scan(bundle);
     const issue: MentioningIssue = {
       number: 40,
+      title: "",
       body: bodies.get(100)!,
       state: "open",
       stateReason: null,

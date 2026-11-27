@@ -182,6 +182,7 @@ export type IssueStateInfo = {
 /** One search hit for `listIssuesMentioning`: the body carries whatever marker the caller reads. */
 export type MentioningIssue = IssueStateInfo & {
   number: number;
+  title: string;
   body: string;
   /** The label names the issue wears. */
   labels: string[];
@@ -190,6 +191,7 @@ export type MentioningIssue = IssueStateInfo & {
 /** One search hit for `listPrsMentioning`. A closed PR is either merged or abandoned. */
 export type MentioningPr = {
   number: number;
+  title: string;
   body: string;
   state: "open" | "closed";
   merged: boolean;
@@ -766,6 +768,7 @@ export function createGitHubClient({
 
   type SearchHit = {
     number: number;
+    title?: string;
     body: string | null;
     state: "open" | "closed";
     state_reason?: IssueStateInfo["stateReason"];
@@ -1814,6 +1817,7 @@ export function createGitHubClient({
     listIssuesMentioning: (text) =>
       searchMentioning(text, "issue").map((hit) => ({
         number: hit.number,
+        title: hit.title ?? "",
         body: hit.body ?? "",
         state: hit.state,
         stateReason: hit.state_reason ?? null,
@@ -1824,6 +1828,7 @@ export function createGitHubClient({
     listPrsMentioning: (text) =>
       searchMentioning(text, "pr").map((hit) => ({
         number: hit.number,
+        title: hit.title ?? "",
         body: hit.body ?? "",
         state: hit.state,
         merged: typeof hit.pull_request?.merged_at === "string",

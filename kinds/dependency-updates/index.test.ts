@@ -292,6 +292,7 @@ describe("run", () => {
       renderMarker({ key: bundleKey(bundleOf(p)), fingerprint: print ?? fingerprint(bundleOf(p)) });
     const filed = (n: number, body: string, state: "open" | "closed"): MentioningIssue => ({
       number: n,
+      title: "",
       body,
       state,
       stateReason: state === "closed" ? "not_planned" : null,
@@ -356,6 +357,7 @@ describe("run", () => {
       [
         {
           number: 31,
+          title: "",
           body: "## Dropped\n\n- `vite@1.1.0`: broke\n",
           state: "closed",
           merged: true,
@@ -385,6 +387,7 @@ describe("run", () => {
       renderMarker({ key: bundleKey(bundle), fingerprint: fingerprint(bundle) });
     const ticket = (n: number, body: string, parked: boolean): MentioningIssue => ({
       number: n,
+      title: "",
       body,
       state: "open",
       stateReason: null,
@@ -393,6 +396,7 @@ describe("run", () => {
     });
     const pr857 = (entries: string): MentioningPr => ({
       number: 857,
+      title: "",
       body: `Closes #856\n\n## Dropped\n\n${entries}\n`,
       state: "closed",
       merged: true,

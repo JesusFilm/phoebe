@@ -26,7 +26,7 @@ function issue(
   labels: string[],
   state: "open" | "closed" = "open",
 ): MentioningIssue {
-  return { number, body: "", state, stateReason: null, closedAt: null, labels };
+  return { number, title: "", body: "", state, stateReason: null, closedAt: null, labels };
 }
 
 const dropped = (...entries: string[]) =>

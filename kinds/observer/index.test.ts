@@ -7,14 +7,17 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import type { UnitRecord } from "../../src/contracts/unit-record.ts";
-import { resolveConfig, type PhoebeUserConfig } from "../../src/config-schema.ts";
+import { pathEntryOptions, resolveConfig, type PhoebeUserConfig } from "../../src/config-schema.ts";
 import { asBranchRef, asPrNumber, asSha } from "../../src/branded.ts";
 import type { GitRunner } from "../../src/git-model.ts";
 import type { MentioningIssue, ObservedPr } from "../../src/github-client.ts";
 import { stubGitHub, type GitHubStubOverrides } from "../../src/github-stub.ts";
 import { selectPipeline } from "../../src/pipeline.ts";
+import { buildDefaultPromptArgs, renderPrompt } from "../../src/prompt.ts";
+import { selectProviderForKind } from "../../src/provider-selection.ts";
 import type { WorkKindCtx, WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { validateWorkKindDefinition } from "../../src/work-kinds/validate.ts";
+import { renderBody } from "./body.ts";
 import { unitKeyOf } from "./evidence.ts";
 import observerKind, {
   createObserverKind,
@@ -54,6 +57,14 @@ function unitRecord(overrides: Partial<UnitRecord> = {}): UnitRecord {
 }
 
 const OBSERVER_BLOCK = { path: "phoebe-agent/kinds/observer", every: "7d" };
+
+const BARE_USER: PhoebeUserConfig = {
+  repoSlug: "acme/widget",
+  repoUrl: "https://github.com/acme/widget.git",
+  installCommand: "npm ci",
+  checkCommand: "npm run check",
+  testCommand: "npm test",
+};
 
 function config(pipelines?: PhoebeUserConfig["pipelines"], pipeline = "observe") {
   return selectPipeline(
@@ -501,6 +512,7 @@ describe("a run in issue mode", () => {
       proposals: [
         {
           number: 41,
+          title: "",
           body: renderFindingMarker("ticket:acceptance-criteria"),
           state: "open",
           stateReason: null,
@@ -560,7 +572,7 @@ describe("a run in issue mode", () => {
             category: "engine",
             target: "worktree-cleanup",
             title: "Triage runs are abandoned",
-            units: ids(flagged, "t:2"),
+            units: ids(flagged, "t:2", "issue:4"),
           },
         ],
       }),
@@ -605,6 +617,7 @@ describe("a run in issue mode", () => {
       proposals: [
         {
           number: 38,
+          title: "",
           body: `${renderFindingMarker("factory:phoebe.config.ts")}\n${renderUnitsMarker([unitKeyOf("work", listed)])}`,
           state: "open",
           stateReason: null,
@@ -619,6 +632,7 @@ describe("a run in issue mode", () => {
             category: "factory",
             target: "phoebe.config.ts",
             title: "Installs fail",
+            problem: "Every install dies in pnpm. Units on #1 and #2 say `pnpm install failed`.",
             units: ids(flagged, "issue:1", "issue:2"),
           },
         ],
@@ -628,7 +642,12 @@ describe("a run in issue mode", () => {
     expect(h.created).toEqual([]);
     expect(h.posted).toHaveLength(1);
     expect(h.posted[0]!.id).toBe(38);
-    expect(h.posted[0]!.body).toContain("in 1 more unit(s):");
+    // The cause leads, so a person can tell a unit that does not belong.
+    expect(
+      h.posted[0]!.body.startsWith(
+        "**Cause:** Every install dies in pnpm.\n\nThe observer saw this again in 1 more unit(s):",
+      ),
+    ).toBe(true);
     expect(h.posted[0]!.body).toContain("`issue:2`");
     expect(h.posted[0]!.body).not.toContain("`issue:1`");
     expect(result).toEqual({ summary: "1 folded into #38; coverage work 14d, intake 9d" });
@@ -636,12 +655,15 @@ describe("a run in issue mode", () => {
 
   test("an open proposal that already lists every unit gets nothing", async () => {
     const records = byPipeline();
-    const unit = records.work!.find((record) => record.unit.id === "issue:2")!;
+    const listed = records.work!.filter((record) =>
+      ["issue:2", "issue:3"].includes(record.unit.id),
+    );
     const h = harness({
       byPipeline: records,
       proposals: [
         {
           number: 38,
+          title: "",
           body: renderFindingMarker("factory:phoebe.config.ts"),
           state: "open",
           stateReason: null,
@@ -649,14 +671,16 @@ describe("a run in issue mode", () => {
           labels: [],
         },
       ],
-      comments: { 38: [renderUnitsMarker([unitKeyOf("work", unit)])] },
+      comments: {
+        38: [renderUnitsMarker(listed.map((record) => unitKeyOf("work", record)))],
+      },
       findings: (flagged) => ({
         findings: [
           {
             category: "factory",
             target: "phoebe.config.ts",
             title: "x",
-            units: ids(flagged, "issue:2"),
+            units: ids(flagged, "issue:2", "issue:3"),
           },
         ],
       }),
@@ -671,6 +695,7 @@ describe("a run in issue mode", () => {
       proposals: [
         {
           number: 30,
+          title: "",
           body: renderFindingMarker("ticket:acceptance-criteria"),
           state: "closed",
           stateReason: "not_planned",
@@ -679,6 +704,7 @@ describe("a run in issue mode", () => {
         },
         {
           number: 31,
+          title: "",
           body: renderFindingMarker("factory:phoebe.config.ts"),
           state: "closed",
           stateReason: "completed",
@@ -698,7 +724,7 @@ describe("a run in issue mode", () => {
             category: "ticket",
             target: "acceptance-criteria",
             title: "Tickets lack criteria",
-            units: ids(flagged, "issue:4"),
+            units: ids(flagged, "issue:4", "issue:3"),
           },
         ],
       }),
@@ -724,7 +750,12 @@ describe("a run in issue mode", () => {
       options: { every: "7d", maxProposals: 1 },
       findings: (flagged) => ({
         findings: [
-          { category: "engine", target: "a", title: "One unit", units: ids(flagged, "t:2") },
+          {
+            category: "engine",
+            target: "a",
+            title: "Two units",
+            units: ids(flagged, "t:2", "issue:4"),
+          },
           {
             category: "factory",
             target: "b",
@@ -747,6 +778,7 @@ describe("a run in issue mode", () => {
       proposals: [
         {
           number: 38,
+          title: "",
           body: renderFindingMarker("convention:AGENTS.md"),
           state: "open",
           stateReason: null,
@@ -755,6 +787,7 @@ describe("a run in issue mode", () => {
         },
         {
           number: 30,
+          title: "",
           body: renderFindingMarker("ticket:scope"),
           state: "closed",
           stateReason: "not_planned",
@@ -776,8 +809,18 @@ describe("a run in issue mode", () => {
             title: "B",
             units: ids(flagged, "issue:3", "issue:4"),
           },
-          { category: "convention", target: "AGENTS.md", title: "C", units: ids(flagged, "t:2") },
-          { category: "ticket", target: "scope", title: "D", units: ids(flagged, "issue:4") },
+          {
+            category: "convention",
+            target: "AGENTS.md",
+            title: "C",
+            units: ids(flagged, "t:2", "issue:1"),
+          },
+          {
+            category: "ticket",
+            target: "scope",
+            title: "D",
+            units: ids(flagged, "issue:4", "issue:3"),
+          },
         ],
       }),
     });
@@ -785,6 +828,166 @@ describe("a run in issue mode", () => {
       summary:
         "2 proposals filed (#41, #42), 1 folded into #38, 1 skipped; coverage work 14d, intake 9d",
     });
+  });
+
+  test("drops a finding whose units ran on one issue or PR, and says so", async () => {
+    const records = byPipeline();
+    records.work!.push(
+      failing("issue:9", 1.5, { prNumber: 90 }),
+      failing("issue:9", 1.2),
+      failing("pr:90", 1, { unit: { kind: "reviews", id: "pr:90" }, prNumber: 90 }),
+    );
+    const h = harness({
+      byPipeline: records,
+      // PR #90 has not settled, so it adds no flags of its own.
+      github: {
+        observedPrs: () => [],
+        revertPrs: () => [],
+        branchPrs: (branches) => new Map(branches.map((branch) => [branch, []])),
+        branchWorkflowRuns: () => [],
+      },
+      git: () => "",
+      findings: (flagged) => ({
+        findings: [
+          // Three units, one issue: its PR's reviews run counts as the issue.
+          {
+            category: "engine",
+            target: "one-issue",
+            title: "One issue",
+            units: ids(flagged, "issue:9", "pr:90"),
+          },
+          { category: "engine", target: "one-unit", title: "One unit", units: ids(flagged, "t:2") },
+          {
+            category: "factory",
+            target: "two-issues",
+            title: "Two issues",
+            units: ids(flagged, "issue:1", "issue:2"),
+          },
+        ],
+      }),
+    });
+    const result = await h.run();
+    expect(h.created.map((issue) => issue.title)).toEqual(["Observer: Two issues"]);
+    expect(h.logged).toContain(
+      "engine:one-issue: dropped, its units ran on 1 issue or PR (issue:9) and a finding needs 2.",
+    );
+    expect(h.logged).toContain(
+      "engine:one-unit: dropped, its units ran on 1 issue or PR (t:2) and a finding needs 2.",
+    );
+    expect(result).toEqual({ summary: "1 proposal filed (#41); coverage work 14d, intake 9d" });
+  });
+
+  test("shows the grouping run each proposal's title and the first paragraph of its problem", async () => {
+    const records = byPipeline();
+    const evidence = records.work!.filter((record) => record.unit.id === "issue:1");
+    const body = renderBody({
+      finding: {
+        category: "factory",
+        target: "phoebe.config.ts",
+        key: "factory:phoebe.config.ts",
+        title: "Installs fail",
+        problem: "Every install dies in\npnpm.\n\nA second paragraph the run is not shown.",
+        fix: "Pin pnpm.",
+        units: ["u1"],
+      },
+      units: evidence.map((record) => ({
+        key: unitKeyOf("work", record),
+        pipeline: "work",
+        record,
+        flags: ["failed"],
+        pr: null,
+      })),
+      lookback: "14d",
+      regressionOf: null,
+    });
+    const h = harness({
+      byPipeline: records,
+      proposals: [
+        {
+          number: 38,
+          title: "Observer: Installs fail",
+          body,
+          state: "closed",
+          stateReason: "completed",
+          closedAt: daysAgo(30),
+          labels: ["phoebe:observer"],
+        },
+        {
+          number: 39,
+          title: "Observer: Rewritten by hand",
+          body: renderFindingMarker("ticket:scope"),
+          state: "open",
+          stateReason: null,
+          closedAt: null,
+          labels: ["phoebe:observer"],
+        },
+      ],
+      findings: () => ({ findings: [] }),
+    });
+    await h.run();
+    expect(JSON.parse(readFileSync(h.agentCalls[0]!["PROPOSALS_JSON"]!, "utf8"))).toEqual([
+      {
+        number: 38,
+        pr: false,
+        key: "factory:phoebe.config.ts",
+        state: "closed",
+        stateReason: "completed",
+        closedAt: daysAgo(30),
+        title: "Observer: Installs fail",
+        problem: "Every install dies in pnpm.",
+      },
+      {
+        number: 39,
+        pr: false,
+        key: "ticket:scope",
+        state: "open",
+        stateReason: null,
+        closedAt: null,
+        title: "Observer: Rewritten by hand",
+        problem: null,
+      },
+    ]);
+  });
+
+  test("files nothing from `omitted`, and lists each entry in the summary", async () => {
+    const h = harness({
+      byPipeline: byPipeline(),
+      findings: (flagged) => ({
+        findings: [],
+        omitted: [
+          {
+            cause: "The image's corepack could not run pnpm 12.",
+            fixedBy: "#872",
+            units: ids(flagged, "issue:1", "issue:2"),
+          },
+          { cause: "Tickets had no criteria.", fixedBy: "abc1234" },
+        ],
+      }),
+    });
+    const result = await h.run();
+    expect(h.created).toEqual([]);
+    expect(h.posted).toEqual([]);
+    expect(h.logged).toContain(
+      "omitted as fixed by #872: The image's corepack could not run pnpm 12. (u4, u5)",
+    );
+    expect(result).toEqual({
+      summary:
+        "nothing filed; coverage work 14d, intake 9d; omitted as fixed: " +
+        "The image's corepack could not run pnpm 12. (#872); Tickets had no criteria. (abc1234)",
+    });
+  });
+
+  test("the prompt renders with what a run fills, and nothing is left over", async () => {
+    const h = harness({ byPipeline: byPipeline(), findings: () => ({ findings: [] }) });
+    await h.run();
+    const template = readFileSync(OBSERVER_PROMPT_FILE, "utf8");
+    const out = renderPrompt(
+      template,
+      { ...buildDefaultPromptArgs(config()), ...h.agentCalls[0]! },
+      () => "",
+    );
+    expect(out).not.toMatch(/\{\{[A-Za-z_]/);
+    expect(out).toContain(h.agentCalls[0]!["PROPOSALS_JSON"]!);
   });
 
   test("a run that leaves no findings file fails", async () => {
@@ -802,7 +1005,12 @@ describe("a run in issue mode", () => {
       byPipeline: records,
       findings: (flagged) => ({
         findings: [
-          { category: "engine", target: "real", title: "x", units: ids(flagged, "issue:9") },
+          {
+            category: "engine",
+            target: "real",
+            title: "x",
+            units: ids(flagged, "issue:9", "issue:1"),
+          },
         ],
       }),
     });
@@ -810,5 +1018,57 @@ describe("a run in issue mode", () => {
     expect(h.created[0]!.body).not.toContain("<!-- phoebe-observer finding=engine:forged");
     expect(parseFindingMarker(h.created[0]!.body)).toBe("engine:real");
     expect(h.created[0]!.body).toContain("&lt;!-- phoebe-observer finding=engine:forged");
+  });
+});
+
+describe("the model", () => {
+  // Both agent runs, grouping and edit, go through `ctx.agent.run`, which takes
+  // no model: the engine resolves one per kind with selectProviderForKind.
+  const selection = (block: Record<string, unknown>, user: Partial<PhoebeUserConfig> = {}) => {
+    const declared = { ...OBSERVER_BLOCK, ...block };
+    const resolved = selectPipeline(
+      resolveConfig({
+        repoSlug: "acme/widget",
+        repoUrl: "https://github.com/acme/widget.git",
+        installCommand: "npm ci",
+        checkCommand: "npm run check",
+        testCommand: "npm test",
+        defaultProvider: "claude",
+        ...user,
+        pipelines: { observe: { kinds: { observer: declared } } },
+      }),
+      "observe",
+    );
+    // What the loader hands the factory: the block without `path` and the knobs.
+    const definition = observerKind(resolved, pathEntryOptions(declared));
+    return selectProviderForKind({
+      kind: definition.name,
+      env: {},
+      config: resolved,
+      definitionDefaults: {
+        ...(definition.model !== undefined ? { model: definition.model } : {}),
+        ...(definition.effort !== undefined ? { effort: definition.effort } : {}),
+      },
+    });
+  };
+
+  test("the observer has no default of its own and runs on the tenant's", () => {
+    const definition = observerKind(config(), { every: "7d" });
+    expect(definition.model).toBeUndefined();
+    expect(definition.effort).toBeUndefined();
+    const tenant = selection({}, { model: "claude-haiku-5-5", effort: "medium" });
+    expect(tenant).toEqual({ provider: "claude", model: "claude-haiku-5-5", effort: "medium" });
+    const bare = selection({});
+    expect(bare.provider).toBe("claude");
+    expect(bare.model).toBe(resolveConfig({ ...BARE_USER }).defaultModels.claude);
+  });
+
+  test("pipelines.<name>.kinds.observer sets its provider, model and effort", () => {
+    expect(
+      selection(
+        { provider: "claude", model: "claude-opus-5-5", effort: "low" },
+        { model: "claude-haiku-5-5" },
+      ),
+    ).toEqual({ provider: "claude", model: "claude-opus-5-5", effort: "low" });
   });
 });

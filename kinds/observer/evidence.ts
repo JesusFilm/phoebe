@@ -108,6 +108,48 @@ export function flagUnits(
   return flagged.sort((a, b) => Date.parse(b.record.startedAt) - Date.parse(a.record.startedAt));
 }
 
+/**
+ * The fewest distinct issues or PRs a finding's units must come from before it
+ * is filed (#980). Several units on one issue or PR are one ref, and there is
+ * no exception for a single unit.
+ */
+export const MIN_REFS = 2;
+
+/**
+ * The issue each PR was opened for: a unit on `issue:<n>` whose record, or
+ * whose settled PR, names PR `m` makes `m` belong to `issue:<n>`.
+ */
+export function issuesByPr(
+  units: ReadonlyArray<{ record: UnitRecord; pr?: PrSignals | null }>,
+): Map<number, string> {
+  const byPr = new Map<number, string>();
+  for (const unit of units) {
+    const ref = unit.record.unit.id;
+    if (!/^issue:\d+$/.test(ref)) continue;
+    const prNumber = unit.pr?.number ?? unit.record.prNumber;
+    if (prNumber !== null) byPr.set(prNumber, ref);
+  }
+  return byPr;
+}
+
+/**
+ * The distinct refs a finding's units ran on. A unit on `pr:<m>` counts as the
+ * issue that PR was opened for, so the run that opened a PR and the reviews or
+ * checks runs on it are one ref.
+ */
+export function refsOf(
+  units: readonly FlaggedUnit[],
+  issueOfPr: ReadonlyMap<number, string>,
+): Set<string> {
+  const refs = new Set<string>();
+  for (const unit of units) {
+    const ref = unit.record.unit.id;
+    const pr = /^pr:(\d+)$/.exec(ref);
+    refs.add(pr === null ? ref : (issueOfPr.get(Number(pr[1])) ?? ref));
+  }
+  return refs;
+}
+
 /** How far back one pipeline's history reaches inside the lookback. */
 export type Coverage = {
   pipeline: string;

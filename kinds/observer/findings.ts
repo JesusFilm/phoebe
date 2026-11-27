@@ -35,9 +35,24 @@ export type Finding = {
   units: string[];
 };
 
+/**
+ * A problem the grouping run left out because its fix merged after the units
+ * that showed it. Nothing is filed from one; the run summary lists it so a
+ * person can check the omission was deliberate.
+ */
+export type Omission = {
+  /** The cause, in one sentence. */
+  cause: string;
+  /** The PR, commit or issue that fixed it (`#872`, `abc1234`). */
+  fixedBy: string;
+  /** The flagged units' ids that showed it. */
+  units: string[];
+};
+
 export type ParsedFindings = {
   findings: Finding[];
-  /** One line for each finding that was dropped, and why. */
+  omitted: Omission[];
+  /** One line for each finding or omission that was dropped, and why. */
   dropped: string[];
 };
 
@@ -50,10 +65,11 @@ function text(value: unknown): string {
 }
 
 /**
- * Read the draft. A draft that is not JSON or has no `findings` array throws,
- * which fails the run: there is nothing to file from it. A finding that breaks
- * the rules is dropped with a reason and the rest still file. Two findings on
- * one key are one finding, their units merged.
+ * Read the draft. A draft that is not JSON, has no `findings` array, or has an
+ * `omitted` that is not an array throws, which fails the run: there is nothing
+ * to trust in it. A finding or omission that breaks the rules is dropped with
+ * a reason and the rest still stand. Two findings on one key are one finding,
+ * their units merged.
  */
 export function parseFindings(raw: string, knownUnits: ReadonlySet<string>): ParsedFindings {
   let value: unknown;
@@ -116,5 +132,47 @@ export function parseFindings(raw: string, knownUnits: ReadonlySet<string>): Par
       units,
     });
   });
-  return { findings: [...byKey.values()], dropped };
+  const omitted = parseOmitted(value["omitted"], knownUnits, dropped);
+  return { findings: [...byKey.values()], omitted, dropped };
+}
+
+/** The draft's `omitted` list: absent is none, anything but a list throws. */
+function parseOmitted(
+  raw: unknown,
+  knownUnits: ReadonlySet<string>,
+  dropped: string[],
+): Omission[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(`${FINDINGS_FILE} has an \`omitted\` that is not an array.`);
+  }
+  const omitted: Omission[] = [];
+  raw.forEach((entry: unknown, index: number) => {
+    const at = `omission ${index + 1}`;
+    if (!isRecord(entry)) {
+      dropped.push(`${at}: not an object`);
+      return;
+    }
+    const cause = text(entry["cause"]).replace(/\s+/g, " ");
+    if (cause === "") {
+      dropped.push(`${at}: no cause`);
+      return;
+    }
+    const fixedBy = text(entry["fixedBy"]).replace(/\s+/g, " ");
+    if (fixedBy === "") {
+      dropped.push(`${at}: no fixedBy`);
+      return;
+    }
+    const units = entry["units"] ?? [];
+    if (!Array.isArray(units)) {
+      dropped.push(`${at}: units is not a list`);
+      return;
+    }
+    omitted.push({
+      cause,
+      fixedBy,
+      units: [...new Set(units.filter((id): id is string => knownUnits.has(id as string)))],
+    });
+  });
+  return omitted;
 }
