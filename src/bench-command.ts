@@ -18,25 +18,36 @@
 //     fleet's slots and needs the long-lived container neither up nor down.
 //
 // Selection reads GitHub and never writes to it. A run's trials have no
-// credential and no remote, but the container does not restrict network access.
+// credential and no remote, but they keep outbound network: "offline" means cut
+// off from GitHub, not from the provider API or the package registry.
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseDotenv } from "../bootstrap/engine-child-env.ts";
 import {
   computeBaseSha,
   DEFAULT_SELECT_LIMIT,
   selectSuite,
+  type BenchSelectBaseline,
   type BenchSelectGitHub,
   type BenchSelectRequest,
 } from "./bench-select.ts";
-import { readBenchReport, renderBenchReport } from "./bench-report.ts";
+import {
+  everyFixtureUnstable,
+  NO_STABLE_FIXTURE,
+  readBenchReport,
+  renderBenchReport,
+} from "./bench-report.ts";
 import {
   benchRoot,
+  DEFAULT_GH_SHIM_PATH,
+  defaultRunGate,
   issuesPipelineConfig,
   parseBenchConfig,
   parseSuite,
+  runBaseline,
   runBench,
+  SELECT_WORK_DIR,
   type BenchRunDeps,
   type BenchRunResult,
 } from "./bench-run.ts";
@@ -57,7 +68,7 @@ import {
 import { readDeploymentCommands } from "./deployment-command.ts";
 import { isInsideContainer } from "./execution-gate.ts";
 import { detectAppCredentials, mintInstallationToken } from "./gh-app.ts";
-import type { GitRunner } from "./git-model.ts";
+import { defaultGit, type GitRunner } from "./git-model.ts";
 import { createGitHubClient } from "./github-client.ts";
 import { applyEnvOverlay, loadUserConfig, resolveConfigPath } from "./load-config.ts";
 import { ensureOriginClone } from "./origin-hub.ts";
@@ -71,6 +82,8 @@ export type ParsedBenchSelectArgs = {
   command?: "select" | "run" | "report";
   /** `select`: what to pin. */
   request?: BenchSelectRequest;
+  /** `select`: `false` with `--no-baseline`, pinning without running the gates. */
+  baseline?: false;
   /** `run`: the suite file, as the operator typed it. */
   suitePath?: string;
   /** `run`: the bench config naming the contenders, as the operator typed it. */
@@ -88,8 +101,9 @@ export type ParsedBenchSelectArgs = {
 const BENCH_HELP_TEXT = `phoebe bench — replay issues Phoebe already solved, offline
 
 Usage:
-  phoebe bench select --issues <n,n,…> [--tenant <owner/repo>]
-  phoebe bench select [--since <YYYY-MM-DD>] [--limit <n>] [--tenant <owner/repo>]
+  phoebe bench select --issues <n,n,…> [--no-baseline] [--tenant <owner/repo>]
+  phoebe bench select [--since <YYYY-MM-DD>] [--limit <n>] [--no-baseline]
+                      [--tenant <owner/repo>]
   phoebe bench run <suite.json> [--bench-config <bench.json>] [--concurrency <n>] [--json]
                    [--tenant <owner/repo>]
   phoebe bench report <runId> [--json] [--tenant <owner/repo>]
@@ -107,6 +121,13 @@ suite and on stderr with its reason.
 Each fixture pins the issue's title, body and the comments posted before the PR
 opened; the PR's number, head and merge commits; and baseSha, the merge-base of
 the PR head and the merge commit's first parent, computed in the hub clone.
+
+Before pinning a fixture, select runs its baseline: it checks the merged PR's
+head out into a fresh tree and runs installCommand, checkCommand and
+testCommand there with no agent, stopping at the first failure. A fixture whose
+merged PR no longer passes is skipped with the gate that failed. One that passes
+records baselinePassedAt. --no-baseline pins without running the gates, and its
+fixtures have no baselinePassedAt.
 
 run replays every fixture in a suite with every contender, offline. Without
 --bench-config the one contender is the tenant's own issues settings. A bench
@@ -136,9 +157,17 @@ no GitHub credential, and answers better, equivalent, worse or wrong with a
 short rationale. Its usage and cost are recorded on the trial, apart from the
 contender's.
 
+Before any trial, run runs every fixture's baseline again, --concurrency at a
+time, because a fixture can break after it is pinned. A fixture whose baseline
+fails is unstable for the run. None of its trials run, planned leaves them out,
+and no rate counts it. The report lists it with the gate that failed and when
+its baseline last passed, and the table ends with a line naming it.
+
 Each trial gets a fresh repository at baseSha with no
 remote, a HOME of its own, no GitHub credential, and a gh that serves the issue
-from the suite and records every write it would have made. Bench runs
+from the suite and records every write it would have made. "Offline" means cut
+off from GitHub, not from the network: trials keep outbound network for the
+provider API and the package registry. Bench runs
 installCommand, the agent, then checkCommand and testCommand itself, stopping at
 the first failure; a trial whose agent left no commits is "no change" and skips
 checkCommand and testCommand (installCommand still runs, before the agent). Each run lands in bench/<runId>/ under the tenant's data directory:
@@ -153,9 +182,11 @@ dash where it reported none). With a judge, it adds a count per verdict and a
 line for what the judge spent. --json prints the BenchReport instead, the same
 JSON saved as report.json. report <runId> prints a saved run's report again.
 
-The exit code is 0 when every trial ran, whatever the trials scored. It is
-non-zero only when bench itself could not run: a bad suite or bench config, a
-missing prompt file, or a contender or judge whose provider key is unset.
+The exit code is 0 when every trial ran, whatever the trials scored. It is 1
+when every fixture is unstable, since there is nothing to compare. It is
+otherwise non-zero only when bench itself could not run: a bad suite or bench
+config, a missing prompt file, or a contender or judge whose provider key is
+unset.
 
 On the host every subcommand runs in a one-off container from the deployment's
 image, which takes none of the fleet's slots; the suite and bench config files
@@ -201,6 +232,7 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
   let concurrency: number | undefined;
   let runId: string | undefined;
   let json = false;
+  let noBaseline = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") {
@@ -255,6 +287,10 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
       json = true;
       continue;
     }
+    if (arg === "--no-baseline") {
+      noBaseline = true;
+      continue;
+    }
     if (isFlag(arg, "tenant")) {
       const [value, skip] = flagValue(argv, i, "tenant");
       tenant = value;
@@ -305,6 +341,11 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
       `\`--bench-config\` and \`--concurrency\` are for \`run\`, not \`${subcommand}\`.`,
     );
   }
+  if (subcommand !== "select" && noBaseline) {
+    throw new Error(
+      `\`--no-baseline\` is for \`select\`; \`${subcommand}\` always runs every fixture's baseline.`,
+    );
+  }
   if (subcommand === "select" && json) {
     throw new Error(
       "`phoebe bench select` always prints JSON; `--json` is for `run` and `report`.",
@@ -337,7 +378,12 @@ export function parseBenchArgs(argv: readonly string[]): ParsedBenchSelectArgs {
     issues !== undefined
       ? { by: "issues", issues }
       : { by: "query", since: since ?? null, limit: limit ?? DEFAULT_SELECT_LIMIT };
-  return { ...common, command: "select", request };
+  return {
+    ...common,
+    command: "select",
+    request,
+    ...(noBaseline ? { baseline: false as const } : {}),
+  };
 }
 
 /** The flags the one-off container is handed, rebuilt rather than forwarded raw. */
@@ -364,6 +410,7 @@ export function benchSelectArgv(parsed: ParsedBenchSelectArgs): string[] {
     if (request.since !== null) argv.push("--since", request.since);
     argv.push("--limit", String(request.limit));
   }
+  if (parsed.baseline === false) argv.push("--no-baseline");
   if (parsed.tenant !== undefined) argv.push("--tenant", parsed.tenant);
   return argv;
 }
@@ -503,7 +550,7 @@ export type BenchDeps = {
   /** Container arm: git in the hub clone. */
   git?: GitRunner;
   now?: () => Date;
-  /** Container arm of `run`: the trials' seams. */
+  /** Container arm: the seams of `run`'s trials, and of the baselines `run` and `select` both run. */
   run?: BenchRunDeps;
   /** Container arm of `run`: the interrupt; SIGINT and SIGTERM by default. */
   signal?: AbortSignal;
@@ -547,21 +594,44 @@ export async function runBenchSelectInContainer(
       }));
   prepare(config);
 
-  const suite = selectSuite({
-    github,
-    config,
-    request: parsed.request!,
-    baseShaOf: (pr) =>
-      computeBaseSha({
-        repoDir: config.paths.repoDir,
-        prNumber: pr.number,
-        headSha: pr.headRefOid,
-        mergeSha: pr.mergeCommitOid!,
-        defaultBranch: config.defaultBranch,
-        ...(deps.git !== undefined ? { git: deps.git } : {}),
-      }),
-    ...(deps.now !== undefined ? { now: deps.now } : {}),
-  });
+  const pipelineConfig = issuesPipelineConfig(config);
+  const workRoot = join(benchRoot(pipelineConfig), `${SELECT_WORK_DIR}-${process.pid}`);
+  const baseline: BenchSelectBaseline | null =
+    parsed.baseline === false
+      ? null
+      : (fixture) =>
+          runBaseline({
+            config: pipelineConfig,
+            env: tenant.env,
+            fixture,
+            dir: join(workRoot, `issue-${fixture.issue.number}`),
+            signal: new AbortController().signal,
+            git: deps.git ?? defaultGit,
+            runGate: deps.run?.runGate ?? defaultRunGate,
+            ghShimPath: deps.run?.ghShimPath ?? DEFAULT_GH_SHIM_PATH,
+            log: (line) => io.stderr(line),
+          });
+  let suite: BenchSuite;
+  try {
+    suite = await selectSuite({
+      github,
+      config,
+      request: parsed.request!,
+      baseline,
+      baseShaOf: (pr) =>
+        computeBaseSha({
+          repoDir: config.paths.repoDir,
+          prNumber: pr.number,
+          headSha: pr.headRefOid,
+          mergeSha: pr.mergeCommitOid!,
+          defaultBranch: config.defaultBranch,
+          ...(deps.git !== undefined ? { git: deps.git } : {}),
+        }),
+      ...(deps.now !== undefined ? { now: deps.now } : {}),
+    });
+  } finally {
+    rmSync(workRoot, { recursive: true, force: true });
+  }
   for (const skip of suite.skipped) {
     io.stderr(
       `[phoebe] bench: skipped #${skip.issue}${skip.pr === null ? "" : ` (PR #${skip.pr})`}: ${skip.reason}`,
@@ -766,6 +836,10 @@ export async function runBenchCli(argv: readonly string[], deps: BenchDeps = {})
     if (parsed.command === "run") {
       const { report } = await runBenchRunInContainer(parsed, deps);
       if (report.interrupted) process.exitCode = 130;
+      else if (everyFixtureUnstable(report)) {
+        benchIo(deps).stderr(`[phoebe] bench: ${NO_STABLE_FIXTURE}`);
+        process.exitCode = 1;
+      }
       return;
     }
     if (parsed.command === "report") {

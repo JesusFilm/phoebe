@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import {
   buildBenchReport,
+  everyFixtureUnstable,
   formatDuration,
   formatTokens,
   median,
@@ -23,6 +24,7 @@ import type {
   BenchRunConfig,
   BenchTrial,
 } from "./contracts/bench.ts";
+import type { BenchUnstableFixture } from "./contracts/bench-report.ts";
 import type { AgentRunRecord } from "./contracts/unit-record.ts";
 
 function contender(name: string, provider = "claude"): BenchContender {
@@ -158,6 +160,8 @@ describe("buildBenchReport", () => {
   const report = buildBenchReport({
     runConfig: RUN_CONFIG,
     trials: TRIALS,
+    baselines: {},
+    unstable: [],
     finishedAt: new Date("2026-11-25T12:10:00.000Z"),
     interrupted: false,
   });
@@ -204,10 +208,55 @@ describe("buildBenchReport", () => {
     expect(codex!.medianTokens).toBe(50);
   });
 
+  test("an unstable fixture is not planned, and the table ends by naming it", () => {
+    const failed = { command: "pnpm test", exitCode: 1, durationMs: 5 };
+    const built = (unstable: BenchUnstableFixture[]) =>
+      buildBenchReport({
+        runConfig: RUN_CONFIG,
+        trials: unstable.length === 2 ? [] : TRIALS,
+        baselines: {
+          "7": { install: PASS, check: PASS, test: PASS },
+          "8": { install: PASS, check: PASS, test: failed },
+        },
+        unstable,
+        finishedAt: new Date("2026-11-25T12:10:00.000Z"),
+        interrupted: false,
+      });
+    const eight: BenchUnstableFixture = {
+      issue: 8,
+      pr: 80,
+      gate: "test",
+      exitCode: 1,
+      baselinePassedAt: "2026-11-20T00:00:00.000Z",
+    };
+    const one = built([eight]);
+    expect(one.planned).toBe(2);
+    expect(one.baselines["8"]!.test).toEqual(failed);
+    expect(one.unstable).toEqual([eight]);
+    expect(everyFixtureUnstable(one)).toBe(false);
+    expect(renderBenchReport(one).trimEnd().split("\n").at(-1)).toBe(
+      "1 fixture(s) unstable, not scored: #8 (test exited 1)",
+    );
+
+    const both = built([
+      { issue: 7, pr: 70, gate: "install", exitCode: null, baselinePassedAt: null },
+      eight,
+    ]);
+    expect(both.planned).toBe(0);
+    expect(everyFixtureUnstable(both)).toBe(true);
+    expect(renderBenchReport(both).trimEnd().split("\n").at(-1)).toBe(
+      "2 fixture(s) unstable, not scored: #7 (install exited without a code), #8 (test exited 1)",
+    );
+    expect(renderBenchReport(report)).not.toContain("unstable");
+    expect(everyFixtureUnstable(report)).toBe(false);
+  });
+
   test("a blank gate command has no rate, and a contender with no trials has no figures", () => {
     const empty = buildBenchReport({
       runConfig: { ...RUN_CONFIG, testCommand: "" },
       trials: [],
+      baselines: {},
+      unstable: [],
       finishedAt: new Date("2026-11-25T12:10:00.000Z"),
       interrupted: true,
     });
@@ -300,6 +349,8 @@ describe("with a judge", () => {
   const report = buildBenchReport({
     runConfig: { ...RUN_CONFIG, judge: JUDGE },
     trials: JUDGED,
+    baselines: {},
+    unstable: [],
     finishedAt: new Date("2026-11-25T12:10:00.000Z"),
     interrupted: false,
   });
@@ -362,6 +413,8 @@ describe("with a judge", () => {
     const plain = buildBenchReport({
       runConfig: RUN_CONFIG,
       trials: JUDGED,
+      baselines: {},
+      unstable: [],
       finishedAt: new Date("2026-11-25T12:10:00.000Z"),
       interrupted: false,
     });
@@ -416,6 +469,8 @@ describe("pieces", () => {
       const report = buildBenchReport({
         runConfig: RUN_CONFIG,
         trials: TRIALS,
+        baselines: {},
+        unstable: [],
         finishedAt: new Date("2026-11-25T12:10:00.000Z"),
         interrupted: false,
       });
@@ -427,8 +482,9 @@ describe("pieces", () => {
         `Saved runs, newest last: ${RUN_CONFIG.runId}.`,
       );
       expect(() => readBenchReport(join(root, "none"), "x")).toThrow(/no saved runs/);
-      // A report saved before the judge existed reads as one without a judge.
-      const { judge: _judge, ...older } = report;
+      // A report saved before the judge or baselines existed reads as one
+      // without a judge, with no baselines and no unstable fixture.
+      const { judge: _judge, baselines: _baselines, unstable: _unstable, ...older } = report;
       writeFileSync(
         join(root, RUN_CONFIG.runId, REPORT_FILE),
         JSON.stringify({

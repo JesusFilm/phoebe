@@ -3,7 +3,7 @@
 // it starts.
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
@@ -61,6 +61,16 @@ describe("parseBenchArgs", () => {
     expect(() => parseBenchArgs(["select", "--tenant"])).toThrow(/needs a value/);
     expect(() => parseBenchArgs(["select", "--json"])).toThrow(/always prints JSON/);
     expect(() => parseBenchArgs(["select", "--bench-config", "b.json"])).toThrow(/are for `run`/);
+  });
+
+  test("--no-baseline is for select, and the one-off container gets it", () => {
+    const parsed = parseBenchArgs(["select", "--issues", "12", "--no-baseline"]);
+    expect(parsed).toMatchObject({ command: "select", baseline: false });
+    expect(parseBenchArgs(["select", "--issues", "12"])).not.toHaveProperty("baseline");
+    expect(benchComposeArgv(parsed).slice(-3)).toEqual(["--issues", "12", "--no-baseline"]);
+    expect(() => parseBenchArgs(["run", "s.json", "--no-baseline"])).toThrow(
+      /`--no-baseline` is for `select`/,
+    );
   });
 
   test("run takes one suite file and --tenant", () => {
@@ -279,13 +289,9 @@ describe("the container arm", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("prints the suite as JSON on stdout, lists skips on stderr, and only reads GitHub", async () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const prepared: string[] = [];
-    const gitCalls: Array<{ args: string[]; cwd: string | undefined }> = [];
-    // Only the reads are declared: any write the verb reached for would throw.
-    const github = stubGitHub({
+  // Only the reads are declared: any write the verb reached for would throw.
+  const selectGitHub = () =>
+    stubGitHub({
       mergedPrsForBranch: (branch) =>
         branch === "phoebe/issue-12"
           ? [
@@ -321,25 +327,45 @@ describe("the container arm", () => {
       }),
     });
 
-    const suite = await runBenchSelectInContainer(parseBenchArgs(["select", "--issues", "12,13"]), {
-      cwd: root,
-      env: { PHOEBE_DATA_DIR: dataBase },
-      io: { stdout: (text) => stdout.push(text), stderr: (line) => stderr.push(line) },
-      github: (tenant) => {
-        expect(tenant.config.repoSlug).toBe("acme/widget");
-        return github;
+  /** The hub clone's side has its own suite (bench-select.test.ts); here it holds every commit. */
+  const hubGit =
+    (calls: Array<{ args: string[]; cwd: string | undefined }>) =>
+    (args: string[], opts?: { cwd?: string }): string => {
+      calls.push({ args, cwd: opts?.cwd });
+      if (args[0] === "rev-parse") return `${"e".repeat(40)}\n`;
+      if (args[0] === "merge-base") return `${"c".repeat(40)}\n`;
+      return "";
+    };
+
+  test("prints the suite as JSON on stdout, lists skips on stderr, and only reads GitHub", async () => {
+    const github = selectGitHub();
+    const gates: string[] = [];
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const prepared: string[] = [];
+    const gitCalls: Array<{ args: string[]; cwd: string | undefined }> = [];
+
+    const suite = await runBenchSelectInContainer(
+      parseBenchArgs(["select", "--issues", "12,13", "--no-baseline"]),
+      {
+        cwd: root,
+        env: { PHOEBE_DATA_DIR: dataBase },
+        io: { stdout: (text) => stdout.push(text), stderr: (line) => stderr.push(line) },
+        github: (tenant) => {
+          expect(tenant.config.repoSlug).toBe("acme/widget");
+          return github;
+        },
+        prepareClone: (config) => prepared.push(config.paths.repoDir),
+        git: hubGit(gitCalls),
+        run: {
+          runGate: (opts) => {
+            gates.push(opts.command);
+            return Promise.resolve({ command: opts.command, exitCode: 0, durationMs: 1 });
+          },
+        },
+        now: () => new Date("2026-11-25T00:00:00Z"),
       },
-      prepareClone: (config) => prepared.push(config.paths.repoDir),
-      // The hub clone's side has its own suite (bench-select.test.ts); here it
-      // holds both commits and answers the merge-base.
-      git: (args, opts) => {
-        gitCalls.push({ args, cwd: opts?.cwd });
-        if (args[0] === "rev-parse") return `${"e".repeat(40)}\n`;
-        if (args[0] === "merge-base") return `${"c".repeat(40)}\n`;
-        return "";
-      },
-      now: () => new Date("2026-11-25T00:00:00Z"),
-    });
+    );
 
     expect(prepared).toEqual([join(dataBase, "acme", "widget", "repo")]);
     const printed = JSON.parse(stdout.join("")) as BenchSuite;
@@ -366,6 +392,50 @@ describe("the container arm", () => {
       "[phoebe] bench: skipped #13: no merged PR came from phoebe/issue-13",
       "[phoebe] bench: 1 fixture(s) for acme/widget, 1 skipped.",
     ]);
+    // --no-baseline: no gate ran, and the fixture has no baselinePassedAt.
+    expect(gates).toEqual([]);
+  });
+
+  test("runs each fixture's baseline before pinning it, and skips one that fails", async () => {
+    const stderr: string[] = [];
+    const gates: Array<{ command: string; cwd: string }> = [];
+    const select = async (failTest: boolean): Promise<BenchSuite> =>
+      runBenchSelectInContainer(parseBenchArgs(["select", "--issues", "12"]), {
+        cwd: root,
+        env: { PHOEBE_DATA_DIR: dataBase, GH_TOKEN: "not-a-real-token" },
+        io: { stdout: () => {}, stderr: (line) => stderr.push(line) },
+        github: () => selectGitHub(),
+        prepareClone: () => {},
+        git: hubGit([]),
+        run: {
+          runGate: (opts) => {
+            gates.push({ command: opts.command, cwd: opts.cwd });
+            expect(opts.env["GH_TOKEN"]).toBeUndefined();
+            const exitCode = failTest && opts.command === "pnpm test" ? 1 : 0;
+            return Promise.resolve({ command: opts.command, exitCode, durationMs: 1 });
+          },
+        },
+        now: () => new Date("2026-11-25T00:00:00Z"),
+      });
+
+    const passed = await select(false);
+    expect(gates.map((gate) => gate.command)).toEqual(["pnpm install", "pnpm check", "pnpm test"]);
+    const bench = join(dataBase, "acme", "widget", "bench");
+    expect(gates[0]!.cwd.startsWith(bench)).toBe(true);
+    expect(passed.fixtures).toMatchObject([
+      { issue: { number: 12 }, baselinePassedAt: "2026-11-25T00:00:00.000Z" },
+    ]);
+    // The baseline's tree went when selection finished.
+    expect(readdirSync(bench)).toEqual([]);
+
+    const failed = await select(true);
+    expect(failed.fixtures).toEqual([]);
+    expect(failed.skipped).toEqual([
+      { issue: 12, pr: 20, reason: "its merged PR no longer passes: test exited 1" },
+    ]);
+    expect(stderr).toContain(
+      "[phoebe] bench: skipped #12 (PR #20): its merged PR no longer passes: test exited 1",
+    );
   });
 });
 
@@ -451,7 +521,10 @@ describe("the container arm of run", () => {
     expect(result.runDir.startsWith(join(dataBase, "acme", "widget", "bench"))).toBe(true);
     expect(result.trials).toHaveLength(1);
     expect(result.trials[0]).toMatchObject({ outcome: "completed", change: "none" });
-    expect(gates).toEqual(["pnpm install"]);
+    // The fixture's baseline, then the trial's install.
+    expect(gates).toEqual(["pnpm install", "pnpm check", "pnpm test", "pnpm install"]);
+    expect(result.report.baselines["12"]).toMatchObject({ test: { exitCode: 0 } });
+    expect(result.report.unstable).toEqual([]);
     expect(result.report.interrupted).toBe(false);
     // The table on stdout, one row for the one contender.
     const table = stdout.join("");
@@ -479,6 +552,44 @@ describe("the container arm of run", () => {
     ).rejects.toThrow(
       new RegExp(`No bench report for run \`nope\`. Saved runs, newest last: ${result.runId}`),
     );
+  });
+
+  test("exits 1 when every fixture is unstable, with the table still printed", async () => {
+    const hubDir = join(dataBase, "acme", "widget", "repo");
+    writeSuite("acme/widget", hubWithOneCommit(hubDir));
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const spawned: string[] = [];
+    const before = process.exitCode;
+    try {
+      await runBenchCli(["run", "bench/suite.json"], {
+        inContainer: true,
+        cwd: root,
+        env: { PHOEBE_DATA_DIR: dataBase, PATH: process.env["PATH"], ANTHROPIC_API_KEY: "k" },
+        io: { stdout: (text) => stdout.push(text), stderr: (line) => stderr.push(line) },
+        prepareClone: () => {},
+        signal: new AbortController().signal,
+        run: {
+          spawnAgent: (_file, _args, opts) => {
+            spawned.push(opts.cwd);
+            return spawn("true", [], { stdio: ["pipe", "pipe", "pipe"] });
+          },
+          runGate: (opts) =>
+            Promise.resolve({
+              command: opts.command,
+              exitCode: opts.command === "pnpm test" ? 1 : 0,
+              durationMs: 1,
+            }),
+          engineCommit: null,
+        },
+      });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = before;
+    }
+    expect(spawned).toEqual([]);
+    expect(stdout.join("")).toContain("1 fixture(s) unstable, not scored: #12 (test exited 1)");
+    expect(stderr.at(-1)).toBe("[phoebe] bench: no stable fixture: nothing to compare");
   });
 
   test("refuses a bench config it cannot read, and a contender with no provider key", async () => {
