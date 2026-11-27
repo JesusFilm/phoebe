@@ -8,6 +8,7 @@
 // outcome reads as. Everything that renders takes the result as a prop.
 
 import { MAX_RUN_LINES } from "phoebe-agent/contracts";
+import { spendCrossingText, spendReleaseText } from "../../../src/contracts/spend.ts";
 import type {
   CompanionEnvironment,
   ConfigEditValue,
@@ -470,6 +471,10 @@ export function crashLoopingCells(report: DeploymentReport): Set<string> {
  * What is wrong with one pipeline, errors and warnings apart so a caller can
  * place them among a tenant's others. Each names its pipeline, because the list
  * it lands in is a tenant's.
+ *
+ * A spend ceiling holding the pipeline is an error, since no unit starts; a
+ * warning limit reached is a warning, and work goes on (#991). Both are the
+ * report's verdict, read off `cell.spend`.
  */
 export function cellProblems(
   cell: FleetCell,
@@ -480,12 +485,26 @@ export function cellProblems(
   if (crashLooping.has(cell.id)) {
     errors.push({ level: "error", text: `${cell.pipeline}: crash-looping` });
   }
+  const hold = cell.spend?.hold ?? null;
+  if (hold !== null) {
+    errors.push({
+      level: "error",
+      text:
+        `${cell.pipeline}: held by a spend ceiling (${spendCrossingText(hold)}) until about ` +
+        spendReleaseText(hold.releaseAt),
+    });
+  }
+  const warnings: RailProblem[] = [];
   const lastError = cell.snapshot?.lastError ?? null;
-  return {
-    errors,
-    warnings:
-      lastError === null ? [] : [{ level: "warning", text: `${cell.pipeline}: ${lastError}` }],
-  };
+  if (lastError !== null)
+    warnings.push({ level: "warning", text: `${cell.pipeline}: ${lastError}` });
+  for (const crossing of cell.spend?.warnings ?? []) {
+    warnings.push({
+      level: "warning",
+      text: `${cell.pipeline}: past a spend warning limit (${spendCrossingText(crossing)})`,
+    });
+  }
+  return { errors, warnings };
 }
 
 /**

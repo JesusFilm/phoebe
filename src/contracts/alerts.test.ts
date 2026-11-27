@@ -30,6 +30,10 @@ function pipeline(overrides: Partial<PipelineAlertFacts> = {}): PipelineAlertFac
     wedgedDetail: "a pass completed 2 min ago",
     crashLooping: false,
     crashLoopDetail: "no self-death since boot",
+    spendWarning: false,
+    spendWarningDetail: "",
+    spendCeiling: false,
+    spendCeilingDetail: "",
     ...overrides,
   };
 }
@@ -205,7 +209,7 @@ describe("a dark deployment's report-borne conditions freeze", () => {
   });
 });
 
-describe("the three conditions a report carries", () => {
+describe("the conditions a report carries", () => {
   test("wedged and crash-looping are per pipeline and name it", () => {
     const sent = edges({
       report: report({
@@ -277,6 +281,78 @@ describe("the three conditions a report carries", () => {
         since: NOW,
         detail: "the pipeline is no longer in the report",
       },
+    ]);
+  });
+});
+
+describe("the two spend conditions (#991)", () => {
+  const warned = pipeline({
+    spendWarning: true,
+    spendWarningDetail: "API spend $6.00 of $5.00 over 24h",
+  });
+  const held = pipeline({
+    spendCeiling: true,
+    spendCeilingDetail: "API spend $11.00 of $10.00 over 24h, held until about 2026-09-18T21:00Z",
+  });
+
+  test("a warning limit crossed raises spend-warning once, per pipeline", () => {
+    const sent = edges({ report: report({ pipelines: [warned] }) });
+    expect(sent).toEqual([
+      {
+        key: "spend-warning:acme-site/sentry",
+        condition: "spend-warning",
+        state: "raised",
+        pipeline: "acme-site/sentry",
+        since: "2026-09-18T11:59:00.000Z",
+        detail: "API spend $6.00 of $5.00 over 24h",
+      },
+    ]);
+    // The next report, still over and spending more, is not news.
+    const later = pipeline({
+      spendWarning: true,
+      spendWarningDetail: "API spend $7.50 of $5.00 over 24h",
+    });
+    expect(
+      edges(
+        { report: report({ pipelines: [later] }) },
+        notified("spend-warning:acme-site/sentry", "raised"),
+      ),
+    ).toEqual([]);
+  });
+
+  test("a ceiling holding raises spend-ceiling, and its lifting clears it", () => {
+    expect(edges({ report: report({ pipelines: [held] }) }).map((edge) => edge.key)).toEqual([
+      "spend-ceiling:acme-site/sentry",
+    ]);
+    const lifted = edges(
+      { report: report({ pipelines: [pipeline()] }) },
+      notified("spend-ceiling:acme-site/sentry", "raised"),
+    );
+    expect(lifted.map((edge) => [edge.condition, edge.state])).toEqual([
+      ["spend-ceiling", "cleared"],
+    ]);
+  });
+
+  test("the sentence says which, and what it reached", () => {
+    const [edge] = edges({ report: report({ pipelines: [held] }) });
+    const body = alertMessage({
+      edge: edge!,
+      deployment: { name: "acme-site", fingerprint: "fp-widget" },
+      consoleOrigin: "https://relay.example",
+    });
+    expect(body.text).toBe(
+      "acme-site: pipeline sentry held by a spend ceiling " +
+        "(API spend $11.00 of $10.00 over 24h, held until about 2026-09-18T21:00Z)",
+    );
+  });
+
+  test("a pipeline that has left the report is no longer past its limits", () => {
+    const sent = edges(
+      { report: report({ pipelines: [] }) },
+      notified(alertKeyOf("spend-ceiling", "acme-site/gone"), "raised"),
+    );
+    expect(sent.map((edge) => [edge.key, edge.state])).toEqual([
+      ["spend-ceiling:acme-site/gone", "cleared"],
     ]);
   });
 });

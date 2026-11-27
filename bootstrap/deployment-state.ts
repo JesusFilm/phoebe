@@ -69,6 +69,7 @@ import type {
   FleetCell,
   ReconcileState,
   SlotReport,
+  TelemetryReport,
   TenantFacts,
 } from "../src/contracts/deployment.ts";
 import type { DoctorSection } from "../src/contracts/doctor.ts";
@@ -86,6 +87,7 @@ import {
   bindingHold,
   createSpendClock,
   evaluateSpend,
+  spendLimitFigures,
   spendTotals,
   zeroTotals,
   type ScopeEvaluation,
@@ -169,6 +171,12 @@ export type DeploymentStateDeps = {
    * field then is too, which a reader takes as running.
    */
   fleetStop?: () => FleetStop | null;
+  /**
+   * The OTLP forwarder's counters (#993), read at publish time; null when
+   * forwarding is off. Absent for a bootstrapper with no forwarder wired — the
+   * field then is too.
+   */
+  telemetry?: () => TelemetryReport | null;
   /**
    * The root config an edit checks itself against (#503), read at publish time.
    * Cheap on a steady deployment: the hash is re-taken only when the file's stat
@@ -637,13 +645,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       const tenantLimits = pipeline.pipeline.tenantSpend;
       if (own === undefined && tenantLimits === undefined) return cell;
       const tenantId = cell.tenant.id;
+      const tenantSum = tenantTotals.get(tenantId) ?? zeroTotals();
       let tenant = tenants.get(tenantId);
       if (tenant === undefined) {
         tenant = evaluateSpend({
           scope: "tenant",
           clockKey: `tenant:${tenantId}`,
           limits: tenantLimits,
-          totals: tenantTotals.get(tenantId) ?? zeroTotals(),
+          totals: tenantSum,
           records: tenantRecords.get(tenantId) ?? [],
           asOf,
           observedAt,
@@ -651,11 +660,12 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         });
         tenants.set(tenantId, tenant);
       }
+      const ownSum = cell.history === undefined ? zeroTotals() : spendTotals(cell.history);
       const mine = evaluateSpend({
         scope: "pipeline",
         clockKey: `pipeline:${cell.id}`,
         limits: own,
-        totals: cell.history === undefined ? zeroTotals() : spendTotals(cell.history),
+        totals: ownSum,
         records: unitRecords.get(cell.id) ?? [],
         asOf,
         observedAt,
@@ -663,7 +673,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       });
       const hold = bindingHold([...tenant.holds, ...mine.holds]);
       if (hold !== null) holds.set(cell.id, hold);
-      return { ...cell, spend: { hold, warnings: [...tenant.warnings, ...mine.warnings] } };
+      const limits = [
+        ...spendLimitFigures({ scope: "tenant", limits: tenantLimits, totals: tenantSum }),
+        ...spendLimitFigures({ scope: "pipeline", limits: own, totals: ownSum }),
+      ];
+      return {
+        ...cell,
+        spend: { hold, warnings: [...tenant.warnings, ...mine.warnings], limits },
+      };
     });
     spendClock.sweep();
     spendHolds = holds;
@@ -719,6 +736,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           children: livenessOf(at),
           slots: deps.slots(),
           ...(deps.fleetStop === undefined ? {} : { stopped: deps.fleetStop() }),
+          ...(deps.telemetry === undefined ? {} : { telemetry: deps.telemetry() }),
         },
         remote,
         fleet: withHistory(buildFleet(at), at),

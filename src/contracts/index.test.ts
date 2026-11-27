@@ -5,6 +5,7 @@
 // crashes in production on `undefined`.
 
 import { describe, expect, test } from "vite-plus/test";
+import { ALERT_CONDITIONS as typedConditions } from "./alerts.ts";
 import {
   API_SOCKET_PATH as typedSocket,
   CANCELLABLE_VERBS as typedCancellable,
@@ -18,6 +19,7 @@ import {
   MAX_RUN_LINES as typedMaxLines,
 } from "./index.ts";
 import {
+  ALERT_CONDITIONS as shippedConditions,
   API_SOCKET_PATH as shippedSocket,
   CANCELLABLE_VERBS as shippedCancellable,
   CLOSED_EDIT_BLOCKS as shippedClosedBlocks,
@@ -29,6 +31,12 @@ import {
   MAX_LOG_LINES as shippedMaxLogLines,
   MAX_RUN_LINES as shippedMaxLines,
 } from "./index.mjs";
+
+describe("the alert conditions", () => {
+  test("are the same on both sides", () => {
+    expect(shippedConditions).toEqual([...typedConditions]);
+  });
+});
 
 describe("the config-edit closed set", () => {
   test("is the same on both sides", () => {

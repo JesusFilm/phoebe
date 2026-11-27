@@ -25,6 +25,8 @@ import {
   type HistoryReader,
   type NeedsALookFetch,
 } from "./history.ts";
+import { SpendLimits } from "./spend-limits.tsx";
+import { NO_SPEND, type SpendView } from "./spend.ts";
 
 const WEEK_MS = 7 * 86_400_000;
 
@@ -60,8 +62,20 @@ function perDay(units: number): string {
   return rate >= 10 || Number.isInteger(rate) ? rate.toFixed(0) : rate.toFixed(1);
 }
 
-/** The overview's card: the fleet's last 7 days, read off the report. */
-export function WeekCard({ summary, now }: { summary: HistorySummary | null; now: Date }) {
+/**
+ * The overview's card: the fleet's last 7 days, read off the report, and under
+ * the figures every spend limit the config sets beside what it is weighed
+ * against (#991), with each pipeline a ceiling holds.
+ */
+export function WeekCard({
+  summary,
+  now,
+  spend = NO_SPEND,
+}: {
+  summary: HistorySummary | null;
+  now: Date;
+  spend?: SpendView;
+}) {
   if (summary === null) {
     return (
       <section className="week-card">
@@ -70,6 +84,7 @@ export function WeekCard({ summary, now }: { summary: HistorySummary | null; now
           This report carries no unit history. The deployment&apos;s bootstrapper predates it, so
           there is nothing to sum, not a quiet week.
         </p>
+        <SpendLimits rows={spend.rows} holds={spend.holds} now={now} />
       </section>
     );
   }
@@ -101,6 +116,7 @@ export function WeekCard({ summary, now }: { summary: HistorySummary | null; now
           </div>
         </div>
       </div>
+      <SpendLimits rows={spend.rows} holds={spend.holds} now={now} />
       <p className="muted week-asof" title={summary.asOf}>
         Summed {age(summary.asOf, now)} ago.
       </p>

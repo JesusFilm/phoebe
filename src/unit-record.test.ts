@@ -104,22 +104,25 @@ describe("recordUnit", () => {
 
   test("tells the supervisor a record landed, and only when one did", () => {
     const dir = stateDir();
-    let appended = 0;
+    const appended: unknown[] = [];
     const deps = {
       deployment: "fleet",
       tenant: "acme/widget",
       pipeline: "work",
       engineCommit: null,
       log: () => {},
-      onAppended: () => (appended += 1),
+      onAppended: (record: unknown) => appended.push(record),
     };
 
     createRecordUnit({ ...deps, unitsPath: unitsPathFor(dir, "work") })(input());
-    expect(appended).toBe(1);
+    expect(appended).toHaveLength(1);
+    // The record handed over is the line that landed, stamped by the writer.
+    const [line] = readFileSync(unitsPathFor(dir, "work"), "utf8").trim().split("\n");
+    expect(appended[0]).toEqual(JSON.parse(line!));
 
     writeFileSync(join(dir, "blocked"), "");
     createRecordUnit({ ...deps, unitsPath: unitsPathFor(dir, "blocked") })(input());
-    expect(appended).toBe(1);
+    expect(appended).toHaveLength(1);
   });
 });
 

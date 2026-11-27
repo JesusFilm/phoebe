@@ -28,12 +28,13 @@
 // uplink never wakes anyone (#515 §4).
 //
 // **A dark deployment's other conditions are frozen.** Its reports are stale,
-// so `wedged`, `crash-looping` and `doctor-fail` hold at their last notified
-// state — no raise and, more to the point, no clear — until it reconnects and
-// reports, at which moment each is re-evaluated against fresh facts (#515 §11).
+// so every report-borne condition (`wedged`, `crash-looping`, `doctor-fail`
+// and the two spend conditions) holds at its last notified state — no raise
+// and, more to the point, no clear — until it reconnects and reports, at which
+// moment each is re-evaluated against fresh facts (#515 §11).
 //
 // A condition can also be **silent** for a duller reason: there is nothing to
-// read. No report means no verdict on the three report-borne conditions, and a
+// read. No report means no verdict on the report-borne conditions, and a
 // doctor run that timed out says `unknown`, which is not a pass.
 
 /** Where a reader with a socket holds a deployment. A local read has none, and says null. */
@@ -56,10 +57,15 @@ export const ALERT_SCHEMA = 1;
 export const ALERT_DARK_AFTER_MS = 5 * 60_000;
 
 /**
- * The five conditions, in the order #515 §3 lists them. Two are the relay's own
- * — `dark` and `replaced` are read off connection facts — and three come off a
- * pushed report, which is why a companion watching a local install raises only
- * the latter three.
+ * The seven conditions: the five #515 §3 lists, in its order, then the two
+ * spend conditions (#991, decision #978). Two are the relay's own — `dark` and
+ * `replaced` are read off connection facts — and the rest come off a pushed
+ * report, which is why a companion watching a local install raises only those.
+ *
+ * `spend-warning` is a pipeline past a warning limit: raised once when the
+ * limit is crossed, cleared when the window falls back under it, and work goes
+ * on. `spend-ceiling` is a pipeline a ceiling holds, raised while admission is
+ * held and cleared when the hold lifts.
  */
 export const ALERT_CONDITIONS = [
   "dark",
@@ -67,6 +73,8 @@ export const ALERT_CONDITIONS = [
   "crash-looping",
   "doctor-fail",
   "replaced",
+  "spend-warning",
+  "spend-ceiling",
 ] as const;
 
 /** One named condition. */
@@ -83,7 +91,7 @@ export type AlertState = "raised" | "cleared";
  */
 export type DoctorVerdict = "ok" | "fail" | "unknown";
 
-/** One pipeline's two report-borne conditions, with a line each for `detail`. */
+/** One pipeline's report-borne conditions, with a line each for `detail`. */
 export type PipelineAlertFacts = {
   /** What the payload's `pipeline` field says, e.g. `acme-site/sentry`. */
   pipeline: string;
@@ -92,6 +100,14 @@ export type PipelineAlertFacts = {
   wedgedDetail: string;
   crashLooping: boolean;
   crashLoopDetail: string;
+  /** The report names at least one warning limit this pipeline's spend has reached (#991). */
+  spendWarning: boolean;
+  /** Which, in one line — `API spend $6.00 of $5.00 over 24h`. */
+  spendWarningDetail: string;
+  /** A spend ceiling holds this pipeline's admission (#991). */
+  spendCeiling: boolean;
+  /** Which, and when it should lift — `… held until about 2026-05-05T21:00:00.000Z`. */
+  spendCeilingDetail: string;
 };
 
 /**
@@ -157,8 +173,9 @@ export type NotifiedAlert = {
 export type NotifiedAlerts = Record<string, NotifiedAlert>;
 
 /**
- * The key a notified state is recorded under. `wedged` and `crash-looping` are
- * per pipeline and so carry one; the other three are per deployment and do not.
+ * The key a notified state is recorded under. `wedged`, `crash-looping` and
+ * the two spend conditions are per pipeline and so carry one; the other three
+ * are per deployment and do not.
  * A colon is safe as the separator because no condition contains one.
  */
 export function alertKeyOf(condition: AlertCondition, pipeline?: string | null): string {
@@ -171,7 +188,7 @@ export type AlertEdge = {
   key: string;
   condition: AlertCondition;
   state: AlertState;
-  /** Set on `wedged` and `crash-looping` only (#515 §9). */
+  /** Set on the per-pipeline conditions only (#515 §9). */
   pipeline: string | null;
   since: string;
   detail: string;
@@ -190,8 +207,8 @@ type Observation =
 
 const SILENT: Observation = { state: "silent" };
 
-/** The two conditions that belong to a pipeline rather than a deployment. */
-const PIPELINE_CONDITIONS = ["wedged", "crash-looping"] as const;
+/** The conditions that belong to a pipeline rather than a deployment. */
+const PIPELINE_CONDITIONS = ["wedged", "crash-looping", "spend-warning", "spend-ceiling"] as const;
 
 /**
  * **The edge rule.** Everything that has crossed a condition boundary since the
@@ -247,7 +264,7 @@ export function alertEdges(input: {
   consider("dark", null, darkness(facts, input.darkAfterMs ?? ALERT_DARK_AFTER_MS));
   consider("replaced", null, replacement(facts));
 
-  // The three that read a report, and the states that freeze them: unseen,
+  // The ones that read a report, and the states that freeze them: unseen,
   // dark, or no report to read.
   if (facts.connection === "dark" || facts.connection === "unseen") return edges;
   const report = facts.report;
@@ -257,9 +274,11 @@ export function alertEdges(input: {
   for (const pipeline of report.pipelines) {
     consider("wedged", pipeline.pipeline, wedging(pipeline, report.at));
     consider("crash-looping", pipeline.pipeline, crashLooping(pipeline, report.at));
+    consider("spend-warning", pipeline.pipeline, spendWarning(pipeline, report.at));
+    consider("spend-ceiling", pipeline.pipeline, spendCeiling(pipeline, report.at));
   }
   // A pipeline that has left the report — a tenant removed, a pipeline renamed
-  // — is not wedged and not crash-looping. Clearing it is both honest and the
+  // — is not wedged, not crash-looping and not over any limit. Clearing it is both honest and the
   // only thing that keeps the notified state from growing forever.
   for (const key of Object.keys(notified)) {
     const gone = departed(key, report.pipelines);
@@ -324,6 +343,18 @@ function crashLooping(pipeline: PipelineAlertFacts, at: string): Observation {
     : { state: "cleared", detail: pipeline.crashLoopDetail };
 }
 
+function spendWarning(pipeline: PipelineAlertFacts, at: string): Observation {
+  return pipeline.spendWarning
+    ? { state: "raised", since: at, detail: pipeline.spendWarningDetail }
+    : { state: "cleared", detail: pipeline.spendWarningDetail };
+}
+
+function spendCeiling(pipeline: PipelineAlertFacts, at: string): Observation {
+  return pipeline.spendCeiling
+    ? { state: "raised", since: at, detail: pipeline.spendCeilingDetail }
+    : { state: "cleared", detail: pipeline.spendCeilingDetail };
+}
+
 /**
  * A notified key whose pipeline the report no longer mentions, split back into
  * its condition and its pipeline. Null for every key that is not a per-pipeline
@@ -370,7 +401,7 @@ export type AlertMessage = {
   condition: AlertCondition;
   state: AlertState;
   deployment: { name: string; keyFingerprint: string };
-  /** Only on `wedged` and `crash-looping`. */
+  /** Only on the per-pipeline conditions. */
   pipeline?: string;
   since: string;
   detail: string;
@@ -457,8 +488,8 @@ export function alertUrl(consoleOrigin: string, fingerprint: string): string {
 }
 
 /**
- * How each condition reads in a sentence. `doctor-fail` and `replaced` are the
- * two that cannot be their own adjective, so they get one.
+ * How each condition reads in a sentence. `doctor-fail`, `replaced` and the
+ * two spend conditions cannot be their own adjective, so they get one.
  */
 const CONDITION_WORD: Record<AlertCondition, string> = {
   dark: "dark",
@@ -466,6 +497,8 @@ const CONDITION_WORD: Record<AlertCondition, string> = {
   "crash-looping": "crash-looping",
   "doctor-fail": "failing doctor's checks",
   replaced: "probably replaced",
+  "spend-warning": "past a spend warning limit",
+  "spend-ceiling": "held by a spend ceiling",
 };
 
 /** `acme-site/sentry` → `sentry`: the pipeline's own name in a sentence. */

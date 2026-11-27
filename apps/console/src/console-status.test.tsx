@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FleetCell, LocalReportEvent } from "phoebe-agent/contracts";
+import type { DeploymentReport, FleetCell, LocalReportEvent } from "phoebe-agent/contracts";
 import {
   channelStatus,
   channelTitle,
@@ -9,6 +9,7 @@ import {
 } from "./console-status.ts";
 import { readReport } from "./report.ts";
 import { ConsoleView } from "./console-view.tsx";
+import { DeploymentTabPanel } from "./deployment-tabs.tsx";
 import { ALL_CHANNEL, BOOT_CHANNEL } from "./logs-channels.ts";
 import {
   ago,
@@ -18,6 +19,7 @@ import {
   directory,
   install,
   localReport,
+  NOW,
   report,
   tenant,
 } from "./test-fixture.ts";
@@ -336,6 +338,70 @@ describe("the console's cli tab", () => {
 
   test("with no run and nobody asking, there is no such tab", () => {
     expect(view(null)).not.toMatch(/>cli</);
+  });
+});
+
+describe("OpenTelemetry forwarding (#993)", () => {
+  const failing: DeploymentReport["bootstrapper"] = {
+    ...report().bootstrapper,
+    telemetry: {
+      sent: 3,
+      dropped: 2,
+      lastError: "http://c:4318/v1/traces answered HTTP 503",
+      lastSentAt: ago(600),
+    },
+  };
+
+  test("sends that keep failing are a warning on the install, local and remote", () => {
+    const local = consoleStatus(workspace, event([pipeline(A, "work")], { bootstrapper: failing }));
+    const warning = {
+      level: "warning",
+      text: "OpenTelemetry sends failing (2 dropped): http://c:4318/v1/traces answered HTTP 503",
+    };
+    expect(local.problems).toContainEqual(warning);
+    const remote = remoteConsoleStatus(
+      readReport({
+        schema: report().schema,
+        receivedAt: ago(2),
+        report: report({ bootstrapper: failing }),
+      }),
+    );
+    expect(remote.problems).toContainEqual(warning);
+  });
+
+  test("the overview counts the sends and badges the failing ones", () => {
+    const overview = (bootstrapper: typeof failing) =>
+      renderToStaticMarkup(
+        <DeploymentTabPanel
+          tab="overview"
+          reading={{ kind: "read", receivedAt: ago(2), report: report({ bootstrapper }) }}
+          connection={{ arm: "local install", detail: "/repos/acme", note: "read here" }}
+          config={null}
+          now={NOW}
+          empty={<p>nothing</p>}
+        />,
+      );
+    const markup = overview(failing);
+    expect(markup).toContain("OpenTelemetry: 3 sent, 2 dropped, last sent");
+    expect(markup).toContain("sends failing");
+    const healthy = overview({ ...failing, telemetry: { ...failing.telemetry!, lastError: null } });
+    expect(healthy).toContain("OpenTelemetry: 3 sent");
+    expect(healthy).not.toContain("sends failing");
+    expect(overview({ ...failing, telemetry: null })).not.toContain("OpenTelemetry");
+  });
+
+  test("forwarding that is off, or delivering again, says nothing", () => {
+    for (const telemetry of [
+      null,
+      undefined,
+      { sent: 4, dropped: 2, lastError: null, lastSentAt: ago(5) },
+    ]) {
+      const status = consoleStatus(
+        workspace,
+        event([pipeline(A, "work")], { bootstrapper: { ...report().bootstrapper, telemetry } }),
+      );
+      expect(status.problems).toEqual([]);
+    }
   });
 });
 

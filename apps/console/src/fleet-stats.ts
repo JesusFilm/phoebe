@@ -25,6 +25,7 @@ import type {
 import { unitCost, unitTokens, type HistoryFetch, type HistoryReader } from "./history.ts";
 import { hostnameOf } from "./reachability.ts";
 import { readReport } from "./report.ts";
+import { NO_SPEND, spendViewOf, type SpendView } from "./spend.ts";
 
 /** The two windows every summary carries. */
 export type StatsRange = "last24h" | "last7d";
@@ -54,6 +55,8 @@ export type StatsDeployment = {
   where: string;
   arm: StatsArm;
   history: StatsHistory;
+  /** Its spend limits beside their figures, and the pipelines a ceiling holds (#991). */
+  spend: SpendView;
 };
 
 /**
@@ -78,6 +81,7 @@ export function statsDeployments(
         event === null
           ? { kind: "unknown", why: "no report read yet" }
           : historyOf(event.report, event.reason ?? "not running, so no report"),
+      spend: event === null ? NO_SPEND : spendOf(event.report),
     };
   });
   const paired = remotes
@@ -88,8 +92,14 @@ export function statsDeployments(
       where: hostnameOf(record.url),
       arm: { kind: "remote", deploymentId: record.deploymentId },
       history: historyOf(record.lastReport, "nothing heard from it yet"),
+      spend: spendOf(record.lastReport),
     }));
   return [...locals, ...paired];
+}
+
+function spendOf(stored: LocalReportEvent["report"]): SpendView {
+  const reading = readReport(stored);
+  return reading.kind === "read" ? spendViewOf(reading.report) : NO_SPEND;
 }
 
 function historyOf(stored: LocalReportEvent["report"], absent: string): StatsHistory {

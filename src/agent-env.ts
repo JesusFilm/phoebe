@@ -16,6 +16,10 @@
 // owns, and a copy there can be rewritten by one unit and run by the next
 // (#780). An image that sets COREPACK_HOME to a root-owned, prepared cache
 // (the dogfood one does) keeps it that way for the agent too.
+//
+// No `OTEL_*` variable ever reaches an agent (#993), whatever a kind's
+// `agentEnv` names: the OTLP headers carry the operator's collector
+// credential, and only the bootstrapper sends to the collector.
 
 import type { PhoebeConfig, ProviderName } from "./config-schema.ts";
 
@@ -30,6 +34,9 @@ const BASE_ALLOWLIST = [
   "GIT_COMMITTER_NAME",
   "GIT_COMMITTER_EMAIL",
 ] as const;
+
+/** The OpenTelemetry variables, which no agent child is handed. */
+const OTEL_PREFIX = "OTEL_";
 
 export function buildAgentEnv(opts: {
   parentEnv: Record<string, string | undefined>;
@@ -46,6 +53,7 @@ export function buildAgentEnv(opts: {
   const { parentEnv, provider, providerEnv, agentEnv = [] } = opts;
   const env: Record<string, string> = { CI: "true" };
   for (const key of [...BASE_ALLOWLIST, providerEnv[provider], ...agentEnv]) {
+    if (key.startsWith(OTEL_PREFIX)) continue;
     const value = parentEnv[key];
     if (value !== undefined && value !== "") {
       env[key] = value;

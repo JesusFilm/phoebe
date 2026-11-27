@@ -112,6 +112,78 @@ function panel(
 }
 
 describe("the overview's 7-day card", () => {
+  test("shows each spend limit beside its figure, and when a hold should lift (#991)", async () => {
+    const limited = withHistory({
+      cells: [
+        {
+          ...WORK,
+          spend: {
+            hold: {
+              scope: "tenant",
+              measure: "usd",
+              window: "7d",
+              limit: 4,
+              spent: 4.2,
+              since: ago(600),
+              releaseAt: new Date(NOW.getTime() + 2 * 3_600_000).toISOString(),
+            },
+            warnings: [{ scope: "tenant", measure: "usd", window: "7d", limit: 3, spent: 4.2 }],
+            limits: [
+              {
+                scope: "tenant",
+                level: "warn",
+                measure: "usd",
+                window: "7d",
+                limit: 3,
+                spent: 4.2,
+              },
+              {
+                scope: "tenant",
+                level: "ceiling",
+                measure: "usd",
+                window: "7d",
+                limit: 4,
+                spent: 4.2,
+              },
+              {
+                scope: "pipeline",
+                level: "warn",
+                measure: "tokens",
+                window: "24h",
+                limit: 500_000,
+                spent: 150_000,
+              },
+            ],
+          },
+        },
+        REVIEW,
+      ],
+    });
+    const box = await mount(panel("overview", limited));
+
+    const card = box.querySelector(".week-card")!;
+    const rows = [...card.querySelectorAll(".spend-limits tbody tr")].map((row) =>
+      [...row.querySelectorAll("td")].map((td) => td.textContent),
+    );
+    expect(rows).toEqual([
+      ["tenant JesusFilm/youtube-studio", "API spend, 7d", "$4.20held", "$3.00", "$4.00"],
+      ["work", "Tokens in + out, 24h", "150,000", "500,000", "—"],
+    ]);
+    const hold = card.querySelector(".spend-holds")!.textContent!;
+    expect(hold).toContain("work is held until about");
+    expect(hold).toContain("(in 2 h)");
+    expect(hold).toContain("by its tenant's ceiling (API spend $4.20 of $4.00 over 7d)");
+    expect(card.textContent).toContain(
+      "raise or remove it in the config; there is no resume button",
+    );
+    expect(card.querySelector("button")).toBeNull();
+  });
+
+  test("a deployment with no limits shows no limits section", async () => {
+    const box = await mount(panel("overview", withHistory()));
+    expect(box.querySelector(".week-card .spend-section")).toBeNull();
+  });
+
   test("reads the report's summary, and asks for no records to draw it", async () => {
     const { read, asked } = reader();
     const box = await mount(panel("overview", withHistory(), read));

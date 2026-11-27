@@ -256,6 +256,90 @@ out.
 directly, so it works while the bootstrapper is down. On the host it runs
 itself in the container with the same flags.
 
+`--export csv` and `--export jsonl` write every unit the filters match to
+stdout, not one page. The verb walks the pages itself, and the count goes to
+stderr:
+
+```sh
+phoebe history --since 2026-11-01 --export csv > units.csv
+```
+
+The CSV has one row per unit. Its columns are `cell`, `kind`, `unit`,
+`outcome`, `quarantined`, `started`, `ended`, `provider`, `model`,
+`agent_runs`, the four token counts summed across the unit's agent runs,
+`partial_usage`, `api_cost_usd`, `estimated_cost_usd` and `pr_link`. API spend
+and Claude's subscription estimate sit in separate columns and are never added
+together. A count that no run reported is an empty cell, not a 0. JSON Lines
+writes one full record per line, the same objects `--json` puts in `records`.
+The History tab's **Export** button writes the same files. `--export` takes
+`--before` as the place to start, but not `--limit` or `--json`.
+
+## Forwarding unit records to OpenTelemetry
+
+Phoebe can send each unit record to an OpenTelemetry collector you run, as one
+OTLP trace. It is off by default. To turn it on, set the standard exporter
+variables in the deployment's `.env`. The scaffolded `container/compose.yml`
+passes them through to the container.
+
+| Variable                             | What it does                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | The collector's base URL. Phoebe appends `v1/traces`.                                                  |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | The full traces URL, used as given. It wins over the base URL.                                         |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | Request headers as `key=value,key=value`, values percent-encoded. Put the collector's credential here. |
+| `OTEL_SERVICE_NAME`                  | Replaces the default `service.name`, which is `phoebe`.                                                |
+| `OTEL_RESOURCE_ATTRIBUTES`           | Extra resource attributes, as `key=value,key=value`.                                                   |
+
+There is no config field. Only the bootstrapper reads these variables. No agent
+gets them, whatever a kind's `agentEnv` says, because the headers hold your
+collector's credential.
+
+Phoebe speaks OTLP/HTTP JSON and nothing else, so point the endpoint at the
+collector's HTTP receiver, which listens on port 4318 by default. If
+`OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` says `grpc`
+or `http/protobuf`, Phoebe still sends JSON, and `phoebe doctor` flags the
+setting.
+
+**What gets sent.** Each record written after forwarding is on is sent once.
+Older records are not sent. Observer units are sent. Bench trials are not, since
+they never reach a pipeline's history. Each trace has these spans:
+
+- A `unit <kind>` root span runs from the unit's start to its settle time. An
+  abandoned unit has no settle time, so its span ends when the record arrived.
+  It carries `phoebe.tenant`, `phoebe.pipeline`, `phoebe.kind`, `phoebe.unit`,
+  `phoebe.outcome`, `phoebe.quarantined`, `phoebe.run_budget_ms`, `phoebe.effort`,
+  `phoebe.pr_number`, `phoebe.head_sha`, `phoebe.engine_commit`,
+  `gen_ai.provider.name` and `gen_ai.request.model`.
+- An `invoke_agent <kind>` child span covers each agent run. It carries the GenAI
+  attributes `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.provider.name`
+  (`anthropic`, `openai` or `cursor`), `gen_ai.request.model` and the
+  `gen_ai.usage.*` token counts. Cost, cost basis, turns, stop reason, usage
+  completeness, exit code, prompt SHA, reported models and the tool-call total
+  go under `phoebe.agent_run.*`.
+
+`gen_ai.usage.input_tokens` counts uncached input, cache reads and cache writes
+together, as the convention asks. A count the provider did not report is left
+out rather than sent as 0. A failed, timed-out or abandoned unit has ERROR
+status, with `error.type` set to the outcome. So does an agent run that exited
+non-zero or never exited. A unit's `detail` and `branch` are never sent,
+because they can hold free text and issue titles.
+
+The resource has `service.version` set to the engine's version and
+`service.instance.id` set to the deployment ID. The `gen_ai.*` names come from
+semantic-conventions-genai v0.1.0, and the scope's schema URL pins that release.
+Those conventions are still at Development status. When Phoebe moves to a later
+release, the changeset lists every renamed attribute.
+
+Trace and span IDs come from a hash of the deployment ID, the tenant and
+pipeline, the unit and its start time. If a record is sent twice, the collector
+sees the same trace twice rather than two traces.
+
+**Delivery.** A send that gets HTTP 429, 502, 503 or 504, or loses its
+connection, is retried once, after the `Retry-After` wait when the collector
+gives one. Any other failure drops the trace, and so does a partial success.
+Nothing is queued on disk. The deployment report's `bootstrapper.telemetry`
+counts what was `sent` and `dropped`, with `lastError` and `lastSentAt`. When the
+latest send failed and none has succeeded since, the console shows a warning.
+
 ## Starting an observer run: `phoebe observe`
 
 The [`observer`](work-kinds.md) kind runs on its `every` schedule, or never
@@ -598,7 +682,7 @@ an API account, and the suite. The deployment already has all four. Use the
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs thirteen checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -628,6 +712,10 @@ an API account, and the suite. The deployment already has all four. Use the
   the host, that the arm's overlay files exist, that the running services and
   published ports match the arm, and on the host arm the same read-only Serve
   inspection `phoebe start` runs. The line says which vantage point answered.
+- **telemetry.** Whether unit records go to an OpenTelemetry collector, and the
+  URL they go to ([below](#forwarding-unit-records-to-opentelemetry)). It names
+  any headers set but never prints their values. A `*_PROTOCOL` of `grpc` or
+  `http/protobuf` is a warn, because Phoebe sends OTLP/HTTP JSON only.
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
@@ -968,10 +1056,17 @@ volume`. From the host, a container that is not running is reported before any
 exec. There is no staleness threshold, because "3h old" is a fact an operator can
 act on and "stale" is a guess.
 
+**Spend limits.** A pipeline past a [spend limit](configuration.md#spend-limits-spend)
+gets a line of its own under its state line. A warning limit reached reads
+`spend warning: API spend $6.00 of $5.00 over 24h (pipelines.work.spend.warn.usd24h)`,
+and work goes on. A ceiling holding reads `spend ceiling: …; held until about
+2026-05-05 21:00 UTC (in 9h), or until a config edit raises or removes it`.
+
 **`--check` for a cron.** Exit 1 when something needs a look: a wedged pipeline,
 a crash-looping one, a failing check in the report's doctor section, a held
-tenant, a bootstrapper that is not running, or no report at all. Doctor
-_warnings_ and stale pipeline directories deliberately do not trip it. It names
+tenant, a spend ceiling holding a pipeline, a bootstrapper that is not running,
+or no report at all. Doctor _warnings_, spend warning limits and stale pipeline
+directories deliberately do not trip it. It names
 the findings on stderr, so the cron mail says which one fired.
 
 **`phoebe list` is deprecated.** It still works. It prints the fleet section
