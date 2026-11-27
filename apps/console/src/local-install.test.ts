@@ -6,6 +6,8 @@ import { MAX_RUN_LINES } from "phoebe-agent/contracts";
 import type { OutcomeOf, VerbRun } from "phoebe-agent/contracts";
 import {
   applyRunExit,
+  cellProblems,
+  fleetTenantProblems,
   applyRunLine,
   configSetRequest,
   dockerReading,
@@ -821,6 +823,69 @@ describe("what a workspace's children are doing, for the rail", () => {
     expect(problemCounts(troubledChild!.problems)).toEqual({ errors: 3, warnings: 3 });
     // A healthy tenant has nothing to count.
     expect(workspaceChildren(workspace, event)[1]!.problems).toEqual([]);
+  });
+});
+
+describe("spend limits on the rail (#991)", () => {
+  const held = cell({
+    spend: {
+      hold: {
+        scope: "pipeline",
+        measure: "usd",
+        window: "24h",
+        limit: 10,
+        spent: 11,
+        since: ago(600),
+        releaseAt: "2026-09-18T21:00:00.000Z",
+      },
+      warnings: [],
+      limits: [],
+    },
+  });
+  const warned = cell({
+    spend: {
+      hold: null,
+      warnings: [{ scope: "tenant", measure: "tokens", window: "7d", limit: 1000, spent: 1500 }],
+      limits: [],
+    },
+  });
+
+  test("a ceiling holding is an error badge that says until about when", () => {
+    expect(cellProblems(held, new Set())).toEqual({
+      errors: [
+        {
+          level: "error",
+          text: "work: held by a spend ceiling (API spend $11.00 of $10.00 over 24h) until about 2026-09-18 21:00 UTC",
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  test("a warning limit crossed is a warning badge, and nothing is held", () => {
+    expect(cellProblems(warned, new Set())).toEqual({
+      errors: [],
+      warnings: [
+        {
+          level: "warning",
+          text: "work: past a spend warning limit (1,500 tokens of 1,000 tokens over 7d)",
+        },
+      ],
+    });
+  });
+
+  test("the tenant's badges count them", () => {
+    const body = report({
+      fleet: { tenants: [tenant()], cells: [held], updatedAt: ago(12) },
+    });
+    expect(problemCounts(fleetTenantProblems(body, tenant()))).toEqual({ errors: 1, warnings: 0 });
+    const warnedBody = report({
+      fleet: { tenants: [tenant()], cells: [warned], updatedAt: ago(12) },
+    });
+    expect(problemCounts(fleetTenantProblems(warnedBody, tenant()))).toEqual({
+      errors: 0,
+      warnings: 1,
+    });
   });
 });
 

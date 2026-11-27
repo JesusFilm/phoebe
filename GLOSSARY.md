@@ -554,8 +554,8 @@ _Avoid_: parameter, payload, input
 
 **Alert**:
 What the companion raises when a deployment or one of its pipelines crosses into or out of a
-named condition: `wedged`, `crash-looping`, `doctor-fail`, and for a remote `dark` and
-`replaced`. Every raise has a matching clear, and the edge rule that decides is one pure
+named condition: `wedged`, `crash-looping`, `doctor-fail`, `spend-warning`,
+`spend-ceiling`, and for a remote `dark` and `replaced`. Every raise has a matching clear, and the edge rule that decides is one pure
 function. It is a transition, never a record.
 _Avoid_: incident, page
 

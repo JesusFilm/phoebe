@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/tes
 import { App } from "./app.tsx";
 import { FleetStatsPage, HOVER_CLOSE_MS, HOVER_OPEN_MS, StatsButton } from "./fleet-stats-page.tsx";
 import type { StatsArm, StatsDeployment } from "./fleet-stats.ts";
+import { NO_SPEND, spendViewOf } from "./spend.ts";
 import type { HistoryFetch, HistoryReader } from "./history.ts";
 import { Rail } from "./rail.tsx";
 import { STATS_HREF } from "./route.ts";
@@ -20,6 +21,7 @@ import {
   agentRun,
   ago,
   bridge,
+  cell,
   historyPage,
   historyRecord,
   install,
@@ -27,6 +29,7 @@ import {
   NOW,
   report,
   stored,
+  tenant,
 } from "./test-fixture.ts";
 
 const roots: Root[] = [];
@@ -78,6 +81,7 @@ const REPORTING: StatsDeployment = {
     },
     asOf: ago(60),
   },
+  spend: NO_SPEND,
 };
 
 const TOO_OLD: StatsDeployment = {
@@ -86,6 +90,54 @@ const TOO_OLD: StatsDeployment = {
   where: "partner-site.tail4f2c.ts.net",
   arm: { kind: "remote", deploymentId: "dep_P" },
   history: { kind: "too-old" },
+  spend: NO_SPEND,
+};
+
+/** REPORTING with a tenant warning limit over the week and a pipeline ceiling over the day that holds. */
+const LIMITED: StatsDeployment = {
+  ...REPORTING,
+  spend: spendViewOf(
+    report({
+      fleet: {
+        tenants: [tenant()],
+        cells: [
+          cell({
+            spend: {
+              hold: {
+                scope: "pipeline",
+                measure: "usd",
+                window: "24h",
+                limit: 1,
+                spent: 1,
+                since: ago(600),
+                releaseAt: new Date(NOW.getTime() + 5 * 3_600_000).toISOString(),
+              },
+              warnings: [],
+              limits: [
+                {
+                  scope: "tenant",
+                  level: "warn",
+                  measure: "usd",
+                  window: "7d",
+                  limit: 25,
+                  spent: 4.2,
+                },
+                {
+                  scope: "pipeline",
+                  level: "ceiling",
+                  measure: "usd",
+                  window: "24h",
+                  limit: 1,
+                  spent: 1,
+                },
+              ],
+            },
+          }),
+        ],
+        updatedAt: ago(12),
+      },
+    }),
+  ),
 };
 
 function pointer(target: Element, type: "mouseover" | "mouseout", related: Element | null): void {
@@ -309,6 +361,56 @@ describe("the fleet stats page", () => {
     expect(asked.at(-1)!.query).toEqual({ since: ago(86_400), limit: 200 });
     expect(box.textContent).not.toContain("Units per day");
     expect(box.querySelector(".stats-tiles")!.textContent).toContain("Units3");
+  });
+
+  test("each limit sits beside its figure for the window on show, and a hold says when it lifts (#991)", async () => {
+    const { readerOf } = readers({ [LIMITED.key]: { kind: "page", page: historyPage([]) } });
+    const box = await mount(
+      <FleetStatsPage deployments={[LIMITED, TOO_OLD]} readerOf={readerOf} now={NOW} />,
+    );
+    const limits = [...box.querySelectorAll("h2")].find((h) => h.textContent === "Spend limits")!;
+    expect(limits).toBeDefined();
+    const cells = (): (string | null)[][] =>
+      [...box.querySelectorAll(".spend-limits tbody tr")].map((row) =>
+        [...row.querySelectorAll("td")].map((td) => td.textContent),
+      );
+    // The week: the tenant's warning limit beside the week's API spend.
+    expect(cells()).toEqual([
+      [
+        "youtube-studio",
+        "tenant JesusFilm/youtube-studio",
+        "API spend, 7d",
+        "$4.20",
+        "$25.00",
+        "—",
+      ],
+    ]);
+    const hold = box.querySelector(".spend-holds")!.textContent!;
+    expect(hold).toContain("youtube-studio: work is held until about");
+    expect(hold).toContain("(in 5 h)");
+    expect(box.textContent).toContain(
+      "raise or remove it in the config; there is no resume button",
+    );
+    expect(
+      [...box.querySelectorAll("button")].some((b) => /resume/i.test(b.textContent ?? "")),
+    ).toBe(false);
+
+    // The day: the pipeline's ceiling, reached, beside the day's API spend.
+    const day = [...box.querySelectorAll("button")].find((b) => b.textContent === "Last 24 hours")!;
+    await act(async () => day.click());
+    expect(cells()).toEqual([
+      ["youtube-studio", "work", "API spend, 24h", "$1.00held", "—", "$1.00"],
+    ]);
+  });
+
+  test("no limits anywhere, no limits section", async () => {
+    const { readerOf } = readers({ [REPORTING.key]: { kind: "page", page: historyPage([]) } });
+    const box = await mount(
+      <FleetStatsPage deployments={[REPORTING]} readerOf={readerOf} now={NOW} />,
+    );
+    expect([...box.querySelectorAll("h2")].some((h) => h.textContent === "Spend limits")).toBe(
+      false,
+    );
   });
 
   test("a deployment whose records cannot be read says so", async () => {

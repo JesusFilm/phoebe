@@ -34,6 +34,8 @@ import {
   usd,
   type HistoryReader,
 } from "./history.ts";
+import { SpendHolds, SpendLimitTable } from "./spend-limits.tsx";
+import { SPEND_LIFT_NOTE, spendRowsOver, type SpendHoldRow, type SpendRow } from "./spend.ts";
 
 /** How long the pointer rests on the button before the card opens. */
 export const HOVER_OPEN_MS = 500;
@@ -441,6 +443,8 @@ export function FleetStatsPage({
       <h2>By deployment</h2>
       <DeploymentRows deployments={deployments} range={range} />
 
+      <FleetSpendLimits deployments={deployments} range={range} now={now} />
+
       {troubles.length === 0 ? null : (
         <ul className="stats-troubles">
           {troubles.map((trouble) => (
@@ -542,6 +546,53 @@ export function FleetStatsPage({
         <UnitDrawer record={drawn.record} now={now} showTenant onClose={() => setDrawn(null)} />
       )}
     </main>
+  );
+}
+
+/**
+ * Every deployment's spend limits over the window on show, each beside its
+ * figure, and every pipeline a ceiling holds whatever its window (#991).
+ * Nothing at all when no deployment sets a limit.
+ */
+function FleetSpendLimits({
+  deployments,
+  range,
+  now,
+}: {
+  deployments: readonly StatsDeployment[];
+  range: StatsRange;
+  now: Date;
+}) {
+  const window = range === "last24h" ? "24h" : "7d";
+  const rows: SpendRow[] = [];
+  const holds: SpendHoldRow[] = [];
+  const nameOf = new Map<string, string>();
+  for (const deployment of deployments) {
+    for (const row of spendRowsOver(deployment.spend, window)) {
+      const keyed = { ...row, key: `${deployment.key}|${row.key}` };
+      nameOf.set(keyed.key, deployment.name);
+      rows.push(keyed);
+    }
+    for (const hold of deployment.spend.holds) {
+      const keyed = { ...hold, key: `${deployment.key}|${hold.key}` };
+      nameOf.set(keyed.key, deployment.name);
+      holds.push(keyed);
+    }
+  }
+  const configured = deployments.some((deployment) => deployment.spend.rows.length > 0);
+  if (!configured && holds.length === 0) return null;
+  const named = (entry: { key: string }): string => nameOf.get(entry.key) ?? "";
+  return (
+    <>
+      <h2>Spend limits</h2>
+      <SpendHolds holds={holds} now={now} deployment={named} />
+      {rows.length === 0 ? (
+        <p className="muted">No limit is set over the {RANGE_LABEL[range].long.toLowerCase()}.</p>
+      ) : (
+        <SpendLimitTable rows={rows} deployment={named} />
+      )}
+      <p className="muted stats-note">{SPEND_LIFT_NOTE}</p>
+    </>
   );
 }
 

@@ -65,6 +65,25 @@ export type SpendHold = SpendCrossing & {
   releaseAt: string;
 };
 
+/** Which half of a `spend` block a limit sits in. */
+export type SpendLimitLevel = "warn" | "ceiling";
+
+/**
+ * One configured limit beside the figure it is weighed against (#991), whether
+ * or not the figure has reached it. What a console draws next to the history
+ * it applies to.
+ */
+export type SpendLimitFigure = {
+  scope: SpendScope;
+  level: SpendLimitLevel;
+  measure: SpendMeasure;
+  window: SpendWindow;
+  /** The configured limit. */
+  limit: number;
+  /** What the window holds now: the tenant's sum for a tenant limit, the pipeline's own otherwise. */
+  spent: number;
+};
+
 /**
  * What the report says about one cell's limits. Present only on a cell that a
  * tenant or pipeline `spend` block covers.
@@ -74,4 +93,41 @@ export type CellSpend = {
   hold: SpendHold | null;
   /** Every warning limit this cell's spend has reached, tenant and pipeline both. */
   warnings: SpendCrossing[];
+  /**
+   * Every limit that covers this cell, tenant ones first, each scope in the
+   * order usd24h, usd7d, tokens24h, tokens7d with a warning limit ahead of its
+   * ceiling (#991). Absent from a report written before #991.
+   */
+  limits?: SpendLimitFigure[];
 };
+
+// --- how a limit reads -------------------------------------------------------
+//
+// Pure, so `phoebe status`, the companion's alerts and the console say the same
+// sentence about the same limit.
+
+/** A figure in its measure's unit: `$6.00`, `1,200 tokens`. */
+export function spendFigure(measure: SpendMeasure, value: number): string {
+  return measure === "usd"
+    ? `$${value.toFixed(2)}`
+    : `${Math.round(value).toLocaleString("en-US")} tokens`;
+}
+
+/**
+ * One limit against its figure: `API spend $6.00 of $5.00 over 24h`, or
+ * `1,200 tokens of 1,000 tokens over 7d`.
+ */
+export function spendCrossingText(crossing: Omit<SpendCrossing, "scope">): string {
+  const what = crossing.measure === "usd" ? "API spend " : "";
+  return (
+    `${what}${spendFigure(crossing.measure, crossing.spent)} of ` +
+    `${spendFigure(crossing.measure, crossing.limit)} over ${crossing.window}`
+  );
+}
+
+/** When a hold should lift, to the minute: `2026-05-05 21:00 UTC`. */
+export function spendReleaseText(releaseAt: string): string {
+  const at = Date.parse(releaseAt);
+  if (!Number.isFinite(at)) return "an unknown time";
+  return `${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}

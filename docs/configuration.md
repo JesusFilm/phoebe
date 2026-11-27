@@ -441,8 +441,18 @@ limits again at that moment rather than waiting for the hourly tick. An edit
 that raises or removes the ceiling lets it go at once. `spend` is hot, so the
 edit relaunches nothing. There is no resume command.
 
-The report also lists, on each cell, the warning limits it has reached.
+The report also lists, on each cell, the warning limits it has reached and
+every limit that covers it beside what its window holds now.
 `phoebe bench` runs are neither counted nor limited: they write no unit history.
+
+**Where a limit shows.** A warning limit reached puts a warning badge on the
+console rail and a `spend warning:` line under the pipeline in `phoebe status`,
+and the companion sends one `spend-warning` alert. Work goes on. A ceiling
+holding puts an error badge on the rail and a `spend ceiling:` line that reads
+"held until about <time>", the companion sends a `spend-ceiling` alert, and
+`phoebe status --check` exits 1 until the hold lifts. The overview's 7-day card
+and the fleet stats page show each limit next to the figure it is weighed
+against. Nothing is filed on GitHub.
 
 The tenant's eight limits answer to `PHOEBE_SPEND_<LEVEL>_<LIMIT>`, such as
 `PHOEBE_SPEND_CEILING_USD24H` ([the catalogue](#the-catalogue)). A pipeline's

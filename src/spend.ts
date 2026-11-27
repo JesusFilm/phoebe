@@ -17,11 +17,13 @@ import type {
   SpendCrossing,
   SpendField,
   SpendHold,
+  SpendLimitFigure,
   SpendLimits,
   SpendMeasure,
   SpendScope,
   SpendWindow,
 } from "./contracts/spend.ts";
+import { spendFigure } from "./contracts/spend.ts";
 import type { HistorySummary, HistoryWindow, UnitRecord } from "./contracts/unit-record.ts";
 
 /** The four limits a `warn` or `ceiling` block may hold, in the order they print. */
@@ -332,6 +334,29 @@ export function evaluateSpend(opts: {
 }
 
 /**
+ * Every limit a scope's block sets, each beside what its window holds now
+ * (#991), reached or not. The order the report promises: by limit key, the
+ * warning limit ahead of its ceiling.
+ */
+export function spendLimitFigures(opts: {
+  scope: SpendScope;
+  limits: SpendField | undefined;
+  totals: SpendTotals;
+}): SpendLimitFigure[] {
+  const figures: SpendLimitFigure[] = [];
+  if (opts.limits === undefined) return figures;
+  for (const key of SPEND_LIMIT_KEYS) {
+    const { measure, window } = SPEND_LIMITS[key];
+    for (const level of SPEND_LEVELS) {
+      const limit = opts.limits[level]?.[key];
+      if (limit === undefined) continue;
+      figures.push({ scope: opts.scope, level, measure, window, limit, spent: opts.totals[key] });
+    }
+  }
+  return figures;
+}
+
+/**
  * The hold that binds when several ceilings are reached at once: the one that
  * lets go last, since admission resumes only when every one has.
  */
@@ -345,12 +370,8 @@ export function bindingHold(holds: readonly SpendHold[]): SpendHold | null {
   return binding;
 }
 
-/** A figure in its measure's unit. */
-export function formatSpend(measure: SpendMeasure, value: number): string {
-  return measure === "usd"
-    ? `$${value.toFixed(2)}`
-    : `${Math.round(value).toLocaleString("en-US")} tokens`;
-}
+/** A figure in its measure's unit, as contracts/spend.ts words it. */
+export const formatSpend = spendFigure;
 
 /**
  * A hold as one sentence an operator can act on: which limit, where it is set,

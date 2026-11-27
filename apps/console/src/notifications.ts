@@ -52,7 +52,7 @@ export type Notifiable = {
   body: string;
   /** Where a click goes, or null for the test alert, which is about no one. */
   subject: AlertSubject | null;
-  /** Set on `wedged` and `crash-looping`: the tab a click should land on. */
+  /** Set on a per-pipeline condition: the tab a click should land on. */
   pipeline: string | null;
 };
 

@@ -15,6 +15,7 @@ import {
   unitsPerDay,
   type StatsDeployment,
 } from "./fleet-stats.ts";
+import { NO_SPEND } from "./spend.ts";
 import type { HistoryFetch } from "./history.ts";
 import {
   agentRun,
@@ -100,6 +101,7 @@ function deployment(name: string, history: StatsDeployment["history"]): StatsDep
     where: "this machine",
     arm: { kind: "local", dir: `/repos/${name}` },
     history,
+    spend: NO_SPEND,
   };
 }
 
