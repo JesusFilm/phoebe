@@ -98,11 +98,16 @@ export const DEFAULT_DRAIN_TIMEOUT_MS = 3_600_000;
 
 /**
  * The knobs the supervisor consumes itself and so acts on without relaunching a
- * pipeline (#402/#407). Compared as one string because the question is only ever
- * "did either move?".
+ * pipeline (#402/#407), and the spend limits the report evaluates (#990).
+ * Compared as one string because the question is only ever "did any move?".
  */
 function hotKnobs(pipeline: Pipeline): string {
-  return `${pipeline.disabled}:${pipeline.priority}`;
+  return JSON.stringify([
+    pipeline.disabled,
+    pipeline.priority,
+    pipeline.spend ?? null,
+    pipeline.tenantSpend ?? null,
+  ]);
 }
 
 /** A supervised pipeline's child — enough to drain it and await its exit. */
@@ -778,7 +783,8 @@ export async function superviseFleet(deps: SuperviseFleetDeps): Promise<EngineEx
     const accounted = new Set<string>();
     for (const pipeline of [...diff.added, ...diff.changed]) accounted.add(pipeline.tenant.id);
     // A hot knob is one the supervisor acts on without relaunching (#402/#407):
-    // `disabled` and `priority`, both deliberately outside the pipeline fingerprint.
+    // `disabled`, `priority` and the spend limits (#990), all deliberately outside
+    // the pipeline fingerprint.
     // Editing one moves the tenant's stat fingerprint and nothing else, so
     // without this the fan-out below would relaunch the very pipeline a hot edit was
     // meant to spare. The running record takes the new values instead, and the

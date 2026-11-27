@@ -125,6 +125,7 @@ import { readHostPlatform } from "./host-platform.ts";
 import { prepareRemote } from "./remote-boot.ts";
 import { createFleetHold, type FleetHold } from "./fleet-hold.ts";
 import { createObserveDispatcher, watchObserveDrop, type ObserveDispatcher } from "./observe.ts";
+import { createSpendHoldRelay, type SpendHoldRelay } from "./spend-hold.ts";
 import { createOutputTap, type OutputTap } from "./output-tap.ts";
 import { createRedactor, redactSecretShapes, type Redactor } from "./redact-output.ts";
 import { deliverSecret } from "./secret-delivery.ts";
@@ -1001,6 +1002,8 @@ function runFleet(opts: {
   observer: ObserveDispatcher;
   /** The OTLP forwarder (#993), or null when no collector is named. */
   telemetry: TelemetryForwarder | null;
+  /** The spend hold (#990): told about each child as it spawns, so a respawn stays held. */
+  spendHolds: SpendHoldRelay;
   /** Where every child's output goes on its way to Docker, and what the API serves. */
   output: OutputTap;
   /** Learns each child's secrets as its env is built, so the API never shows one. */
@@ -1081,6 +1084,8 @@ function runFleet(opts: {
     });
     // Where a manual observer run is forwarded (#937), if this pipeline runs one.
     opts.observer.attach(pipeline, child);
+    // A pipeline under a spend ceiling (#990) is told before it can admit anything.
+    opts.spendHolds.attach(pipeline, child);
     deployment.noteSpawn(pipeline);
     // A child spawning is the fleet being up: the deployment's boot doctor run
     // starts here, and a run a reconcile parked is released here (#507 §7).
@@ -1892,6 +1897,13 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
   // mount and stay the operator's to edit in their own checkouts, and this
   // editor cannot reach them because it was never given them.
   const editor = createConfigEditor({ rootConfigPath: configPath, dataBase });
+  // The spend hold (#990): the report weighs each cell's limits, and this tells
+  // the pipelines a reached ceiling covers. It asks the report to re-sum the
+  // history when a hold is due to let go, rather than waiting for the hourly tick.
+  const spendHolds = createSpendHoldRelay({
+    refresh: () => deployment.refreshHistory(),
+    log: (message) => console.log(message),
+  });
   const deployment = createDeploymentState({
     identity: remote.identity,
     dataBase,
@@ -1922,6 +1934,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // The report just moved: every open event stream gets it (map #690). With
     // no `remote` block, or no stream open, this is a call that does nothing.
     onReport: () => remote.push(),
+    onSpendHolds: (holds) => spendHolds.update(holds),
   });
   // A stop or a start is a fact the report carries, so the page that pressed
   // the button sees it move before the first pipeline has drained.
@@ -2069,6 +2082,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         hold,
         observer,
         telemetry,
+        spendHolds,
         output,
         redactor,
         heldTenants: () => held,
@@ -2090,6 +2104,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     } finally {
       stop.dispose();
       clearInterval(historyTick);
+      spendHolds.stop();
       // Nothing in flight is cancelled: a doctor child outliving the drain by a
       // few seconds is harmless, and its six-hour clock is what must not
       // outlive it.
@@ -2231,6 +2246,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       ...(telemetry === null ? {} : { onRecord: telemetry.forward }),
     });
     observer.attach(pipeline, child);
+    spendHolds.attach(pipeline, child);
     deployment.noteSpawn(pipeline);
     doctor.noteFleetUp();
     // Answer the child's credential lease (#211). Solo has no per-tenant `.env`
@@ -2334,6 +2350,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // signal must actually kill this process, and our own latch would swallow it.
     stop.dispose();
     clearInterval(historyTick);
+    spendHolds.stop();
     doctor.stop();
     observeDrop.stop();
     await remote.stop();

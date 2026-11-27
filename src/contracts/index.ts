@@ -73,6 +73,16 @@ export type {
 export type { PipelineSource, PipelineState, WedgedVerdict } from "./pipeline-state.ts";
 export type { CurrentUnit, StatusSnapshot, UnitRef } from "./status-snapshot.ts";
 export type { HistoryCost, HistorySummary, HistoryTokens, HistoryWindow } from "./unit-record.ts";
+export type {
+  CellSpend,
+  SpendCrossing,
+  SpendField,
+  SpendHold,
+  SpendLimits,
+  SpendMeasure,
+  SpendScope,
+  SpendWindow,
+} from "./spend.ts";
 export {
   DEPLOYMENT_SCHEMA,
   type BootstrapperReport,

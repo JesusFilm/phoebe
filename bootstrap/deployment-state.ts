@@ -41,6 +41,12 @@
 // publish: the summary is stamped `asOf`, and a stamp that moved on every
 // snapshot write would make every publish a change.
 //
+// **Spend limits are weighed with the history** (#990). Every publish weighs
+// each live cell's tenant and pipeline limits against the summaries as last
+// summed, so the verdict moves exactly when the history or the limits do. A
+// ceiling reached is a hold on the cell and a message to the pipelines it
+// covers, through `onSpendHolds`.
+//
 // Nothing here may throw into the supervisor. A deployment that cannot write its
 // own report is a deployment with a reporting fault, not a deployment that
 // should stop working.
@@ -75,6 +81,17 @@ import {
 import type { SecretsSection } from "../src/contracts/secrets.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
 import type { HistorySummary, UnitRecord } from "../src/contracts/unit-record.ts";
+import type { SpendHold } from "../src/contracts/spend.ts";
+import {
+  addTotals,
+  bindingHold,
+  createSpendClock,
+  evaluateSpend,
+  spendTotals,
+  zeroTotals,
+  type ScopeEvaluation,
+  type SpendTotals,
+} from "../src/spend.ts";
 import { boundConfigRows, unknownConfig, type ConfigCollector } from "./config-report.ts";
 import { PIPELINE_DEFAULTS } from "../src/config-schema.ts";
 import { derivePaths } from "../src/paths.ts";
@@ -202,6 +219,13 @@ export type DeploymentStateDeps = {
    * which is what makes the push "on change" rather than "on a timer".
    */
   onReport?: () => void;
+  /**
+   * The spend ceilings holding admission (#990), keyed by pipeline id, as of this
+   * publish. Called on every publish whether or not the report moved, so the
+   * receiver diffs: a hold that is already known is not news. A pipeline missing
+   * from the map is not held.
+   */
+  onSpendHolds?: (holds: ReadonlyMap<string, SpendHold>) => void;
 };
 
 /** What the bootstrapper tells the model. Every method is safe to call at any time. */
@@ -354,6 +378,10 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
   const unitRecords = new Map<string, UnitRecord[]>();
   /** The summaries as last computed, every one at the same `asOf`. */
   let histories: { cells: Map<string, HistorySummary>; fleet: HistorySummary } | null = null;
+  /** When each reached ceiling was first seen, so a hold's `since` stays put. */
+  const spendClock = createSpendClock();
+  /** The holds the last publish computed, handed to `onSpendHolds`. */
+  let spendHolds: ReadonlyMap<string, SpendHold> = new Map();
 
   /**
    * Re-read every tenant's effective config and re-fit the section.
@@ -572,14 +600,81 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       histories = { cells, fleet: summarizeHistory([...unitRecords.values()].flat(), at) };
     }
     const summaries = histories;
+    const cells = fleet.cells.map((cell) => {
+      const history = summaries.cells.get(cell.id);
+      return history === undefined ? cell : { ...cell, history };
+    });
     return {
       tenants: fleet.tenants,
-      cells: fleet.cells.map((cell) => {
-        const history = summaries.cells.get(cell.id);
-        return history === undefined ? cell : { ...cell, history };
-      }),
+      cells: withSpend(cells, Date.parse(summaries.fleet.asOf), at),
       history: summaries.fleet,
     };
+  };
+
+  /**
+   * Every live cell a `spend` block covers, with its hold and the warning limits
+   * it has reached (#990). A tenant's figures are the sum of all its cells,
+   * stale ones included, since that is what the tenant spent; a pipeline's are
+   * its own. The two scopes are weighed apart, and the ceiling that lets go last
+   * is the cell's hold.
+   *
+   * Only an enumerated cell can be held: a stale one has no process to hold and
+   * no limits of its own.
+   */
+  const withSpend = (cells: FleetCell[], asOf: number, observedAt: number): FleetCell[] => {
+    const pipelines = new Map(live.map((pipeline) => [pipeline.id, pipeline] as const));
+    const tenantTotals = new Map<string, SpendTotals>();
+    const tenantRecords = new Map<string, UnitRecord[]>();
+    for (const cell of cells) {
+      const totals = cell.history === undefined ? zeroTotals() : spendTotals(cell.history);
+      tenantTotals.set(
+        cell.tenant.id,
+        addTotals(tenantTotals.get(cell.tenant.id) ?? zeroTotals(), totals),
+      );
+      const records = tenantRecords.get(cell.tenant.id) ?? [];
+      records.push(...(unitRecords.get(cell.id) ?? []));
+      tenantRecords.set(cell.tenant.id, records);
+    }
+    const tenants = new Map<string, ScopeEvaluation>();
+    const holds = new Map<string, SpendHold>();
+    const out = cells.map((cell) => {
+      const pipeline = pipelines.get(cell.id);
+      if (pipeline === undefined) return cell;
+      const own = pipeline.pipeline.spend;
+      const tenantLimits = pipeline.pipeline.tenantSpend;
+      if (own === undefined && tenantLimits === undefined) return cell;
+      const tenantId = cell.tenant.id;
+      let tenant = tenants.get(tenantId);
+      if (tenant === undefined) {
+        tenant = evaluateSpend({
+          scope: "tenant",
+          clockKey: `tenant:${tenantId}`,
+          limits: tenantLimits,
+          totals: tenantTotals.get(tenantId) ?? zeroTotals(),
+          records: tenantRecords.get(tenantId) ?? [],
+          asOf,
+          observedAt,
+          clock: spendClock,
+        });
+        tenants.set(tenantId, tenant);
+      }
+      const mine = evaluateSpend({
+        scope: "pipeline",
+        clockKey: `pipeline:${cell.id}`,
+        limits: own,
+        totals: cell.history === undefined ? zeroTotals() : spendTotals(cell.history),
+        records: unitRecords.get(cell.id) ?? [],
+        asOf,
+        observedAt,
+        clock: spendClock,
+      });
+      const hold = bindingHold([...tenant.holds, ...mine.holds]);
+      if (hold !== null) holds.set(cell.id, hold);
+      return { ...cell, spend: { hold, warnings: [...tenant.warnings, ...mine.warnings] } };
+    });
+    spendClock.sweep();
+    spendHolds = holds;
+    return out;
   };
 
   const livenessOf = (at: number): ChildLiveness[] => {
@@ -603,6 +698,18 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       });
     }
     return rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  };
+
+  /**
+   * Hand the holds on. A receiver that throws is its own fault and logs its own
+   * failures (bootstrap/spend-hold.ts); it must not cost the report its write.
+   */
+  const tellSpendHolds = (): void => {
+    try {
+      deps.onSpendHolds?.(spendHolds);
+    } catch {
+      return;
+    }
   };
 
   const publish = (): void => {
@@ -636,6 +743,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         ...(deps.edits !== undefined ? { edits: deps.edits() } : {}),
         secrets,
       };
+      tellSpendHolds();
       const next = stampReport(draft, last, iso(at));
       if (next === null) return;
       write(next);
