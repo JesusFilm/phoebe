@@ -334,7 +334,7 @@ records. When the config sets [spend limits](configuration.md#spend-limits-spend
 the card lists each one beside the figure it is weighed against, with its
 warning limit and ceiling, and names every pipeline a ceiling holds and the
 time the hold should lift. There is no resume button. A ceiling lifts on its
-own as spend ages out, or sooner when a config edit raises or removes it. A
+own as spend ages out, or sooner when a config edit raises it above current spend or removes it. A
 ceiling holding is an error badge on the rail, and a warning limit reached is a
 warning badge. Under the card, "Needs a look" lists up to six units from the last 7 days
 that failed, timed out or were abandoned, newest first. Each one opens the
@@ -381,7 +381,7 @@ crosses into one of five conditions, and one when it crosses back:
 `spend-warning` fires once when a pipeline reaches a
 [warning limit](configuration.md#spend-limits-spend), and `spend-ceiling` when
 a ceiling starts holding it. Each clears when the window falls back under the
-limit or a config edit raises or removes it.
+limit or a config edit raises it above current spend or removes it.
 
 A remote adds `dark`, raised five minutes after the companion last heard from
 it ("unreachable for 5 min"), and `replaced`, when a different deployment
