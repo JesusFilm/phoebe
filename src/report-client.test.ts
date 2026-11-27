@@ -5,6 +5,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { createReportClient, REPORT_PASS, REPORT_RECORD, REPORT_STATUS } from "./report-client.ts";
 import type { StatusSnapshot } from "./contracts/status-snapshot.ts";
+import type { UnitRecord } from "./contracts/unit-record.ts";
 
 const snapshot: StatusSnapshot = {
   tenant: "acme/widget",
@@ -15,6 +16,13 @@ const snapshot: StatusSnapshot = {
   lastTimeoutAt: null,
   updatedAt: "2026-05-05T00:00:00.000Z",
 };
+
+const record = {
+  v: 1,
+  tenant: "acme/widget",
+  pipeline: "work",
+  unit: { kind: "issues", id: "7" },
+} as unknown as UnitRecord;
 
 describe("createReportClient", () => {
   test("an engine with no IPC channel has nobody to report to", () => {
@@ -35,11 +43,11 @@ describe("createReportClient", () => {
     expect(sent).toEqual([{ type: REPORT_STATUS, snapshot }]);
   });
 
-  test("a new unit record is announced, not carried: the file is the copy that counts", () => {
+  test("a new unit record rides along, for the forwarder that sends each one once", () => {
     const sent: unknown[] = [];
     const client = createReportClient({ send: (message) => sent.push(message) })!;
-    client.record();
-    expect(sent).toEqual([{ type: REPORT_RECORD }]);
+    client.record(record);
+    expect(sent).toEqual([{ type: REPORT_RECORD, record }]);
   });
 
   test("every send carries an error-first callback, so a closed channel is handled", () => {
@@ -59,6 +67,6 @@ describe("createReportClient", () => {
     })!;
     expect(() => client.pass(1000)).not.toThrow();
     expect(() => client.snapshot(snapshot)).not.toThrow();
-    expect(() => client.record()).not.toThrow();
+    expect(() => client.record(record)).not.toThrow();
   });
 });

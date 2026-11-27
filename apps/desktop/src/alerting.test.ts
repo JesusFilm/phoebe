@@ -20,9 +20,29 @@ function install(overrides: Partial<LocalInstall> = {}): LocalInstall {
   };
 }
 
-/** One read, with as many wedged and crash-looping pipelines as the test wants. */
+/** A pipeline over its $5 daily warning limit. */
+const WARNED = {
+  hold: null,
+  warnings: [{ scope: "pipeline", measure: "usd", window: "24h", limit: 5, spent: 6 }],
+};
+
+/** A pipeline its $10 daily ceiling holds. */
+const HELD = {
+  hold: {
+    scope: "pipeline",
+    measure: "usd",
+    window: "24h",
+    limit: 10,
+    spent: 11,
+    since: "2026-09-18T09:30:00.000Z",
+    releaseAt: "2026-09-18T21:00:00.000Z",
+  },
+  warnings: [],
+};
+
+/** One read, with as many wedged, crash-looping or over-limit pipelines as the test wants. */
 function read(
-  pipelines: { id: string; wedged?: boolean; crashLooping?: boolean }[],
+  pipelines: { id: string; wedged?: boolean; crashLooping?: boolean; spend?: unknown }[],
   overrides: Partial<LocalReportEvent> = {},
 ): LocalReportEvent {
   const dir = overrides.install ?? DIR;
@@ -60,6 +80,7 @@ function read(
               pipeline.wedged === true
                 ? { wedged: true, reason: "no-pass", noPassForMs: 17 * 60_000 }
                 : { wedged: false },
+            ...(pipeline.spend === undefined ? {} : { spend: pipeline.spend }),
           })),
         },
       },
@@ -134,6 +155,38 @@ describe("the local arm's edges", () => {
 
     expect(raised.map((event) => event.alert.condition)).toEqual(["crash-looping"]);
     expect(raised[0]!.alert.detail).toBe("4 restart(s)");
+  });
+
+  test("a warning limit crossed is one spend-warning alert, and work goes on (#991)", () => {
+    const alerts = createCompanionAlerts();
+    alerts.local(read([{ id: "acme#sentry" }]));
+
+    const raised = alerts.local(read([{ id: "acme#sentry", spend: WARNED }]));
+
+    expect(raised.map((event) => event.alert.condition)).toEqual(["spend-warning"]);
+    expect(raised[0]!.alert.text).toBe(
+      "youtube-studio: pipeline sentry past a spend warning limit (API spend $6.00 of $5.00 over 24h)",
+    );
+    // Still over on the next read: raised once, not again.
+    expect(alerts.local(read([{ id: "acme#sentry", spend: WARNED }]))).toEqual([]);
+  });
+
+  test("a ceiling holding is a spend-ceiling alert, cleared when it lifts (#991)", () => {
+    const alerts = createCompanionAlerts();
+    alerts.local(read([{ id: "acme#sentry" }]));
+
+    const raised = alerts.local(read([{ id: "acme#sentry", spend: HELD }]));
+    expect(raised.map((event) => event.alert.condition)).toEqual(["spend-ceiling"]);
+    expect(raised[0]!.alert.detail).toBe(
+      "API spend $11.00 of $10.00 over 24h, held until about 2026-09-18 21:00 UTC",
+    );
+
+    const lifted = alerts.local(
+      read([{ id: "acme#sentry", spend: { ...HELD, hold: null, limits: [] } }]),
+    );
+    expect(lifted.map((event) => [event.alert.condition, event.alert.state])).toEqual([
+      ["spend-ceiling", "cleared"],
+    ]);
   });
 
   test("the sentence is the alert's own, deployment name and all (#515 §9)", () => {

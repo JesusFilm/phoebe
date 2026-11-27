@@ -54,6 +54,7 @@ import type {
 // carry these: a hand-written copy of the edge rule is the one thing #524 §3
 // exists to prevent, so both readers import this module directly.
 import { alertEdges, alertText, ALERT_SCHEMA } from "../../../src/contracts/alerts.ts";
+import { spendCrossingText, spendReleaseText } from "../../../src/contracts/spend.ts";
 
 /** Where the `url` on a local install's alert points: this companion's own page. */
 export const COMPANION_ORIGIN = "phoebe://console";
@@ -299,6 +300,32 @@ function pipelineAlertFacts(cell: FleetCell, child: ChildLiveness | undefined): 
     wedgedDetail: wedged ? wedgedDetail(cell) : "",
     crashLooping,
     crashLoopDetail: crashLooping ? `${child?.restarts ?? 0} restart(s)` : "",
+    ...spendAlertFacts(cell),
+  };
+}
+
+/**
+ * The two spend conditions (#991), off the verdict the report already reached:
+ * a warning limit reached, and a ceiling holding. A report from before spend
+ * limits, or a cell no limit covers, is over nothing.
+ */
+function spendAlertFacts(
+  cell: FleetCell,
+): Pick<
+  PipelineAlertFacts,
+  "spendWarning" | "spendWarningDetail" | "spendCeiling" | "spendCeilingDetail"
+> {
+  const spend = isRecord(cell.spend) ? cell.spend : null;
+  const warnings = Array.isArray(spend?.warnings) ? spend.warnings : [];
+  const hold = isRecord(spend?.hold) ? spend.hold : null;
+  return {
+    spendWarning: warnings.length > 0,
+    spendWarningDetail: warnings.map((warning) => spendCrossingText(warning)).join("; "),
+    spendCeiling: hold !== null,
+    spendCeilingDetail:
+      hold === null
+        ? ""
+        : `${spendCrossingText(hold)}, held until about ${spendReleaseText(hold.releaseAt)}`,
   };
 }
 

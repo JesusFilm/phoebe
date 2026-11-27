@@ -85,6 +85,34 @@ describe("attachEngineReports", () => {
     expect(seen).toEqual([["t#work", { kind: "record" }]]);
   });
 
+  test("the record a record message carries goes to the forwarder (#993)", () => {
+    const { state, seen } = recorder();
+    const child = fakeChild();
+    const forwarded: unknown[] = [];
+    attachEngineReports({
+      pipelineId: "t#work",
+      child,
+      state,
+      onRecord: (record) => forwarded.push(record),
+    });
+    const record = {
+      v: 1,
+      tenant: "acme/widget",
+      pipeline: "work",
+      unit: { kind: "issues", id: "7" },
+      startedAt: "2026-11-20T10:00:00.000Z",
+      agentRuns: [],
+    };
+
+    child.emitMessage({ type: REPORT_RECORD, record });
+    // An older engine's bare announcement, and a version this bootstrapper cannot read.
+    child.emitMessage({ type: REPORT_RECORD });
+    child.emitMessage({ type: REPORT_RECORD, record: { ...record, v: 2 } });
+    expect(forwarded).toEqual([record]);
+    // The summary still moves for every one of them: the file is what it reads.
+    expect(seen).toHaveLength(3);
+  });
+
   test("the broker's messages, and malformed ones, are not this adapter's business", () => {
     const { state, seen } = recorder();
     const child = fakeChild();

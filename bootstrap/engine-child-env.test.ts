@@ -53,6 +53,18 @@ describe("buildEngineChildEnv", () => {
     expect(env.PHOEBE_POLL_INTERVAL_MS).toBe("300000");
   });
 
+  test("never copies the supervisor's OTLP variables to a child (#993)", () => {
+    const env = buildEngineChildEnv({
+      base: {
+        ...base,
+        OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+        OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20collector-secret",
+      },
+      tenantEnv: {},
+    });
+    expect(Object.keys(env).filter((key) => key.startsWith("OTEL_"))).toEqual([]);
+  });
+
   test("hands the child the deployment's name (#686)", () => {
     const env = buildEngineChildEnv({
       base: { ...base, PHOEBE_DEPLOYMENT_NAME: "phoebe" },

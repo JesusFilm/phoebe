@@ -137,6 +137,33 @@ describe("the report the model publishes", () => {
     });
   });
 
+  test("carries the OTLP forwarder's counts, null when forwarding is off (#993)", () => {
+    const off = harness({ telemetry: () => null });
+    off.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(off.latest()!.bootstrapper.telemetry).toBeNull();
+
+    let counts = {
+      sent: 0,
+      dropped: 0,
+      lastError: null as string | null,
+      lastSentAt: null as string | null,
+    };
+    const on = harness({ telemetry: () => counts });
+    on.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    counts = {
+      sent: 0,
+      dropped: 1,
+      lastError: "http://c:4318/v1/traces answered HTTP 503",
+      lastSentAt: null,
+    };
+    on.state.publish();
+    expect(on.latest()!.bootstrapper.telemetry).toEqual(counts);
+
+    const unwired = harness();
+    unwired.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect("telemetry" in unwired.latest()!.bootstrapper).toBe(false);
+  });
+
   test("a reconcile names its reason, and the next spawn ends it", () => {
     const h = harness();
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
@@ -1174,6 +1201,28 @@ describe("spend limits (#990)", () => {
     expect([...h.lastHolds().keys()]).toEqual(["/t/a#work"]);
   });
 
+  test("the report lists every configured limit beside its figure, reached or not", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 2, costBasis: "api" })])]);
+    h.units.set(`${STATE}/triage`, [
+      unitAt(h.now() - HOUR, [run({ costUsd: 1, costBasis: "api" })], "triage"),
+    ]);
+    const tenantSpend: SpendField = { warn: { usd7d: 20 } };
+    h.state.notePipelines([
+      limited("work", { tenantSpend, spend: { warn: { usd24h: 5 }, ceiling: { usd24h: 8 } } }),
+      limited("triage", { tenantSpend }),
+    ]);
+
+    expect(cellOf(h.latest()!, "work").spend?.limits).toEqual([
+      { scope: "tenant", level: "warn", measure: "usd", window: "7d", limit: 20, spent: 3 },
+      { scope: "pipeline", level: "warn", measure: "usd", window: "24h", limit: 5, spent: 2 },
+      { scope: "pipeline", level: "ceiling", measure: "usd", window: "24h", limit: 8, spent: 2 },
+    ]);
+    expect(cellOf(h.latest()!, "triage").spend?.limits).toEqual([
+      { scope: "tenant", level: "warn", measure: "usd", window: "7d", limit: 20, spent: 3 },
+    ]);
+  });
+
   test("a subscription estimate never trips a usd limit", () => {
     const h = holdsHarness();
     h.units.set(`${STATE}/work`, [
@@ -1185,7 +1234,7 @@ describe("spend limits (#990)", () => {
       }),
     ]);
 
-    expect(cellOf(h.latest()!, "work").spend).toEqual({ hold: null, warnings: [] });
+    expect(cellOf(h.latest()!, "work").spend).toMatchObject({ hold: null, warnings: [] });
     expect(h.lastHolds().size).toBe(0);
   });
 

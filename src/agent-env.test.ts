@@ -24,6 +24,27 @@ const parentEnv = {
 };
 
 describe("buildAgentEnv", () => {
+  test("never holds an OTEL_* variable, even one a kind's agentEnv names (#993)", () => {
+    const otel = {
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.com:4318",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example.com:4318/v1/traces",
+      OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20collector-secret",
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+      OTEL_SERVICE_NAME: "phoebe",
+      OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=prod",
+    };
+    for (const provider of ["claude", "cursor", "codex"] as const) {
+      const env = buildAgentEnv({
+        parentEnv: { ...parentEnv, ...otel },
+        provider,
+        providerEnv,
+        agentEnv: Object.keys(otel),
+      });
+      expect(Object.keys(env).filter((key) => key.startsWith("OTEL_"))).toEqual([]);
+      expect(JSON.stringify(env)).not.toContain("collector-secret");
+    }
+  });
+
   test("contains exactly the allowlist plus the active provider's key", () => {
     const env = buildAgentEnv({ parentEnv, provider: "claude", providerEnv });
     expect(env).toEqual({

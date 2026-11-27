@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vite-plus/test";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "../bootstrap/supervise-fleet.ts";
+import { OTLP_ENV_NAMES } from "../bootstrap/otlp.ts";
 import {
   DEFAULT_PROMPT_FILE_BY_KIND,
   resolveConfig,
@@ -251,6 +252,15 @@ describe("runInit", () => {
     expect(report.created).toContain("phoebe.config.ts");
     expect(report.created).toContain("container/Dockerfile");
     expect(report.updated).toEqual([]);
+  });
+
+  test("compose.yml passes every OTLP variable through, empty by default (#993)", () => {
+    const target = makeTempDir();
+    runInit({ targetDir: target });
+    const compose = readFileSync(join(target, "container/compose.yml"), "utf8");
+    for (const name of OTLP_ENV_NAMES) {
+      expect(compose).toContain(`      ${name}: "${"${"}${name}:-}"`);
+    }
   });
 
   test("scaffolds the remote-access overlays, inert, and leaves compose.yml free of them (map #690)", () => {

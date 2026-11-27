@@ -1,7 +1,8 @@
 // Runtime surface of `phoebe-agent/contracts` — the `import` condition of the
 // subpath export. Almost everything here is types, and types leave nothing
 // behind at runtime; what is left is the handful of pure constants a reader
-// needs to *check* something, written twice by hand.
+// needs to *check* something, written twice by hand, and one module of code,
+// the history export's mapping, which both entries re-export rather than copy.
 //
 // Twice, because Node will not type-strip a `.ts` file out of node_modules: an
 // installed consumer's `import { DEPLOYMENT_SCHEMA } from "phoebe-agent/contracts"`
@@ -22,8 +23,16 @@ export const ALERT_SCHEMA = 1;
 /** How long after the last heartbeat silence becomes an alert (#515 §4). */
 export const ALERT_DARK_AFTER_MS = 300_000;
 
-/** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
-export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];
+/** The seven conditions (#515 §3, #991). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
+export const ALERT_CONDITIONS = [
+  "dark",
+  "wedged",
+  "crash-looping",
+  "doctor-fail",
+  "replaced",
+  "spend-warning",
+  "spend-ceiling",
+];
 /**
  * The config-edit closed set (#503). Mirror of `CLOSED_EDIT_BLOCKS` in
  * config-edit.ts; the doc comments live there.
@@ -99,3 +108,13 @@ export const MAX_LOG_LINES = 2000;
 
 /** How far back a log follow starts — see container-logs.ts. */
 export const LOG_TAIL_LINES = 200;
+
+// The history export's mapping (#992) is code, not a constant, so it is not
+// copied here: both entries re-export the one file.
+export {
+  HISTORY_CSV_COLUMNS,
+  HISTORY_EXPORT_FORMATS,
+  HISTORY_MAX_LIMIT,
+  historyExportHead,
+  historyExportLines,
+} from "./history-export.mjs";

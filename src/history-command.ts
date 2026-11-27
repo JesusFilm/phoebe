@@ -11,7 +11,18 @@
 // serializes, so a local console and a remote one read one shape.
 
 import type { DeploymentReport } from "./contracts/deployment.ts";
-import type { HistoryPage, HistoryRecord, HistoryTotals } from "./contracts/history.ts";
+import type {
+  HistoryPage,
+  HistoryQuery,
+  HistoryRecord,
+  HistoryTotals,
+} from "./contracts/history.ts";
+import {
+  HISTORY_EXPORT_FORMATS,
+  historyExportHead,
+  historyExportLines,
+  type HistoryExportFormat,
+} from "./contracts/history-export.mjs";
 import { runningDeployment, type ContainerExecDeps } from "./container-exec.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import { runCompose } from "./deployment-compose.ts";
@@ -34,6 +45,7 @@ export const HISTORY_HELP_TEXT = `phoebe history — the units this deployment r
 
 Usage:
   phoebe history [filters] [--limit <n>] [--before <cursor>] [--json]
+  phoebe history [filters] [--before <cursor>] --export csv|jsonl
 
 Filters (all optional, combined with AND):
   --tenant <owner/repo>   One tenant's cells
@@ -54,6 +66,11 @@ Cost reads $0.42 for API spend, "$0.42 est." for a subscription estimate, and
 
 --json prints one HistoryPage object, the same one GET /api/history answers.
 
+--export writes every unit the filters match to stdout, walking every page, in
+the format the console's History tab exports too. csv is one row per unit with
+its usage summed across agent runs, API cost and estimated cost in columns of
+their own. jsonl is one full record per line. The count goes to stderr.
+
 Each pipeline keeps about two thousand units before its oldest rotate out; the
 footer says how far back each cell's history reaches. Run it either side of the
 container wall: inside, it reads the files; on the host, it execs itself in the
@@ -63,6 +80,8 @@ running container.
 export type ParsedHistoryArgs = {
   help: boolean;
   json: boolean;
+  /** `--export`: write every matching record in this format, not one page. */
+  export?: HistoryExportFormat;
   tenant?: string;
   pipeline?: string;
   /** The query fields, raw, as the flags gave them. */
@@ -112,7 +131,7 @@ export function parseHistoryArgs(argv: readonly string[]): ParsedHistoryArgs {
       parsed.json = true;
       continue;
     }
-    const name = flagNamed(arg, [...QUERY_FLAGS, "tenant", "pipeline"]);
+    const name = flagNamed(arg, [...QUERY_FLAGS, "tenant", "pipeline", "export"]);
     if (name === undefined) {
       throw new Error(
         `Unknown ${arg.startsWith("-") ? "flag" : "argument"} \`${arg}\` for \`phoebe history\`. ` +
@@ -121,7 +140,8 @@ export function parseHistoryArgs(argv: readonly string[]): ParsedHistoryArgs {
     }
     const [value, skip] = flagValue(argv, i, name);
     i += skip;
-    if (name === "tenant") parsed.tenant = value;
+    if (name === "export") parsed.export = exportFormatOf(value);
+    else if (name === "tenant") parsed.tenant = value;
     else if (name === "pipeline") parsed.pipeline = value;
     else parsed.query[name as (typeof QUERY_FLAGS)[number]] = value;
   }
@@ -133,8 +153,24 @@ export function parseHistoryArgs(argv: readonly string[]): ParsedHistoryArgs {
       "`--cell` names one cell already; it does not combine with `--tenant` or `--pipeline`.",
     );
   }
+  if (parsed.export !== undefined && parsed.json) {
+    throw new Error("`--json` prints one page and `--export` writes every page; pick one.");
+  }
+  if (parsed.export !== undefined && parsed.query.limit !== undefined) {
+    throw new Error("`--export` writes every matching unit, so it takes no `--limit`.");
+  }
   parseHistoryQuery(parsed.query);
   return parsed;
+}
+
+function exportFormatOf(value: string): HistoryExportFormat {
+  const format = HISTORY_EXPORT_FORMATS.find((known) => known === value);
+  if (format === undefined) {
+    throw new Error(
+      `\`--export\` is one of ${HISTORY_EXPORT_FORMATS.join(", ")} (got \`${value}\`).`,
+    );
+  }
+  return format;
 }
 
 /** The flags the in-container run is handed, rebuilt rather than forwarded raw. */
@@ -146,6 +182,7 @@ export function historyExecArgv(parsed: ParsedHistoryArgs): string[] {
     const value = parsed.query[name];
     if (value !== undefined) argv.push(`--${name}=${value}`);
   }
+  if (parsed.export !== undefined) argv.push(`--export=${parsed.export}`);
   if (parsed.json) argv.push("--json");
   return argv;
 }
@@ -333,8 +370,11 @@ function historyIo(deps: HistoryDeps | undefined): HistoryIo {
   };
 }
 
-/** The in-container arm: the report names the cells, the files hold the records. */
-export function runHistoryInContainer(parsed: ParsedHistoryArgs, deps?: HistoryDeps): HistoryPage {
+/** The in-container arm's read: the report names the cells, the files hold the records. */
+function containerHistory(
+  parsed: ParsedHistoryArgs,
+  deps: HistoryDeps | undefined,
+): { query: HistoryQuery; read: (query: HistoryQuery) => HistoryPage } {
   const dataBase = resolveDataBase(deps?.env ?? process.env);
   const path = deploymentReportPath(dataBase);
   const file = deps?.read !== undefined ? readReportFile(path, deps.read) : readReportFile(path);
@@ -345,10 +385,46 @@ export function runHistoryInContainer(parsed: ParsedHistoryArgs, deps?: HistoryD
     );
   }
   const sources = narrowSources(file.report, historySourcesOf(file.report, dataBase), parsed);
-  const query = parseHistoryQuery(parsed.query);
-  return deps?.read !== undefined
-    ? queryHistory(sources, query, deps.read)
-    : queryHistory(sources, query);
+  const read = deps?.read;
+  return {
+    query: parseHistoryQuery(parsed.query),
+    read: (query) =>
+      read !== undefined ? queryHistory(sources, query, read) : queryHistory(sources, query),
+  };
+}
+
+/** The in-container arm: one page. */
+export function runHistoryInContainer(parsed: ParsedHistoryArgs, deps?: HistoryDeps): HistoryPage {
+  const { query, read } = containerHistory(parsed, deps);
+  return read(query);
+}
+
+/**
+ * The in-container arm of `--export`: the head, then every page under the
+ * same filters, the largest a page holds, until the cursor runs out. Returns
+ * how many records it wrote.
+ */
+export function exportHistoryInContainer(
+  parsed: ParsedHistoryArgs,
+  format: HistoryExportFormat,
+  write: (text: string) => void,
+  deps?: HistoryDeps,
+): number {
+  const { query, read } = containerHistory(parsed, deps);
+  write(historyExportHead(format));
+  let written = 0;
+  let before = query.before;
+  for (;;) {
+    const page = read({
+      ...query,
+      limit: HISTORY_MAX_LIMIT,
+      ...(before !== undefined ? { before } : {}),
+    });
+    if (page.records.length > 0) write(historyExportLines(format, page.records));
+    written += page.records.length;
+    if (page.nextBefore === null || page.records.length === 0) return written;
+    before = page.nextBefore;
+  }
 }
 
 /** `phoebe history`. */
@@ -360,6 +436,11 @@ export async function runHistoryCli(argv: readonly string[], deps?: HistoryDeps)
     return;
   }
   if (deps?.inContainer ?? isInsideContainer()) {
+    if (parsed.export !== undefined) {
+      const written = exportHistoryInContainer(parsed, parsed.export, io.stdout, deps);
+      io.stderr(`[phoebe] exported ${written} unit${written === 1 ? "" : "s"}.`);
+      return;
+    }
     const page = runHistoryInContainer(parsed, deps);
     io.stdout(
       parsed.json
