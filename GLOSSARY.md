@@ -494,6 +494,16 @@ dependency detector's)
 One contender replaying one fixture once, offline, with no way to write to GitHub.
 _Avoid_: run (overloaded), attempt, replay
 
+**Baseline**:
+A fixture's merged pull request run through the install, check and test gates with no
+agent, to show the known-good answer still passes.
+_Avoid_: control, reference run, golden run
+
+**Unstable fixture**:
+A fixture whose baseline fails in a given benchmark run. Its trials are skipped for that
+run and never scored against any contender.
+_Avoid_: flaky fixture (flaky is a test that sometimes fails), broken fixture, stale fixture
+
 ### Console
 
 **Console**:
