@@ -16,9 +16,12 @@
 //     of the snapshot moves when the file does. Over IPC rather than `fs.watch`,
 //     which #501 rejected: the channel is already there and already ordered.
 //   - **record** — a unit record just landed in this pipeline's `units.jsonl`
-//     (#929). It carries nothing: the bootstrapper re-reads the file, which is
-//     the only copy that counts, and recomputes the history summary from it so
-//     the report shows the unit without waiting for the hourly recompute.
+//     (#929). The bootstrapper re-reads the file, which is the only copy that
+//     counts, and recomputes the history summary from it so the report shows
+//     the unit without waiting for the hourly recompute. The record rides
+//     along too (#993), for the one reader that wants exactly the line that
+//     landed: the OTLP forwarder, which sends each new record once and would
+//     race the next append if it read the file's tail instead.
 //
 // All three are fire-and-forget. Nothing the engine does waits on them, an
 // unsupervised engine (no channel) gets a null client and sends nothing, and a
@@ -26,6 +29,7 @@
 // work must never depend on being watched.
 
 import type { StatusSnapshot } from "./contracts/status-snapshot.ts";
+import type { UnitRecord } from "./contracts/unit-record.ts";
 import type { ParentChannel } from "./slot-client.ts";
 
 /** This engine finished a loop pass. */
@@ -40,8 +44,8 @@ export type ReportClient = {
   pass(pollIntervalMs: number): void;
   /** Report the snapshot as it now stands on disk. */
   snapshot(snapshot: StatusSnapshot): void;
-  /** Report that a unit record was appended to this pipeline's history. */
-  record(): void;
+  /** Report that this unit record was appended to this pipeline's history. */
+  record(record: UnitRecord): void;
 };
 
 /**
@@ -67,6 +71,6 @@ export function createReportClient(parent: ParentChannel): ReportClient | null {
   return {
     pass: (pollIntervalMs) => send({ type: REPORT_PASS, pollIntervalMs }),
     snapshot: (snapshot) => send({ type: REPORT_STATUS, snapshot }),
-    record: () => send({ type: REPORT_RECORD }),
+    record: (record) => send({ type: REPORT_RECORD, record }),
   };
 }

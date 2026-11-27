@@ -180,10 +180,10 @@ export type UnitHistoryDeps = {
   /**
    * A record landed. The engine tells its supervisor here (#929), so the
    * deployment report's history summary moves with the unit rather than on the
-   * next hourly recompute. Not called when the append failed: there is nothing
-   * new to read.
+   * next hourly recompute, and hands the record over for OTLP forwarding (#993).
+   * Not called when the append failed: there is nothing new to read.
    */
-  onAppended?: () => void;
+  onAppended?: (record: UnitRecord) => void;
 };
 
 /**
@@ -212,6 +212,6 @@ export function createRecordUnit(deps: UnitHistoryDeps): RecordUnit {
       );
       return;
     }
-    deps.onAppended?.();
+    deps.onAppended?.(record);
   };
 }
