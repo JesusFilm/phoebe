@@ -261,6 +261,12 @@ export function parseSuite(text: string, repoSlug: string): BenchSuite {
     if (problem !== null)
       throw new Error(`Fixture ${index} in the suite is malformed: ${problem}.`);
   });
+  const issues = new Set<number>();
+  (s.fixtures as BenchFixture[]).forEach((fixture, index) => {
+    if (issues.has(fixture.issue.number))
+      throw new Error(`Fixture ${index} repeats issue #${fixture.issue.number}.`);
+    issues.add(fixture.issue.number);
+  });
   return s as BenchSuite;
 }
 
