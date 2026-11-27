@@ -78,7 +78,7 @@ export function readUnitHistory(
 export function emptyHistoryWindow(): HistoryWindow {
   return {
     units: 0,
-    outcomes: { completed: 0, failed: 0, "timed-out": 0, abandoned: 0 },
+    outcomes: { completed: 0, unproductive: 0, failed: 0, "timed-out": 0, abandoned: 0 },
     quarantined: 0,
     costUsd: { api: 0, subscriptionEstimate: 0 },
     unitsWithoutCost: 0,

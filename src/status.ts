@@ -374,6 +374,9 @@ function usd(value: number): string {
  */
 export function formatHistoryWindow(window: HistoryWindow): string {
   const counts = [`${window.units} unit${window.units === 1 ? "" : "s"}`];
+  if (window.outcomes.unproductive > 0) {
+    counts.push(`${window.outcomes.unproductive} unproductive`);
+  }
   if (window.outcomes.failed > 0) counts.push(`${window.outcomes.failed} failed`);
   if (window.outcomes["timed-out"] > 0) counts.push(`${window.outcomes["timed-out"]} timed out`);
   if (window.outcomes.abandoned > 0) counts.push(`${window.outcomes.abandoned} abandoned`);

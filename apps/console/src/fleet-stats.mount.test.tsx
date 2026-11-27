@@ -58,7 +58,7 @@ async function mount(element: ReactElement): Promise<HTMLElement> {
 function window7(overrides: Partial<HistoryWindow> = {}): HistoryWindow {
   return {
     units: 12,
-    outcomes: { completed: 9, failed: 2, "timed-out": 1, abandoned: 0 },
+    outcomes: { completed: 9, unproductive: 0, failed: 2, "timed-out": 1, abandoned: 0 },
     quarantined: 0,
     costUsd: { api: 4.2, subscriptionEstimate: 9.75 },
     unitsWithoutCost: 1,

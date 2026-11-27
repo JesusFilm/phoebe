@@ -7,6 +7,12 @@
 // settings fill the rest. With no bench config the one contender is the
 // tenant's own settings.
 //
+// Before any trial, every fixture's baseline (#988) runs, `concurrency` at a
+// time: the merged PR's head, checked out of the hub clone into a tree of its
+// own, through `installCommand`, `checkCommand` and `testCommand` with no agent.
+// A fixture whose baseline fails is unstable for the run, and none of its
+// trials run: a result nobody can score is not worth the agent's money.
+//
 // A trial is one contender replaying one fixture once:
 //
 //   1. A fresh repository holding the history up to `baseSha`, fetched from the
@@ -30,7 +36,9 @@
 //      line's `judgement`, apart from the contender's own.
 //
 // Nothing here writes to a pipeline's `units.jsonl` and nothing reaches
-// GitHub: the engine's push and PR code never runs.
+// GitHub: the engine's push and PR code never runs. "Offline" means exactly
+// that, cut off from GitHub. Trials keep outbound network, which the provider
+// API and the package registry need.
 
 import { execSync, spawn } from "node:child_process";
 import {
@@ -50,7 +58,12 @@ import {
   type GhShimSnapshot,
 } from "./bench-gh-shim.ts";
 import { judgeTrial, parseBenchJudge } from "./bench-judge.ts";
-import { buildBenchReport, REPORT_FILE } from "./bench-report.ts";
+import {
+  baselineFailure,
+  buildBenchReport,
+  describeBaselineFailure,
+  REPORT_FILE,
+} from "./bench-report.ts";
 import {
   DEFAULT_PIPELINE_NAME,
   PROVIDER_NAMES,
@@ -58,6 +71,7 @@ import {
   type ProviderName,
 } from "./config-schema.ts";
 import type {
+  BenchBaselineGate,
   BenchConfig,
   BenchContender,
   BenchContenderSpec,
@@ -72,7 +86,7 @@ import type {
   BenchTrial,
   BenchWouldHave,
 } from "./contracts/bench.ts";
-import type { BenchReport } from "./contracts/bench-report.ts";
+import type { BenchReport, BenchUnstableFixture } from "./contracts/bench-report.ts";
 import { UNIT_RECORD_VERSION, type UnitRecordOutcome } from "./contracts/unit-record.ts";
 import { defaultGit, type GitRunner } from "./git-model.ts";
 import { pipelineOwnedKinds, selectPipeline } from "./pipeline.ts";
@@ -111,6 +125,11 @@ export { REPORT_FILE };
 export const PATCHES_DIR = "patches";
 /** Where the trials' trees live while they run; removed after each. */
 export const WORK_DIR = "work";
+/** The prefix of the directory under `bench/` where `bench select` runs baselines; removed after. */
+export const SELECT_WORK_DIR = "select-work";
+
+/** The `gh` shim a trial or baseline runs, beside this module. */
+export const DEFAULT_GH_SHIM_PATH = join(import.meta.dirname, "bench-gh-shim.ts");
 
 /** A gate's ceiling, the one production gives `installCommand`. */
 export const GATE_TIMEOUT_MS = 600_000;
@@ -208,6 +227,9 @@ function fixtureProblem(fixture: unknown): string | null {
   if (!isSha(pr.headSha) || !isSha(pr.mergeSha))
     return "pr.headSha and pr.mergeSha must be commit ids";
   if (!isSha(f.baseSha)) return "baseSha is not a commit id";
+  if (f.baselinePassedAt !== undefined && !isText(f.baselinePassedAt)) {
+    return "baselinePassedAt is not a string";
+  }
   return null;
 }
 
@@ -238,6 +260,12 @@ export function parseSuite(text: string, repoSlug: string): BenchSuite {
     const problem = fixtureProblem(fixture);
     if (problem !== null)
       throw new Error(`Fixture ${index} in the suite is malformed: ${problem}.`);
+  });
+  const issues = new Set<number>();
+  (s.fixtures as BenchFixture[]).forEach((fixture, index) => {
+    if (issues.has(fixture.issue.number))
+      throw new Error(`Fixture ${index} repeats issue #${fixture.issue.number}.`);
+    issues.add(fixture.issue.number);
   });
   return s as BenchSuite;
 }
@@ -409,6 +437,68 @@ function gitIdentity(git: GitRunner, repoDir: string): { name: string; email: st
   };
 }
 
+/** Fetch the fixture's PR head and the default branch into the hub when it lacks `sha`. */
+function ensureInHub(
+  git: GitRunner,
+  config: PhoebeConfig,
+  fixture: BenchFixture,
+  sha: string,
+): void {
+  const hub = config.paths.repoDir;
+  try {
+    git(["cat-file", "-e", `${sha}^{commit}`], { cwd: hub, stdio: "ignore" });
+    return;
+  } catch {
+    // Not there: fetch it below.
+  }
+  git(
+    [
+      "fetch",
+      "--quiet",
+      "--no-write-fetch-head",
+      "origin",
+      `refs/pull/${fixture.pr.number}/head`,
+      config.defaultBranch,
+    ],
+    { cwd: hub, stdio: "pipe" },
+  );
+}
+
+/**
+ * A fresh repository at `root/repo` holding the history up to `sha` and
+ * nothing else. `init` and a fetch by commit rather than a clone: a clone would
+ * carry the hub's refs and objects past `sha`, and a remote to push to.
+ */
+function freshRepo(opts: {
+  git: GitRunner;
+  config: PhoebeConfig;
+  dir: string;
+  sha: string;
+  /** The branch checked out at `sha`; detached when absent. */
+  branch?: string;
+}): void {
+  const { git, config, dir, sha } = opts;
+  git(["init", "--quiet", "-b", config.defaultBranch, dir], { stdio: "pipe" });
+  git(["fetch", "--quiet", "--no-tags", config.paths.repoDir, sha], { cwd: dir, stdio: "pipe" });
+  if (opts.branch === undefined) {
+    git(["checkout", "--quiet", "--detach", sha], { cwd: dir, stdio: "pipe" });
+  } else {
+    git(["branch", config.defaultBranch, sha], { cwd: dir, stdio: "pipe" });
+    git(["checkout", "--quiet", "-b", opts.branch, sha], { cwd: dir, stdio: "pipe" });
+  }
+  rmSync(join(dir, ".git", "FETCH_HEAD"), { force: true });
+}
+
+function sandboxDirs(root: string): TrialDirs {
+  return {
+    root,
+    repo: join(root, "repo"),
+    home: join(root, "home"),
+    bin: join(root, "bin"),
+    gh: join(root, "gh"),
+  };
+}
+
 /**
  * Lay out one trial: its repository at `baseSha` with no remote, its HOME, and
  * the `gh` shim with the fixture's snapshot.
@@ -422,62 +512,31 @@ function prepareTrial(opts: {
 }): TrialDirs {
   const { plan, fixture, git } = opts;
   const { config } = plan;
-  const root = join(plan.runDir, WORK_DIR, opts.trialId);
-  const dirs: TrialDirs = {
-    root,
-    repo: join(root, "repo"),
-    home: join(root, "home"),
-    bin: join(root, "bin"),
-    gh: join(root, "gh"),
-  };
-  rmSync(root, { recursive: true, force: true });
+  const dirs = sandboxDirs(join(plan.runDir, WORK_DIR, opts.trialId));
+  rmSync(dirs.root, { recursive: true, force: true });
+  ensureInHub(git, config, fixture, fixture.baseSha);
+  freshRepo({
+    git,
+    config,
+    dir: dirs.repo,
+    sha: fixture.baseSha,
+    branch: `${config.branchPrefix}issue-${fixture.issue.number}`,
+  });
+  prepareSandbox({ config, fixture, dirs, git, ghShimPath: opts.ghShimPath });
+  return dirs;
+}
+
+/** The HOME with a git identity, and the `gh` shim serving the fixture's snapshot. */
+function prepareSandbox(opts: {
+  config: PhoebeConfig;
+  fixture: BenchFixture;
+  dirs: TrialDirs;
+  git: GitRunner;
+  ghShimPath: string;
+}): void {
+  const { config, fixture, dirs, git } = opts;
   for (const dir of [dirs.home, dirs.bin, dirs.gh]) mkdirSync(dir, { recursive: true });
-
-  const hub = config.paths.repoDir;
-  const has = (): boolean => {
-    try {
-      git(["cat-file", "-e", `${fixture.baseSha}^{commit}`], { cwd: hub, stdio: "ignore" });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (!has()) {
-    git(
-      [
-        "fetch",
-        "--quiet",
-        "--no-write-fetch-head",
-        "origin",
-        `refs/pull/${fixture.pr.number}/head`,
-        config.defaultBranch,
-      ],
-      { cwd: hub, stdio: "pipe" },
-    );
-  }
-
-  // `init` and a fetch by commit rather than a clone: a clone would carry the
-  // hub's refs and objects past `baseSha`, the merged PR among them, and a
-  // remote to push to.
-  git(["init", "--quiet", "-b", config.defaultBranch, dirs.repo], { stdio: "pipe" });
-  git(["fetch", "--quiet", "--no-tags", hub, fixture.baseSha], { cwd: dirs.repo, stdio: "pipe" });
-  git(["branch", config.defaultBranch, fixture.baseSha], { cwd: dirs.repo, stdio: "pipe" });
-  git(
-    [
-      "checkout",
-      "--quiet",
-      "-b",
-      `${config.branchPrefix}issue-${fixture.issue.number}`,
-      fixture.baseSha,
-    ],
-    {
-      cwd: dirs.repo,
-      stdio: "pipe",
-    },
-  );
-  rmSync(join(dirs.repo, ".git", "FETCH_HEAD"), { force: true });
-
-  const identity = gitIdentity(git, hub);
+  const identity = gitIdentity(git, config.paths.repoDir);
   writeFileSync(
     join(dirs.home, ".gitconfig"),
     `[user]\n\tname = ${identity.name}\n\temail = ${identity.email}\n`,
@@ -493,7 +552,79 @@ function prepareTrial(opts: {
     `#!/bin/sh\nexec ${shellQuote(process.execPath)} --no-warnings ${shellQuote(opts.ghShimPath)} ${shellQuote(dirs.gh)} "$@"\n`,
     { mode: 0o755 },
   );
-  return dirs;
+}
+
+// --- baselines (#988) -------------------------------------------------------
+
+/**
+ * A fixture's baseline: check the merged PR's head (`pr.headSha`) out of the
+ * hub clone into a fresh tree under `dir`, and run `installCommand`,
+ * `checkCommand` and `testCommand` there with no agent. The gates get the
+ * trial gates' env, ceiling and shared package store. The first failure stops
+ * them. The tree is gone when this returns.
+ *
+ * The tree is its own repository, so nothing in it reaches a trial's, which
+ * still holds the history only up to `baseSha`.
+ *
+ * Throws when the head cannot be checked out. An interrupt kills the gate in
+ * flight, which then has no exit code.
+ */
+export async function runBaseline(opts: {
+  /** The tenant config as the `issues` pipeline sees it. */
+  config: PhoebeConfig;
+  env: NodeJS.ProcessEnv;
+  fixture: BenchFixture;
+  dir: string;
+  signal: AbortSignal;
+  git: GitRunner;
+  runGate: RunGate;
+  ghShimPath: string;
+  log: (line: string) => void;
+}): Promise<BenchGates> {
+  const { config, fixture, git } = opts;
+  const echo = (line: string): void =>
+    opts.log(`[phoebe] bench [issue:${fixture.issue.number} baseline] ${line}`);
+  const dirs = sandboxDirs(opts.dir);
+  const gates: BenchGates = { install: null, check: null, test: null };
+  rmSync(dirs.root, { recursive: true, force: true });
+  try {
+    try {
+      ensureInHub(git, config, fixture, fixture.pr.headSha);
+      freshRepo({ git, config, dir: dirs.repo, sha: fixture.pr.headSha });
+      prepareSandbox({ config, fixture, dirs, git, ghShimPath: opts.ghShimPath });
+    } catch (error) {
+      throw new Error(
+        `could not check out PR #${fixture.pr.number}'s head ${fixture.pr.headSha.slice(0, 7)}: ${errorText(error)}`,
+        { cause: error },
+      );
+    }
+    echo(`checking PR #${fixture.pr.number}'s head ${fixture.pr.headSha.slice(0, 7)}, no agent.`);
+    const env = trialGateEnv(opts.env, config, dirs);
+    for (const [gate, command] of [
+      ["install", config.installCommand],
+      ["check", config.checkCommand],
+      ["test", config.testCommand],
+    ] as const) {
+      if (opts.signal.aborted) break;
+      if (command.trim() === "") continue;
+      echo(`$ ${command}`);
+      const result = await opts.runGate({
+        command,
+        cwd: dirs.repo,
+        env,
+        signal: opts.signal,
+        echo,
+      });
+      gates[gate] = result;
+      echo(
+        `${command} exited ${result.exitCode ?? "without a code"} after ${result.durationMs}ms.`,
+      );
+      if (result.exitCode !== 0) break;
+    }
+    return gates;
+  } finally {
+    rmSync(dirs.root, { recursive: true, force: true });
+  }
 }
 
 function readWouldHave(ghDir: string): BenchWouldHave[] {
@@ -1035,6 +1166,80 @@ export function assertContenderKeys(opts: {
 
 // --- the run ----------------------------------------------------------------
 
+/**
+ * Every fixture's baseline, `concurrency` at a time, before any trial. A
+ * fixture whose baseline fails is unstable for this run. One the interrupt cut
+ * short is neither: the run is stopping, and no trial of it will start.
+ */
+async function runBaselines(opts: {
+  config: PhoebeConfig;
+  env: NodeJS.ProcessEnv;
+  fixtures: readonly BenchFixture[];
+  runDir: string;
+  concurrency: number;
+  signal: AbortSignal;
+  deps: Required<Omit<BenchRunDeps, "engineCommit">>;
+}): Promise<{ baselines: Record<string, BenchGates>; unstable: BenchUnstableFixture[] }> {
+  const { fixtures, signal, deps } = opts;
+  const failures: Array<BenchUnstableFixture | null> = fixtures.map(() => null);
+  const gatesOf: Array<BenchGates | null> = fixtures.map(() => null);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (!signal.aborted && next < fixtures.length) {
+      const index = next++;
+      const fixture = fixtures[index]!;
+      const entry = (gate: BenchBaselineGate, exitCode: number | null): BenchUnstableFixture => ({
+        issue: fixture.issue.number,
+        pr: fixture.pr.number,
+        gate,
+        exitCode,
+        baselinePassedAt: fixture.baselinePassedAt ?? null,
+      });
+      let gates: BenchGates;
+      try {
+        gates = await runBaseline({
+          config: opts.config,
+          env: opts.env,
+          fixture,
+          dir: join(opts.runDir, WORK_DIR, `f${index}-issue-${fixture.issue.number}-baseline`),
+          signal,
+          git: deps.git,
+          runGate: deps.runGate,
+          ghShimPath: deps.ghShimPath,
+          log: deps.log,
+        });
+      } catch (error) {
+        if (signal.aborted) return;
+        deps.log(`[phoebe] bench [issue:${fixture.issue.number} baseline] ${errorText(error)}`);
+        gatesOf[index] = { install: null, check: null, test: null };
+        failures[index] = entry("checkout", null);
+        continue;
+      }
+      if (signal.aborted) return;
+      gatesOf[index] = gates;
+      const failure = baselineFailure(gates);
+      if (failure !== null) failures[index] = entry(failure.gate, failure.exitCode);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(opts.concurrency, fixtures.length) }, worker));
+
+  const baselines: Record<string, BenchGates> = {};
+  fixtures.forEach((fixture, index) => {
+    const gates = gatesOf[index];
+    if (gates !== null && gates !== undefined) baselines[String(fixture.issue.number)] = gates;
+  });
+  const unstable = failures.filter((entry): entry is BenchUnstableFixture => entry !== null);
+  for (const entry of unstable) {
+    deps.log(
+      `[phoebe] bench [issue:${entry.issue} baseline] unstable: ${describeBaselineFailure(entry)} ` +
+        `on PR #${entry.pr}'s head` +
+        `${entry.baselinePassedAt === null ? "" : ` (it passed at ${entry.baselinePassedAt})`}; ` +
+        `its trials are skipped.`,
+    );
+  }
+  return { baselines, unstable };
+}
+
 export type BenchRunResult = {
   runId: string;
   runDir: string;
@@ -1043,10 +1248,11 @@ export type BenchRunResult = {
 };
 
 /**
- * Replay every fixture with every contender, `repeat` times each, up to
- * `concurrency` trials at once. One that fails or times out is recorded and the
- * run goes on. When `signal` fires, the trials in flight are dropped and
- * `report.json` is written with `interrupted: true`.
+ * Run every fixture's baseline, then replay every stable fixture with every
+ * contender, `repeat` times each, up to `concurrency` trials at once. One that
+ * fails or times out is recorded and the run goes on. When `signal` fires,
+ * the trials in flight are dropped and `report.json` is written with
+ * `interrupted: true`.
  *
  * Throws, before any trial, on what would make every trial meaningless: a
  * contender whose prompt file is missing, or a contender or judge whose
@@ -1080,7 +1286,7 @@ export async function runBench(opts: {
     runGate: opts.deps?.runGate ?? defaultRunGate,
     now: opts.deps?.now ?? (() => new Date()),
     log: opts.deps?.log ?? ((line) => process.stderr.write(`${line}\n`)),
-    ghShimPath: opts.deps?.ghShimPath ?? join(import.meta.dirname, "bench-gh-shim.ts"),
+    ghShimPath: opts.deps?.ghShimPath ?? DEFAULT_GH_SHIM_PATH,
   };
   const engineCommit =
     opts.deps?.engineCommit !== undefined
@@ -1158,16 +1364,29 @@ export async function runBench(opts: {
     );
   }
 
+  const { baselines, unstable } = await runBaselines({
+    config,
+    env,
+    fixtures: suite.fixtures,
+    runDir,
+    concurrency,
+    signal,
+    deps,
+  });
+  const unstableIssues = new Set(unstable.map((entry) => entry.issue));
+
   const shared: RunPlan = { runId, runDir, config, env, runTimeoutMs, engineCommit, judge };
   const queue = suite.fixtures.flatMap((fixture, fixtureIndex) =>
-    contenders.flatMap((resolved) =>
-      Array.from({ length: repeat }, (_, index) => ({
-        fixture,
-        fixtureIndex,
-        resolved,
-        repeat: index,
-      })),
-    ),
+    unstableIssues.has(fixture.issue.number)
+      ? []
+      : contenders.flatMap((resolved) =>
+          Array.from({ length: repeat }, (_, index) => ({
+            fixture,
+            fixtureIndex,
+            resolved,
+            repeat: index,
+          })),
+        ),
   );
   const trials: BenchTrial[] = [];
   let next = 0;
@@ -1193,6 +1412,8 @@ export async function runBench(opts: {
   const report = buildBenchReport({
     runConfig,
     trials,
+    baselines,
+    unstable,
     finishedAt: deps.now(),
     interrupted: signal.aborted,
   });
@@ -1201,7 +1422,9 @@ export async function runBench(opts: {
     `[phoebe] bench: ${report.interrupted ? "interrupted after" : "finished"} ` +
       `${report.recorded}/${report.planned} trial(s): ${report.outcomes.completed} completed ` +
       `(${report.outcomes.noChange} with no change), ${report.outcomes.failed} failed, ` +
-      `${report.outcomes.timedOut} timed out. ${join(runDir, REPORT_FILE)}`,
+      `${report.outcomes.timedOut} timed out` +
+      `${report.unstable.length === 0 ? "" : `; ${report.unstable.length} fixture(s) unstable`}. ` +
+      `${join(runDir, REPORT_FILE)}`,
   );
   return { runId, runDir, trials, report };
 }

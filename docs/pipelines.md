@@ -230,7 +230,7 @@ Ownership is partitioned rather than locked. Each thing on disk has exactly one
 writer, and nothing needs electing.
 
 `state/<pipeline>/status.json` is the pipeline's alone, and so is its unit history
-beside it, `units.jsonl`: one line per unit that completed, failed or timed out, with
+beside it, `units.jsonl`: one line per unit that completed, ended unproductive, failed or timed out, with
 the tokens, cost and tool calls its agent runs reported. A unit whose process died
 before it settled gets an `abandoned` line from the next process at boot. That line
 names the provider, model and effort the unit started on, and has no settle time,

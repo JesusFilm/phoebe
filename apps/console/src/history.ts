@@ -18,12 +18,19 @@
 import type {
   AgentRunRecord,
   DesktopBridge,
+  HistoryExportFormat,
   HistoryPage,
   HistoryQuery,
   HistoryRecord,
   UnitRecordOutcome,
 } from "phoebe-agent/contracts";
-import { REMOTE_ROUTES } from "phoebe-agent/contracts";
+import {
+  HISTORY_MAX_LIMIT,
+  historyExportHead,
+  historyExportLines,
+  REMOTE_ROUTES,
+} from "phoebe-agent/contracts";
+import { RemoteRequestError } from "./remote-client.ts";
 
 /** What one ask for a page came to. */
 export type HistoryFetch =
@@ -55,6 +62,7 @@ export function historyPath(query: HistoryQuery): string {
 /** Every outcome a record can carry, in the order the filter lists them. */
 export const HISTORY_OUTCOMES: readonly UnitRecordOutcome[] = [
   "completed",
+  "unproductive",
   "failed",
   "timed-out",
   "abandoned",
@@ -110,6 +118,72 @@ export function filterChoices(choices: FilterChoices, filters: HistoryFilters): 
   if (filters.model !== undefined) models.add(filters.model);
   return { kinds: [...kinds].sort(), models: [...models].sort() };
 }
+
+// ───────────────────────────── export ─────────────────────────────
+
+/** The export formats, as the tab's choice names them. */
+export const EXPORT_FORMATS: readonly { format: HistoryExportFormat; label: string }[] = [
+  { format: "csv", label: "CSV" },
+  { format: "jsonl", label: "JSON Lines" },
+];
+
+/** A file an export hands to whatever saves it. */
+export type ExportFile = { name: string; type: string; text: string };
+
+/** How the tab saves a file: the browser's download, unless a test hands its own. */
+export type SaveFile = (file: ExportFile) => void;
+
+/**
+ * Every record the filters match, as one file in `format`: the pages walked
+ * from the newest until the cursor runs out, not just the ones the tab has
+ * drawn. The mapping is the contracts' (#992), so the file matches what
+ * `phoebe history --export` writes. `progress` hears the count after each
+ * page, with the total the filters match. Rejects when a page could not be
+ * read, so a part of the history never saves as if it were all of it.
+ */
+export async function exportHistory(
+  reader: HistoryReader,
+  filters: HistoryFilters,
+  format: HistoryExportFormat,
+  progress?: (written: number, total: number) => void,
+): Promise<{ text: string; count: number }> {
+  const parts = [historyExportHead(format)];
+  let count = 0;
+  let before: string | undefined;
+  for (;;) {
+    const fetched = await reader({ ...historyQueryOf(filters, before), limit: HISTORY_MAX_LIMIT });
+    if (fetched.kind === "too-old") {
+      throw new Error("this deployment is too old to keep unit history");
+    }
+    const { records, nextBefore, summary } = fetched.page;
+    parts.push(historyExportLines(format, records));
+    count += records.length;
+    progress?.(count, summary.units);
+    if (nextBefore === null || records.length === 0) return { text: parts.join(""), count };
+    before = nextBefore;
+  }
+}
+
+/** `phoebe-history-2026-11-27.csv`: the day it was saved, and the format's own extension. */
+export function exportFileOf(format: HistoryExportFormat, text: string, at: Date): ExportFile {
+  const day = at.toISOString().slice(0, 10);
+  return format === "csv"
+    ? { name: `phoebe-history-${day}.csv`, type: "text/csv", text }
+    : { name: `phoebe-history-${day}.jsonl`, type: "application/x-ndjson", text };
+}
+
+/** Save through a download: the companion asks where, a browser saves to its folder. */
+export const downloadFile: SaveFile = (file) => {
+  const url = URL.createObjectURL(new Blob([file.text], { type: file.type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.name;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+};
 
 // ───────────────────────────── one record ─────────────────────────────
 
@@ -246,9 +320,11 @@ export function retainedSince(page: Pick<HistoryPage, "retained">): string | nul
 
 // ───────────────────────────── summaries ─────────────────────────────
 
-/** Units that did not complete: failed, timed out or abandoned. */
+/** Units that did not complete: unproductive, failed, timed out or abandoned. */
 export function unfinishedOf(outcomes: Record<UnitRecordOutcome, number>): number {
-  return outcomes.failed + outcomes["timed-out"] + outcomes.abandoned;
+  return (
+    (outcomes.unproductive ?? 0) + outcomes.failed + outcomes["timed-out"] + outcomes.abandoned
+  );
 }
 
 /** The part of a summary window or a page's totals a cost reads off. */
@@ -284,7 +360,12 @@ export const TOKENS_ONLY_NOTE = "None of these units reported a cost. Their toke
 // ───────────────────────────── needs a look ─────────────────────────────
 
 /** The outcomes the overview's "Needs a look" feed lists. */
-export const NOT_COMPLETED: readonly UnitRecordOutcome[] = ["failed", "timed-out", "abandoned"];
+export const NOT_COMPLETED: readonly UnitRecordOutcome[] = [
+  "unproductive",
+  "failed",
+  "timed-out",
+  "abandoned",
+];
 
 /** How many units the feed lists at most. */
 export const FEED_SIZE = 6;
@@ -301,6 +382,20 @@ export type NeedsALookFetch =
   | { kind: "too-old" };
 
 /**
+ * Whether a rejection is an engine turning down the `outcome` filter itself,
+ * which is how one that predates `unproductive` answers. The remote API
+ * answers 400 and the local exec's error carries the same sentence; a network
+ * failure, another status or a malformed page says nothing of the filter.
+ */
+export function rejectsOutcomeFilter(error: unknown): boolean {
+  const said = (text: unknown) => typeof text === "string" && text.includes("`outcome` is one of");
+  if (error instanceof RemoteRequestError) {
+    return error.status === 400 && said((error.body as { detail?: unknown } | null)?.detail);
+  }
+  return error instanceof Error && said(error.message);
+}
+
+/**
  * The newest units since `since` that did not complete. One read per outcome,
  * since a query takes one, each capped at the feed's size: the newest six of
  * the three together are among the newest six of each. The total is the three
@@ -312,10 +407,21 @@ export async function readNeedsALook(
   since: string,
 ): Promise<NeedsALookFetch> {
   const fetched = await Promise.all(
-    NOT_COMPLETED.map((outcome) => reader({ outcome, since, limit: FEED_SIZE })),
+    NOT_COMPLETED.map((outcome) => {
+      const read = reader({ outcome, since, limit: FEED_SIZE });
+      // An engine older than the outcome rejects the filter. Only that read
+      // may fail quietly: the feed still lists the outcomes it knows.
+      return outcome === "unproductive"
+        ? read.catch((error: unknown): null => {
+            if (rejectsOutcomeFilter(error)) return null;
+            throw error;
+          })
+        : read;
+    }),
   );
   const pages: HistoryPage[] = [];
   for (const one of fetched) {
+    if (one === null) continue;
     if (one.kind === "too-old") return { kind: "too-old" };
     pages.push(one.page);
   }

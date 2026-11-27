@@ -137,6 +137,33 @@ describe("the report the model publishes", () => {
     });
   });
 
+  test("carries the OTLP forwarder's counts, null when forwarding is off (#993)", () => {
+    const off = harness({ telemetry: () => null });
+    off.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect(off.latest()!.bootstrapper.telemetry).toBeNull();
+
+    let counts = {
+      sent: 0,
+      dropped: 0,
+      lastError: null as string | null,
+      lastSentAt: null as string | null,
+    };
+    const on = harness({ telemetry: () => counts });
+    on.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    counts = {
+      sent: 0,
+      dropped: 1,
+      lastError: "http://c:4318/v1/traces answered HTTP 503",
+      lastSentAt: null,
+    };
+    on.state.publish();
+    expect(on.latest()!.bootstrapper.telemetry).toEqual(counts);
+
+    const unwired = harness();
+    unwired.state.noteEngine({ ref: "main", sha: "abc", quarantinedSha: null });
+    expect("telemetry" in unwired.latest()!.bootstrapper).toBe(false);
+  });
+
   test("a reconcile names its reason, and the next spawn ends it", () => {
     const h = harness();
     h.state.notePipelines([pipelineOf("/t/a", "work")]);
@@ -1055,11 +1082,11 @@ describe("the file a workspace with many tenants writes", () => {
     const fiveHundred = fleetOf(500);
 
     // Ten times the tenants is not ten times the file: the fleet matrix grows
-    // with the fleet, the config section does not. A cell is about 2 KiB
-    // written out, most of it the history summary (#929): fixed per cell, never
-    // growing with the units behind it.
+    // with the fleet, the config section does not. A cell is a little over
+    // 2 KiB written out, most of it the history summary (#929, #985): fixed per
+    // cell, never growing with the units behind it.
     expect(fifty).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 256 * 1024);
-    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 1024 * 1024);
+    expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 1280 * 1024);
     expect(fiveHundred).toBeLessThan(fifty * 2);
   });
 });

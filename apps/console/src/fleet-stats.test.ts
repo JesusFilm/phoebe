@@ -33,7 +33,7 @@ import {
 function window(overrides: Partial<HistoryWindow> = {}): HistoryWindow {
   return {
     units: 10,
-    outcomes: { completed: 7, failed: 1, "timed-out": 1, abandoned: 1 },
+    outcomes: { completed: 7, unproductive: 0, failed: 1, "timed-out": 1, abandoned: 1 },
     quarantined: 0,
     costUsd: { api: 2.5, subscriptionEstimate: 4 },
     unitsWithoutCost: 1,

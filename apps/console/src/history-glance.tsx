@@ -47,6 +47,9 @@ export function SummaryCost({ window }: { window: HistoryWindow }) {
 /** `2 failed, 1 timed out`: each outcome that did not complete and has units. */
 function unfinishedParts(window: HistoryWindow): string {
   const parts: string[] = [];
+  if (window.outcomes.unproductive > 0) {
+    parts.push(`${window.outcomes.unproductive} unproductive`);
+  }
   if (window.outcomes.failed > 0) parts.push(`${window.outcomes.failed} failed`);
   if (window.outcomes["timed-out"] > 0) parts.push(`${window.outcomes["timed-out"]} timed out`);
   if (window.outcomes.abandoned > 0) parts.push(`${window.outcomes.abandoned} abandoned`);
@@ -313,15 +316,15 @@ function OutcomeBar({ window }: { window: HistoryWindow }) {
   if (window.units === 0) return null;
   const share = (n: number): string => `${(n / window.units) * 100}%`;
   const { completed, failed, abandoned } = window.outcomes;
+  const unproductive = window.outcomes.unproductive ?? 0;
   const timedOut = window.outcomes["timed-out"];
+  const label =
+    `${completed} completed, ${unproductive} unproductive, ${failed} failed, ` +
+    `${timedOut} timed out, ${abandoned} abandoned`;
   return (
-    <div
-      className="outcome-bar"
-      role="img"
-      aria-label={`${completed} completed, ${failed} failed, ${timedOut} timed out, ${abandoned} abandoned`}
-      title={`${completed} completed, ${failed} failed, ${timedOut} timed out, ${abandoned} abandoned`}
-    >
+    <div className="outcome-bar" role="img" aria-label={label} title={label}>
       <span className="completed" style={{ width: share(completed) }} />
+      <span className="unproductive" style={{ width: share(unproductive) }} />
       <span className="failed" style={{ width: share(failed) }} />
       <span className="timed-out" style={{ width: share(timedOut) }} />
       <span className="abandoned" style={{ width: share(abandoned) }} />
@@ -365,13 +368,11 @@ export function PipelineBreakdown({ summary, now }: { summary: HistorySummary | 
         <tbody>
           {row("Units", (window) => window.units)}
           {row("Completed", (window) => window.outcomes.completed)}
+          {row("Unproductive", (window) => window.outcomes.unproductive ?? 0)}
           {row("Failed", (window) => window.outcomes.failed)}
-          {row("Timed out", (window) =>
-            window.quarantined > 0
-              ? `${window.outcomes["timed-out"]} (${window.quarantined} quarantined)`
-              : window.outcomes["timed-out"],
-          )}
+          {row("Timed out", (window) => window.outcomes["timed-out"])}
           {row("Abandoned", (window) => window.outcomes.abandoned)}
+          {row("Quarantined", (window) => window.quarantined)}
           {row("Cost", (window) => (
             <SummaryCost window={window} />
           ))}

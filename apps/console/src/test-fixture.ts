@@ -645,7 +645,13 @@ export function historyPage(
     records,
     summary: {
       units: records.length,
-      byOutcome: { completed: records.length, failed: 0, "timed-out": 0, abandoned: 0 },
+      byOutcome: {
+        completed: records.length,
+        unproductive: 0,
+        failed: 0,
+        "timed-out": 0,
+        abandoned: 0,
+      },
       quarantined: 0,
       costUsd: { api: 0.42, subscriptionEstimate: 0 },
       unitsWithoutCost: 0,
@@ -662,7 +668,7 @@ export function historyPage(
 export function historyWindow(overrides: Partial<HistoryWindow> = {}): HistoryWindow {
   return {
     units: 10,
-    outcomes: { completed: 9, failed: 1, "timed-out": 0, abandoned: 0 },
+    outcomes: { completed: 9, unproductive: 0, failed: 1, "timed-out": 0, abandoned: 0 },
     quarantined: 0,
     costUsd: { api: 4.2, subscriptionEstimate: 0 },
     unitsWithoutCost: 0,
@@ -680,7 +686,7 @@ export function historySummary(
     asOf: ago(3600),
     last24h: historyWindow({
       units: 2,
-      outcomes: { completed: 2, failed: 0, "timed-out": 0, abandoned: 0 },
+      outcomes: { completed: 2, unproductive: 0, failed: 0, "timed-out": 0, abandoned: 0 },
       costUsd: { api: 0.84, subscriptionEstimate: 0 },
       ...overrides.last24h,
     }),

@@ -429,6 +429,11 @@ A work unit a pipeline process started and never settled, because the process en
 mid-unit. The next process for that pipeline finds it at boot.
 _Avoid_: stranded (that is a claim with no pull request), orphaned, crashed
 
+**Unproductive unit**:
+An issue-keyed work unit whose run returned normally and whose claim Phoebe re-armed
+because it produced no pull request.
+_Avoid_: completed, no-op, empty run
+
 ### History
 
 **Unit record**:

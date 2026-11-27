@@ -8,6 +8,10 @@
 // tab never narrows a page it already holds. "Show more" asks for the page
 // after the last one, under the same filters.
 //
+// Export (#992) saves every unit the filters match as CSV or JSON Lines. It
+// walks the pages itself rather than saving the ones drawn, shows how far it
+// has got, and says how many rows it saved.
+//
 // A deployment with a tenant that declares the observer has a "Run observer"
 // button in the header (#938, run-observer.tsx). The run it starts lands here
 // like any unit; the tab asks again when the report shows it settled, and the
@@ -17,6 +21,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   AgentRunRecord,
   FleetCell,
+  HistoryExportFormat,
   HistoryPage,
   HistoryRecord,
   HistoryTotals,
@@ -26,7 +31,11 @@ import { age, duration } from "./facts.ts";
 import {
   API_COST_NOTE,
   compactCount,
+  downloadFile,
   ESTIMATE_NOTE,
+  EXPORT_FORMATS,
+  exportFileOf,
+  exportHistory,
   filterChoices,
   NO_CHOICES,
   withChoicesOf,
@@ -38,6 +47,7 @@ import {
   retainedSince,
   runCost,
   unitCost,
+  unfinishedOf,
   unitLabel,
   unitTokens,
   usd,
@@ -46,6 +56,7 @@ import {
   type HistoryFetch,
   type HistoryFilters,
   type HistoryReader,
+  type SaveFile,
 } from "./history.ts";
 import { summaryPieces, type ObserveRunner, type ObserverTarget } from "./observer.ts";
 import { RunObserver } from "./run-observer.tsx";
@@ -63,12 +74,19 @@ type TabState =
   | { kind: "too-old" }
   | { kind: "failed"; message: string };
 
+type ExportState =
+  | { kind: "idle" }
+  | { kind: "busy"; written: number; total: number | null }
+  | { kind: "saved"; count: number; format: HistoryExportFormat }
+  | { kind: "failed"; message: string };
+
 export function HistoryTab({
   reader,
   scope,
   cells,
   now,
   observer,
+  save = downloadFile,
 }: {
   /** How this deployment's pages are read: the arm's own. */
   reader: HistoryReader;
@@ -85,6 +103,8 @@ export function HistoryTab({
    * (#938). Without it, or with no targets, the header has no button.
    */
   observer?: { targets: readonly ObserverTarget[]; run: ObserveRunner };
+  /** How an export's file is saved; a download unless a test hands its own. */
+  save?: SaveFile;
 }) {
   const [filters, setFilters] = useState<HistoryFilters>({});
   const [state, setState] = useState<TabState>({ kind: "loading" });
@@ -95,6 +115,8 @@ export function HistoryTab({
   const [seen, setSeen] = useState<FilterChoices>(NO_CHOICES);
   const [open, setOpen] = useState<HistoryRecord | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [format, setFormat] = useState<HistoryExportFormat>("csv");
+  const [exported, setExported] = useState<ExportState>({ kind: "idle" });
   const readerRef = useRef(reader);
   readerRef.current = reader;
   // Each ask carries a number, and only the latest one's answer is drawn: a
@@ -146,6 +168,21 @@ export function HistoryTab({
     // the reader through a ref, so a new reader on a render asks nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, filterKey, attempt]);
+
+  /** Walk every page under the filters as they stand now, then save the file. */
+  const runExport = (): void => {
+    const asFormat = format;
+    setExported({ kind: "busy", written: 0, total: null });
+    exportHistory(readerRef.current, filters, asFormat, (written, total) =>
+      setExported({ kind: "busy", written, total }),
+    ).then(
+      ({ text, count }) => {
+        save(exportFileOf(asFormat, text, now));
+        setExported({ kind: "saved", count, format: asFormat });
+      },
+      (error: unknown) => setExported({ kind: "failed", message: messageOf(error) }),
+    );
+  };
 
   const set = (key: keyof HistoryFilters, value: string): void => {
     setFilters((previous) => {
@@ -241,6 +278,28 @@ export function HistoryTab({
           ))}
         </select>
       </div>
+      <div className="history-export" role="group" aria-label="Export the units">
+        <select
+          aria-label="Export format"
+          value={format}
+          disabled={exported.kind === "busy"}
+          onChange={(event) => setFormat(event.target.value as HistoryExportFormat)}
+        >
+          {EXPORT_FORMATS.map((choice) => (
+            <option key={choice.format} value={choice.format}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          disabled={state.kind !== "loaded" || exported.kind === "busy"}
+          onClick={runExport}
+        >
+          Export
+        </button>
+        <ExportStatus state={exported} />
+      </div>
 
       {state.kind === "loading" ? (
         <p className="muted">Reading history…</p>
@@ -273,6 +332,34 @@ export function HistoryTab({
       )}
     </section>
   );
+}
+
+/** How far an export has got, how many rows it saved, or why it stopped. */
+function ExportStatus({ state }: { state: ExportState }) {
+  switch (state.kind) {
+    case "idle":
+      return null;
+    case "busy":
+      return (
+        <span className="muted" role="status">
+          Exporting… {state.total === null ? null : `${state.written} of ${state.total} units`}
+        </span>
+      );
+    case "saved": {
+      const label = EXPORT_FORMATS.find((choice) => choice.format === state.format)?.label;
+      return (
+        <span className="muted" role="status">
+          Saved {state.count} unit{state.count === 1 ? "" : "s"} as {label}.
+        </span>
+      );
+    }
+    case "failed":
+      return (
+        <span className="refusal" role="status">
+          Could not export: {state.message}
+        </span>
+      );
+  }
 }
 
 function Records({
@@ -379,8 +466,7 @@ function Records({
 
 /** The matched totals in one line: counts, then cost by basis, never added together. */
 function Totals({ totals }: { totals: HistoryTotals }) {
-  const unfinished =
-    totals.byOutcome.failed + totals.byOutcome["timed-out"] + totals.byOutcome.abandoned;
+  const unfinished = unfinishedOf(totals.byOutcome);
   const parts: ReactNode[] = [`${totals.units} unit${totals.units === 1 ? "" : "s"} match`];
   if (unfinished > 0) parts.push(`${unfinished} did not complete`);
   if (totals.costUsd.api > 0) {
@@ -416,6 +502,7 @@ function Totals({ totals }: { totals: HistoryTotals }) {
 
 const OUTCOME_TONE: Record<UnitRecordOutcome, string> = {
   completed: "chip ok",
+  unproductive: "chip warn",
   failed: "chip fail",
   "timed-out": "chip warn",
   abandoned: "chip",

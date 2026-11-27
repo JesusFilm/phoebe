@@ -11,8 +11,8 @@
 //     at build time; a value import would drag engine code — and the built-ins
 //     behind it — along with it.
 //
-// So contracts holds type declarations, the occasional pure constant, and pure
-// computation over WebCrypto, and nothing that reaches a filesystem, a process,
+// So contracts holds type declarations, the occasional pure constant, pure
+// computation over WebCrypto, and the history export's mapping, and nothing that reaches a filesystem, a process,
 // or a socket. Host code keeps importing these files from `src/` directly; the
 // subpath export exists for everyone who installs the package instead.
 //
@@ -33,8 +33,7 @@ export type {
 } from "./config-edit.ts";
 export { CLOSED_EDIT_BLOCKS } from "./config-edit.ts";
 // The edge rule itself (`alertEdges` and the body builders in alerts.ts) is not
-// re-exported, for the reason above: it is the one piece of real logic in this
-// directory, and a hand-written copy of it in index.mjs would be a second
+// re-exported, for the reason above: it is real logic, and a hand-written copy of it in index.mjs would be a second
 // implementation of the thing whose whole point is that there is only one. Both
 // readers live in this repo — the relay and the companion's main process — and
 // both import alerts.ts directly (#524 §3).
@@ -103,6 +102,7 @@ export {
   type FleetReport,
   type ReconcileState,
   type SlotReport,
+  type TelemetryReport,
   type TenantFacts,
 } from "./deployment.ts";
 export { EFFECTIVE_CONFIG_VERSION } from "./effective-config.ts";
@@ -138,6 +138,7 @@ export type {
 export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
 export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
 export type {
+  BenchBaselineGate,
   BenchComment,
   BenchConfig,
   BenchContender,
@@ -158,10 +159,12 @@ export type {
 } from "./bench.ts";
 export { BENCH_VERDICTS } from "./bench.ts";
 export type {
+  BenchBaselineFailure,
   BenchGateRate,
   BenchJudgeUsage,
   BenchReport,
   BenchReportRow,
+  BenchUnstableFixture,
   BenchVerdictCounts,
 } from "./bench-report.ts";
 export type {
@@ -172,6 +175,14 @@ export type {
   UnitRecordOutcome,
 } from "./unit-record.ts";
 export type { HistoryPage, HistoryQuery, HistoryRecord, HistoryTotals } from "./history.ts";
+export {
+  HISTORY_CSV_COLUMNS,
+  HISTORY_EXPORT_FORMATS,
+  HISTORY_MAX_LIMIT,
+  historyExportHead,
+  historyExportLines,
+  type HistoryExportFormat,
+} from "./history-export.mjs";
 export type {
   BlockedReason,
   PairResult,
