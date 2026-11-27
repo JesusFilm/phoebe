@@ -33,6 +33,7 @@ import type { PhoebeConfig } from "../../src/config-schema.ts";
 import type { BenchContenderSpec, BenchSuite } from "../../src/contracts/bench.ts";
 import { defaultGit, type GitRunner } from "../../src/git-model.ts";
 import { pipelineOwnedKinds } from "../../src/pipeline.ts";
+import { selectProviderForKind } from "../../src/provider-selection.ts";
 import {
   defineWorkKind,
   type WorkKindDefinition,
@@ -54,6 +55,7 @@ import {
   resolveSides,
   settingsDiffer,
   unmeasuredPaths,
+  type IssuesSettings,
   type RunSettingsChild,
   type Side,
 } from "./sides.ts";
@@ -111,6 +113,20 @@ export function benchPipelineOf(config: PhoebeConfig, at: string): string {
     return name;
   }
   throw new Error(`${at}: no pipeline declares the bench kind.`);
+}
+
+/** What the deployment's config file alone gives the `issues` kind, with no env names applied. */
+function deploymentSettings(config: PhoebeConfig): IssuesSettings {
+  const selection = selectProviderForKind({
+    kind: "issues",
+    env: {},
+    config: issuesPipelineConfig(config),
+  });
+  return {
+    provider: selection.provider,
+    model: selection.model,
+    effort: selection.effort ?? null,
+  };
 }
 
 /** The suite cut to its newest `max` fixtures, by PR number, newest first. */
@@ -293,7 +309,11 @@ export function createBenchKind(
       const unmeasured = unmeasuredPaths(changedPaths(ctx, hub, mainSha, unit.pr.headSha));
 
       const promptChanged = sides.pr.prompt.text !== sides.main.prompt.text;
-      if (!promptChanged && !settingsDiffer(sides.main.settings, sides.pr.settings)) {
+      const deployment = deploymentSettings(ctx.config);
+      if (
+        !promptChanged &&
+        !settingsDiffer(sides.main.settings ?? deployment, sides.pr.settings ?? deployment)
+      ) {
         finish(ctx, unit, renderNothingToMeasureComment(unit.pr.headSha, unmeasured));
         const summary = `${prName}: nothing to measure, nothing ran`;
         ctx.log(summary);

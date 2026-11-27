@@ -541,7 +541,10 @@ kind benches a PR when a person adds the `phoebe:bench` label to it. The kind
 replays the deployment's suite with two contenders. `main` has the default
 branch's `issues` prompt, provider, model and effort, and `pr` has the PR
 head's. It posts the figures side by side in a new comment on the PR, then
-removes the label. Add the label again to run another bench. The kind needs a
+removes the label. Add the label again to run another bench. A bench that runs
+longer than the unit's run budget (45 minutes by default) is aborted and the label
+stays, so raise it with `PHOEBE_BENCH_RUN_TIMEOUT_MS` or `workKinds.bench.runTimeoutMs`.
+The kind needs a
 suite, so run `phoebe bench select > bench/suite.json` first. A PR that
 changes neither the `issues` prompt nor those settings gets a comment saying
 there is nothing to measure.
@@ -579,8 +582,12 @@ the current one:
 phoebe bench run bench/suite.json --bench-config bench/pr-123.json
 ```
 
-If the PR also changes the `issues` provider, model or effort, set them on the
-`pr` contender. `main` takes the tenant's own settings.
+This compares the deployment against the PR, not the default branch against the PR:
+`main` takes the tenant's own prompt and settings, env overrides included. If the
+deployment differs from the default branch, extract the default branch's committed
+prompt and set its committed provider, model and effort on `main` too. If the PR
+also changes the `issues` provider, model or effort, set them on the `pr`
+contender.
 
 ### No CI workflow template
 

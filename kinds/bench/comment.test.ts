@@ -2,7 +2,14 @@ import { describe, expect, test } from "vite-plus/test";
 import type { BenchTrial } from "../../src/contracts/bench.ts";
 import type { BenchReport } from "../../src/contracts/bench-report.ts";
 import type { AgentRunRecord } from "../../src/contracts/unit-record.ts";
-import { medianTrialCost, renderBenchComment, totalCost } from "./comment.ts";
+import {
+  medianTrialCost,
+  renderBadSuiteComment,
+  renderBenchComment,
+  renderNoSuiteComment,
+  selectCommand,
+  totalCost,
+} from "./comment.ts";
 import type { Side } from "./sides.ts";
 
 function run(costUsd: number | null, costBasis: AgentRunRecord["costBasis"]): AgentRunRecord {
@@ -58,5 +65,22 @@ describe("renderBenchComment", () => {
     expect(body).toContain("| Settings | — | — |");
     expect(body).toContain("Total cost: —.");
     expect(body).not.toContain("Bench does not measure");
+  });
+});
+
+describe("selectCommand", () => {
+  test("writes to the configured suite, creating its directory first", () => {
+    expect(selectCommand("suite.json")).toBe("phoebe bench select > suite.json");
+    expect(selectCommand("bench/suite.json")).toBe(
+      "mkdir -p bench && phoebe bench select > bench/suite.json",
+    );
+    expect(selectCommand("my bench/custom.json")).toBe(
+      "mkdir -p 'my bench' && phoebe bench select > 'my bench/custom.json'",
+    );
+  });
+
+  test("both no-suite comments name the configured path", () => {
+    expect(renderNoSuiteComment("bench/custom.json")).toContain("> bench/custom.json");
+    expect(renderBadSuiteComment("bench/custom.json", "bad")).toContain("> bench/custom.json");
   });
 });

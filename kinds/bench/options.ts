@@ -66,8 +66,12 @@ function judgeOption(
   raw: Record<string, unknown>,
   env: NodeJS.ProcessEnv,
 ): BenchJudge | null {
-  const file =
-    raw["judge"] === undefined ? null : parseBenchJudge(raw["judge"], (what) => fail(at, what));
+  const rawJudge = raw["judge"];
+  if (rawJudge !== undefined) {
+    if (!isRecord(rawJudge)) fail(at, "`judge` must be an object with `provider` and `model`.");
+    onlyKeys(`${at}.judge`, rawJudge, ["provider", "model"]);
+  }
+  const file = isRecord(rawJudge) ? rawJudge : null;
   const provider = readSetting(env, JUDGE_PROVIDER);
   const model = readSetting(env, JUDGE_MODEL);
   if (provider !== undefined && !(PROVIDER_NAMES as readonly string[]).includes(provider.value)) {
@@ -77,8 +81,8 @@ function judgeOption(
     );
   }
   const merged = {
-    provider: provider?.value ?? file?.provider,
-    model: model?.value ?? file?.model,
+    provider: provider?.value ?? file?.["provider"],
+    model: model?.value ?? file?.["model"],
   };
   if (merged.provider === undefined && merged.model === undefined) return null;
   if (merged.provider === undefined || merged.model === undefined) {
@@ -89,7 +93,9 @@ function judgeOption(
         `(\`judge\`, ${JUDGE_PROVIDER.env}, ${JUDGE_MODEL.env}).`,
     );
   }
-  return { provider: merged.provider, model: merged.model };
+  return parseBenchJudge({ provider: merged.provider, model: merged.model }, (what) =>
+    fail(at, what),
+  );
 }
 
 /**

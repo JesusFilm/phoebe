@@ -1179,13 +1179,13 @@ pipelines: {
       bench: {
         path: "phoebe-agent/kinds/bench",
         suite: "bench/suite.json",
-        // A bench replays up to maxFixtures × 2 × repeat trials in one unit.
-        runTimeoutMs: 12 * 60 * 60 * 1000,
         // maxFixtures: 10, repeat: 1, judge: { provider: "claude", model: "claude-opus-5-5" },
       },
     },
   },
 },
+// A bench replays up to maxFixtures × 2 × repeat trials in one unit.
+workKinds: { bench: { runTimeoutMs: 12 * 60 * 60 * 1000 } },
 ```
 
 | Option        | Default | Env                                                       | Meaning                                                                                             |
@@ -1199,8 +1199,11 @@ An env name beats the file, as for every catalogued setting. A judge needs both
 its provider and its model, from either place. An unknown option fails
 registration. So does declaring the kind in a pipeline that runs any other
 kind, and so does a `concurrency` above 1. The kind never takes a slot the work
-pipeline wanted. Set the block's `runTimeoutMs` high enough for a whole bench,
-since the run deadline covers the bench, not one trial. Each trial still uses
+pipeline wanted. The kind sets no run budget of its own, so the 45-minute default
+applies until you raise it with `PHOEBE_BENCH_RUN_TIMEOUT_MS` or
+`workKinds.bench.runTimeoutMs`. Set it high enough for a whole bench, since the
+deadline covers the bench, not one trial. A bench that outruns it is aborted and
+the label stays, so every retry fails the same way. Each trial still uses
 the tenant's `issues` run budget.
 
 **Fetch and select.** Each poll lists the open PRs that carry the label. Each

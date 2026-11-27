@@ -21,6 +21,9 @@ if (configPath === undefined) {
   process.exit(2);
 }
 const user = await loadUserConfig(resolve(configPath));
+// Relative prompts resolve from the asset directory the config names, as they
+// do when the supervisor runs the engine with that directory as its cwd.
+const assetDir = resolve(dirname(resolve(configPath)), user.configDir ?? ".");
 const config = issuesPipelineConfig(
   resolveConfig(user, { dataBase: dirname(resolve(configPath)) }),
 );
@@ -29,6 +32,6 @@ const settings: TreeSettings = {
   provider: selection.provider,
   model: selection.model,
   effort: selection.effort ?? null,
-  promptFile: resolve(dirname(resolve(configPath)), config.promptFiles.issue),
+  promptFile: resolve(assetDir, config.promptFiles.issue),
 };
 process.stdout.write(`${JSON.stringify(settings)}\n`);

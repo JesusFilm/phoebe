@@ -3,6 +3,7 @@
 // about ten fixtures run once each move on noise, so nothing here fails a
 // check, and the reviewer decides. Pure, so every line is tested without git.
 
+import { posix } from "node:path";
 import { formatTokens, formatUsd, median, NONE, unstableLine } from "../../src/bench-report.ts";
 import { BENCH_VERDICTS, type BenchTrial } from "../../src/contracts/bench.ts";
 import type { BenchReport, BenchReportRow } from "../../src/contracts/bench-report.ts";
@@ -18,8 +19,19 @@ export function benchMarker(runId: string, headSha: string): string {
   return `<!-- phoebe-bench run=${runId} head=${headSha} -->`;
 }
 
-/** The command a deployment with no suite is told to run. */
-export const SELECT_COMMAND = "phoebe bench select > bench/suite.json";
+/** One argument, quoted for a POSIX shell when it needs it. */
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** The command a deployment with no suite at `suite` is told to run. */
+export function selectCommand(suite: string): string {
+  const dir = posix.dirname(suite);
+  const target = shellQuote(suite);
+  return dir === "."
+    ? `phoebe bench select > ${target}`
+    : `mkdir -p ${shellQuote(dir)} && phoebe bench select > ${target}`;
+}
 
 function short(sha: string): string {
   return sha.slice(0, 12);
@@ -194,7 +206,7 @@ export function renderNoSuiteComment(suite: string): string {
       "deployment directory, then add the `phoebe:bench` label again:",
     "",
     "```sh",
-    SELECT_COMMAND,
+    selectCommand(suite),
     "```",
     "",
   ].join("\n");
@@ -205,7 +217,7 @@ export function renderBadSuiteComment(suite: string, error: string): string {
   return [
     "<!-- phoebe-bench bad-suite -->",
     `Bench did not run. The suite at \`${suite}\` could not be read. Fix it or pin a new one ` +
-      `with \`${SELECT_COMMAND}\`, then add the \`phoebe:bench\` label again.`,
+      `with \`${selectCommand(suite)}\`, then add the \`phoebe:bench\` label again.`,
     "",
     "```text",
     error,

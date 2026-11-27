@@ -29,8 +29,21 @@ describe("resolveBenchOptions", () => {
     );
     expect(() =>
       resolveBenchOptions({ suite: "s", judge: { provider: "claude" } }, AT, {}),
-    ).toThrow("judge.model must be a non-empty string");
+    ).toThrow("the judge needs both a provider and a model");
     expect(() => resolveBenchOptions("bench/suite.json", AT, {})).toThrow("must be an object");
+  });
+
+  test("a half judge in the file is completed by the env name", () => {
+    expect(
+      resolveBenchOptions({ suite: "s", judge: { provider: "claude" } }, AT, {
+        PHOEBE_BENCH_JUDGE_MODEL: "claude-opus-5-5",
+      }).judge,
+    ).toEqual({ provider: "claude", model: "claude-opus-5-5" });
+    expect(() =>
+      resolveBenchOptions({ suite: "s", judge: { provider: "claude", extra: 1 } }, AT, {
+        PHOEBE_BENCH_JUDGE_MODEL: "m",
+      }),
+    ).toThrow("extra");
   });
 
   test("the env names beat the file", () => {
