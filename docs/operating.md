@@ -253,6 +253,72 @@ out.
 directly, so it works while the bootstrapper is down. On the host it runs
 itself in the container with the same flags.
 
+## Forwarding unit records to OpenTelemetry
+
+Phoebe can send each unit record to an OpenTelemetry collector you run, as one
+OTLP trace. It is off by default. To turn it on, set the standard exporter
+variables in the deployment's `.env`. The scaffolded `container/compose.yml`
+passes them through to the container.
+
+| Variable                             | What it does                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | The collector's base URL. Phoebe appends `v1/traces`.                                                  |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | The full traces URL, used as given. It wins over the base URL.                                         |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | Request headers as `key=value,key=value`, values percent-encoded. Put the collector's credential here. |
+| `OTEL_SERVICE_NAME`                  | Replaces the default `service.name`, which is `phoebe`.                                                |
+| `OTEL_RESOURCE_ATTRIBUTES`           | Extra resource attributes, as `key=value,key=value`.                                                   |
+
+There is no config field. Only the bootstrapper reads these variables. No agent
+gets them, whatever a kind's `agentEnv` says, because the headers hold your
+collector's credential.
+
+Phoebe speaks OTLP/HTTP JSON and nothing else, so point the endpoint at the
+collector's HTTP receiver, which listens on port 4318 by default. If
+`OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` says `grpc`
+or `http/protobuf`, Phoebe still sends JSON, and `phoebe doctor` flags the
+setting.
+
+**What gets sent.** Each record written after forwarding is on is sent once.
+Older records are not sent. Observer units are sent. Bench trials are not, since
+they never reach a pipeline's history. Each trace has these spans:
+
+- A `unit <kind>` root span runs from the unit's start to its settle time. An
+  abandoned unit has no settle time, so its span ends when the record arrived.
+  It carries `phoebe.tenant`, `phoebe.pipeline`, `phoebe.kind`, `phoebe.unit`,
+  `phoebe.outcome`, `phoebe.quarantined`, `phoebe.run_budget_ms`, `phoebe.effort`,
+  `phoebe.pr_number`, `phoebe.head_sha`, `phoebe.engine_commit`,
+  `gen_ai.provider.name` and `gen_ai.request.model`.
+- An `invoke_agent <kind>` child span covers each agent run. It carries the GenAI
+  attributes `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.provider.name`
+  (`anthropic`, `openai` or `cursor`), `gen_ai.request.model` and the
+  `gen_ai.usage.*` token counts. Cost, cost basis, turns, stop reason, usage
+  completeness, exit code, prompt SHA, reported models and the tool-call total
+  go under `phoebe.agent_run.*`.
+
+`gen_ai.usage.input_tokens` counts uncached input, cache reads and cache writes
+together, as the convention asks. A count the provider did not report is left
+out rather than sent as 0. A failed, timed-out or abandoned unit has ERROR
+status, with `error.type` set to the outcome. So does an agent run that exited
+non-zero or never exited. A unit's `detail` and `branch` are never sent,
+because they can hold free text and issue titles.
+
+The resource has `service.version` set to the engine's version and
+`service.instance.id` set to the deployment ID. The `gen_ai.*` names come from
+semantic-conventions-genai v0.1.0, and the scope's schema URL pins that release.
+Those conventions are still at Development status. When Phoebe moves to a later
+release, the changeset lists every renamed attribute.
+
+Trace and span IDs come from a hash of the deployment ID, the tenant and
+pipeline, the unit and its start time. If a record is sent twice, the collector
+sees the same trace twice rather than two traces.
+
+**Delivery.** A send that gets HTTP 429, 502, 503 or 504, or loses its
+connection, is retried once, after the `Retry-After` wait when the collector
+gives one. Any other failure drops the trace, and so does a partial success.
+Nothing is queued on disk. The deployment report's `bootstrapper.telemetry`
+counts what was `sent` and `dropped`, with `lastError` and `lastSentAt`. When the
+latest send failed and none has succeeded since, the console shows a warning.
+
 ## Starting an observer run: `phoebe observe`
 
 The [`observer`](work-kinds.md) kind runs on its `every` schedule, or never
@@ -486,7 +552,7 @@ is never judged. A trial with commits that got no verdict counts as
 
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs thirteen checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -516,6 +582,10 @@ is never judged. A trial with commits that got no verdict counts as
   the host, that the arm's overlay files exist, that the running services and
   published ports match the arm, and on the host arm the same read-only Serve
   inspection `phoebe start` runs. The line says which vantage point answered.
+- **telemetry.** Whether unit records go to an OpenTelemetry collector, and the
+  URL they go to ([below](#forwarding-unit-records-to-opentelemetry)). It names
+  any headers set but never prints their values. A `*_PROTOCOL` of `grpc` or
+  `http/protobuf` is a warn, because Phoebe sends OTLP/HTTP JSON only.
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its

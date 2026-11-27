@@ -91,6 +91,7 @@ export {
   type FleetReport,
   type ReconcileState,
   type SlotReport,
+  type TelemetryReport,
   type TenantFacts,
 } from "./deployment.ts";
 export { EFFECTIVE_CONFIG_VERSION } from "./effective-config.ts";

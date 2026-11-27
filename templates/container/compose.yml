@@ -79,6 +79,18 @@ services:
       PHOEBE_MAX_CONCURRENT_AGENTS: "${PHOEBE_MAX_CONCURRENT_AGENTS:-}"
       PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS: "${PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS:-}"
       PHOEBE_RECONCILE_INTERVAL_MS: "${PHOEBE_RECONCILE_INTERVAL_MS:-}"
+      # Optional: forward each unit record as an OTLP trace to your own
+      # OpenTelemetry collector (docs/operating.md → Forwarding unit records to
+      # OpenTelemetry). Off while both endpoints are empty. Only the
+      # bootstrapper reads these; no agent ever sees them, since the headers
+      # carry the collector's credential. Phoebe sends OTLP/HTTP JSON only.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:-}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-}"
+      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: "${OTEL_EXPORTER_OTLP_TRACES_PROTOCOL:-}"
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-}"
+      OTEL_RESOURCE_ATTRIBUTES: "${OTEL_RESOURCE_ATTRIBUTES:-}"
     volumes:
       # Two named volumes (#62). All tenant data nests under /data/repos as
       # /data/repos/<owner>/<repo>/{repo,worktrees,state,scratch}; the shared engine

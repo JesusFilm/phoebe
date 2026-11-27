@@ -80,6 +80,8 @@ import {
 } from "./github-app.ts";
 import { attachBroker } from "./broker-ipc.ts";
 import { attachEngineReports } from "./engine-report-ipc.ts";
+import { displayUrl, otelEnvKeys, resolveOtlpTarget } from "./otlp.ts";
+import { createTelemetryForwarder, type TelemetryForwarder } from "./telemetry-forwarder.ts";
 import { createConfigCollector, createRootConfigSource } from "./config-report.ts";
 import { createConfigEditor, type ConfigEditor } from "./config-editor.ts";
 import {
@@ -997,6 +999,8 @@ function runFleet(opts: {
   hold: FleetHold;
   /** Manual observer runs (#937): told about each child as it spawns. */
   observer: ObserveDispatcher;
+  /** The OTLP forwarder (#993), or null when no collector is named. */
+  telemetry: TelemetryForwarder | null;
   /** Where every child's output goes on its way to Docker, and what the API serves. */
   output: OutputTap;
   /** Learns each child's secrets as its env is built, so the API never shows one. */
@@ -1068,7 +1072,13 @@ function runFleet(opts: {
     // The report rail (#532): this child's completed passes and its `status.json`
     // writes, into the one read model. Wired beside the broker because it is the
     // same channel, opened for the same reason.
-    attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
+    attachEngineReports({
+      pipelineId: pipeline.id,
+      child,
+      state: deployment,
+      // Each new unit record, observer units included, as one OTLP trace (#993).
+      ...(opts.telemetry === null ? {} : { onRecord: opts.telemetry.forward }),
+    });
     // Where a manual observer run is forwarded (#937), if this pipeline runs one.
     opts.observer.attach(pipeline, child);
     deployment.noteSpawn(pipeline);
@@ -1120,6 +1130,8 @@ function runFleet(opts: {
       // Validation is the *running* engine's answer (#503), so the validator
       // moves with every materialization, exactly as the config collector does.
       opts.editor.useEngine(engine.entry);
+      // The engine's own version is the traces' `service.version` (#993).
+      opts.telemetry?.useEngine(engine.entry);
       deployment.noteEngine({
         ref: engineRefOf(engine),
         sha: engine.sha,
@@ -1854,6 +1866,23 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     warn: (message) => console.warn(message),
   });
   const identity = remote.identity();
+  // OTLP forwarding (#993): on when this container's env names a collector,
+  // off otherwise, and never a config field. The variables stay here — no
+  // engine child's allowlist carries them, and the agent's never does.
+  const otlpTarget = resolveOtlpTarget(process.env as Record<string, string | undefined>);
+  const telemetry: TelemetryForwarder | null =
+    otlpTarget === null
+      ? null
+      : createTelemetryForwarder({
+          target: otlpTarget,
+          deploymentId: () => remote.identity().deploymentId ?? identity.name,
+          onChange: () => deployment.publish(),
+        });
+  if (otlpTarget !== null) {
+    console.log(
+      `[phoebe] boot: forwarding unit records as OTLP traces to ${displayUrl(otlpTarget.url)}.`,
+    );
+  }
   // Every engine child opens its pipeline lines with this name (#686). Set on the
   // supervisor's own env so both arms deliver it the way they deliver the rest:
   // a fleet child copies it off the deployment knobs, a solo child inherits it.
@@ -1869,6 +1898,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     crashLoop: () => guard.state(),
     slots: () => brokerSlots(broker),
     fleetStop: () => hold.current(),
+    telemetry: () => telemetry?.report() ?? null,
     // The root config is the one file a console may edit (#503), so it is the
     // one an edit's fingerprint must be taken over.
     rootConfig: createRootConfigSource(configPath),
@@ -2038,6 +2068,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
         secrets,
         hold,
         observer,
+        telemetry,
         output,
         redactor,
         heldTenants: () => held,
@@ -2112,6 +2143,7 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // Validation is the *running* engine's answer (#503), so the validator moves
     // with every materialization, exactly as the config collector does.
     editor.useEngine(engine.entry);
+    telemetry?.useEngine(engine.entry);
     deployment.noteEngine({
       ref: engineRefOf(engine),
       sha: engine.sha,
@@ -2141,15 +2173,21 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
     // write into; an empty store keeps the null and the child inherits verbatim.
     const store = tenantSecretStore(soloTenant);
     const storeKeys = Object.keys(store);
+    // The OTLP variables stay with the supervisor (#993): the engine never sends,
+    // and the headers hold the collector's credential.
+    const otelKeys = otelEnvKeys(process.env);
     const childEnv =
-      env ?? (scrubKeys.length > 0 || storeKeys.length > 0 ? { ...process.env } : null);
+      env ??
+      (scrubKeys.length > 0 || storeKeys.length > 0 || otelKeys.length > 0
+        ? { ...process.env }
+        : null);
     if (childEnv !== null) {
       for (const key of storeKeys) {
         if (store[key] !== "") childEnv[key] = store[key];
       }
       // After the store, as in `buildEngineChildEnv`: the scrub is a subtraction
       // and has to come after everything that could add.
-      for (const key of scrubKeys) delete childEnv[key];
+      for (const key of [...scrubKeys, ...otelKeys]) delete childEnv[key];
     }
     // What this child could print of its own secrets, learned before it prints
     // (map #690, redact-output.ts): the env it is handed, and the store whole.
@@ -2186,7 +2224,12 @@ export async function runBoot(argv: readonly string[]): Promise<void> {
       },
     });
     attachBroker({ owner: pipeline.id, broker, child });
-    attachEngineReports({ pipelineId: pipeline.id, child, state: deployment });
+    attachEngineReports({
+      pipelineId: pipeline.id,
+      child,
+      state: deployment,
+      ...(telemetry === null ? {} : { onRecord: telemetry.forward }),
+    });
     observer.attach(pipeline, child);
     deployment.noteSpawn(pipeline);
     doctor.noteFleetUp();

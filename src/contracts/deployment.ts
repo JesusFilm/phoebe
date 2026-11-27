@@ -164,7 +164,30 @@ export type BootstrapperReport = {
    * as running. An addition, so it does not move {@link DEPLOYMENT_SCHEMA}.
    */
   stopped?: FleetStop | null;
+  /**
+   * How forwarding unit records to an OpenTelemetry collector is going (#993).
+   * Null when forwarding is off; absent on a report from a bootstrapper that
+   * predates it. An addition, so it does not move {@link DEPLOYMENT_SCHEMA}.
+   */
+  telemetry?: TelemetryReport | null;
   updatedAt: string;
+};
+
+/**
+ * The bootstrapper's OTLP forwarding counters since it started (#993). Counts
+ * only: nothing is queued, so a dropped trace is gone and counted here.
+ */
+export type TelemetryReport = {
+  /** Traces the collector took whole. */
+  sent: number;
+  /** Traces given up on: refused, partly rejected, or still failing after the one retry. */
+  dropped: number;
+  /**
+   * Why the latest send failed, cleared by the next one that succeeds. Non-null
+   * means every send since the last delivery has failed.
+   */
+  lastError: string | null;
+  lastSentAt: string | null;
 };
 
 /**
