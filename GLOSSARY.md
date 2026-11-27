@@ -496,8 +496,7 @@ _Avoid_: run (overloaded), attempt, replay
 
 **Baseline**:
 A fixture's merged pull request run through the install, check and test gates with no
-agent, to show the known-good answer still passes. `bench select` runs one before it pins a
-fixture, and `bench run` runs one again before any trial.
+agent, to show the known-good answer still passes.
 _Avoid_: control, reference run, golden run
 
 **Unstable fixture**:
