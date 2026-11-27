@@ -2,7 +2,7 @@
 
 ## What went wrong
 
-Phoebe works this repository unattended. Over the last {{OBSERVER_LOOKBACK}}, {{FLAGGED_COUNT}} of its work units went wrong: they failed, timed out, were abandoned when the engine died under them, or were quarantined after timing out too often, or the pull request they worked did not land cleanly. How far back the history actually reaches: {{OBSERVER_COVERAGE}}.
+Phoebe works this repository unattended. Over the last {{OBSERVER_LOOKBACK}}, {{FLAGGED_COUNT}} of its work units went wrong: they ended without the PR they were meant to open (`unproductive`), failed, timed out, were abandoned when the engine died under them, or were quarantined after too many runs that produced nothing, or the pull request they worked did not land cleanly. How far back the history actually reaches: {{OBSERVER_COVERAGE}}.
 
 The units are on disk. Read them from there:
 

@@ -232,8 +232,11 @@ phoebe history --tenant acme/widget --pipeline work --kind issues --json
 
 The filters are `--tenant <owner/repo>`, `--pipeline <name>`, `--cell <id>`
 (the deployment report's `<tenantId>#<pipeline>`), `--kind`, `--outcome`
-(`completed`, `failed`, `timed-out` or `abandoned`), `--provider`, `--model`
-and `--since <date>`. They combine with AND. A page holds 50 units by default;
+(`completed`, `unproductive`, `failed`, `timed-out` or `abandoned`),
+`--provider`, `--model` and `--since <date>`. An `unproductive` unit is one whose
+run ended without throwing but left its issue claimed with no PR; Phoebe
+re-arms the issue and counts the run toward quarantine. A unit whose run
+quarantined it reads `(quarantined)` after its outcome. They combine with AND. A page holds 50 units by default;
 `--limit` raises that to at most 200, and a larger number is cut to 200. When
 more units match, the footer prints the `--before <cursor>` that fetches the
 next page.

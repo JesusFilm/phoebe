@@ -263,6 +263,7 @@ exist, not what work happens inside one.
 | `pollIntervalMs` | `300000` | cold | Idle poll cadence. **Outranks `PHOEBE_POLL_INTERVAL_MS`**; the env var is the fallback for a pipeline that declares nothing, and the default applies when neither does.                                                                                                                                             |
 | `disabled`       | `false`  | hot  | Operator off-switch for this pipeline.                                                                                                                                                                                                                                                                              |
 | `priority`       | `0`      | hot  | Tenant-local scheduling priority for a contended [slot](#concurrency-the-pipelines-knob-and-the-fleets-cap); higher wins, ties keep their place in the queue.                                                                                                                                                       |
+| `spend`          | none     | hot  | This pipeline's [spend limits](#spend-limits-spend), weighed against its own history apart from the tenant's.                                                                                                                                                                                                       |
 
 Hot means the supervisor acts on a change without relaunching the pipeline. Cold
 knobs relaunch it. `disabled` is hot at all three scopes: tenant, pipeline, and
@@ -389,6 +390,63 @@ kind no longer disables it**. A kind absent from `order` runs after the named
 ones. Set `kinds.<name>.disabled: true` instead. A config whose `workOrder`
 already listed every kind, which covers the shipped default and every config
 `phoebe init` writes, behaves exactly as before.
+
+## Spend limits (`spend`)
+
+A `spend` block puts limits on what a tenant, or one of its pipelines, spends.
+It goes on the tenant config, on `pipelines.<name>`, or both:
+
+```ts
+spend: {
+  warn: { usd24h: 20, tokens7d: 50_000_000 },
+  ceiling: { usd24h: 40, usd7d: 150 },
+},
+pipelines: {
+  observe: { spend: { ceiling: { usd7d: 10 } } },
+},
+```
+
+With no block there are no limits. Each of `warn` and `ceiling` holds any of
+four limits, all positive numbers:
+
+| Limit       | Counts                                  |
+| ----------- | --------------------------------------- |
+| `usd24h`    | API spend in dollars, last 24 hours     |
+| `usd7d`     | API spend in dollars, last 7 days       |
+| `tokens24h` | Input plus output tokens, last 24 hours |
+| `tokens7d`  | Input plus output tokens, last 7 days   |
+
+`usd` counts only what an API key was billed. A Claude subscription reports a
+list-price estimate that nobody paid, and that estimate never counts toward a
+limit. `tokens` counts every provider, cached tokens left out. The windows roll:
+they are the same last 24 hours and last 7 days the deployment report's history
+summary sums. There is no calendar month.
+
+A ceiling below its matching warning limit is a config error naming both. A
+`spend` block on a workspace root is a config error too, since a root runs no
+work.
+
+**How a ceiling holds.** The bootstrapper weighs the limits whenever it sums the
+unit history: at boot, when a pipeline records a unit, and hourly. Tenant and
+pipeline limits apply apart. A tenant's figures are the sum of all its
+pipelines', and its ceiling covers every one of them. A pipeline's ceiling
+covers that pipeline alone. Once a ceiling is reached, each pipeline it covers
+admits no new unit. Units already running finish. A held observer also refuses
+a manual run (`phoebe observe`, `POST /api/observe`) and names the ceiling.
+
+**How a hold lets go.** On its own, as spend ages out of the window. The
+deployment report carries each cell's hold, with the limit, what the window
+holds, since when, and an estimated `releaseAt`. The bootstrapper weighs the
+limits again at that moment rather than waiting for the hourly tick. An edit
+that raises or removes the ceiling lets it go at once. `spend` is hot, so the
+edit relaunches nothing. There is no resume command.
+
+The report also lists, on each cell, the warning limits it has reached.
+`phoebe bench` runs are neither counted nor limited: they write no unit history.
+
+The tenant's eight limits answer to `PHOEBE_SPEND_<LEVEL>_<LIMIT>`, such as
+`PHOEBE_SPEND_CEILING_USD24H` ([the catalogue](#the-catalogue)). A pipeline's
+block is file-only, like the rest of `pipelines`.
 
 ## Work order
 
@@ -1288,6 +1346,14 @@ bootstrapper-only setting never reaches an engine child.
 | `PHOEBE_DEPLOYMENT_SLOT_CAP`              | `deployment.slotCap`             | bootstrapper | Default `max(concurrency)` across live pipelines. See [Concurrency](#concurrency-the-pipelines-knob-and-the-fleets-cap).                                     |
 | `PHOEBE_DEPLOYMENT_SLOT_FLOOR_BUDGET`     | `deployment.slotFloorBudget`     | bootstrapper | Default 1. `0` makes the cap a hard ceiling.                                                                                                                 |
 | `PHOEBE_DEPLOYMENT_RECONCILE_INTERVAL_MS` | `deployment.reconcileIntervalMs` | bootstrapper | Default 60000.                                                                                                                                               |
+| `PHOEBE_SPEND_WARN_USD24H`                | `spend.warn.usd24h`              | bootstrapper | No default. See [Spend limits](#spend-limits-spend).                                                                                                         |
+| `PHOEBE_SPEND_WARN_USD7D`                 | `spend.warn.usd7d`               | bootstrapper | No default.                                                                                                                                                  |
+| `PHOEBE_SPEND_WARN_TOKENS24H`             | `spend.warn.tokens24h`           | bootstrapper | No default.                                                                                                                                                  |
+| `PHOEBE_SPEND_WARN_TOKENS7D`              | `spend.warn.tokens7d`            | bootstrapper | No default.                                                                                                                                                  |
+| `PHOEBE_SPEND_CEILING_USD24H`             | `spend.ceiling.usd24h`           | bootstrapper | No default. At or above the matching warning limit.                                                                                                          |
+| `PHOEBE_SPEND_CEILING_USD7D`              | `spend.ceiling.usd7d`            | bootstrapper | No default.                                                                                                                                                  |
+| `PHOEBE_SPEND_CEILING_TOKENS24H`          | `spend.ceiling.tokens24h`        | bootstrapper | No default.                                                                                                                                                  |
+| `PHOEBE_SPEND_CEILING_TOKENS7D`           | `spend.ceiling.tokens7d`         | bootstrapper | No default.                                                                                                                                                  |
 
 `phoebe --help` prints this list from the same catalogue, so the two cannot
 drift apart. A test fails the build on any `PHOEBE_*` name in the tree that is

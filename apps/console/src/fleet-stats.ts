@@ -133,9 +133,14 @@ function isWindow(value: unknown): value is HistoryWindow {
   );
 }
 
-/** One window's units that did not complete: failed, timed out or abandoned. */
+/** One window's units that did not complete: unproductive, failed, timed out or abandoned. */
 export function didNotComplete(window: Pick<HistoryWindow, "outcomes">): number {
-  return window.outcomes.failed + window.outcomes["timed-out"] + window.outcomes.abandoned;
+  return (
+    (window.outcomes.unproductive ?? 0) +
+    window.outcomes.failed +
+    window.outcomes["timed-out"] +
+    window.outcomes.abandoned
+  );
 }
 
 /** The fleet's totals over one window, and which deployments they leave out. */
@@ -155,7 +160,7 @@ export function fleetTotals(
 ): FleetTotals {
   const total: HistoryWindow = {
     units: 0,
-    outcomes: { completed: 0, failed: 0, "timed-out": 0, abandoned: 0 },
+    outcomes: { completed: 0, unproductive: 0, failed: 0, "timed-out": 0, abandoned: 0 },
     quarantined: 0,
     costUsd: { api: 0, subscriptionEstimate: 0 },
     unitsWithoutCost: 0,

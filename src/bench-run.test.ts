@@ -951,5 +951,11 @@ describe("pieces", () => {
     expect(() =>
       parseSuite(JSON.stringify({ v: 1, repo: "acme/widget", fixtures: [fixture] }), "acme/widget"),
     ).toThrow(/selectedAt/);
+    expect(() =>
+      parseSuite(
+        JSON.stringify({ v: 1, repo: "acme/widget", selectedAt, fixtures: [fixture, fixture] }),
+        "acme/widget",
+      ),
+    ).toThrow(/Fixture 1 repeats issue #7/);
   });
 });

@@ -8,7 +8,13 @@ import type { UnitRecord } from "../../src/contracts/unit-record.ts";
 import { PR_FLAGS, type PrFlag, type PrSignals, type UnitPrOutcome } from "./pr-outcomes.ts";
 
 /** Why a unit is evidence, from its record alone. */
-export const RECORD_FLAGS = ["failed", "timed-out", "abandoned", "quarantined"] as const;
+export const RECORD_FLAGS = [
+  "unproductive",
+  "failed",
+  "timed-out",
+  "abandoned",
+  "quarantined",
+] as const;
 export type RecordFlag = (typeof RECORD_FLAGS)[number];
 
 /**
@@ -32,9 +38,10 @@ export type FlaggedUnit = {
   pr: PrSignals | null;
 };
 
-/** The flags one record earns. A quarantine rides on the timeout that caused it. */
+/** The flags one record earns. A quarantine rides on the run that caused it. */
 export function flagsOf(record: UnitRecord): RecordFlag[] {
   const flags: RecordFlag[] = [];
+  if (record.outcome === "unproductive") flags.push("unproductive");
   if (record.outcome === "failed") flags.push("failed");
   if (record.outcome === "timed-out") flags.push("timed-out");
   if (record.outcome === "abandoned") flags.push("abandoned");

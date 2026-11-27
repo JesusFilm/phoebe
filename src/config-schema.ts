@@ -19,6 +19,8 @@ import { validateWorkspaceField } from "../bootstrap/workspace-source.ts";
 // the engine exists, and the engine re-validates the consumer's config here.
 import { validateGitIdentityField, type GitIdentity } from "../bootstrap/git-identity.ts";
 import { derivePaths } from "./paths.ts";
+import { normalizeSpendField, validateSpendField } from "./spend.ts";
+import type { SpendField } from "./contracts/spend.ts";
 // Type-only (erased at runtime, so no import cycle): the definition contract
 // lives beside the registry in src/work-kinds/.
 import type { AnyWorkKindDefinition } from "./work-kinds/definition.ts";
@@ -328,6 +330,13 @@ export type PipelineDeclaration = {
   disabled?: boolean;
   /** Tenant-local scheduling priority; higher wins a contended slot. Hot. */
   priority?: number;
+  /**
+   * This pipeline's spend limits (#990): a `warn` and a `ceiling`, each with
+   * optional `usd24h`, `usd7d`, `tokens24h` and `tokens7d`. Weighed against this
+   * pipeline's own history, apart from the tenant's limits. Hot — the bootstrapper
+   * acts on an edit without relaunching the pipeline.
+   */
+  spend?: SpendField;
 };
 
 /** The tenant's `pipelines` block, keyed by pipeline name. */
@@ -347,6 +356,8 @@ export type ResolvedPipeline = {
   pollIntervalMs?: number;
   disabled: boolean;
   priority: number;
+  /** The pipeline's spend limits, absent when it declares none. */
+  spend?: SpendField;
 };
 
 /** Per-pipeline defaults for the knobs a declaration may omit. */
@@ -365,6 +376,7 @@ const PIPELINE_KNOBS = [
   "pollIntervalMs",
   "disabled",
   "priority",
+  "spend",
 ] as const satisfies readonly (keyof PipelineDeclaration)[];
 
 /**
@@ -490,6 +502,9 @@ export function validatePipelinesField(pipelines: PipelinesField): void {
     if (pipeline.kinds !== undefined) {
       validateWorkKindsField(pipeline.kinds, `pipelines.${name}.kinds`);
     }
+    if (pipeline.spend !== undefined) {
+      validateSpendField(pipeline.spend, `pipelines.${name}.spend`);
+    }
   }
 
   const owner = new Map<string, string>();
@@ -522,6 +537,7 @@ export function resolvePipelines(user: PhoebeUserConfig): Record<string, Resolve
     const isDefaultPipeline = name === DEFAULT_PIPELINE_NAME;
     const order = pipeline.order ?? (isDefaultPipeline ? user.workOrder : undefined) ?? [];
     const kinds = pipeline.kinds ?? (isDefaultPipeline ? user.workKinds : undefined) ?? {};
+    const spend = normalizeSpendField(pipeline.spend);
     resolved[name] = {
       order,
       kinds,
@@ -529,6 +545,7 @@ export function resolvePipelines(user: PhoebeUserConfig): Record<string, Resolve
       ...(pipeline.pollIntervalMs !== undefined ? { pollIntervalMs: pipeline.pollIntervalMs } : {}),
       disabled: pipeline.disabled ?? PIPELINE_DEFAULTS.disabled,
       priority: pipeline.priority ?? PIPELINE_DEFAULTS.priority,
+      ...(spend !== undefined ? { spend } : {}),
     };
   }
   return resolved;
@@ -947,6 +964,13 @@ export type PhoebeConfig = {
    */
   disabled: boolean;
   /**
+   * The tenant's spend limits (#990), weighed against the sum of its pipelines'
+   * history. Absent when the tenant declares none, which means no limits. The
+   * engine never acts on them: it prints them for the bootstrapper, which
+   * evaluates them and holds admission when a ceiling is reached.
+   */
+  spend?: SpendField;
+  /**
    * Per-tenant filesystem layout. Not user-supplied: derived from `repoSlug`
    * and the deployment data base by `resolveConfig` (see src/paths.ts, #58/#62).
    */
@@ -1111,6 +1135,15 @@ export type PhoebeUserConfig = {
    * quarantine (Phoebe's own decision). Default `false`.
    */
   disabled?: boolean;
+  /**
+   * The tenant's spend limits (#990, decision #978): a `warn` and a `ceiling`,
+   * each with optional `usd24h`, `usd7d`, `tokens24h` and `tokens7d`. `usd` is
+   * API spend only, `tokens` input plus output tokens; the windows are rolling.
+   * A warning limit is reported. A ceiling holds admission on every pipeline of
+   * the tenant until spend ages out of the window or the ceiling is raised.
+   * Tenant-only, like `pipelines`. Hot. No block means no limits.
+   */
+  spend?: SpendField;
 };
 
 /**
@@ -1291,6 +1324,15 @@ export function validateUserConfig(user: PhoebeUserConfig): void {
     }
     validatePipelinesField(user.pipelines);
     validatePipelineAliasConflicts(user);
+  }
+  if (user.spend !== undefined) {
+    if (user.workspace !== undefined) {
+      throw new Error(
+        `phoebe.config.ts declares \`spend\` on a workspace root. Spend limits belong to a ` +
+          `tenant or one of its pipelines, so the block goes on a tenant config.`,
+      );
+    }
+    validateSpendField(user.spend, "spend");
   }
   if (user.workspace !== undefined) {
     validateWorkspaceField(user.workspace);
@@ -1872,6 +1914,13 @@ export function resolveConfig(
     creditIssueAuthor: user.creditIssueAuthor ?? CONFIG_DEFAULTS.creditIssueAuthor,
     featureBranchCatchUp: user.featureBranchCatchUp ?? CONFIG_DEFAULTS.featureBranchCatchUp,
     disabled: user.disabled ?? CONFIG_DEFAULTS.disabled,
+    ...spendOf(user),
     paths: derivePaths(user.repoSlug, opts.dataBase),
   };
+}
+
+/** The tenant's `spend` block as `resolveConfig` spreads it: absent when it limits nothing. */
+function spendOf(user: PhoebeUserConfig): { spend?: SpendField } {
+  const spend = normalizeSpendField(user.spend);
+  return spend === undefined ? {} : { spend };
 }
