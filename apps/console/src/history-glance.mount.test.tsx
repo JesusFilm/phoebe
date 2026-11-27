@@ -80,7 +80,7 @@ function withHistory(overrides: Partial<DeploymentReport["fleet"]> = {}): Deploy
       history: historySummary({
         last7d: {
           units: 21,
-          outcomes: { completed: 17, failed: 2, "timed-out": 1, abandoned: 1 },
+          outcomes: { completed: 17, unproductive: 0, failed: 2, "timed-out": 1, abandoned: 1 },
           costUsd: { api: 4.2, subscriptionEstimate: 12.5 },
           unitsWithoutCost: 3,
         },
@@ -123,7 +123,12 @@ describe("the overview's 7-day card", () => {
     expect(card.textContent).toContain("3 with no cost reported");
     expect(card.textContent).toContain("4did not complete · 2 failed, 1 timed out, 1 abandoned");
     // The only reads are the feed's, one per outcome that did not complete.
-    expect(asked.map((query) => query.outcome)).toEqual(["failed", "timed-out", "abandoned"]);
+    expect(asked.map((query) => query.outcome)).toEqual([
+      "unproductive",
+      "failed",
+      "timed-out",
+      "abandoned",
+    ]);
   });
 
   test("draws without a reader at all, since the summary is in the report", async () => {
@@ -181,6 +186,7 @@ describe("needs a look", () => {
 
     const since = new Date(NOW.getTime() - 7 * 86_400_000).toISOString();
     expect(asked).toEqual([
+      { outcome: "unproductive", since, limit: 6 },
       { outcome: "failed", since, limit: 6 },
       { outcome: "timed-out", since, limit: 6 },
       { outcome: "abandoned", since, limit: 6 },

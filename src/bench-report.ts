@@ -11,14 +11,17 @@ import { join } from "node:path";
 import {
   BENCH_VERDICTS,
   type BenchContender,
+  type BenchGates,
   type BenchRunConfig,
   type BenchTrial,
 } from "./contracts/bench.ts";
 import type {
+  BenchBaselineFailure,
   BenchGateRate,
   BenchJudgeUsage,
   BenchReport,
   BenchReportRow,
+  BenchUnstableFixture,
   BenchVerdictCounts,
 } from "./contracts/bench-report.ts";
 import type { AgentRunRecord } from "./contracts/unit-record.ts";
@@ -141,14 +144,21 @@ export function contenderRow(
   };
 }
 
-/** The report for a run: its config, the trials it recorded, and how it ended. */
+/**
+ * The report for a run: its config, its fixtures' baselines, the trials it
+ * recorded, and how it ended. An unstable fixture's trials never ran, so it is
+ * in no rate; `planned` leaves it out too.
+ */
 export function buildBenchReport(opts: {
   runConfig: BenchRunConfig;
   trials: readonly BenchTrial[];
+  baselines: Record<string, BenchGates>;
+  unstable: readonly BenchUnstableFixture[];
   finishedAt: Date;
   interrupted: boolean;
 }): BenchReport {
   const { runConfig, trials } = opts;
+  const stableFixtures = runConfig.suite.fixtures.length - opts.unstable.length;
   const count = (outcome: BenchTrial["outcome"]): number =>
     trials.filter((trial) => trial.outcome === outcome).length;
   return {
@@ -162,7 +172,9 @@ export function buildBenchReport(opts: {
     benchConfig: runConfig.benchConfig,
     repeat: runConfig.repeat,
     concurrency: runConfig.concurrency,
-    planned: runConfig.suite.fixtures.length * runConfig.contenders.length * runConfig.repeat,
+    baselines: opts.baselines,
+    unstable: [...opts.unstable],
+    planned: stableFixtures * runConfig.contenders.length * runConfig.repeat,
     recorded: trials.length,
     outcomes: {
       completed: count("completed"),
@@ -233,6 +245,41 @@ function judgeLine(judge: BenchJudgeUsage, unjudged: number): string {
   );
 }
 
+// --- baselines (#988) -------------------------------------------------------
+
+/** The first gate a baseline failed, or `null` when every gate it ran passed. */
+export function baselineFailure(gates: BenchGates): BenchBaselineFailure | null {
+  for (const gate of ["install", "check", "test"] as const) {
+    const result = gates[gate];
+    if (result !== null && result.exitCode !== 0) return { gate, exitCode: result.exitCode };
+  }
+  return null;
+}
+
+/** `test exited 1`, `install exited without a code`, `checkout failed`. */
+export function describeBaselineFailure(failure: BenchBaselineFailure): string {
+  if (failure.gate === "checkout") return "checkout failed";
+  return `${failure.gate} exited ${failure.exitCode ?? "without a code"}`;
+}
+
+/** What `bench run` says, exiting 1, when it had no stable fixture to run. */
+export const NO_STABLE_FIXTURE = "no stable fixture: nothing to compare";
+
+/** Every fixture in the suite failed its baseline, so no trial ran. */
+export function everyFixtureUnstable(report: BenchReport): boolean {
+  return (
+    report.suite.fixtures.length > 0 && report.unstable.length === report.suite.fixtures.length
+  );
+}
+
+/** `2 fixture(s) unstable, not scored: #412 (test exited 1), #430 (install exited 1)`. */
+export function unstableLine(unstable: readonly BenchUnstableFixture[]): string {
+  return (
+    `${unstable.length} fixture(s) unstable, not scored: ` +
+    unstable.map((entry) => `#${entry.issue} (${describeBaselineFailure(entry)})`).join(", ")
+  );
+}
+
 /**
  * The report as the terminal shows it: a heading, one row per contender, and
  * each contender's settings. With a judge, a column per verdict after the
@@ -290,6 +337,7 @@ export function renderBenchReport(report: BenchReport): string {
     ...report.contenders.map(
       (row) => `${row.contender.name.padEnd(widths[0]!)}  ${settingsOf(row.contender)}`,
     ),
+    ...(report.unstable.length === 0 ? [] : ["", unstableLine(report.unstable)]),
   ];
   return `${out.join("\n")}\n`;
 }
@@ -311,8 +359,11 @@ export function parseBenchReport(text: string, where: string): BenchReport {
     throw new Error(`${where} is not a bench report this engine reads (expected \`v: 1\`).`);
   }
   // A report saved before the judge (#942) has neither field; it had no judge.
+  // One saved before baselines (#988) ran none and had no unstable fixture.
   return {
     ...(r as BenchReport),
+    baselines: r.baselines ?? {},
+    unstable: r.unstable ?? [],
     judge: r.judge ?? null,
     contenders: r.contenders.map((row) => ({ ...row, verdicts: row.verdicts ?? null })),
   };

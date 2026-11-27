@@ -23,10 +23,14 @@ export const OTHER_TOOL_CALLS = "other";
 
 /**
  * How a unit ended, as history sees it. `skipped` and `waiting-for-slot` never
- * write a record, since no work happened; a quarantine is a flag on the
- * timed-out record it follows, not an outcome of its own.
+ * write a record, since no work happened; a quarantine is a flag on the record
+ * of the run that earned it, not an outcome of its own.
+ *
+ * `unproductive` is a run that returned without throwing but left its issue
+ * claimed with no PR: the run the stranded-unit sweep counts toward quarantine
+ * (#985). It is not a success, and no count of completed units includes it.
  */
-export type UnitRecordOutcome = "completed" | "failed" | "timed-out" | "abandoned";
+export type UnitRecordOutcome = "completed" | "unproductive" | "failed" | "timed-out" | "abandoned";
 
 /**
  * What a cost figure is. `api` is money a key was billed; `subscription-estimate`
@@ -83,7 +87,7 @@ export type UnitRecord = {
   pipeline: string;
   unit: UnitRef;
   outcome: UnitRecordOutcome;
-  /** This timeout was the one that quarantined the unit. */
+  /** This run, whatever its outcome, was the one that quarantined the unit. */
   quarantined: boolean;
   /** Failure or timeout text, or a completed unit's summary; at most 500 characters. */
   detail: string | null;
@@ -130,7 +134,7 @@ export type HistoryCost = {
 export type HistoryWindow = {
   units: number;
   outcomes: Record<UnitRecordOutcome, number>;
-  /** Timed-out units whose timeout quarantined them. */
+  /** Units whose run quarantined them. */
   quarantined: number;
   costUsd: HistoryCost;
   /** Units none of whose agent runs reported a cost. */

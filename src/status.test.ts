@@ -164,7 +164,7 @@ function history(last24h: Partial<HistoryWindow> = {}): HistorySummary {
 /** Thirty-one units in a day, four of them not completed, on both kinds of cost. */
 const BUSY_DAY: Partial<HistoryWindow> = {
   units: 31,
-  outcomes: { completed: 27, failed: 3, "timed-out": 1, abandoned: 0 },
+  outcomes: { completed: 27, unproductive: 0, failed: 3, "timed-out": 1, abandoned: 0 },
   costUsd: { api: 8.2, subscriptionEstimate: 4.1 },
 };
 
@@ -519,11 +519,23 @@ describe("the history line (#929)", () => {
       formatHistoryWindow(
         historyWindow({
           units: 1,
-          outcomes: { completed: 0, failed: 0, "timed-out": 0, abandoned: 1 },
+          outcomes: { completed: 0, unproductive: 0, failed: 0, "timed-out": 0, abandoned: 1 },
           costUsd: { api: 0.42, subscriptionEstimate: 0 },
         }),
       ),
     ).toBe("1 unit, 1 abandoned  $0.42 api");
+  });
+
+  test("an unproductive unit is counted with the ones that did not complete (#985)", () => {
+    expect(
+      formatHistoryWindow(
+        historyWindow({
+          units: 3,
+          outcomes: { completed: 1, unproductive: 2, failed: 0, "timed-out": 0, abandoned: 0 },
+          unitsWithoutCost: 3,
+        }),
+      ),
+    ).toBe("3 units, 2 unproductive  tokens only");
   });
 
   test("units that reported no cost say tokens only, rather than costing nothing", () => {

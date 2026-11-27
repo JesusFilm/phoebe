@@ -137,6 +137,7 @@ export type {
 export type { ServeOutcome, StartOutcome } from "./start-outcome.ts";
 export type { PairOutcome, SessionsOutcome } from "./pair-outcome.ts";
 export type {
+  BenchBaselineGate,
   BenchComment,
   BenchConfig,
   BenchContender,
@@ -157,10 +158,12 @@ export type {
 } from "./bench.ts";
 export { BENCH_VERDICTS } from "./bench.ts";
 export type {
+  BenchBaselineFailure,
   BenchGateRate,
   BenchJudgeUsage,
   BenchReport,
   BenchReportRow,
+  BenchUnstableFixture,
   BenchVerdictCounts,
 } from "./bench-report.ts";
 export type {

@@ -28,7 +28,7 @@ import {
   usd,
   withChoicesOf,
 } from "./history.ts";
-import { createRemoteClient } from "./remote-client.ts";
+import { createRemoteClient, RemoteRequestError } from "./remote-client.ts";
 import { agentRun, bridge, historyPage, historyRecord } from "./test-fixture.ts";
 
 describe("asking for a page", () => {
@@ -210,15 +210,17 @@ describe("a summed cost (#932)", () => {
     expect(summaryCost(summed(0, 0, 0))).toEqual({ kind: "no-units" });
   });
 
-  test("did not complete counts failed, timed out and abandoned", () => {
-    expect(unfinishedOf({ completed: 9, failed: 1, "timed-out": 2, abandoned: 3 })).toBe(6);
+  test("did not complete counts unproductive, failed, timed out and abandoned", () => {
+    expect(
+      unfinishedOf({ completed: 9, unproductive: 4, failed: 1, "timed-out": 2, abandoned: 3 }),
+    ).toBe(10);
   });
 });
 
 describe("the units that need a look (#932)", () => {
   const SINCE = "2026-09-11T12:00:00.000Z";
 
-  test("asks once per outcome that did not complete, and keeps the newest six of all three", async () => {
+  test("asks once per outcome that did not complete, and keeps the newest six of all four", async () => {
     const asked: HistoryQuery[] = [];
     const at = (hours: number) => new Date(Date.UTC(2026, 8, 18, 12 - hours)).toISOString();
     const of = (outcome: UnitRecordOutcome, hours: number[]) =>
@@ -226,6 +228,7 @@ describe("the units that need a look (#932)", () => {
         historyRecord({ outcome, startedAt: at(h), unit: { kind: "issues", id: `issue:${h}` } }),
       );
     const pages: Record<string, HistoryRecord[]> = {
+      unproductive: of("unproductive", [6]),
       failed: of("failed", [1, 4, 7, 8, 9, 10]),
       "timed-out": of("timed-out", [2, 5]),
       abandoned: of("abandoned", [3]),
@@ -244,6 +247,7 @@ describe("the units that need a look (#932)", () => {
     const fetched = await readNeedsALook(read, SINCE);
 
     expect(asked).toEqual([
+      { outcome: "unproductive", since: SINCE, limit: 6 },
       { outcome: "failed", since: SINCE, limit: 6 },
       { outcome: "timed-out", since: SINCE, limit: 6 },
       { outcome: "abandoned", since: SINCE, limit: 6 },
@@ -256,9 +260,9 @@ describe("the units that need a look (#932)", () => {
       "issue:3",
       "issue:4",
       "issue:5",
-      "issue:7",
+      "issue:6",
     ]);
-    expect(fetched.total).toBe(12);
+    expect(fetched.total).toBe(14);
   });
 
   test("a deployment too old for one read is too old for the feed", async () => {
@@ -269,5 +273,31 @@ describe("the units that need a look (#932)", () => {
           : { kind: "page", page: historyPage([]) },
       );
     expect(await readNeedsALook(read, SINCE)).toEqual({ kind: "too-old" });
+  });
+
+  test("an engine that predates unproductive still feeds the other outcomes", async () => {
+    const read: HistoryReader = (query) =>
+      query.outcome === "unproductive"
+        ? Promise.reject(
+            new RemoteRequestError(400, {
+              error: "bad-request",
+              detail: "`outcome` is one of completed, failed (got `unproductive`).",
+            }),
+          )
+        : Promise.resolve({ kind: "page", page: historyPage([]) });
+    expect(await readNeedsALook(read, SINCE)).toEqual({ kind: "units", records: [], total: 0 });
+  });
+
+  test("any other failure of the unproductive read fails the feed", async () => {
+    const read: HistoryReader = (query) =>
+      query.outcome === "unproductive"
+        ? Promise.reject(new Error("fetch failed"))
+        : Promise.resolve({ kind: "page", page: historyPage([]) });
+    await expect(readNeedsALook(read, SINCE)).rejects.toThrow("fetch failed");
+    const server: HistoryReader = (query) =>
+      query.outcome === "unproductive"
+        ? Promise.reject(new RemoteRequestError(500, { error: "boom" }))
+        : Promise.resolve({ kind: "page", page: historyPage([]) });
+    await expect(readNeedsALook(server, SINCE)).rejects.toThrow("500");
   });
 });

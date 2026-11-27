@@ -38,6 +38,7 @@ import {
   retainedSince,
   runCost,
   unitCost,
+  unfinishedOf,
   unitLabel,
   unitTokens,
   usd,
@@ -379,8 +380,7 @@ function Records({
 
 /** The matched totals in one line: counts, then cost by basis, never added together. */
 function Totals({ totals }: { totals: HistoryTotals }) {
-  const unfinished =
-    totals.byOutcome.failed + totals.byOutcome["timed-out"] + totals.byOutcome.abandoned;
+  const unfinished = unfinishedOf(totals.byOutcome);
   const parts: ReactNode[] = [`${totals.units} unit${totals.units === 1 ? "" : "s"} match`];
   if (unfinished > 0) parts.push(`${unfinished} did not complete`);
   if (totals.costUsd.api > 0) {
@@ -416,6 +416,7 @@ function Totals({ totals }: { totals: HistoryTotals }) {
 
 const OUTCOME_TONE: Record<UnitRecordOutcome, string> = {
   completed: "chip ok",
+  unproductive: "chip warn",
   failed: "chip fail",
   "timed-out": "chip warn",
   abandoned: "chip",
