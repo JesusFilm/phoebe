@@ -61,6 +61,12 @@ import type { SlotClient } from "./slot-client.ts";
 import type { ReportClient } from "./report-client.ts";
 import { createManualRunInbox, MANUAL_RUN, type ManualRunInbox } from "./manual-run.ts";
 import {
+  createSpendHoldState,
+  SPEND_HOLD,
+  SPEND_RELEASE,
+  type SpendHoldState,
+} from "./spend-hold.ts";
+import {
   createEmitUnitEvent,
   createForgetInherited,
   type SnapshotWriterDeps,
@@ -3705,6 +3711,8 @@ function concurrentEngine(opts: {
   inherited?: StatusSnapshot;
   /** Manual runs the bootstrapper forwards (#937). */
   manualRuns?: ManualRunInbox;
+  /** The spend hold the bootstrapper sends (#990). */
+  spendHold?: SpendHoldState;
   /** The unit history writer, wired the way the entry point wires it (#928). */
   recordUnit?: RecordUnit;
 }): {
@@ -3758,6 +3766,7 @@ function concurrentEngine(opts: {
     credentialClient: opts.credentialClient ?? null,
     reportClient: opts.reportClient ?? null,
     manualRuns: opts.manualRuns ?? null,
+    spendHold: opts.spendHold ?? null,
     emitUnitEvent: createEmitUnitEvent(snapshotWriter),
     forgetInherited: createForgetInherited(snapshotWriter, (abandoned) =>
       opts.recordUnit?.(abandonedRecord(abandoned)),
@@ -3876,6 +3885,83 @@ describe("manual runs (#937)", () => {
     expect(inbox.take("gated")).toBeNull();
 
     await gated.release("u:1");
+    engine.drain.request();
+    await loop;
+  });
+});
+
+describe("the spend hold (#990)", () => {
+  test("a held pipeline admits no unit, lets the running one finish, and resumes on release", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const channel = new EventEmitter();
+    const spendHold = createSpendHoldState(
+      { on: (event, listener) => channel.on(event, listener) },
+      { log: () => {} },
+    )!;
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 2, spendHold });
+    const loop = engine.loop();
+    await settle();
+    expect(gated.started).toEqual(["u:1"]);
+
+    channel.emit("message", {
+      type: SPEND_HOLD,
+      hold: {
+        scope: "tenant",
+        measure: "usd",
+        window: "24h",
+        limit: 5,
+        spent: 6,
+        since: "2026-08-19T00:00:00.000Z",
+        releaseAt: "2026-08-19T20:00:00.000Z",
+      },
+    });
+    gated.offer(2);
+    // The settle wakes the loop for a pass, which the hold turns away.
+    await gated.release("u:1");
+    await settle();
+    expect(gated.started).toEqual(["u:1"]);
+    const said = engine.lines.filter((line) => line.includes("Spend ceiling reached"));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("`spend.ceiling.usd24h`");
+
+    // The release ends the wait, so admission resumes without a poll interval.
+    channel.emit("message", { type: SPEND_RELEASE });
+    await settle();
+    expect(gated.started).toEqual(["u:1", "u:2"]);
+
+    await gated.release("u:2");
+    engine.drain.request();
+    await loop;
+  });
+
+  test("a hold arriving mid-unit never touches the unit already running", async () => {
+    const gated = gatedKind({ refs: [1] });
+    const channel = new EventEmitter();
+    const spendHold = createSpendHoldState(
+      { on: (event, listener) => channel.on(event, listener) },
+      { log: () => {} },
+    )!;
+    const engine = concurrentEngine({ kinds: [gated], concurrency: 1, spendHold });
+    const loop = engine.loop();
+    await settle();
+    channel.emit("message", {
+      type: SPEND_HOLD,
+      hold: {
+        scope: "pipeline",
+        measure: "tokens",
+        window: "7d",
+        limit: 10,
+        spent: 10,
+        since: "2026-08-19T00:00:00.000Z",
+        releaseAt: "2026-08-25T00:00:00.000Z",
+      },
+    });
+    await settle();
+    expect(engine.status()?.currentUnits.map((unit) => unit.unit.id)).toEqual(["u:1"]);
+
+    await gated.release("u:1");
+    await settle();
+    expect(engine.status()?.currentUnits).toEqual([]);
     engine.drain.request();
     await loop;
   });

@@ -447,6 +447,13 @@ One pipeline's bounded collection of unit records, oldest dropped first. Structu
 never logs: the container keeps no logs.
 _Avoid_: run log, log, audit trail
 
+**Spend limit**:
+A limit on what a tenant or one pipeline spends over the last 24 hours or 7 days, counted
+as API dollars or as input plus output tokens. A **warning limit** is reported when
+reached. A **ceiling** holds admission on the pipelines it covers until the window falls
+back under it or a config edit raises it; units already running finish.
+_Avoid_: budget (that is the run budget), quota, cap (that is the slot cap)
+
 ### Observing
 
 **Observer**:

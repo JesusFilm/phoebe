@@ -30,6 +30,7 @@ import { setResolvedConfig } from "./resolved-config.ts";
 import { createWorkKindRegistry } from "./work-kinds/load-custom.ts";
 import type { WorkspaceMode } from "./work-kinds/definition.ts";
 import type { WorkKindRegistry } from "./work-kinds/registry.ts";
+import type { SpendField } from "./contracts/spend.ts";
 
 /**
  * The output contract's version. Bumped when a field changes meaning; new
@@ -64,6 +65,16 @@ export type EnumeratedPipeline = {
    * it for one thing: which pipeline a manual observer run goes to.
    */
   kinds: string[];
+  /**
+   * This pipeline's spend limits (#990), absent when it declares none. Hot: the
+   * supervisor evaluates them and never relaunches the pipeline for an edit.
+   */
+  spend?: SpendField;
+  /**
+   * The tenant's spend limits, the same on every pipeline of the tenant. Carried
+   * here because the supervisor reads a tenant only through its pipelines.
+   */
+  tenantSpend?: SpendField;
   /** Opaque digest of the pipeline's cold config; a move means relaunch this pipeline. */
   fingerprint: string;
 };
@@ -120,7 +131,13 @@ function canonicalJson(value: unknown): string {
  * one pipeline, and the supervisor fans those out to every pipeline of the tenant.
  */
 export function pipelineFingerprint(name: string, pipeline: ResolvedPipeline): string {
-  return createHash("sha256").update(canonicalJson({ name, pipeline })).digest("hex").slice(0, 16);
+  // `spend` is hot too (#990), but only at the pipeline's own level: a kind's
+  // config is free to name a field `spend`, and an edit there is a real change.
+  const cold = { ...pipeline, spend: undefined };
+  return createHash("sha256")
+    .update(canonicalJson({ name, pipeline: cold }))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /**
@@ -252,6 +269,8 @@ export async function enumeratePipelines(
       // the supervisor rebuilds the scrub from the enumeration it just read.
       env: declaredEnvKeys(scheduled),
       kinds: scheduled.map((kind) => kind.name),
+      ...(pipeline.spend !== undefined ? { spend: pipeline.spend } : {}),
+      ...(config.spend !== undefined ? { tenantSpend: config.spend } : {}),
       fingerprint: pipelineFingerprint(name, pipeline),
     };
   });
@@ -304,7 +323,8 @@ Usage:
   phoebe pipelines [--config <path>]   One JSON object: { version, pipelines[] }
   phoebe pipelines --probe             Report that this engine supports enumeration
 
-Each pipeline carries its name, the hot knobs (disabled, priority), its concurrency,
+Each pipeline carries its name, the hot knobs (disabled, priority, and its own and its
+tenant's spend limits), its concurrency,
 whether it needs the tenant's git clone, the env keys and kinds it schedules, and an opaque fingerprint that moves
 when the pipeline's cold config does. The supervisor reads it; nothing else does.
 `;

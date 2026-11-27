@@ -14,6 +14,7 @@ import { afterAll, describe, expect, test } from "vite-plus/test";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
 import type { TenantEffectiveConfig } from "../src/contracts/effective-config.ts";
 import type { StatusSnapshot } from "../src/contracts/status-snapshot.ts";
+import type { SpendField, SpendHold } from "../src/contracts/spend.ts";
 import type { AgentRunRecord, UnitRecord } from "../src/contracts/unit-record.ts";
 import type { SupervisedPipeline } from "./pipelines.ts";
 import {
@@ -1060,5 +1061,234 @@ describe("the file a workspace with many tenants writes", () => {
     expect(fifty).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 256 * 1024);
     expect(fiveHundred).toBeLessThan(CONFIG_SECTION_BUDGET_BYTES + 1280 * 1024);
     expect(fiveHundred).toBeLessThan(fifty * 2);
+  });
+});
+
+describe("spend limits (#990)", () => {
+  const STATE = "/data/repos/acme/widget/state";
+  const HOUR = 60 * 60 * 1000;
+
+  function run(opts: {
+    costUsd?: number | null;
+    costBasis?: AgentRunRecord["costBasis"];
+    inputTokens?: number;
+    outputTokens?: number;
+  }): AgentRunRecord {
+    return {
+      startedAt: "2026-05-04T23:00:00.000Z",
+      durationMs: 1000,
+      exitCode: 0,
+      promptSha: "sha",
+      inputTokens: opts.inputTokens ?? 0,
+      outputTokens: opts.outputTokens ?? 0,
+      cacheReadTokens: 1_000_000,
+      cacheWriteTokens: 1_000_000,
+      reasoningTokens: null,
+      costUsd: opts.costUsd ?? null,
+      turns: 1,
+      providerDurationMs: null,
+      stopReason: null,
+      reportedModels: [],
+      usageComplete: true,
+      toolCalls: {},
+      costBasis: opts.costBasis ?? null,
+    };
+  }
+
+  function unitAt(startedAt: number, runs: AgentRunRecord[], pipeline = "work"): UnitRecord {
+    return {
+      v: 1,
+      tenant: "acme/widget",
+      pipeline,
+      unit: { kind: "issue", id: String(startedAt) },
+      outcome: "completed",
+      quarantined: false,
+      detail: null,
+      startedAt: new Date(startedAt).toISOString(),
+      settledAt: new Date(startedAt).toISOString(),
+      durationMs: 0,
+      runBudgetMs: null,
+      provider: "claude",
+      model: null,
+      effort: null,
+      branch: null,
+      headSha: null,
+      prNumber: null,
+      engineCommit: null,
+      agentRuns: runs,
+    };
+  }
+
+  function limited(
+    name: string,
+    spend: { spend?: SpendField; tenantSpend?: SpendField },
+  ): SupervisedPipeline {
+    const base = pipelineOf("/t/a", name);
+    return { ...base, pipeline: { ...base.pipeline, ...spend } };
+  }
+
+  function holdsHarness() {
+    const told: ReadonlyMap<string, SpendHold>[] = [];
+    const h = harness({ onSpendHolds: (holds) => told.push(new Map(holds)) });
+    return { ...h, told, lastHolds: () => told[told.length - 1] ?? new Map() };
+  }
+
+  const cellOf = (report: DeploymentReport, pipeline: string) =>
+    report.fleet.cells.find((cell) => cell.pipeline === pipeline)!;
+
+  test("a cell no spend block covers carries no spend field", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 9, costBasis: "api" })])]);
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+
+    expect(cellOf(h.latest()!, "work").spend).toBeUndefined();
+    expect(h.lastHolds().size).toBe(0);
+  });
+
+  test("a pipeline ceiling reached holds that pipeline, and says until when", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [
+      unitAt(h.now() - 3 * HOUR, [run({ costUsd: 4, costBasis: "api" })]),
+      unitAt(h.now() - HOUR, [run({ costUsd: 2, costBasis: "api" })]),
+    ]);
+    h.state.notePipelines([
+      limited("work", { spend: { warn: { usd24h: 3 }, ceiling: { usd24h: 5 } } }),
+      pipelineOf("/t/a", "triage"),
+    ]);
+
+    const work = cellOf(h.latest()!, "work");
+    expect(work.spend?.hold).toEqual({
+      scope: "pipeline",
+      measure: "usd",
+      window: "24h",
+      limit: 5,
+      spent: 6,
+      since: "2026-05-05T00:00:00.000Z",
+      // The $4 unit ages out 21 hours from now, leaving $2 under the $5 ceiling.
+      releaseAt: "2026-05-05T21:00:00.000Z",
+    });
+    expect(work.spend?.warnings).toEqual([
+      { scope: "pipeline", measure: "usd", window: "24h", limit: 3, spent: 6 },
+    ]);
+    expect(cellOf(h.latest()!, "triage").spend).toBeUndefined();
+    expect([...h.lastHolds().keys()]).toEqual(["/t/a#work"]);
+  });
+
+  test("a subscription estimate never trips a usd limit", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [
+      unitAt(h.now() - HOUR, [run({ costUsd: 500, costBasis: "subscription-estimate" })]),
+    ]);
+    h.state.notePipelines([
+      limited("work", {
+        spend: { warn: { usd24h: 1, usd7d: 1 }, ceiling: { usd24h: 1, usd7d: 1 } },
+      }),
+    ]);
+
+    expect(cellOf(h.latest()!, "work").spend).toEqual({ hold: null, warnings: [] });
+    expect(h.lastHolds().size).toBe(0);
+  });
+
+  test("tokens count input plus output from every provider, never the cache", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [
+      unitAt(h.now() - HOUR, [run({ inputTokens: 600, outputTokens: 300 })]),
+      unitAt(h.now() - HOUR, [{ ...run({ inputTokens: 100 }), costBasis: null }]),
+    ]);
+    h.state.notePipelines([limited("work", { spend: { ceiling: { tokens24h: 1000 } } })]);
+
+    expect(cellOf(h.latest()!, "work").spend?.hold?.spent).toBe(1000);
+  });
+
+  test("a tenant ceiling weighs the sum of its cells and holds every pipeline", () => {
+    const h = holdsHarness();
+    h.dirs.set(STATE, ["work", "triage", "retired"]);
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 3, costBasis: "api" })])]);
+    h.units.set(`${STATE}/triage`, [
+      unitAt(h.now() - HOUR, [run({ costUsd: 3, costBasis: "api" })], "triage"),
+    ]);
+    // A retired pipeline's spend is still the tenant's.
+    h.units.set(`${STATE}/retired`, [
+      unitAt(h.now() - HOUR, [run({ costUsd: 1, costBasis: "api" })], "retired"),
+    ]);
+    const tenantSpend: SpendField = { ceiling: { usd7d: 7 } };
+    h.state.notePipelines([limited("work", { tenantSpend }), limited("triage", { tenantSpend })]);
+
+    const report = h.latest()!;
+    for (const name of ["work", "triage"]) {
+      expect(cellOf(report, name).spend?.hold).toMatchObject({
+        scope: "tenant",
+        measure: "usd",
+        window: "7d",
+        limit: 7,
+        spent: 7,
+      });
+    }
+    expect(cellOf(report, "retired").spend).toBeUndefined();
+    expect([...h.lastHolds().keys()].sort()).toEqual(["/t/a#triage", "/t/a#work"]);
+  });
+
+  test("tenant and pipeline limits apply independently", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 3, costBasis: "api" })])]);
+    h.units.set(`${STATE}/triage`, [
+      unitAt(h.now() - HOUR, [run({ costUsd: 3, costBasis: "api" })], "triage"),
+    ]);
+    const tenantSpend: SpendField = { ceiling: { usd24h: 10 } };
+    h.state.notePipelines([
+      limited("work", { tenantSpend, spend: { ceiling: { usd24h: 3 } } }),
+      limited("triage", { tenantSpend }),
+    ]);
+
+    // $6 for the tenant is under its $10, but `work` alone is at its own $3.
+    expect(cellOf(h.latest()!, "work").spend?.hold?.scope).toBe("pipeline");
+    expect(cellOf(h.latest()!, "triage").spend?.hold).toBeNull();
+  });
+
+  test("a hold lets go as its spend ages out of the window", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 6, costBasis: "api" })])]);
+    h.state.notePipelines([limited("work", { spend: { ceiling: { usd24h: 5 } } })]);
+    expect(cellOf(h.latest()!, "work").spend?.hold?.releaseAt).toBe("2026-05-05T23:00:00.000Z");
+
+    h.advance(12 * HOUR);
+    h.state.refreshHistory();
+    // Still inside the window; the hold and its `since` stay put.
+    expect(cellOf(h.latest()!, "work").spend?.hold?.since).toBe("2026-05-05T00:00:00.000Z");
+    expect(h.lastHolds().size).toBe(1);
+
+    h.advance(12 * HOUR);
+    h.state.refreshHistory();
+    expect(cellOf(h.latest()!, "work").spend?.hold).toBeNull();
+    expect(h.lastHolds().size).toBe(0);
+  });
+
+  test("a config edit that raises or removes the ceiling lets go at once", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 6, costBasis: "api" })])]);
+    h.state.notePipelines([limited("work", { spend: { ceiling: { usd24h: 5 } } })]);
+    expect(h.lastHolds().size).toBe(1);
+
+    h.state.notePipelines([limited("work", { spend: { ceiling: { usd24h: 50 } } })]);
+    expect(cellOf(h.latest()!, "work").spend?.hold).toBeNull();
+    expect(h.lastHolds().size).toBe(0);
+
+    h.state.notePipelines([limited("work", { spend: { ceiling: { usd24h: 5 } } })]);
+    expect(h.lastHolds().size).toBe(1);
+    h.state.notePipelines([pipelineOf("/t/a", "work")]);
+    expect(cellOf(h.latest()!, "work").spend).toBeUndefined();
+    expect(h.lastHolds().size).toBe(0);
+  });
+
+  test("a new unit record that reaches the ceiling holds without waiting for the tick", () => {
+    const h = holdsHarness();
+    h.state.notePipelines([limited("work", { spend: { ceiling: { usd24h: 5 } } })]);
+    expect(h.lastHolds().size).toBe(0);
+
+    h.advance(60_000);
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - 1000, [run({ costUsd: 5, costBasis: "api" })])]);
+    h.state.noteEngineReport("/t/a#work", { kind: "record" });
+
+    expect(h.lastHolds().get("/t/a#work")?.since).toBe("2026-05-05T00:01:00.000Z");
   });
 });

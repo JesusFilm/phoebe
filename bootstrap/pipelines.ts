@@ -32,6 +32,8 @@
 import { spawnSync } from "node:child_process";
 
 import type { DiscoveredTenant } from "./tenants.ts";
+import type { SpendField } from "../src/contracts/spend.ts";
+import { readSpendField } from "../src/spend.ts";
 
 /** One pipeline of a tenant's work, as the supervisor reads it off the engine. */
 export type Pipeline = {
@@ -58,6 +60,13 @@ export type Pipeline = {
    * engine too old to have the observer.
    */
   kinds: readonly string[];
+  /**
+   * Hot: this pipeline's spend limits (#990), absent when it declares none or the
+   * engine is too old to say. The deployment report evaluates them.
+   */
+  spend?: SpendField;
+  /** Hot: the tenant's spend limits, the same on every pipeline of the tenant. */
+  tenantSpend?: SpendField;
   /**
    * Opaque digest of the pipeline's cold config; a move means relaunch this pipeline.
    * Null for the implicit pipeline of a checkout that cannot enumerate — the same
@@ -177,6 +186,11 @@ function parsePipeline(value: unknown): Pipeline {
   }
   const pipeline = value as Record<string, unknown>;
   const { name, disabled, priority, concurrency, needsClone, env, kinds, fingerprint } = pipeline;
+  // `spend` and `tenantSpend` are additive too (#990), and read leniently: the
+  // engine validated the block, and a limit the supervisor cannot read is one it
+  // does not enforce rather than a reason to hold the tenant.
+  const spend = readSpendField(pipeline["spend"]);
+  const tenantSpend = readSpendField(pipeline["tenantSpend"]);
   if (
     typeof name !== "string" ||
     typeof disabled !== "boolean" ||
@@ -209,6 +223,8 @@ function parsePipeline(value: unknown): Pipeline {
     needsClone,
     env: (env as string[] | undefined) ?? [],
     kinds: (kinds as string[] | undefined) ?? [],
+    ...(spend !== undefined ? { spend } : {}),
+    ...(tenantSpend !== undefined ? { tenantSpend } : {}),
     fingerprint,
   };
 }
