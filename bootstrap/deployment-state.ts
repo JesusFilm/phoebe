@@ -599,7 +599,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
     });
     return {
       tenants: fleet.tenants,
-      cells: withSpend(cells, Date.parse(summaries.fleet.asOf)),
+      cells: withSpend(cells, Date.parse(summaries.fleet.asOf), at),
       history: summaries.fleet,
     };
   };
@@ -614,7 +614,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
    * Only an enumerated cell can be held: a stale one has no process to hold and
    * no limits of its own.
    */
-  const withSpend = (cells: FleetCell[], asOf: number): FleetCell[] => {
+  const withSpend = (cells: FleetCell[], asOf: number, observedAt: number): FleetCell[] => {
     const pipelines = new Map(live.map((pipeline) => [pipeline.id, pipeline] as const));
     const tenantTotals = new Map<string, SpendTotals>();
     const tenantRecords = new Map<string, UnitRecord[]>();
@@ -646,6 +646,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
           totals: tenantTotals.get(tenantId) ?? zeroTotals(),
           records: tenantRecords.get(tenantId) ?? [],
           asOf,
+          observedAt,
           clock: spendClock,
         });
         tenants.set(tenantId, tenant);
@@ -657,6 +658,7 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         totals: cell.history === undefined ? zeroTotals() : spendTotals(cell.history),
         records: unitRecords.get(cell.id) ?? [],
         asOf,
+        observedAt,
         clock: spendClock,
       });
       const hold = bindingHold([...tenant.holds, ...mine.holds]);

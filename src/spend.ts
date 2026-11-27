@@ -293,6 +293,8 @@ export function evaluateSpend(opts: {
   /** The records under the totals, for the release estimate. */
   records: readonly UnitRecord[];
   asOf: number;
+  /** When the figures were observed, for a new hold's `since`; defaults to `asOf`. */
+  observedAt?: number;
   clock: SpendClock;
 }): ScopeEvaluation {
   const holds: SpendHold[] = [];
@@ -307,7 +309,7 @@ export function evaluateSpend(opts: {
     }
     const holdAt = opts.limits.ceiling?.[key];
     if (holdAt === undefined || spent < holdAt) continue;
-    const since = opts.clock.since(`${opts.clockKey}|${key}`, opts.asOf);
+    const since = opts.clock.since(`${opts.clockKey}|${key}`, opts.observedAt ?? opts.asOf);
     const releaseAt = estimateRelease({
       records: opts.records,
       measure,

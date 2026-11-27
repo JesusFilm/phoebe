@@ -2291,6 +2291,14 @@ export function createEngine(options: EngineOptions): Engine {
       return "drain";
     }
 
+    // A spend hold that arrived while awaiting the slot also stops this unit.
+    // Not a drain: a hold must not exit a persistent engine, so give the slot
+    // back and let the next pass see the hold.
+    if (spendHold?.current() != null) {
+      slotClient?.release();
+      return "refused";
+    }
+
     emitUnitEvent({
       unit: ref,
       event: "started",
@@ -2613,7 +2621,7 @@ export function createEngine(options: EngineOptions): Engine {
         const line =
           `Spend ceiling reached — admitting no unit this cycle: ` +
           `${describeSpendHold(held, pipeline)}.`;
-        if (runOnce) {
+        if (runOnce || dryRun) {
           log.warn(line);
           break;
         }
