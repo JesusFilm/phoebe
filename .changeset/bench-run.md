@@ -1,5 +1,0 @@
----
-"phoebe-agent": minor
----
-
-Add `phoebe bench run <suite>`, which replays every fixture in a suite once with the tenant's own `issues` settings, offline. Each trial gets a repository at `baseSha` with no remote, a HOME of its own, and no `GH_TOKEN` or `GH_APP_*`. The `gh` on its PATH returns the issue from the suite and records writes such as `gh pr create` as "would have" without contacting GitHub. Bench runs `installCommand`, the agent, then `checkCommand` and `testCommand` itself, and stops at the first failure. A trial with no commits is "no change" and skips the check and test gates. Results go to `bench/<runId>/` in the tenant's data directory: the config the run used, `trials.jsonl` (unit records with `pipeline: "bench"` plus gate results, diff stats and "would have" writes), one patch per trial with commits, and `report.json`. Nothing goes into a pipeline's `units.jsonl`. Only the last 10 runs are kept. A failed or timed-out trial is recorded and the run moves on. Ctrl-C drops the trial in progress and writes a partial report marked `interrupted: true`.
