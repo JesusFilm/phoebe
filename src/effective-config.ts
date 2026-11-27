@@ -64,6 +64,7 @@ import { pipelineOwnedKinds } from "./pipeline.ts";
 import { PR_SCOPED_KINDS } from "./pr-scope.ts";
 import { ENGINE_CREDENTIAL_KEYS } from "./shell-env.ts";
 import { envNames, kindEnvNames, SETTINGS, settingAt, type Setting } from "./settings-catalogue.ts";
+import { SPEND_LEVELS, SPEND_LIMIT_KEYS } from "./spend.ts";
 
 /**
  * The env as three layers, so a value can say where it was set. The engine child
@@ -484,6 +485,24 @@ function globalFields(pass: Pass): EffectiveFields {
     );
   }
 
+  // The tenant's spend limits (#990), catalogued at their dotted paths. Unset
+  // is the shipped answer: no block means no limits.
+  const spend: EffectiveFields = {};
+  for (const level of SPEND_LEVELS) {
+    const branch: EffectiveFields = {};
+    for (const key of SPEND_LIMIT_KEYS) {
+      branch[key] = catalogueLeaf({
+        entry: settingAt(`spend.${level}.${key}`),
+        user,
+        configPath,
+        env,
+        layers,
+      });
+    }
+    spend[level] = branch;
+  }
+  fields["spend"] = spend;
+
   // Derived, never declared: the tenant's on-disk layout is a function of its
   // slug, which is what keeps a tenant's data from drifting away from its name.
   const paths: EffectiveFields = {};
@@ -567,6 +586,20 @@ function pipelineFields(pass: Pass & { globals: EffectiveFields }): EffectiveFie
         "engine",
       ),
     };
+    // A pipeline's spend limits are file-only, like the rest of its block, and
+    // weighed apart from the tenant's: nothing inherits.
+    const spend: EffectiveFields = {};
+    for (const level of SPEND_LEVELS) {
+      const limits: EffectiveFields = {};
+      for (const key of SPEND_LIMIT_KEYS) {
+        limits[key] = leafFrom(
+          fileCandidate(declared?.spend?.[level]?.[key], configPath),
+          "bootstrapper",
+        );
+      }
+      spend[level] = limits;
+    }
+    branch["spend"] = spend;
     const kinds: EffectiveFields = {};
     for (const kind of owned) {
       kinds[kind] = kindFields({ kind, pipeline, pass, globals });

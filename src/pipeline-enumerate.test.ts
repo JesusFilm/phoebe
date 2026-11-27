@@ -104,6 +104,25 @@ describe("enumeratePipelines", () => {
     expect(after[1]).toMatchObject({ name: "intake", disabled: true, priority: 5 });
   });
 
+  test("spend limits never move a fingerprint, and both levels arrive (#990)", async () => {
+    const before = await enumerate({ pipelines: { work: {}, intake: {} } });
+    const after = await enumerate({
+      spend: { ceiling: { usd24h: 20 } },
+      pipelines: { work: {}, intake: { spend: { warn: { tokens7d: 1e6 } } } },
+    });
+    expect(after.map((pipeline) => pipeline.fingerprint)).toEqual(
+      before.map((pipeline) => pipeline.fingerprint),
+    );
+    expect(after[0]).toMatchObject({ name: "work", tenantSpend: { ceiling: { usd24h: 20 } } });
+    expect(after[0]).not.toHaveProperty("spend");
+    expect(after[1]).toMatchObject({
+      name: "intake",
+      spend: { warn: { tokens7d: 1e6 } },
+      tenantSpend: { ceiling: { usd24h: 20 } },
+    });
+    expect(before[0]).not.toHaveProperty("tenantSpend");
+  });
+
   test("a cold knob moves only its own pipeline's fingerprint", async () => {
     const before = await enumerate({
       pipelines: { work: { order: ["conflicts"] }, intake: { pollIntervalMs: 15_000 } },

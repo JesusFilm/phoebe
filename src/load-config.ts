@@ -42,8 +42,8 @@ const OVERLAY_SETTINGS = SETTINGS.filter((entry) => entry.overlay !== "none");
  * field untouched, so `resolveConfig` can still fall back to `CONFIG_DEFAULTS`
  * when the field was absent from the file too.
  *
- * Strings are taken verbatim; enums and booleans are validated and a bad value
- * throws. Booleans stay strict `"true"`/`"false"` rather than accepting
+ * Strings are taken verbatim; enums, booleans and numbers are validated and a
+ * bad value throws. Booleans stay strict `"true"`/`"false"` rather than accepting
  * `1`/`yes`/`on`: a var that silently read a typo as `false` would turn a
  * janitor off without saying so.
  */
@@ -52,14 +52,41 @@ export function applyEnvOverlay(user: PhoebeUserConfig, env: NodeJS.ProcessEnv):
   for (const entry of OVERLAY_SETTINGS) {
     const read = readEnv(env, overlayEnvNames(entry));
     if (read === undefined) continue;
-    overlaid[entry.path] = coerce(entry, read);
+    writeAt(overlaid, entry.path, coerce(entry, read));
   }
   return overlaid;
 }
 
+/**
+ * Write `value` at a dotted path, copying every object on the way down so the
+ * file's own config is never mutated. A dotted overlay path is a leaf inside a
+ * tenant block (`spend.ceiling.usd24h`); everything beside it is kept.
+ */
+function writeAt(target: Record<string, unknown>, path: string, value: unknown): void {
+  const segments = path.split(".");
+  let node = target;
+  for (const segment of segments.slice(0, -1)) {
+    const child = node[segment];
+    const copy =
+      typeof child === "object" && child !== null && !Array.isArray(child)
+        ? { ...(child as Record<string, unknown>) }
+        : {};
+    node[segment] = copy;
+    node = copy;
+  }
+  node[segments[segments.length - 1]!] = value;
+}
+
 /** One env value as the field at this path holds it, or a throw naming the var. */
-function coerce(entry: Setting, read: SettingRead): string | boolean {
+function coerce(entry: Setting, read: SettingRead): string | boolean | number {
   const { via, value } = read;
+  if (entry.type === "number") {
+    const parsed = Number(value);
+    if (value.trim().length === 0 || !Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error(`${via} must be a positive number (got "${value}").`);
+    }
+    return parsed;
+  }
   if (entry.type === "boolean") {
     if (value !== "true" && value !== "false") {
       throw new Error(`${via} must be "true" or "false" (got "${value}").`);

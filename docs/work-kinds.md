@@ -1063,7 +1063,9 @@ is already in flight there. A manual run counts as the last completed run for
 
 **A run** reads `state/<pipeline>/units.jsonl` of every other pipeline the
 tenant declares, read-only, and flags each unit that started inside `lookback`
-and failed, timed out, was abandoned or was quarantined. It also flags a unit
+and was unproductive, failed, timed out, was abandoned or was quarantined.
+An unproductive unit's run ended normally but left its issue claimed with no
+PR. It also flags a unit
 by what became of its pull request once that PR merged or closed:
 
 | Flag                | When                                                                            |

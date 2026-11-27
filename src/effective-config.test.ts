@@ -331,6 +331,37 @@ describe("the bootstrapper's fields", () => {
   });
 });
 
+describe("spend limits (#990)", () => {
+  test("a tenant limit is a catalogued leaf the env beats, read by the bootstrapper", () => {
+    const fields = compute({
+      user: { spend: { ceiling: { usd24h: 20, usd7d: 100 } } },
+      env: { tenant: { PHOEBE_SPEND_CEILING_USD24H: "30" } },
+    }).fields;
+    expect(leafAt(fields, "spend.ceiling.usd24h")).toMatchObject({
+      value: 30,
+      source: "overlay",
+      via: "PHOEBE_SPEND_CEILING_USD24H",
+      reader: "bootstrapper",
+    });
+    expect(leafAt(fields, "spend.ceiling.usd7d")).toMatchObject({ value: 100, source: "file" });
+    expect(leafAt(fields, "spend.warn.tokens7d").value).toBeNull();
+  });
+
+  test("a pipeline's limits are file-only and inherit nothing from the tenant", () => {
+    const fields = compute({
+      user: {
+        spend: { warn: { usd24h: 5 } },
+        pipelines: { work: { spend: { ceiling: { tokens24h: 1000 } } } },
+      },
+    }).fields;
+    expect(leafAt(fields, "pipelines.work.spend.ceiling.tokens24h")).toMatchObject({
+      value: 1000,
+      source: "file",
+    });
+    expect(leafAt(fields, "pipelines.work.spend.warn.usd24h").value).toBeNull();
+  });
+});
+
 describe("a value that does not survive JSON", () => {
   test("an inline kind definition renders as a summary and is marked opaque", () => {
     const definition = { name: "nudger", fetch: () => [], run: () => undefined };

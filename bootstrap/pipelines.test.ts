@@ -423,6 +423,48 @@ describe("a pipeline's scheduled `kinds` (#937)", () => {
   });
 });
 
+describe("a pipeline's spend limits (#990)", () => {
+  const withSpend = (extra: Record<string, unknown>): string =>
+    `${JSON.stringify({
+      version: 1,
+      pipelines: [
+        {
+          name: "work",
+          disabled: false,
+          priority: 0,
+          concurrency: 1,
+          needsClone: true,
+          fingerprint: "fp-work",
+          ...extra,
+        },
+      ],
+    })}\n`;
+  const pipelinesOf = (stdout: string) =>
+    createPipelineEnumerator({
+      entry: "/engine/src/cli.ts",
+      run: engineReturning(stdout).run,
+    }).pipelinesFor({ configPath: "/t/phoebe.config.ts", fingerprint: "a" });
+
+  test("come back at both levels, and an engine too old to say limits nothing", () => {
+    const [work] = pipelinesOf(
+      withSpend({
+        spend: { ceiling: { usd24h: 5 } },
+        tenantSpend: { warn: { tokens7d: 1000 } },
+      }),
+    );
+    expect(work?.spend).toEqual({ ceiling: { usd24h: 5 } });
+    expect(work?.tenantSpend).toEqual({ warn: { tokens7d: 1000 } });
+    const [old] = pipelinesOf(withSpend({}));
+    expect(old).not.toHaveProperty("spend");
+    expect(old).not.toHaveProperty("tenantSpend");
+  });
+
+  test("a limit that is not a positive number is dropped, not a tenant fault", () => {
+    const [work] = pipelinesOf(withSpend({ spend: { ceiling: { usd24h: -1, usd7d: 9 } } }));
+    expect(work?.spend).toEqual({ ceiling: { usd7d: 9 } });
+  });
+});
+
 describe("siblingOnlyEnvKeys", () => {
   const rowWith = (own: string[], siblings: string[]): SupervisedPipeline => ({
     id: `/t#intake`,

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import type { DeploymentReport } from "../src/contracts/deployment.ts";
 import type { FleetStop } from "../src/contracts/remote-protocol.ts";
+import type { SpendHold } from "../src/contracts/spend.ts";
 import type { CurrentUnit } from "../src/contracts/status-snapshot.ts";
 import { MANUAL_RUN, parseManualRunMessage } from "../src/manual-run.ts";
 import { askDrop, watchDrop, type DropWatcherDeps } from "./file-drop.ts";
@@ -66,14 +67,20 @@ class FakeChild extends EventEmitter {
   }
 }
 
-type Cell = { pipeline: SupervisedPipeline; tenant?: string; running?: CurrentUnit[] };
+type Cell = {
+  pipeline: SupervisedPipeline;
+  tenant?: string;
+  running?: CurrentUnit[];
+  hold?: SpendHold;
+};
 
 /** The report as the dispatcher reads it: the live cells and their snapshots. */
 function reportOf(cells: readonly Cell[]): DeploymentReport {
   return {
     fleet: {
-      cells: cells.map(({ pipeline, tenant, running }) => ({
+      cells: cells.map(({ pipeline, tenant, running, hold }) => ({
         id: pipeline.id,
+        ...(hold !== undefined ? { spend: { hold, warnings: [] } } : {}),
         snapshot: {
           tenant: tenant ?? pipeline.tenant.slug ?? "acme/solo",
           pipeline: pipeline.pipeline.name,
@@ -105,6 +112,30 @@ const widgetWork = pipelineOf("acme/widget", "work", ["issues", "reviews"]);
 const gadget = pipelineOf("acme/gadget", "observe", ["observer"]);
 
 describe("the observe handler", () => {
+  test("refuses a run while a spend ceiling holds the observer, naming the ceiling (#990)", () => {
+    const hold: SpendHold = {
+      scope: "tenant",
+      measure: "usd",
+      window: "24h",
+      limit: 20,
+      spent: 21.5,
+      since: "2026-11-25T10:00:00.000Z",
+      releaseAt: "2026-11-26T08:00:00.000Z",
+    };
+    const { dispatcher } = harness([{ pipeline: widget, hold }]);
+    const observer = new FakeChild();
+    dispatcher.attach(widget, observer);
+
+    const answer = dispatcher.request({ tenant: null, lookback: null, by: "shell" });
+
+    expect(answer.outcome).toBe("refused");
+    expect(answer.tenant).toBe("acme/widget");
+    expect(answer.detail).toContain("the observer pipeline for acme/widget (observe) is held");
+    expect(answer.detail).toContain("`spend.ceiling.usd24h`");
+    expect(answer.detail).toContain("2026-11-26T08:00:00.000Z");
+    expect(observer.sent).toEqual([]);
+  });
+
   test("forwards a run to the one tenant's observer pipeline without --tenant", () => {
     const { dispatcher, logged } = harness([{ pipeline: widget }, { pipeline: widgetWork }]);
     const observer = new FakeChild();
