@@ -2400,6 +2400,25 @@ a.button {
   border-radius: 4px;
 }
 
+.history-export {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.history-export select {
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
 .history-summary,
 .history-foot {
   font-size: 12px;

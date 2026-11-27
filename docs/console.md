@@ -292,6 +292,12 @@ query, so a filter finds older units as well as the ones already on screen.
 **Show more** fetches the next page. The foot of the table says how far back
 the deployment's history goes, because older units rotate out.
 
+**Export** saves every unit the active filters match as CSV or JSON Lines,
+including units on pages not loaded yet. It fetches the pages itself and shows
+the count as it goes, then says how many units it saved. The files have the same columns as
+`phoebe history --export` ([`operating.md`](operating.md)). If a page fails to
+load, nothing is saved. The fleet stats page has no export.
+
 A row opens a drawer on the right. It shows the unit's outcome, age and cost,
 the provider and model, effort, duration and tokens, a link to its issue or PR
 on GitHub, and one row per agent run. A run that ended before it reported its
