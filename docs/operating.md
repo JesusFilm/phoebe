@@ -531,6 +531,61 @@ under the table with the judge's runs, tokens and cost. A trial with no change
 is never judged. A trial with commits that got no verdict counts as
 `unjudged` in the JSON report, and the line under the table says how many.
 
+## Benching a pull request: the `bench` kind
+
+A deployment that declares the [`bench`](work-kinds.md#bench-measure-a-prs-prompt-and-model-against-the-default-branch-opt-in)
+kind benches a PR when a person adds the `phoebe:bench` label to it. The kind
+replays the deployment's suite with two contenders. `main` has the default
+branch's `issues` prompt, provider, model and effort, and `pr` has the PR
+head's. It posts the figures side by side in a new comment on the PR, then
+removes the label. Add the label again to run another bench. The kind needs a
+suite, so run `phoebe bench select > bench/suite.json` first. A PR that
+changes neither the `issues` prompt nor those settings gets a comment saying
+there is nothing to measure.
+
+The comment is information for the reviewer. Bench sets no check status and
+fails nothing, because ten fixtures run once each can differ by a fixture or
+two by chance. Bench does not measure changes to `AGENTS.md` or skills yet,
+because trials read both from each fixture's tree at `baseSha`. The comment
+says so when a PR touches them.
+
+### By hand: a two-contender bench config
+
+Without the kind, you can make the same comparison with `phoebe bench run`.
+From the deployment directory, copy PR #123's prompt out of a checkout of the
+repository (`~/src/widget` here):
+
+```sh
+git -C ~/src/widget fetch origin pull/123/head
+git -C ~/src/widget show FETCH_HEAD:prompts/issues-prompt.md > bench/pr-123-issues-prompt.md
+```
+
+Then save a bench config as `bench/pr-123.json` that names that prompt beside
+the current one:
+
+```json
+{
+  "contenders": [
+    { "name": "main" },
+    { "name": "pr", "promptFile": "bench/pr-123-issues-prompt.md" }
+  ]
+}
+```
+
+```sh
+phoebe bench run bench/suite.json --bench-config bench/pr-123.json
+```
+
+If the PR also changes the `issues` provider, model or effort, set them on the
+`pr` contender. `main` takes the tenant's own settings.
+
+### No CI workflow template
+
+Phoebe ships no GitHub Actions template for benching PRs. A CI bench would need
+its own copy of the image, a clone of the repository, provider keys billed to
+an API account, and the suite. The deployment already has all four. Use the
+`bench` kind or the recipe above instead.
+
 ## Checking the deployment's health: `phoebe doctor`
 
 `phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:
