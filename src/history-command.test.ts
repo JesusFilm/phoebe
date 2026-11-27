@@ -2,13 +2,14 @@
 // against a real data volume in a temporary directory, the text view's cost and
 // footer, the flags, and the host arm's exec through an injected runner.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentReport, FleetCell } from "./contracts/deployment.ts";
 import type { HistoryPage } from "./contracts/history.ts";
+import { HISTORY_CSV_COLUMNS } from "./contracts/history-export.mjs";
 import type { AgentRunRecord, UnitRecord } from "./contracts/unit-record.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
 import {
@@ -120,13 +121,24 @@ afterEach(() => {
   process.exitCode = 0;
 });
 
-async function inContainer(argv: string[]): Promise<string> {
+async function inContainer(
+  argv: string[],
+  seen?: { stderr: string[]; reads: string[] },
+): Promise<string> {
   const out: string[] = [];
   await runHistoryCli(argv, {
     inContainer: true,
     env: { PHOEBE_DATA_DIR: base },
     now: NOW,
-    io: { stdout: (text) => out.push(text), stderr: () => {} },
+    ...(seen !== undefined
+      ? {
+          read: (path: string) => {
+            seen.reads.push(path);
+            return readFileSync(path, "utf8");
+          },
+        }
+      : {}),
+    io: { stdout: (text) => out.push(text), stderr: (line) => seen?.stderr.push(line) },
   });
   return out.join("");
 }
@@ -185,6 +197,71 @@ describe("the in-container arm", () => {
     expect(text).not.toContain("--before");
   });
 
+  describe("--export", () => {
+    /** A cell with more units than three pages hold, every other one failed. */
+    function manyUnits(): void {
+      const records = Array.from({ length: 450 }, (_, i) =>
+        record({
+          unit: { kind: "issues", id: String(1000 + i) },
+          startedAt: new Date(NOW - (i + 10) * 60_000).toISOString(),
+          outcome: i % 2 === 0 ? "completed" : "failed",
+        }),
+      );
+      const path = unitsPathFor(join(base, "acme/widget", "state"), "work");
+      writeFileSync(path, records.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    }
+
+    test("csv walks every page and writes each unit the filters match, once", async () => {
+      manyUnits();
+      const seen = { stderr: [] as string[], reads: [] as string[] };
+      const text = await inContainer(
+        ["--export", "csv", "--tenant", "acme/widget", "--outcome=completed"],
+        seen,
+      );
+      const lines = text.trimEnd().split("\n");
+      expect(lines[0]).toBe(HISTORY_CSV_COLUMNS.join(","));
+      const rows = lines.slice(1).map((line) => line.split(","));
+      expect(rows).toHaveLength(225);
+      expect(new Set(rows.map((row) => row[2])).size).toBe(225);
+      expect(rows.every((row) => row[3] === "completed")).toBe(true);
+      expect(rows.every((row) => row[0] === "/etc/phoebe/acme/widget#work")).toBe(true);
+      // Newest first, the same order the pages hold.
+      expect(rows[0]![2]).toBe("1000");
+      expect(rows.at(-1)![2]).toBe("1448");
+      // Two pages of at most 200, so the files were read once per page.
+      const unitsReads = seen.reads.filter((path) => path.endsWith("units.jsonl"));
+      expect(unitsReads.length).toBe(2);
+      expect(seen.stderr).toEqual(["[phoebe] exported 225 units."]);
+    });
+
+    test("jsonl writes one full record per line, across pages, and starts from --before", async () => {
+      manyUnits();
+      const all = (await inContainer(["--export=jsonl", "--tenant", "acme/widget"]))
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as HistoryPage["records"][number]);
+      const cell = "/etc/phoebe/acme/widget#work";
+      const firstPage = queryHistory(historySourcesOf(report, base), { cell, limit: 100 });
+      expect(all).toHaveLength(450);
+      expect(all.slice(0, 100)).toEqual(firstPage.records);
+      const cursor = firstPage.nextBefore!;
+      const rest = (
+        await inContainer(["--export=jsonl", "--tenant", "acme/widget", "--before", cursor])
+      )
+        .trimEnd()
+        .split("\n");
+      expect(rest).toHaveLength(350);
+    });
+
+    test("an export nothing matches is the CSV header alone", async () => {
+      const seen = { stderr: [] as string[], reads: [] as string[] };
+      expect(await inContainer(["--export", "csv", "--kind", "nothing"], seen)).toBe(
+        `${HISTORY_CSV_COLUMNS.join(",")}\n`,
+      );
+      expect(seen.stderr).toEqual(["[phoebe] exported 0 units."]);
+    });
+  });
+
   test("no deployment report is an error that says why", async () => {
     rmSync(deploymentReportPath(base));
     await expect(inContainer([])).rejects.toThrow(/No deployment report/);
@@ -231,6 +308,15 @@ describe("the flags", () => {
     expect(() => parseHistoryArgs(["--cell", "x#work", "--tenant", "acme/widget"])).toThrow(
       /does not combine/,
     );
+  });
+
+  test("--export takes csv or jsonl, and neither --json nor --limit", () => {
+    expect(parseHistoryArgs(["--export", "csv"]).export).toBe("csv");
+    expect(parseHistoryArgs(["--export=jsonl"]).export).toBe("jsonl");
+    expect(() => parseHistoryArgs(["--export", "xlsx"])).toThrow(/one of csv, jsonl/);
+    expect(() => parseHistoryArgs(["--export"])).toThrow(/needs a value/);
+    expect(() => parseHistoryArgs(["--export", "csv", "--json"])).toThrow(/pick one/);
+    expect(() => parseHistoryArgs(["--export", "csv", "--limit", "5"])).toThrow(/no `--limit`/);
   });
 
   test("the footer offers the next page when there is one", () => {
@@ -306,6 +392,18 @@ describe("the host arm", () => {
     await expect(
       runHistoryCli([], { cwd: root, inContainer: false, dockerAvailable: true, runner }),
     ).rejects.toThrow(/container not running/);
+  });
+
+  test("the exec argv carries --export into the container", () => {
+    expect(historyExecArgv(parseHistoryArgs(["--kind", "issues", "--export", "csv"]))).toEqual([
+      "exec",
+      "-T",
+      "phoebe",
+      "phoebe",
+      "history",
+      "--kind=issues",
+      "--export=csv",
+    ]);
   });
 
   test("the exec argv is rebuilt from the parsed flags", () => {

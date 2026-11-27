@@ -253,6 +253,24 @@ out.
 directly, so it works while the bootstrapper is down. On the host it runs
 itself in the container with the same flags.
 
+`--export csv` and `--export jsonl` write every unit the filters match to
+stdout, not one page. The verb walks the pages itself, and the count goes to
+stderr:
+
+```sh
+phoebe history --since 2026-11-01 --export csv > units.csv
+```
+
+The CSV has one row per unit. Its columns are `cell`, `kind`, `unit`,
+`outcome`, `quarantined`, `started`, `ended`, `provider`, `model`,
+`agent_runs`, the four token counts summed across the unit's agent runs,
+`partial_usage`, `api_cost_usd`, `estimated_cost_usd` and `pr_link`. API spend
+and Claude's subscription estimate sit in separate columns and are never added
+together. A count that no run reported is an empty cell, not a 0. JSON Lines
+writes one full record per line, the same objects `--json` puts in `records`.
+The History tab's **Export** button writes the same files. `--export` takes
+`--before` as the place to start, but not `--limit` or `--json`.
+
 ## Starting an observer run: `phoebe observe`
 
 The [`observer`](work-kinds.md) kind runs on its `every` schedule, or never

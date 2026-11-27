@@ -18,12 +18,18 @@
 import type {
   AgentRunRecord,
   DesktopBridge,
+  HistoryExportFormat,
   HistoryPage,
   HistoryQuery,
   HistoryRecord,
   UnitRecordOutcome,
 } from "phoebe-agent/contracts";
-import { REMOTE_ROUTES } from "phoebe-agent/contracts";
+import {
+  HISTORY_MAX_LIMIT,
+  historyExportHead,
+  historyExportLines,
+  REMOTE_ROUTES,
+} from "phoebe-agent/contracts";
 
 /** What one ask for a page came to. */
 export type HistoryFetch =
@@ -110,6 +116,72 @@ export function filterChoices(choices: FilterChoices, filters: HistoryFilters): 
   if (filters.model !== undefined) models.add(filters.model);
   return { kinds: [...kinds].sort(), models: [...models].sort() };
 }
+
+// ───────────────────────────── export ─────────────────────────────
+
+/** The export formats, as the tab's choice names them. */
+export const EXPORT_FORMATS: readonly { format: HistoryExportFormat; label: string }[] = [
+  { format: "csv", label: "CSV" },
+  { format: "jsonl", label: "JSON Lines" },
+];
+
+/** A file an export hands to whatever saves it. */
+export type ExportFile = { name: string; type: string; text: string };
+
+/** How the tab saves a file: the browser's download, unless a test hands its own. */
+export type SaveFile = (file: ExportFile) => void;
+
+/**
+ * Every record the filters match, as one file in `format`: the pages walked
+ * from the newest until the cursor runs out, not just the ones the tab has
+ * drawn. The mapping is the contracts' (#992), so the file matches what
+ * `phoebe history --export` writes. `progress` hears the count after each
+ * page, with the total the filters match. Rejects when a page could not be
+ * read, so a part of the history never saves as if it were all of it.
+ */
+export async function exportHistory(
+  reader: HistoryReader,
+  filters: HistoryFilters,
+  format: HistoryExportFormat,
+  progress?: (written: number, total: number) => void,
+): Promise<{ text: string; count: number }> {
+  const parts = [historyExportHead(format)];
+  let count = 0;
+  let before: string | undefined;
+  for (;;) {
+    const fetched = await reader({ ...historyQueryOf(filters, before), limit: HISTORY_MAX_LIMIT });
+    if (fetched.kind === "too-old") {
+      throw new Error("this deployment is too old to keep unit history");
+    }
+    const { records, nextBefore, summary } = fetched.page;
+    parts.push(historyExportLines(format, records));
+    count += records.length;
+    progress?.(count, summary.units);
+    if (nextBefore === null || records.length === 0) return { text: parts.join(""), count };
+    before = nextBefore;
+  }
+}
+
+/** `phoebe-history-2026-11-27.csv`: the day it was saved, and the format's own extension. */
+export function exportFileOf(format: HistoryExportFormat, text: string, at: Date): ExportFile {
+  const day = at.toISOString().slice(0, 10);
+  return format === "csv"
+    ? { name: `phoebe-history-${day}.csv`, type: "text/csv", text }
+    : { name: `phoebe-history-${day}.jsonl`, type: "application/x-ndjson", text };
+}
+
+/** Save through a download: the companion asks where, a browser saves to its folder. */
+export const downloadFile: SaveFile = (file) => {
+  const url = URL.createObjectURL(new Blob([file.text], { type: file.type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.name;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+};
 
 // ───────────────────────────── one record ─────────────────────────────
 

@@ -14,6 +14,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DeploymentReport } from "./contracts/deployment.ts";
+import { HISTORY_MAX_LIMIT } from "./contracts/history-export.mjs";
 import type {
   HistoryPage,
   HistoryQuery,
@@ -31,8 +32,8 @@ import { UNITS_FILE, UNITS_ROTATED_FILE } from "./unit-record.ts";
 /** Records on a page when the query names no limit. */
 export const HISTORY_DEFAULT_LIMIT = 50;
 
-/** The most records one page holds; a larger limit is clamped to this. */
-export const HISTORY_MAX_LIMIT = 200;
+/** The most records one page holds; see contracts/history-export.mjs. */
+export { HISTORY_MAX_LIMIT };
 
 /** Every outcome a record can carry, in the order a summary lists them. */
 export const UNIT_RECORD_OUTCOMES: readonly UnitRecordOutcome[] = [
