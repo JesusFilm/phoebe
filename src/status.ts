@@ -36,6 +36,13 @@ import type {
 import type { RemoteReport } from "./contracts/remote-protocol.ts";
 import type { DoctorReport, DoctorSection } from "./contracts/doctor.ts";
 import type { HistorySummary, HistoryWindow } from "./contracts/unit-record.ts";
+import {
+  spendCrossingText,
+  spendReleaseText,
+  type SpendCrossing,
+  type SpendHold,
+} from "./contracts/spend.ts";
+import { spendLimitKey, spendLimitPath } from "./spend.ts";
 import { deploymentReportPath } from "../bootstrap/deployment-report.ts";
 import type { DeploymentField } from "./config-schema.ts";
 import { readDeploymentCommands } from "./deployment-command.ts";
@@ -109,8 +116,9 @@ container, passing flags and exit code through; a container that is not running
 is reported before any exec.
 
 --check exits 1 on: a wedged or crash-looping pipeline, a failing doctor check
-in the report, a held tenant, no bootstrapper, or no report. Doctor warnings and
-stale pipeline directories do not trip it.
+in the report, a held tenant, a spend ceiling holding a pipeline, no
+bootstrapper, or no report. Doctor warnings, spend warning limits and stale
+pipeline directories do not trip it.
 `;
 
 export const LIST_HELP_TEXT = `phoebe list — deprecated alias for the fleet section of \`phoebe status\`
@@ -308,6 +316,51 @@ export function formatStateLine(cell: FleetCell): string {
   return parts.join("  ");
 }
 
+/** `2026-05-05 21:00 UTC (in 21h)`: when a hold should let go, to the minute. */
+export function formatReleaseAt(stamp: string, now: number): string {
+  const at = Date.parse(stamp);
+  if (!Number.isFinite(at)) return spendReleaseText(stamp);
+  return `${spendReleaseText(stamp)} (in ${formatAge(at - now)})`;
+}
+
+/** `$6.00 of $5.00 over 24h at pipelines.work.spend.warn.usd24h`: one limit, its figure and its path. */
+function formatCrossing(
+  crossing: SpendCrossing,
+  level: "warn" | "ceiling",
+  pipeline: string,
+): string {
+  const path = spendLimitPath(
+    crossing.scope,
+    level,
+    spendLimitKey(crossing.measure, crossing.window),
+    pipeline,
+  );
+  return `${spendCrossingText(crossing)} (${path})`;
+}
+
+/**
+ * The spend lines under a pipeline (#991): the ceiling holding it, which reads
+ * "held until about", and a line for each warning limit it has reached. None
+ * for a cell no limit covers or whose spend is under every limit.
+ */
+export function formatSpendLines(cell: FleetCell, now: number): string[] {
+  const spend = cell.spend;
+  if (spend === undefined) return [];
+  const lines: string[] = [];
+  if (spend.hold !== null) lines.push(formatHoldLine(spend.hold, cell.pipeline, now));
+  for (const warning of spend.warnings) {
+    lines.push(`spend warning: ${formatCrossing(warning, "warn", cell.pipeline)}`);
+  }
+  return lines;
+}
+
+function formatHoldLine(hold: SpendHold, pipeline: string, now: number): string {
+  return (
+    `spend ceiling: ${formatCrossing(hold, "ceiling", pipeline)}; held until about ` +
+    `${formatReleaseAt(hold.releaseAt, now)}, or until a config edit raises or removes it`
+  );
+}
+
 function usd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
@@ -388,6 +441,9 @@ export function formatFleetSection(
           formatCellMark(cell),
       );
       lines.push(`        ${" ".repeat(width)}  ${formatStateLine(cell)}`);
+      for (const line of formatSpendLines(cell, now)) {
+        lines.push(`        ${" ".repeat(width)}  ${line}`);
+      }
       if (opts.verbose === true && cell.history !== undefined) {
         lines.push(`        ${" ".repeat(width)}  history ${formatHistorySummary(cell.history)}`);
       }
@@ -484,8 +540,9 @@ export function formatStatusReport(view: StatusView): string {
  * Everything `--check` exits 1 for, named (#508 §5). One list, so a host cron
  * and the console agree on "needs a look": a wedged pipeline, a crash-looping
  * one, a failing doctor check in the cached report, a held tenant, a
- * bootstrapper that is not running, or no report at all. Doctor *warnings* and
- * stale pipeline directories are deliberately not here — neither is a thing to
+ * spend ceiling holding a pipeline (#991), a bootstrapper that is not running,
+ * or no report at all. Doctor *warnings*, spend warning limits and stale
+ * pipeline directories are deliberately not here — neither is a thing to
  * wake anyone for.
  */
 export function statusFindings(opts: {
@@ -505,6 +562,12 @@ export function statusFindings(opts: {
   if (doctor?.report != null && !doctor.report.ok) findings.push("doctor: failing check(s)");
   for (const tenant of opts.report.fleet.tenants) {
     if (tenant.held) findings.push(`held tenant: ${tenant.path}`);
+  }
+  for (const cell of opts.report.fleet.cells) {
+    const hold = cell.spend?.hold ?? null;
+    if (hold !== null) {
+      findings.push(`spend ceiling: ${cell.id} (held until about ${hold.releaseAt})`);
+    }
   }
   return findings;
 }

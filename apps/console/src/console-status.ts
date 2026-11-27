@@ -9,7 +9,7 @@
 //
 // Pure. console-view.tsx draws it.
 
-import type { LocalInstall, LocalReportEvent } from "phoebe-agent/contracts";
+import type { DeploymentReport, LocalInstall, LocalReportEvent } from "phoebe-agent/contracts";
 import { harnessPin, providerOf } from "./harness.ts";
 import {
   cellProblems,
@@ -50,6 +50,22 @@ export type ConsoleStatus = {
   /** By tab: one pipeline's, and each tenant's whole set under `<slug>:*`. */
   channels: Map<string, ChannelStatus>;
 };
+
+/**
+ * The deployment's own warning when forwarding unit records to OpenTelemetry
+ * keeps failing (#993): the latest send failed and none has succeeded since.
+ * Nothing when forwarding is off, or the report predates it.
+ */
+export function telemetryProblems(report: DeploymentReport): RailProblem[] {
+  const telemetry = report.bootstrapper?.telemetry;
+  if (telemetry == null || telemetry.lastError === null) return [];
+  return [
+    {
+      level: "warning",
+      text: `OpenTelemetry sends failing (${telemetry.dropped} dropped): ${telemetry.lastError}`,
+    },
+  ];
+}
 
 /**
  * The install's standing, off its latest read. A stopped install has nothing
@@ -131,6 +147,7 @@ export function consoleStatus(
   // The install's own first: a container that cannot run a unit at all is the
   // cause under whatever each tenant goes on to report.
   problems.unshift(...ofInstall);
+  if (report !== null) problems.push(...telemetryProblems(report));
   // Errors ahead of warnings across the whole install, each level in the order found.
   const errors = problems.filter((problem) => problem.level === "error");
   const warnings = problems.filter((problem) => problem.level !== "error");
@@ -184,6 +201,7 @@ export function remoteConsoleStatus(reading: ReportReading): ConsoleStatus {
         );
       }
     }
+    problems.push(...telemetryProblems(report));
   }
   const errors = problems.filter((problem) => problem.level === "error");
   const warnings = problems.filter((problem) => problem.level !== "error");

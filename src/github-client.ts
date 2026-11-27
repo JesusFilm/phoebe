@@ -54,6 +54,14 @@ import {
 // prompt, network partition). Mirrors the git-side bound in main.ts; the two are
 // separate knobs because a `gh` call and a `git` call fail differently.
 const CHILD_PROCESS_TIMEOUT_MS = 120_000;
+// Node's default `maxBuffer` is 1 MiB, and full pages of REST objects pass it:
+// 100 Actions runs measured 1.8 MB (#986), and a search or comments page of 100
+// objects with bodies can too. GitHub caps a body at 65,536 characters, so a
+// full page of 100 bodies stays well under 64 MiB, and a nested GraphQL page
+// (100 review threads of 30 comments each) would need nearly every comment at
+// that cap to reach the 256 MiB set here. V8 tops out at about 512 MiB per
+// string, so a higher cap would only trade ENOBUFS for an out-of-memory error.
+const CHILD_PROCESS_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
 // GitHub computes mergeability server-side and answers UNKNOWN while it works,
 // so a first read on a freshly-pushed PR routinely says nothing useful. That is
 // a GitHub quirk, not loop knowledge, which is why the retry lives here.
@@ -253,6 +261,17 @@ export type BenchIssueFacts = {
   comments: GhComment[];
 };
 
+/**
+ * An open PR carrying a label, as the bench kind lists the PRs a person asked it
+ * to measure (#989). Any author and any base: the label is the whole filter.
+ */
+export type LabeledPr = {
+  number: PrNumber;
+  title: string;
+  headRefName: BranchRef;
+  headSha: Sha;
+};
+
 /** A PR a branch has had, as the observer matches a unit record to one (#935). */
 export type BranchPr = { number: PrNumber; createdAt: string; closedAt: string | null };
 
@@ -358,6 +377,8 @@ export type GitHubClient = {
    * of them through the same `isPrInScope` filter.
    */
   listOpenPhoebePrs(): OpenPhoebePr[];
+  /** Open PRs carrying `label`, oldest first, whatever `prScope` says. */
+  listLabeledPrs(label: string): LabeledPr[];
   /**
    * A PR's merge state, read fresh every call. The cycle client's `mergeInfo` is
    * the one to use during discovery; this is for the re-check after an agent has
@@ -419,6 +440,8 @@ export type GitHubClient = {
    */
   addUnitLabel(target: UnitTarget, label: string): void;
   removeQuarantineLabel(target: UnitTarget): void;
+  /** Remove `label` from an issue or PR. */
+  removeUnitLabel(target: UnitTarget, label: string): void;
   /**
    * Add `label` to an issue. Uses a captured (non-inherited) exec so the
    * caller can inspect the error with `isLabelNotFoundError` when the label
@@ -617,6 +640,7 @@ export function createGhExecutor(env: NodeJS.ProcessEnv): GhExecutor {
       env,
       encoding: "utf8",
       timeout: CHILD_PROCESS_TIMEOUT_MS,
+      maxBuffer: CHILD_PROCESS_MAX_BUFFER_BYTES,
       // Captured stderr is what the classifiers read; stdin carries `--input -`
       // bodies on this path exactly as on the inherit path — dropping it here
       // once sent GitHub an empty body for every ref and stack write.
@@ -776,9 +800,13 @@ export function createGitHubClient({
     return hits;
   }
 
-  /** A REST call. The endpoint names the resource, so these carry no `-R`. */
-  function ghApiJson<T>(endpoint: string): T {
-    const args = ["api", endpoint];
+  /**
+   * A REST call. The endpoint names the resource, so these carry no `-R`.
+   * `jq` projects the response inside `gh`, so only the fields a caller reads
+   * cross the pipe.
+   */
+  function ghApiJson<T>(endpoint: string, jq?: string): T {
+    const args = ["api", endpoint, ...(jq !== undefined ? ["--jq", jq] : [])];
     try {
       return JSON.parse(exec(args)) as T;
     } catch (error) {
@@ -1352,6 +1380,29 @@ export function createGitHubClient({
       return prs;
     },
 
+    listLabeledPrs: (label) => {
+      type GhLabeledPr = { number: number; title: string; headRefName: string; headRefOid: string };
+      return ghJson<GhLabeledPr[]>([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--label",
+        label,
+        "--limit",
+        "100",
+        "--search",
+        "sort:created-asc",
+        "--json",
+        "number,title,headRefName,headRefOid",
+      ]).map((pr) => ({
+        number: asPrNumber(pr.number),
+        title: pr.title,
+        headRefName: asBranchRef(pr.headRefName),
+        headSha: asSha(pr.headRefOid),
+      }));
+    },
+
     currentMergeInfo,
 
     prCommentBodies: (prNumber) => {
@@ -1669,6 +1720,10 @@ export function createGitHubClient({
         "--remove-label",
         PHOEBE_QUARANTINE_LABEL,
       ]);
+    },
+
+    removeUnitLabel: (target, label) => {
+      ghWrite([target.objectType, "edit", String(target.id), "--remove-label", label]);
     },
 
     issueLabels: (issueNumber) =>
@@ -2111,16 +2166,17 @@ export function createGitHubClient({
     },
 
     branchWorkflowRuns: (branch) => {
-      type Raw = {
-        workflow_runs: Array<{
-          name: string | null;
-          head_sha: string;
-          conclusion: string | null;
-          created_at: string;
-        }>;
-      };
-      const { workflow_runs: runs } = ghApiJson<Raw>(
+      type Raw = Array<{
+        name: string | null;
+        head_sha: string;
+        conclusion: string | null;
+        created_at: string;
+      }>;
+      // A whole run object is about 18 KB and only four fields are read, so
+      // `gh` projects the page before it crosses the pipe (#986).
+      const runs = ghApiJson<Raw>(
         `repos/${config.repoSlug}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=100`,
+        "[.workflow_runs[] | {name, head_sha, conclusion, created_at}]",
       );
       return runs.map((run) => ({
         name: run.name ?? "",

@@ -3,7 +3,7 @@
 // is actually working. (A `--fix` mode that repairs at the current pin is a
 // mapped follow-up.)
 //
-// Nine deployment checks, all reads of state that already exists (three more —
+// Ten deployment checks, all reads of state that already exists (three more —
 // `labels`, `stray-members` and `stale-state` — are per tenant and live in the
 // tenant sweep below):
 //   1. cli            — installed bootstrapper vs the npm registry's latest
@@ -24,6 +24,10 @@
 //                       listener, the tailnet, the mint drop, the sessions file,
 //                       and on the host arm the Serve mapping. `unknown` with no
 //                       block; `detail` says which vantage point answered.
+//  10. telemetry      — whether unit records are forwarded to an OpenTelemetry
+//                       collector, and where (#993). A `*_PROTOCOL` Phoebe does
+//                       not speak is a warn: it sends OTLP/HTTP JSON whatever
+//                       the variable says.
 //
 // A tenant's scheduled work kinds may declare env keys of their own (#425);
 // doctor reports a missing one as a tenant finding, ahead of the engine child
@@ -71,6 +75,7 @@ import {
 } from "../bootstrap/github-engine.ts";
 import { TENANT_CONFIG_FILE } from "../bootstrap/tenants.ts";
 import { inspectMintDrop, type MintDropFacts } from "../bootstrap/mint-drop.ts";
+import { displayUrl, OTLP_SUPPORTED_PROTOCOL, resolveOtlpTarget } from "../bootstrap/otlp.ts";
 import {
   localApiGet,
   readLocalApiStatus,
@@ -362,6 +367,39 @@ export function configPenCheck(fields: {
       `\`phoebe stop && phoebe start\` — a mount cannot be added to a running container. ` +
       `Editing the file by hand works either way.`,
   };
+}
+
+/**
+ * Whether unit records go to an OpenTelemetry collector (#993), read from the
+ * same variables the bootstrapper reads, through the same function. The
+ * header values are never printed — they carry the collector's credential —
+ * only their names. Pure, for tests.
+ */
+export function telemetryCheck(env: Record<string, string | undefined>): DoctorCheck {
+  const target = resolveOtlpTarget(env);
+  if (target === null) {
+    return {
+      id: "telemetry",
+      state: "ok",
+      detail:
+        "off. Set OTEL_EXPORTER_OTLP_ENDPOINT to forward unit records to an OpenTelemetry collector",
+    };
+  }
+  const headers = Object.keys(target.headers);
+  const where =
+    `on. Each new unit record goes to ${displayUrl(target.url)} as one OTLP trace ` +
+    `(from ${target.from}${headers.length === 0 ? "" : `, with header(s) ${headers.join(", ")}`})`;
+  if (target.unsupportedProtocol !== null) {
+    return {
+      id: "telemetry",
+      state: "warn",
+      detail:
+        `${where}. The protocol is set to \`${target.unsupportedProtocol}\`, which Phoebe does not ` +
+        `support. Phoebe sends ${OTLP_SUPPORTED_PROTOCOL} only. Point the endpoint at the collector's ` +
+        `OTLP/HTTP receiver, port 4318 by default, and set the protocol to ${OTLP_SUPPORTED_PROTOCOL} or unset it.`,
+    };
+  }
+  return { id: "telemetry", state: "ok", detail: where };
 }
 
 /**
@@ -2176,6 +2214,9 @@ export async function runDoctor(
       }),
     ),
   );
+
+  // 10. OTLP forwarding (#993): the bootstrapper's env, which this run shares.
+  checks.push(telemetryCheck(env));
 
   // Tenant sweep: workspace mode enumerates the same fleet boot supervises;
   // solo probes the root itself (the deployment root IS the tenant there).

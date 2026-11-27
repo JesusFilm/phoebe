@@ -112,12 +112,21 @@ export function violationsIn(file: string, source: string): string[] {
   return found;
 }
 
+/**
+ * TypeScript, and the `.mjs` files that hold the subpath's runtime code (the
+ * history export's mapping): an installed consumer loads those, so they answer
+ * to both rules too.
+ */
+function isSource(name: string): boolean {
+  return name.endsWith(".ts") || name.endsWith(".mjs");
+}
+
 function sourceFilesUnder(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...sourceFilesUnder(full));
-    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) files.push(full);
+    else if (isSource(entry.name) && !entry.name.endsWith(".test.ts")) files.push(full);
   }
   return files;
 }
@@ -126,7 +135,7 @@ function sourceFilesUnder(dir: string): string[] {
 function resolveSpecifier(from: string, specifier: string): string | null {
   const base = resolve(dirname(from), specifier);
   for (const candidate of [base, `${base}.ts`, join(base, "index.ts")]) {
-    if (existsSync(candidate) && candidate.endsWith(".ts")) return candidate;
+    if (existsSync(candidate) && isSource(candidate)) return candidate;
   }
   return null;
 }
@@ -162,6 +171,7 @@ describe("the contracts closure stays pure", () => {
     const { files } = closure();
     expect(files).toContain(join(contractsDir, "index.ts"));
     expect(files).toContain(join(contractsDir, "stop-outcome.ts"));
+    expect(files).toContain(join(contractsDir, "history-export.mjs"));
   });
 
   test.each([

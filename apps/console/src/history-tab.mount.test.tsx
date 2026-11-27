@@ -1,16 +1,24 @@
 // @vitest-environment jsdom
 // The History tab with a reader behind it (#931): the list newest first as the
 // page holds it, each filter sent as a query rather than applied to the page,
-// a row opening the drawer, each kind of cost with its line, "show more", and
-// a deployment too old to serve history.
+// a row opening the drawer, each kind of cost with its line, "show more", a
+// deployment too old to serve history, and an export that walks every page
+// under the active filters (#992).
 
 import { act } from "react";
 import type { ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { HistoryQuery } from "phoebe-agent/contracts";
+import type { HistoryQuery, HistoryRecord } from "phoebe-agent/contracts";
+import { historyExportHead, historyExportLines } from "phoebe-agent/contracts";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { HistoryTab } from "./history-tab.tsx";
-import { API_COST_NOTE, ESTIMATE_NOTE, type HistoryFetch, type HistoryReader } from "./history.ts";
+import {
+  API_COST_NOTE,
+  ESTIMATE_NOTE,
+  type ExportFile,
+  type HistoryFetch,
+  type HistoryReader,
+} from "./history.ts";
 import { agentRun, cell, historyPage, historyRecord, NOW } from "./test-fixture.ts";
 
 const roots: Root[] = [];
@@ -226,5 +234,121 @@ describe("the drawer", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
     expect(box.querySelector("aside.unit-drawer")).toBeNull();
+  });
+});
+
+describe("export", () => {
+  test("walks every page under the active filters, shows progress, then saves the file and its count", async () => {
+    // The tab's own pages come back at once; each export page waits to be let go.
+    const asked: HistoryQuery[] = [];
+    const held: Array<(fetch: HistoryFetch) => void> = [];
+    const drawn: HistoryFetch = {
+      kind: "page",
+      page: historyPage([NEWER], { nextBefore: "drawn-1" }),
+    };
+    const read: HistoryReader = (query) => {
+      asked.push(query);
+      if (query.limit === undefined) return Promise.resolve(drawn);
+      return new Promise((resolve) => held.push(resolve));
+    };
+    const saved: ExportFile[] = [];
+    const box = await mount(
+      <HistoryTab
+        reader={read}
+        scope="/repos/youtube-studio"
+        cells={CELLS}
+        now={NOW}
+        save={(file) => saved.push(file)}
+      />,
+    );
+    await choose(box, "Pipeline", "/etc/phoebe#work");
+    await choose(box, "Work kind", "issues");
+
+    const exportButton = [...box.querySelectorAll("button")].find(
+      (b) => b.textContent === "Export",
+    )!;
+    await act(async () => exportButton.click());
+    expect(asked.at(-1)).toEqual({ cell: "/etc/phoebe#work", kind: "issues", limit: 200 });
+    expect(exportButton.disabled).toBe(true);
+
+    const total = (records: HistoryRecord[], nextBefore: string | null): HistoryFetch => {
+      const page = historyPage(records, { nextBefore });
+      return { kind: "page", page: { ...page, summary: { ...page.summary, units: 3 } } };
+    };
+    await act(async () => held.shift()!(total([NEWER], "export-1")));
+    expect(box.textContent).toContain("Exporting… 1 of 3 units");
+    expect(asked.at(-1)).toEqual({
+      cell: "/etc/phoebe#work",
+      kind: "issues",
+      before: "export-1",
+      limit: 200,
+    });
+
+    await act(async () => held.shift()!(total([ESTIMATED, OLDER], null)));
+    expect(held).toHaveLength(0);
+    expect(saved).toHaveLength(1);
+    const file = saved[0]!;
+    expect(file.name).toBe(`phoebe-history-${NOW.toISOString().slice(0, 10)}.csv`);
+    expect(file.type).toBe("text/csv");
+    expect(file.text).toBe(
+      historyExportHead("csv") + historyExportLines("csv", [NEWER, ESTIMATED, OLDER]),
+    );
+    expect(box.textContent).toContain("Saved 3 units as CSV.");
+    expect(exportButton.disabled).toBe(false);
+    // The drawn list is the tab's own: the export added nothing to it.
+    expect(rows(box)).toHaveLength(1);
+  });
+
+  test("JSON Lines saves one record per line", async () => {
+    const { read } = reader({ kind: "page", page: historyPage([NEWER, OLDER]) });
+    const saved: ExportFile[] = [];
+    const box = await mount(
+      <HistoryTab
+        reader={read}
+        scope="/repos/youtube-studio"
+        cells={CELLS}
+        now={NOW}
+        save={(file) => saved.push(file)}
+      />,
+    );
+    await choose(box, "Export format", "jsonl");
+    const exportButton = [...box.querySelectorAll("button")].find(
+      (b) => b.textContent === "Export",
+    )!;
+    await act(async () => exportButton.click());
+
+    expect(saved[0]!.name).toMatch(/\.jsonl$/);
+    expect(
+      saved[0]!.text
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([NEWER, OLDER]);
+    expect(box.textContent).toContain("Saved 2 units as JSON Lines.");
+  });
+
+  test("a page that fails mid-export saves nothing and says why", async () => {
+    const { read } = reader(
+      { kind: "page", page: historyPage([NEWER]) },
+      { kind: "page", page: historyPage([NEWER], { nextBefore: "export-1" }) },
+      new Error("the container stopped"),
+    );
+    const saved: ExportFile[] = [];
+    const box = await mount(
+      <HistoryTab
+        reader={read}
+        scope="/repos/youtube-studio"
+        cells={CELLS}
+        now={NOW}
+        save={(file) => saved.push(file)}
+      />,
+    );
+    const exportButton = [...box.querySelectorAll("button")].find(
+      (b) => b.textContent === "Export",
+    )!;
+    await act(async () => exportButton.click());
+
+    expect(saved).toEqual([]);
+    expect(box.textContent).toContain("Could not export: the container stopped");
   });
 });

@@ -27,6 +27,7 @@ import { useState, type ReactNode } from "react";
 import type { EditReceipt } from "phoebe-agent/contracts";
 import { age } from "./facts.ts";
 import { NeedsALook, PipelineBreakdown, PipelineWeek, WeekCard } from "./history-glance.tsx";
+import { spendViewOf } from "./spend.ts";
 import { HistoryTab } from "./history-tab.tsx";
 import type { HistoryReader } from "./history.ts";
 import { observerTargetsOf, type ObserveRunner } from "./observer.ts";
@@ -174,8 +175,8 @@ const TAB_HEADINGS: Record<DeploymentTab, string> = {
 };
 
 /**
- * The top of the overview (#932): the 7-day card off the report's summary, and
- * under it the units that need a look, which is the one part that reads records.
+ * The top of the overview (#932): the 7-day card off the report's summary, with
+ * the spend limits beside its figures (#991), and under it the units that need a look, which is the one part that reads records.
  * A report with no summary gets the card's own word for that and no feed, since
  * a deployment that cannot sum its units cannot list them either.
  */
@@ -193,7 +194,7 @@ function OverviewHistory({
   const summary = fleetHistoryOf(reading.report);
   return (
     <>
-      <WeekCard summary={summary} now={now} />
+      <WeekCard summary={summary} now={now} spend={spendViewOf(reading.report)} />
       {summary === null || history === undefined ? null : (
         <NeedsALook
           reader={history.reader}
@@ -288,6 +289,23 @@ function OverviewTab({
                 : ` · stopped by ${bootstrapper.stopped.by} ${age(bootstrapper.stopped.at, now)} ago`
             }`}
           />
+          {bootstrapper?.telemetry == null ? null : (
+            <>
+              <dt>Telemetry</dt>
+              <dd>
+                {`OpenTelemetry: ${bootstrapper.telemetry.sent} sent, ${bootstrapper.telemetry.dropped} dropped${
+                  bootstrapper.telemetry.lastSentAt === null
+                    ? ""
+                    : `, last sent ${age(bootstrapper.telemetry.lastSentAt, now)} ago`
+                }`}
+                {bootstrapper.telemetry.lastError === null ? null : (
+                  <span className="chip warn" title={bootstrapper.telemetry.lastError}>
+                    sends failing
+                  </span>
+                )}
+              </dd>
+            </>
+          )}
           <Pair label="Report" value={`read ${age(reading.receivedAt, now)} ago`} />
         </dl>
       </section>

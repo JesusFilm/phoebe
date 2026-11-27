@@ -256,6 +256,90 @@ out.
 directly, so it works while the bootstrapper is down. On the host it runs
 itself in the container with the same flags.
 
+`--export csv` and `--export jsonl` write every unit the filters match to
+stdout, not one page. The verb walks the pages itself, and the count goes to
+stderr:
+
+```sh
+phoebe history --since 2026-11-01 --export csv > units.csv
+```
+
+The CSV has one row per unit. Its columns are `cell`, `kind`, `unit`,
+`outcome`, `quarantined`, `started`, `ended`, `provider`, `model`,
+`agent_runs`, the four token counts summed across the unit's agent runs,
+`partial_usage`, `api_cost_usd`, `estimated_cost_usd` and `pr_link`. API spend
+and Claude's subscription estimate sit in separate columns and are never added
+together. A count that no run reported is an empty cell, not a 0. JSON Lines
+writes one full record per line, the same objects `--json` puts in `records`.
+The History tab's **Export** button writes the same files. `--export` takes
+`--before` as the place to start, but not `--limit` or `--json`.
+
+## Forwarding unit records to OpenTelemetry
+
+Phoebe can send each unit record to an OpenTelemetry collector you run, as one
+OTLP trace. It is off by default. To turn it on, set the standard exporter
+variables in the deployment's `.env`. The scaffolded `container/compose.yml`
+passes them through to the container.
+
+| Variable                             | What it does                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | The collector's base URL. Phoebe appends `v1/traces`.                                                  |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | The full traces URL, used as given. It wins over the base URL.                                         |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | Request headers as `key=value,key=value`, values percent-encoded. Put the collector's credential here. |
+| `OTEL_SERVICE_NAME`                  | Replaces the default `service.name`, which is `phoebe`.                                                |
+| `OTEL_RESOURCE_ATTRIBUTES`           | Extra resource attributes, as `key=value,key=value`.                                                   |
+
+There is no config field. Only the bootstrapper reads these variables. No agent
+gets them, whatever a kind's `agentEnv` says, because the headers hold your
+collector's credential.
+
+Phoebe speaks OTLP/HTTP JSON and nothing else, so point the endpoint at the
+collector's HTTP receiver, which listens on port 4318 by default. If
+`OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` says `grpc`
+or `http/protobuf`, Phoebe still sends JSON, and `phoebe doctor` flags the
+setting.
+
+**What gets sent.** Each record written after forwarding is on is sent once.
+Older records are not sent. Observer units are sent. Bench trials are not, since
+they never reach a pipeline's history. Each trace has these spans:
+
+- A `unit <kind>` root span runs from the unit's start to its settle time. An
+  abandoned unit has no settle time, so its span ends when the record arrived.
+  It carries `phoebe.tenant`, `phoebe.pipeline`, `phoebe.kind`, `phoebe.unit`,
+  `phoebe.outcome`, `phoebe.quarantined`, `phoebe.run_budget_ms`, `phoebe.effort`,
+  `phoebe.pr_number`, `phoebe.head_sha`, `phoebe.engine_commit`,
+  `gen_ai.provider.name` and `gen_ai.request.model`.
+- An `invoke_agent <kind>` child span covers each agent run. It carries the GenAI
+  attributes `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.provider.name`
+  (`anthropic`, `openai` or `cursor`), `gen_ai.request.model` and the
+  `gen_ai.usage.*` token counts. Cost, cost basis, turns, stop reason, usage
+  completeness, exit code, prompt SHA, reported models and the tool-call total
+  go under `phoebe.agent_run.*`.
+
+`gen_ai.usage.input_tokens` counts uncached input, cache reads and cache writes
+together, as the convention asks. A count the provider did not report is left
+out rather than sent as 0. A failed, timed-out or abandoned unit has ERROR
+status, with `error.type` set to the outcome. So does an agent run that exited
+non-zero or never exited. A unit's `detail` and `branch` are never sent,
+because they can hold free text and issue titles.
+
+The resource has `service.version` set to the engine's version and
+`service.instance.id` set to the deployment ID. The `gen_ai.*` names come from
+semantic-conventions-genai v0.1.0, and the scope's schema URL pins that release.
+Those conventions are still at Development status. When Phoebe moves to a later
+release, the changeset lists every renamed attribute.
+
+Trace and span IDs come from a hash of the deployment ID, the tenant and
+pipeline, the unit and its start time. If a record is sent twice, the collector
+sees the same trace twice rather than two traces.
+
+**Delivery.** A send that gets HTTP 429, 502, 503 or 504, or loses its
+connection, is retried once, after the `Retry-After` wait when the collector
+gives one. Any other failure drops the trace, and so does a partial success.
+Nothing is queued on disk. The deployment report's `bootstrapper.telemetry`
+counts what was `sent` and `dropped`, with `lastError` and `lastSentAt`. When the
+latest send failed and none has succeeded since, the console shows a warning.
+
 ## Starting an observer run: `phoebe observe`
 
 The [`observer`](work-kinds.md) kind runs on its `every` schedule, or never
@@ -305,7 +389,8 @@ phoebe bench select --since 2026-10-01 --limit 30 > bench/suite.json
 `<branchPrefix>issue-<n>` branches, newest merge first, and stops once
 `--limit` fixtures qualify. The default limit is 20. `--since` keeps only PRs
 merged on or after that date. In a workspace, `--tenant <owner/repo>` picks the
-tenant.
+tenant. `--no-baseline` pins fixtures without running their baselines. See
+[Baselines and unstable fixtures](#baselines-and-unstable-fixtures).
 
 An issue qualifies when exactly one PR came from its branch, that PR merged into
 the default branch, and every commit on it has the same git author. The verb
@@ -328,6 +413,13 @@ Each fixture pins three things:
 - `baseSha`, the merge-base of the PR head and the merge commit's first parent.
   The verb computes it in the tenant's hub clone, so checking out `baseSha` gives
   the tree the PR started from, or the default branch it last merged in.
+
+Before it pins an issue that qualifies, the verb runs the issue's baseline:
+the merged PR's head goes through `installCommand`, `checkCommand` and
+`testCommand` with no agent. If a gate fails, the verb skips the issue with a
+reason such as `its merged PR no longer passes: test exited 1`. A fixture that
+passes records the time in `baselinePassedAt`. With `--no-baseline` no gate
+runs, and the fixtures have no `baselinePassedAt`.
 
 On the host the verb starts a one-off container from the deployment's image
 with `docker compose run --rm`. The long-lived container does not need to be
@@ -383,8 +475,11 @@ and that its provider key (the variable `providerEnv` names) is set, and that
 the judge's provider key is set too. A trial
 has its own HOME, so a provider's on-disk login is not available to it.
 
-A trial has no GitHub credentials and no git remote. The bench container sets no
-network restriction, so unauthenticated requests to github.com are not blocked:
+"Offline" means cut off from GitHub: no git remote, no GitHub credential, and
+the `gh` shim. It does not mean cut off from the network. Trials keep outbound
+network, because the provider API and the package registry need it. Bench sets
+no egress allowlist, so an unauthenticated request to github.com is not
+blocked. Here is what a trial gets:
 
 - The agent works in a fresh repository that holds history up to `baseSha` and
   nothing later, so the merged PR is not in it. The repository has no remote.
@@ -400,6 +495,35 @@ Bench runs the gates itself, in this order: `installCommand`, the agent,
 `checkCommand`, `testCommand`. It records each gate's exit code and duration,
 and the first failure stops the rest. If the agent made no commits, the trial
 is recorded as "no change" and the check and test gates are skipped.
+
+### Baselines and unstable fixtures
+
+A fixture's baseline checks that its merged PR still passes. Bench checks out
+the merged PR's head, `pr.headSha`, from the hub clone into a fresh tree. It runs
+`installCommand`, `checkCommand` and `testCommand` there with no agent, and
+the first failure stops the rest. The gates get the same environment, the same
+10-minute ceiling per gate and the same shared package store as a trial's
+gates. The baseline tree is a separate repository. The trial's repository
+still holds history only up to `baseSha`, so the agent never sees the answer.
+
+`bench select` runs each fixture's baseline before pinning it.
+`bench run` runs every fixture's baseline again before the first trial,
+`--concurrency` at a time, because a fixture can break after it is pinned. A
+certificate expires, a test depends on the date, or a package is unpublished.
+Each baseline runs once. A test that fails now and then hits every contender
+alike, and `repeat` covers that.
+
+A fixture whose baseline fails in a run is unstable for that run. None of its
+trials run, so no agent time is spent on a result nobody can score. Bench does
+nothing to rescue it. It uses no fake clock and no registry snapshot. The
+report lists the unstable fixtures, and the table ends with a line like this:
+
+```
+2 fixture(s) unstable, not scored: #412 (test exited 1), #430 (install exited 1)
+```
+
+If bench cannot check out the merged PR's head at all, the fixture is unstable at
+`checkout`.
 
 Each run writes to `bench/<runId>/` in the tenant's data directory, beside
 `state/`:
@@ -436,6 +560,8 @@ opus-high       6          0   100%   83%       9m 05s           2.6M     $9.80 
 - **check** and **test** are pass rates over all of the contender's trials. A
   trial with no change, a failure, a timeout, or one stopped by an earlier gate
   counts as not passing.
+- An unstable fixture is in no rate, and `planned` counts only the trials of
+  stable fixtures.
 - **median time** is the whole trial: install, agent and gates.
 - **median tokens** adds input, output and cache tokens across the trial's
   agent runs.
@@ -446,6 +572,10 @@ opus-high       6          0   100%   83%       9m 05s           2.6M     $9.80 
 
 `--json` prints the report as JSON instead: a `BenchReport` (`v: 1`, exported
 from `phoebe-agent/contracts`). `report.json` holds the same JSON.
+`baselines` maps each fixture's issue number to its baseline gates.
+`unstable` lists each unstable fixture with its issue, PR, the gate that
+failed, that gate's exit code, and the fixture's `baselinePassedAt` from the
+suite, so you can see how long ago it last passed.
 `phoebe bench report <runId>` prints a saved run's report again, as the table or
 with `--json`. The run id is the directory name under `bench/`.
 
@@ -454,9 +584,10 @@ phoebe bench report 2026-11-25T12-00-00-000Z --json
 ```
 
 The exit code is 0 when every trial ran, however the trials scored. Failing
-gates never change it. Bench exits non-zero only when it could not do its job:
-a bad suite or bench config, a missing prompt file, or a contender or judge
-whose provider key is unset.
+gates never change it. When every fixture is unstable, bench prints the report,
+says `no stable fixture: nothing to compare`, and exits 1. Otherwise bench
+exits non-zero only when it could not do its job: a bad suite or bench config,
+a missing prompt file, or a contender or judge whose provider key is unset.
 
 ### The judge
 
@@ -487,9 +618,71 @@ under the table with the judge's runs, tokens and cost. A trial with no change
 is never judged. A trial with commits that got no verdict counts as
 `unjudged` in the JSON report, and the line under the table says how many.
 
+## Benching a pull request: the `bench` kind
+
+A deployment that declares the [`bench`](work-kinds.md#bench-measure-a-prs-prompt-and-model-against-the-default-branch-opt-in)
+kind benches a PR when a person adds the `phoebe:bench` label to it. The kind
+replays the deployment's suite with two contenders. `main` has the default
+branch's `issues` prompt, provider, model and effort, and `pr` has the PR
+head's. It posts the figures side by side in a new comment on the PR, then
+removes the label. Add the label again to run another bench. A bench that runs
+longer than the unit's run budget (45 minutes by default) is aborted and the label
+stays, so raise it with `PHOEBE_BENCH_RUN_TIMEOUT_MS` or `workKinds.bench.runTimeoutMs`.
+The kind needs a
+suite, so run `phoebe bench select > bench/suite.json` first. A PR that
+changes neither the `issues` prompt nor those settings gets a comment saying
+there is nothing to measure.
+
+The comment is information for the reviewer. Bench sets no check status and
+fails nothing, because ten fixtures run once each can differ by a fixture or
+two by chance. Bench does not measure changes to `AGENTS.md` or skills yet,
+because trials read both from each fixture's tree at `baseSha`. The comment
+says so when a PR touches them.
+
+### By hand: a two-contender bench config
+
+Without the kind, you can make the same comparison with `phoebe bench run`.
+From the deployment directory, copy PR #123's prompt out of a checkout of the
+repository (`~/src/widget` here):
+
+```sh
+git -C ~/src/widget fetch origin pull/123/head
+git -C ~/src/widget show FETCH_HEAD:prompts/issues-prompt.md > bench/pr-123-issues-prompt.md
+```
+
+Then save a bench config as `bench/pr-123.json` that names that prompt beside
+the current one:
+
+```json
+{
+  "contenders": [
+    { "name": "main" },
+    { "name": "pr", "promptFile": "bench/pr-123-issues-prompt.md" }
+  ]
+}
+```
+
+```sh
+phoebe bench run bench/suite.json --bench-config bench/pr-123.json
+```
+
+This compares the deployment against the PR, not the default branch against the PR:
+`main` takes the tenant's own prompt and settings, env overrides included. If the
+deployment differs from the default branch, extract the default branch's committed
+prompt and set its committed provider, model and effort on `main` too. If the PR
+also changes the `issues` provider, model or effort, set them on the `pr`
+contender.
+
+### No CI workflow template
+
+Phoebe ships no GitHub Actions template for benching PRs. A CI bench would need
+its own copy of the image, a clone of the repository, provider keys billed to
+an API account, and the suite. The deployment already has all four. Use the
+`bench` kind or the recipe above instead.
+
 ## Checking the deployment's health: `phoebe doctor`
 
-`phoebe doctor` (report-only) runs twelve checks and exits 1 when any fails:
+`phoebe doctor` (report-only) runs thirteen checks and exits 1 when any fails:
 
 - **cli.** Installed `phoebe-agent` against the npm registry's latest.
 - **engine.** The configured pin against the latest release tag, plus the commit
@@ -519,6 +712,10 @@ is never judged. A trial with commits that got no verdict counts as
   the host, that the arm's overlay files exist, that the running services and
   published ports match the arm, and on the host arm the same read-only Serve
   inspection `phoebe start` runs. The line says which vantage point answered.
+- **telemetry.** Whether unit records go to an OpenTelemetry collector, and the
+  URL they go to ([below](#forwarding-unit-records-to-opentelemetry)). It names
+  any headers set but never prints their values. A `*_PROTOCOL` of `grpc` or
+  `http/protobuf` is a warn, because Phoebe sends OTLP/HTTP JSON only.
 
 In workspace mode it also sweeps every tenant, using the same enumeration boot
 supervises with, checking each tenant's `GH_TOKEN` is present the way its
@@ -859,10 +1056,17 @@ volume`. From the host, a container that is not running is reported before any
 exec. There is no staleness threshold, because "3h old" is a fact an operator can
 act on and "stale" is a guess.
 
+**Spend limits.** A pipeline past a [spend limit](configuration.md#spend-limits-spend)
+gets a line of its own under its state line. A warning limit reached reads
+`spend warning: API spend $6.00 of $5.00 over 24h (pipelines.work.spend.warn.usd24h)`,
+and work goes on. A ceiling holding reads `spend ceiling: …; held until about
+2026-05-05 21:00 UTC (in 9h), or until a config edit raises or removes it`.
+
 **`--check` for a cron.** Exit 1 when something needs a look: a wedged pipeline,
 a crash-looping one, a failing check in the report's doctor section, a held
-tenant, a bootstrapper that is not running, or no report at all. Doctor
-_warnings_ and stale pipeline directories deliberately do not trip it. It names
+tenant, a spend ceiling holding a pipeline, a bootstrapper that is not running,
+or no report at all. Doctor _warnings_, spend warning limits and stale pipeline
+directories deliberately do not trip it. It names
 the findings on stderr, so the cron mail says which one fired.
 
 **`phoebe list` is deprecated.** It still works. It prints the fleet section

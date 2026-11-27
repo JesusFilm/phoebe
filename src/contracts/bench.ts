@@ -46,6 +46,12 @@ export type BenchFixture = {
    * in the hub clone: the tree the PR started from (or last caught up with).
    */
   baseSha: string;
+  /**
+   * ISO. When `bench select` saw the merged PR's head pass install, check and
+   * test with no agent (#988). Absent when the suite was pinned with
+   * `--no-baseline`, or before baselines existed.
+   */
+  baselinePassedAt?: string;
 };
 
 /** An issue the selection looked at and left out, and why. */
@@ -87,15 +93,21 @@ export type BenchGateResult = {
 };
 
 /**
- * The gates of one trial. A gate bench did not reach is `null`: everything
- * after the first failure, and `check` and `test` when the agent left no
- * commits.
+ * The gates of one trial, or of one fixture's baseline. A gate bench did not
+ * reach is `null`: everything after the first failure, and `check` and `test`
+ * when the agent left no commits.
  */
 export type BenchGates = {
   install: BenchGateResult | null;
   check: BenchGateResult | null;
   test: BenchGateResult | null;
 };
+
+/**
+ * Where a fixture's baseline failed: the first gate that exited non-zero on the
+ * merged PR's head, or `checkout` when that head could not be put in a tree.
+ */
+export type BenchBaselineGate = "checkout" | keyof BenchGates;
 
 /** What the trial's commits changed, measured from `baseSha`. */
 export type BenchDiffStats = {

@@ -146,6 +146,17 @@ function setting(entry: CatalogueEntry): Setting {
   };
 }
 
+/** One option of the bench kind, at `kinds.bench.<path>`, named `PHOEBE_BENCH_<FIELD>`. */
+function benchOption(path: string, field: string, type: SettingType): Setting {
+  return setting({
+    path: `kinds.bench.${path}`,
+    env: workKindEnvVar("bench", field),
+    reader: "engine",
+    type,
+    overlay: "none",
+  });
+}
+
 /**
  * Every setting Phoebe reads from the environment, in one list — the order the
  * configuration reference prints them in: identity, then policy, then the knobs
@@ -265,6 +276,17 @@ export const SETTINGS: readonly Setting[] = [
     envOnly: true,
     overlay: "none",
   }),
+  // The bench kind's options (#989). It is a catalog kind, so its block sits
+  // under a pipeline (`pipelines.<name>.kinds.bench`) and a dotted path's
+  // derived name would read `PHOEBE_KINDS_BENCH_*`. The names follow the
+  // per-kind convention instead, the one every other `PHOEBE_BENCH_*` name an
+  // operator sees already uses. The judge is two leaves because env sets leaves
+  // only; it is on once both resolve.
+  benchOption("suite", "suite", "string"),
+  benchOption("maxFixtures", "maxFixtures", "integer"),
+  benchOption("repeat", "repeat", "integer"),
+  { ...benchOption("judge.provider", "judgeProvider", "enum"), values: PROVIDER_NAMES },
+  benchOption("judge.model", "judgeModel", "string"),
   // The three host knobs, fields on the bootstrapper-only `deployment` block so
   // an operator can reach them by editing one config rather than only through an
   // env var set in a compose file they may not own.

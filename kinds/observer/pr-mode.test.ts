@@ -17,7 +17,7 @@ import type { WorkKindRunCtx } from "../../src/work-kinds/definition.ts";
 import { unitKeyOf } from "./evidence.ts";
 import { createObserverKind } from "./index.ts";
 import { resolveObserverOptions } from "./options.ts";
-import { EDIT_PROMPT_FILE } from "./pr-proposal.ts";
+import { BENCH_HINT, EDIT_PROMPT_FILE } from "./pr-proposal.ts";
 import { parseFindingMarker, renderFindingMarker, renderUnitsMarker } from "./proposals.ts";
 
 const DAY = 86_400_000;
@@ -344,6 +344,10 @@ describe("PR mode", () => {
       { target: "pr #59", label: "phoebe:observer" },
     ]);
     expect(h.labels.some((entry) => entry.label === "ready-for-agent")).toBe(false);
+    // Only the PR that edits a prompt suggests a bench, and nothing adds the label.
+    expect(h.prs.map((pr) => pr.body.includes(BENCH_HINT))).toEqual([false, true, false]);
+    expect(h.prs[1]!.body).toContain("add the `phoebe:bench` label");
+    expect(h.labels.some((entry) => entry.label === "phoebe:bench")).toBe(false);
     expect(result).toEqual({
       summary: "3 proposals filed (#57, #58, #59); coverage work none, intake 6d",
     });
