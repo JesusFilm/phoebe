@@ -28,7 +28,7 @@ import {
   usd,
   withChoicesOf,
 } from "./history.ts";
-import { createRemoteClient } from "./remote-client.ts";
+import { createRemoteClient, RemoteRequestError } from "./remote-client.ts";
 import { agentRun, bridge, historyPage, historyRecord } from "./test-fixture.ts";
 
 describe("asking for a page", () => {
@@ -273,5 +273,31 @@ describe("the units that need a look (#932)", () => {
           : { kind: "page", page: historyPage([]) },
       );
     expect(await readNeedsALook(read, SINCE)).toEqual({ kind: "too-old" });
+  });
+
+  test("an engine that predates unproductive still feeds the other outcomes", async () => {
+    const read: HistoryReader = (query) =>
+      query.outcome === "unproductive"
+        ? Promise.reject(
+            new RemoteRequestError(400, {
+              error: "bad-request",
+              detail: "`outcome` is one of completed, failed (got `unproductive`).",
+            }),
+          )
+        : Promise.resolve({ kind: "page", page: historyPage([]) });
+    expect(await readNeedsALook(read, SINCE)).toEqual({ kind: "units", records: [], total: 0 });
+  });
+
+  test("any other failure of the unproductive read fails the feed", async () => {
+    const read: HistoryReader = (query) =>
+      query.outcome === "unproductive"
+        ? Promise.reject(new Error("fetch failed"))
+        : Promise.resolve({ kind: "page", page: historyPage([]) });
+    await expect(readNeedsALook(read, SINCE)).rejects.toThrow("fetch failed");
+    const server: HistoryReader = (query) =>
+      query.outcome === "unproductive"
+        ? Promise.reject(new RemoteRequestError(500, { error: "boom" }))
+        : Promise.resolve({ kind: "page", page: historyPage([]) });
+    await expect(readNeedsALook(server, SINCE)).rejects.toThrow("500");
   });
 });

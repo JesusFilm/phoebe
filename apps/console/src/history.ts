@@ -24,6 +24,7 @@ import type {
   UnitRecordOutcome,
 } from "phoebe-agent/contracts";
 import { REMOTE_ROUTES } from "phoebe-agent/contracts";
+import { RemoteRequestError } from "./remote-client.ts";
 
 /** What one ask for a page came to. */
 export type HistoryFetch =
@@ -309,6 +310,20 @@ export type NeedsALookFetch =
   | { kind: "too-old" };
 
 /**
+ * Whether a rejection is an engine turning down the `outcome` filter itself,
+ * which is how one that predates `unproductive` answers. The remote API
+ * answers 400 and the local exec's error carries the same sentence; a network
+ * failure, another status or a malformed page says nothing of the filter.
+ */
+export function rejectsOutcomeFilter(error: unknown): boolean {
+  const said = (text: unknown) => typeof text === "string" && text.includes("`outcome` is one of");
+  if (error instanceof RemoteRequestError) {
+    return error.status === 400 && said((error.body as { detail?: unknown } | null)?.detail);
+  }
+  return error instanceof Error && said(error.message);
+}
+
+/**
  * The newest units since `since` that did not complete. One read per outcome,
  * since a query takes one, each capped at the feed's size: the newest six of
  * the three together are among the newest six of each. The total is the three
@@ -324,7 +339,12 @@ export async function readNeedsALook(
       const read = reader({ outcome, since, limit: FEED_SIZE });
       // An engine older than the outcome rejects the filter. Only that read
       // may fail quietly: the feed still lists the outcomes it knows.
-      return outcome === "unproductive" ? read.catch((): null => null) : read;
+      return outcome === "unproductive"
+        ? read.catch((error: unknown): null => {
+            if (rejectsOutcomeFilter(error)) return null;
+            throw error;
+          })
+        : read;
     }),
   );
   const pages: HistoryPage[] = [];
