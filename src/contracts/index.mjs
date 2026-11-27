@@ -23,8 +23,16 @@ export const ALERT_SCHEMA = 1;
 /** How long after the last heartbeat silence becomes an alert (#515 §4). */
 export const ALERT_DARK_AFTER_MS = 300_000;
 
-/** The five conditions (#515 §3). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
-export const ALERT_CONDITIONS = ["dark", "wedged", "crash-looping", "doctor-fail", "replaced"];
+/** The seven conditions (#515 §3, #991). Mirror of `ALERT_CONDITIONS` in alerts.ts. */
+export const ALERT_CONDITIONS = [
+  "dark",
+  "wedged",
+  "crash-looping",
+  "doctor-fail",
+  "replaced",
+  "spend-warning",
+  "spend-ceiling",
+];
 /**
  * The config-edit closed set (#503). Mirror of `CLOSED_EDIT_BLOCKS` in
  * config-edit.ts; the doc comments live there.

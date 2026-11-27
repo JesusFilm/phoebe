@@ -256,7 +256,7 @@ install's own page: the install tab, and six more.
 
 | Tab           | What it answers                                                                                                                                                                                          |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Overview**  | The last 7 days and the units that need a look, then the engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                                                   |
+| **Overview**  | The last 7 days, its spend limits and any hold, and the units that need a look, then the engine ref and running SHA, reconcile state, slots, every pipeline's two lines, held tenants.                   |
 | **Pipelines** | One row per pipeline: the process line, the state line, units in flight against their budgets, the wedged clause, its last 7 days. A row opens into its unit history.                                    |
 | **History**   | The units this deployment ran, newest first, filtered by pipeline, kind, outcome and model. A row opens a drawer for that unit. **Run observer** starts an observer run when a tenant declares the kind. |
 | **Doctor**    | The last run's checks with the trigger that produced them and how long ago.                                                                                                                              |
@@ -330,7 +330,13 @@ it is too old to run the observer.
 The overview opens with a card for the last 7 days. It shows how many units
 ran and how many a day, what they cost, and how many did not complete. The
 card reads the history summary the report carries, so drawing it fetches no
-records. Under it, "Needs a look" lists up to six units from the last 7 days
+records. When the config sets [spend limits](configuration.md#spend-limits-spend),
+the card lists each one beside the figure it is weighed against, with its
+warning limit and ceiling, and names every pipeline a ceiling holds and the
+time the hold should lift. There is no resume button. A ceiling lifts on its
+own as spend ages out, or sooner when a config edit raises it above current spend or removes it. A
+ceiling holding is an error badge on the rail, and a warning limit reached is a
+warning badge. Under the card, "Needs a look" lists up to six units from the last 7 days
 that failed, timed out or were abandoned, newest first. Each one opens the
 same drawer as the History tab, and the link under the list opens the History
 tab. The list is the one part of the overview that reads records. It asks
@@ -351,7 +357,8 @@ closes 300 ms after the pointer leaves both.
 
 Clicking the icon opens the fleet stats page, at `#/stats`. It has the same four
 figures as tiles, a chart of units per day over the week, a table by deployment,
-a table by model, and the five most expensive units. Each of those units opens
+every deployment's spend limits over the chosen window beside their figures
+along with each hold, a table by model, and the five most expensive units. Each of those units opens
 the drawer the History tab uses. Choosing an install on the rail leaves the page.
 
 The totals and the table by deployment add up each deployment's report summary.
@@ -367,9 +374,14 @@ every table, and are never added together.
 ## Alerting
 
 Nobody watches a window. The companion raises one notification when an install
-crosses into one of three conditions, and one when it crosses back:
+crosses into one of five conditions, and one when it crosses back:
 
-`wedged`, `crash-looping`, `doctor-fail`.
+`wedged`, `crash-looping`, `doctor-fail`, `spend-warning`, `spend-ceiling`.
+
+`spend-warning` fires once when a pipeline reaches a
+[warning limit](configuration.md#spend-limits-spend), and `spend-ceiling` when
+a ceiling starts holding it. Each clears when the window falls back under the
+limit or a config edit raises it above current spend or removes it.
 
 A remote adds `dark`, raised five minutes after the companion last heard from
 it ("unreachable for 5 min"), and `replaced`, when a different deployment

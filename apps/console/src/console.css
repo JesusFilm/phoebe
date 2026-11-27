@@ -2507,6 +2507,28 @@ a.button {
   font-size: 12px;
 }
 
+/* ── spend limits beside the figures (#991) ────────────────────────────── */
+
+.spend-section {
+  margin: 12px 0 4px;
+}
+
+.spend-section h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+.spend-holds {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.spend-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
 .feed-detail {
   max-width: 360px;
   overflow: hidden;

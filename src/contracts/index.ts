@@ -77,6 +77,8 @@ export type {
   SpendCrossing,
   SpendField,
   SpendHold,
+  SpendLimitFigure,
+  SpendLimitLevel,
   SpendLimits,
   SpendMeasure,
   SpendScope,

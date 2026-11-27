@@ -994,10 +994,17 @@ volume`. From the host, a container that is not running is reported before any
 exec. There is no staleness threshold, because "3h old" is a fact an operator can
 act on and "stale" is a guess.
 
+**Spend limits.** A pipeline past a [spend limit](configuration.md#spend-limits-spend)
+gets a line of its own under its state line. A warning limit reached reads
+`spend warning: API spend $6.00 of $5.00 over 24h (pipelines.work.spend.warn.usd24h)`,
+and work goes on. A ceiling holding reads `spend ceiling: …; held until about
+2026-05-05 21:00 UTC (in 9h), or until a config edit raises or removes it`.
+
 **`--check` for a cron.** Exit 1 when something needs a look: a wedged pipeline,
 a crash-looping one, a failing check in the report's doctor section, a held
-tenant, a bootstrapper that is not running, or no report at all. Doctor
-_warnings_ and stale pipeline directories deliberately do not trip it. It names
+tenant, a spend ceiling holding a pipeline, a bootstrapper that is not running,
+or no report at all. Doctor _warnings_, spend warning limits and stale pipeline
+directories deliberately do not trip it. It names
 the findings on stderr, so the cron mail says which one fired.
 
 **`phoebe list` is deprecated.** It still works. It prints the fleet section

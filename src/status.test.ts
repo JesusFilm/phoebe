@@ -14,6 +14,7 @@ import type {
 import type { RemoteReport } from "./contracts/remote-protocol.ts";
 import type { DoctorSection } from "./contracts/doctor.ts";
 import type { HistorySummary, HistoryWindow } from "./contracts/unit-record.ts";
+import type { CellSpend } from "./contracts/spend.ts";
 import { emptyHistoryWindow } from "./unit-history.ts";
 import type { CommandResult, CommandRunner } from "./deployment-compose.ts";
 import { COMPOSE_REL_PATH } from "./deployment-compose.ts";
@@ -24,7 +25,9 @@ import {
   formatHistoryLine,
   formatHistoryWindow,
   formatProcessLine,
+  formatReleaseAt,
   formatRemoteLine,
+  formatSpendLines,
   formatStateLine,
   formatStatusReport,
   LIST_DEPRECATION_NOTICE,
@@ -166,6 +169,28 @@ const BUSY_DAY: Partial<HistoryWindow> = {
   units: 31,
   outcomes: { completed: 27, unproductive: 0, failed: 3, "timed-out": 1, abandoned: 0 },
   costUsd: { api: 8.2, subscriptionEstimate: 4.1 },
+};
+
+/** A pipeline over its own \$5 ceiling and its tenant's \$20 weekly warning limit. */
+const HELD: CellSpend = {
+  hold: {
+    scope: "pipeline",
+    measure: "usd",
+    window: "24h",
+    limit: 5,
+    spent: 6,
+    since: MINUTES_AGO(30),
+    releaseAt: new Date(NOW + 9 * 3_600_000).toISOString(),
+  },
+  warnings: [{ scope: "tenant", measure: "usd", window: "7d", limit: 20, spent: 21.5 }],
+  limits: [],
+};
+
+/** A pipeline past a warning limit and under every ceiling. */
+const WARNED: CellSpend = {
+  hold: null,
+  warnings: [{ scope: "pipeline", measure: "tokens", window: "24h", limit: 1000, spent: 1200 }],
+  limits: [],
 };
 
 function view(overrides: Partial<Parameters<typeof formatStatusReport>[0]> = {}) {
@@ -583,6 +608,40 @@ describe("the history line (#929)", () => {
   });
 });
 
+describe("the spend lines (#991)", () => {
+  test("a ceiling holding reads held until about, and names the limit it reached", () => {
+    expect(formatSpendLines(cell({ pipeline: "work", spend: HELD }), NOW)).toEqual([
+      "spend ceiling: API spend $6.00 of $5.00 over 24h (pipelines.work.spend.ceiling.usd24h); " +
+        "held until about 2026-09-17 21:00 UTC (in 9h), or until a config edit raises or removes it",
+      "spend warning: API spend $21.50 of $20.00 over 7d (spend.warn.usd7d)",
+    ]);
+  });
+
+  test("a warning limit crossed is a line of its own, and nothing is held", () => {
+    expect(formatSpendLines(cell({ pipeline: "work", spend: WARNED }), NOW)).toEqual([
+      "spend warning: 1,200 tokens of 1,000 tokens over 24h (pipelines.work.spend.warn.tokens24h)",
+    ]);
+  });
+
+  test("a cell under every limit, or with none, says nothing", () => {
+    expect(formatSpendLines(cell({ pipeline: "work" }), NOW)).toEqual([]);
+    expect(
+      formatSpendLines(cell({ pipeline: "work", spend: { hold: null, warnings: [] } }), NOW),
+    ).toEqual([]);
+  });
+
+  test("the lines sit under the pipeline's state line in the fleet section", () => {
+    const text = view({ report: report({ cells: [cell({ pipeline: "work", spend: WARNED })] }) });
+    const lines = text.split("\n");
+    const state = lines.findIndex((line) => line.trim() === "idle");
+    expect(lines[state + 1]?.trim()).toMatch(/^spend warning: 1,200 tokens/);
+  });
+
+  test("a release stamp that will not parse is said plainly", () => {
+    expect(formatReleaseAt("soon", NOW)).toBe("an unknown time");
+  });
+});
+
 describe("statusFindings — what --check exits 1 for", () => {
   test("a healthy deployment has none", () => {
     expect(
@@ -629,6 +688,22 @@ describe("statusFindings — what --check exits 1 for", () => {
         bootAlive: true,
       }),
     ).toEqual([]);
+  });
+
+  test("a spend ceiling holding is a finding; a warning limit is not", () => {
+    expect(
+      statusFindings({
+        report: report({
+          cells: [
+            cell({ pipeline: "work", spend: HELD }),
+            cell({ pipeline: "triage", spend: WARNED }),
+          ],
+        }),
+        bootAlive: true,
+      }),
+    ).toEqual([
+      "spend ceiling: /etc/phoebe/children/widget#work (held until about 2026-09-17T21:00:00.000Z)",
+    ]);
   });
 
   test("a doctor warning and a stale pipeline directory are not findings", () => {
@@ -808,6 +883,34 @@ describe("the in-container arm", () => {
     expect(lines.err.join("\n")).toContain("needs a look: bootstrapper not running");
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+
+  test("--check exits 1 while a spend ceiling holds and 0 once it lifts", async () => {
+    const held = `${JSON.stringify(report({ cells: [cell({ pipeline: "work", spend: HELD })] }))}\n`;
+    const lines = io();
+    await runStatusCli(["--check"], "status", {
+      inContainer: true,
+      bootAlive: true,
+      readReport: () => held,
+      now: NOW,
+      io: lines.io,
+    });
+    expect(lines.out.join("")).toContain("held until about 2026-09-17 21:00 UTC");
+    expect(lines.err.join("\n")).toContain("spend ceiling: /etc/phoebe/children/widget#work");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+
+    const lifted = `${JSON.stringify(
+      report({ cells: [cell({ pipeline: "work", spend: { ...HELD, hold: null } })] }),
+    )}\n`;
+    await runStatusCli(["--check"], "status", {
+      inContainer: true,
+      bootAlive: true,
+      readReport: () => lifted,
+      now: NOW,
+      io: io().io,
+    });
+    expect(process.exitCode ?? 0).toBe(0);
   });
 
   test("`list` prints the deprecation notice and the fleet section", async () => {

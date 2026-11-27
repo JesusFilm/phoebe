@@ -1201,6 +1201,28 @@ describe("spend limits (#990)", () => {
     expect([...h.lastHolds().keys()]).toEqual(["/t/a#work"]);
   });
 
+  test("the report lists every configured limit beside its figure, reached or not", () => {
+    const h = holdsHarness();
+    h.units.set(`${STATE}/work`, [unitAt(h.now() - HOUR, [run({ costUsd: 2, costBasis: "api" })])]);
+    h.units.set(`${STATE}/triage`, [
+      unitAt(h.now() - HOUR, [run({ costUsd: 1, costBasis: "api" })], "triage"),
+    ]);
+    const tenantSpend: SpendField = { warn: { usd7d: 20 } };
+    h.state.notePipelines([
+      limited("work", { tenantSpend, spend: { warn: { usd24h: 5 }, ceiling: { usd24h: 8 } } }),
+      limited("triage", { tenantSpend }),
+    ]);
+
+    expect(cellOf(h.latest()!, "work").spend?.limits).toEqual([
+      { scope: "tenant", level: "warn", measure: "usd", window: "7d", limit: 20, spent: 3 },
+      { scope: "pipeline", level: "warn", measure: "usd", window: "24h", limit: 5, spent: 2 },
+      { scope: "pipeline", level: "ceiling", measure: "usd", window: "24h", limit: 8, spent: 2 },
+    ]);
+    expect(cellOf(h.latest()!, "triage").spend?.limits).toEqual([
+      { scope: "tenant", level: "warn", measure: "usd", window: "7d", limit: 20, spent: 3 },
+    ]);
+  });
+
   test("a subscription estimate never trips a usd limit", () => {
     const h = holdsHarness();
     h.units.set(`${STATE}/work`, [
@@ -1212,7 +1234,7 @@ describe("spend limits (#990)", () => {
       }),
     ]);
 
-    expect(cellOf(h.latest()!, "work").spend).toEqual({ hold: null, warnings: [] });
+    expect(cellOf(h.latest()!, "work").spend).toMatchObject({ hold: null, warnings: [] });
     expect(h.lastHolds().size).toBe(0);
   });
 

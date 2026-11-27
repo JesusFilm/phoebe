@@ -87,6 +87,7 @@ import {
   bindingHold,
   createSpendClock,
   evaluateSpend,
+  spendLimitFigures,
   spendTotals,
   zeroTotals,
   type ScopeEvaluation,
@@ -644,13 +645,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       const tenantLimits = pipeline.pipeline.tenantSpend;
       if (own === undefined && tenantLimits === undefined) return cell;
       const tenantId = cell.tenant.id;
+      const tenantSum = tenantTotals.get(tenantId) ?? zeroTotals();
       let tenant = tenants.get(tenantId);
       if (tenant === undefined) {
         tenant = evaluateSpend({
           scope: "tenant",
           clockKey: `tenant:${tenantId}`,
           limits: tenantLimits,
-          totals: tenantTotals.get(tenantId) ?? zeroTotals(),
+          totals: tenantSum,
           records: tenantRecords.get(tenantId) ?? [],
           asOf,
           observedAt,
@@ -658,11 +660,12 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
         });
         tenants.set(tenantId, tenant);
       }
+      const ownSum = cell.history === undefined ? zeroTotals() : spendTotals(cell.history);
       const mine = evaluateSpend({
         scope: "pipeline",
         clockKey: `pipeline:${cell.id}`,
         limits: own,
-        totals: cell.history === undefined ? zeroTotals() : spendTotals(cell.history),
+        totals: ownSum,
         records: unitRecords.get(cell.id) ?? [],
         asOf,
         observedAt,
@@ -670,7 +673,14 @@ export function createDeploymentState(deps: DeploymentStateDeps): DeploymentStat
       });
       const hold = bindingHold([...tenant.holds, ...mine.holds]);
       if (hold !== null) holds.set(cell.id, hold);
-      return { ...cell, spend: { hold, warnings: [...tenant.warnings, ...mine.warnings] } };
+      const limits = [
+        ...spendLimitFigures({ scope: "tenant", limits: tenantLimits, totals: tenantSum }),
+        ...spendLimitFigures({ scope: "pipeline", limits: own, totals: ownSum }),
+      ];
+      return {
+        ...cell,
+        spend: { hold, warnings: [...tenant.warnings, ...mine.warnings], limits },
+      };
     });
     spendClock.sweep();
     spendHolds = holds;
